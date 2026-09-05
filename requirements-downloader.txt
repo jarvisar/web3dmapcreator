@@ -1,0 +1,4 @@
+# Kept outside Blender because these packages include native libraries and a
+# newer NumPy than Blender 3.6 bundles.
+overturemaps==1.0.2
+
