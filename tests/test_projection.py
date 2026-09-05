@@ -6,10 +6,12 @@ import unittest
 
 from jarvizar_city_model.data.projection import (
     create_fixed_scale_transform,
+    format_degrees,
     LocalENUProjection,
     MiniatureTransform,
     WGS84Bounds,
     create_miniature_transform,
+    parse_bounds_text,
 )
 
 
@@ -44,6 +46,76 @@ class WGS84BoundsTests(unittest.TestCase):
             with self.subTest(values=values):
                 with self.assertRaises(ValueError):
                     WGS84Bounds(*values)
+
+
+class BoundsTextTests(unittest.TestCase):
+    """The one-line paste the blender-osm Copy button produces."""
+
+    def test_parses_the_blender_osm_clipboard_line(self):
+        bounds = parse_bounds_text("-84.53576,39.08541,-84.48473,39.11475")
+
+        self.assertAlmostEqual(bounds.west, -84.53576)
+        self.assertAlmostEqual(bounds.south, 39.08541)
+        self.assertAlmostEqual(bounds.east, -84.48473)
+        self.assertAlmostEqual(bounds.north, 39.11475)
+
+    def test_reads_loose_separators_and_decoration(self):
+        variants = (
+            " -84.53576, 39.08541, -84.48473, 39.11475\n",
+            "-84.53576 39.08541 -84.48473 39.11475",
+            "-84.53576;39.08541;-84.48473;39.11475",
+            "[-84.53576, 39.08541, -84.48473, 39.11475]",
+            "bbox=-84.53576,39.08541,-84.48473,39.11475",
+            "-84.53576\t39.08541\n-84.48473\t39.11475",
+        )
+        for text in variants:
+            with self.subTest(text=text):
+                bounds = parse_bounds_text(text)
+                self.assertAlmostEqual(bounds.west, -84.53576)
+                self.assertAlmostEqual(bounds.north, 39.11475)
+
+    def test_rejects_text_that_is_not_four_numbers_in_order(self):
+        invalid = (
+            "",
+            "-84.53576,39.08541,-84.48473",
+            "-84.53576,39.08541,-84.48473,39.11475,17.0",
+            "-84.53576,39.08541,-84.48473,north",
+            # east west of west: a lat/lon swap of a real box does not
+            # accidentally become a legal one.
+            "-84.48473,39.08541,-84.53576,39.11475",
+            "-184.0,39.08541,-84.48473,39.11475",
+        )
+        for text in invalid:
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    parse_bounds_text(text)
+
+    def test_rejects_a_non_string(self):
+        with self.assertRaises(ValueError):
+            parse_bounds_text(None)
+
+    def test_formatting_round_trips_through_the_text_fields(self):
+        text = ",".join(str(value) for value in CINCINNATI_CORNERS)
+        bounds = parse_bounds_text(text)
+        formatted = tuple(
+            format_degrees(value)
+            for value in (bounds.west, bounds.south, bounds.east, bounds.north)
+        )
+
+        self.assertEqual(
+            formatted, ("-84.5337", "39.08554", "-84.47422", "39.11094")
+        )
+        self.assertEqual(
+            tuple(float(value) for value in formatted), CINCINNATI_CORNERS
+        )
+
+    def test_formatting_has_no_trailing_noise_or_negative_zero(self):
+        self.assertEqual(format_degrees(0.0), "0")
+        self.assertEqual(format_degrees(-0.0), "0")
+        self.assertEqual(format_degrees(12.0), "12")
+        self.assertEqual(format_degrees(-84.53576), "-84.53576")
+        with self.assertRaises(ValueError):
+            format_degrees(math.inf)
 
 
 class LocalENUProjectionTests(unittest.TestCase):

@@ -36,7 +36,8 @@ jarvizar_city_model/
     __init__.py                    add-on registration / Blender 3.6 metadata
     blender_manifest.toml          Blender 4.2+ extension metadata
     config.py                      scene settings
-    operators.py                   cache/generate/export-3mf/clear orchestration
+    operators.py                   paste-bbox/cache/generate/export-3mf/clear
+                                   orchestration
     ui.py                          N-panel
     data/
         cache.py                   deterministic bbox cache + manifest

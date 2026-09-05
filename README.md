@@ -181,6 +181,14 @@ generated, so a leftover default cube in the scene is left out.
 
 1. Enter the bbox as decimal degrees in west, south, east, north order. The
    default is `-84.53370,39.08554,-84.47422,39.11094` (Cincinnati).
+   **Paste Coordinates** fills all four fields from one line on the clipboard,
+   which is the format the **Copy** button at
+   [prochitecture.com/blender-osm](https://prochitecture.com/blender-osm)
+   produces: `-84.53576,39.08541,-84.48473,39.11475`. Commas, spaces,
+   semicolons, surrounding brackets and a `bbox=` prefix all read the same;
+   the order does not, because several other orders are still a legal box
+   somewhere else on earth. If the clipboard does not hold a box, the button
+   asks for the text instead of guessing.
 2. Choose the print scale, as above.
 3. Under **Features**, enable what you want. Each feature only downloads the
    Overture types it actually needs.

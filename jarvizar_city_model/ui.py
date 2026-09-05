@@ -66,6 +66,11 @@ class JARVIZAR_PT_city_model(Panel):
         grid.prop(settings, "east")
         grid.prop(settings, "south")
         grid.prop(settings, "north")
+        # blender-osm copies "west,south,east,north" as one line; pasting that
+        # whole line beats editing four fields by hand.  The button gets its
+        # own row because at the default sidebar width a shared row truncates
+        # the heading to "WGS84 Boun...".
+        box.operator("jarvizar.paste_bounds", text="Paste Coordinates", icon="PASTEDOWN")
 
         box = layout.box()
         box.label(text="Print Scale")

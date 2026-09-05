@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import re
 from typing import Any, Dict, Tuple
 
 
@@ -110,6 +111,60 @@ class WGS84Bounds:
             "east": self.east,
             "north": self.north,
         }
+
+
+BOUNDS_TEXT_ORDER = ("west", "south", "east", "north")
+BOUNDS_TEXT_EXAMPLE = "-84.53576,39.08541,-84.48473,39.11475"
+
+_BOUNDS_TEXT_SEPARATORS = re.compile(r"[,;\s]+")
+_BOUNDS_TEXT_WRAPPERS = "()[]{}<>\"' \t\r\n"
+
+
+def parse_bounds_text(text: str) -> WGS84Bounds:
+    """Read ``west,south,east,north`` decimal degrees out of one pasted line.
+
+    That is what the Copy button on prochitecture.com/blender-osm puts on the
+    clipboard, and what most bbox pickers emit.  Separators are read loosely --
+    commas, semicolons, tabs, newlines, surrounding brackets and quotes, and a
+    ``bbox=`` style prefix all mean the same thing -- but the *order* is never
+    guessed.  Four numbers in another order describe a different place, and
+    several other orders still validate as a legal box (a lat/lon swap of a
+    Cincinnati box is a legal box in the Indian Ocean), so guessing would
+    silently model the wrong city instead of reporting a problem.
+    """
+
+    if not isinstance(text, str):
+        raise ValueError("Bounding-box text must be a string")
+    cleaned = text.strip()
+    if "=" in cleaned:
+        # A box copied out of a URL or a query arrives as "bbox=w,s,e,n".
+        cleaned = cleaned.rsplit("=", 1)[1]
+    cleaned = cleaned.strip(_BOUNDS_TEXT_WRAPPERS)
+    tokens = [token for token in _BOUNDS_TEXT_SEPARATORS.split(cleaned) if token]
+    if len(tokens) != 4:
+        raise ValueError(
+            f"Expected 4 numbers as west,south,east,north; found {len(tokens)}"
+        )
+    values = []
+    for name, token in zip(BOUNDS_TEXT_ORDER, tokens):
+        try:
+            values.append(_finite_float(token, name))
+        except ValueError:
+            raise ValueError(f"{name} is not a number: {token}") from None
+    return WGS84Bounds(*values)
+
+
+def format_degrees(value: float) -> str:
+    """Render one degree value for a text field: exact, without trailing noise.
+
+    Seven decimals is roughly a centimetre and is the precision the cache key
+    is written at (:meth:`data.cache.Bounds.canonical`), so a box that passes
+    through these fields lands in the cache directory it names.
+    """
+
+    number = _finite_float(value, "degrees")
+    text = f"{number:.7f}".rstrip("0").rstrip(".")
+    return "0" if text in ("", "-", "-0") else text
 
 
 @dataclass(frozen=True)

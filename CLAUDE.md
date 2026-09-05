@@ -54,7 +54,7 @@ Shell is Git Bash **and** PowerShell. `$APPDATA` works in Bash.
 ### Commands
 
 ```bash
-# unit tests (288, all pure, no bpy) -- note the -t tests
+# unit tests (294, all pure, no bpy) -- note the -t tests
 python -m unittest discover -s tests -p "test_*.py" -t tests
 
 # synthetic full-pipeline test inside Blender (writes its own fixtures)
@@ -76,6 +76,10 @@ python -m unittest discover -s tests -p "test_*.py" -t tests
 # embed/overhang probe: every cap face of roads, slabs, buildings, piers and
 # supports measured against the height field (skips zero-area faces)
 ... --python tests/blender_embed_probe.py -- --cache <cache>
+
+# clipboard paste button; needs a real window, so no --background
+powershell -c "Set-Clipboard -Value '-84.53576,39.08541,-84.48473,39.11475'"
+"/c/Program Files/Blender Foundation/Blender 3.6/blender.exe"   --factory-startup --python tests/blender_gui_paste.py
 
 # build both zips into dist/
 python scripts/build_addon.py
@@ -101,14 +105,20 @@ before force-closing** (he has said yes once; that was not standing permission).
 
 ## Current state
 
-- Repo is at **0.9.0**; `dist/jarvizar_city_model-0.9.0-{blender36,extension}.zip` built.
+- Repo is at **0.9.1**; `dist/jarvizar_city_model-0.9.1-{blender36,extension}.zip` built.
+- 0.9.1 = **Paste Coordinates**. One button under the bbox fields fills all
+  four from `west,south,east,north` on the clipboard, which is what the Copy
+  button at prochitecture.com/blender-osm produces. `parse_bounds_text` /
+  `format_degrees` are pure (`data/projection.py`); the operator reads
+  `window_manager.clipboard` in `invoke` and only opens a dialog when the
+  clipboard cannot answer. See "Pasted bounds" below. 294 unit tests.
 - 0.9.0 = the 3MF export path and consistent face winding. **Export 3MF for
   Bambu** writes every generated object as one 3MF object with one part each,
   at true millimetres; and `orient_faces_outward` re-winds any solid whose
   degenerate cap slivers handed their walls the wrong direction. Sample:
   **0 inconsistently wound shells of 25,033** (was 107) and **0 faces facing
   inward of 1,349,935** (was 1,366, of which 713 in `BUILDINGS`); polygon count
-  unchanged to the face, 13.7 s, 0 non-manifold. 288 unit tests.
+  unchanged to the face, 13.7 s, 0 non-manifold.
 - 0.8.0 = loose deck ends touch down + merged objects. A deck end that is
   neither a joint nor a surface-road end is anchored to the ground like a
   road end (`solve_deck_network(open_ends=...)`; ends on the bbox edge stay
@@ -142,7 +152,7 @@ before force-closing** (he has said yes once; that was not standing permission).
   close-ups were made with `render_preview.py --water 0 --target x,y --span n`
   at (-113,-55) Brent Spence, (17,-20) Roebling/Taylor-Southgate, (43.7,22.4)
   the riverbank satellite-forest slab.
-- 288 unit tests pass; smoke, live full, live smoke and the embed probe all
+- 294 unit tests pass; smoke, live full, live smoke and the embed probe all
   pass. `blender_live_smoke.py` needed `cut_water_from_terrain = False`
   added in 0.9.0: it switches every non-building feature off, but the cut
   reads the water layer independently of the blue slab, so it had been
@@ -516,6 +526,25 @@ hole-bridge triangle (1.988e-4).
 
 ---
 
+**Pasted bounds are read in one fixed order and never guessed.**
+`parse_bounds_text` takes `west,south,east,north` -- what the Copy button at
+prochitecture.com/blender-osm puts on the clipboard -- and is deliberately
+loose about separators (commas, semicolons, whitespace, brackets, quotes, a
+`bbox=` prefix) and strict about order. Sniffing the order is not possible:
+a lat/lon swap of the Cincinnati box, `39.08,-84.53,39.11,-84.48`, still
+validates (west 39.08 < east 39.11, south -84.53 < north -84.48) and would
+quietly model a patch of the Indian Ocean. `format_degrees` writes the fields
+back at 7 decimals with trailing zeros stripped, the precision
+`data.cache.Bounds.canonical` hashes at, so pasting the sample bbox lands on
+the existing `bbox_4df7cf1c3668` cache directory -- verified in Blender.
+The operator's `text` property carries `SKIP_SAVE`: Blender remembers operator
+properties between runs, so without it a second click would reapply the text
+typed into the dialog on the first instead of reading the clipboard again.
+`window_manager.clipboard` always reads back empty in `--background` Blender
+(no GHOST window), so the one-click path can only be tested in a real window;
+`tests/blender_gui_paste.py` is that test (windowed, quits itself), and the
+unit tests cover the parsing.
+
 **Bambu Studio arranges every 3MF build item separately, so the export must
 write exactly one.** Adam's "the Z-axis is not lined up, the geometry is all
 there". A 3MF `<item>` is a printable object to Bambu: it re-centres each on
@@ -632,10 +661,12 @@ deck (`scratchpad/probe_bridges2.py`).
   from the intact installed 0.8.0 add-on and verified (no
   `orient_faces_outward`, version tuple `(0, 8, 0)`); bump the manifest and the
   zip name now follows.
-- **Installed is 0.9.0** (matches the repo), installed 2026-09-05 with
-  Blender closed via the `install-addon` skill; preference path verified and
-  `probe_client` OK. `dist/jarvizar_city_model-0.5.1-blender36.zip`,
-  `-0.6.0-`, `-0.7.0-` and `-0.8.0-` are kept for rollback; a scratch copy of
+- **Installed is 0.9.1** (matches the repo), installed 2026-09-05 with
+  Blender closed via the `install-addon` skill; version tuple, module path,
+  preference path and `probe_client` verified against the installed copy with
+  the repo kept off `sys.path`, and `jarvizar.paste_bounds` round-tripped
+  there. `dist/jarvizar_city_model-0.5.1-blender36.zip`, `-0.6.0-`, `-0.7.0-`,
+  `-0.8.0-` and `-0.9.0-` are kept for rollback; a scratch copy of
   `render_preview.py` that takes `--path <extracted zip dir>` instead of the
   repo root is how true "before" renders were made for the 0.6.0, 0.7.0 and
   0.8.0 comparisons.

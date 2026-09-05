@@ -36,8 +36,11 @@ from .data.overture import (
     resolve_python,
 )
 from .data.projection import (
+    BOUNDS_TEXT_EXAMPLE,
     create_fixed_scale_transform,
     create_miniature_transform,
+    format_degrees,
+    parse_bounds_text,
 )
 from .geometry.building_generation import generate_buildings
 from .geometry.dem_terrain import generate_border_rim, generate_terrain_solid
@@ -144,6 +147,78 @@ def _load_features(bundle: CacheBundle, feature_type: str):
     if not path.is_file():
         return []
     return load_feature_collection(path)
+
+
+class JARVIZAR_OT_paste_bounds(Operator):
+    bl_idname = "jarvizar.paste_bounds"
+    bl_label = "Paste Bounding Box"
+    bl_description = (
+        "Fill all four bounding-box fields from one line of decimal degrees, "
+        "west,south,east,north -- the format the Copy button on "
+        "prochitecture.com/blender-osm puts on the clipboard. Reads the "
+        "clipboard directly; asks for the text if the clipboard does not hold "
+        "a box"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    # Kept short: the prefill only exists so a nearly-right clipboard can be
+    # corrected in place, and a whole pasted document in a dialog field is
+    # worse than an empty one.
+    PREFILL_LIMIT = 200
+
+    # SKIP_SAVE matters: Blender remembers an operator's properties between
+    # runs, so without it the second click of the button would silently reapply
+    # the text typed into the dialog on the first instead of reading the
+    # clipboard again.
+    text: bpy.props.StringProperty(
+        name="Coordinates",
+        description="west,south,east,north in WGS84 decimal degrees",
+        default="",
+        options={"SKIP_SAVE"},
+    )
+
+    def invoke(self, context, event):
+        if self.text.strip():
+            # Text passed in by a caller is the answer; only a bare click has
+            # to go looking for one.
+            return self.execute(context)
+        clipboard = str(getattr(context.window_manager, "clipboard", "") or "")
+        try:
+            parse_bounds_text(clipboard)
+        except ValueError:
+            # One click is the whole point when the clipboard is good; only a
+            # clipboard that cannot answer earns a dialog, prefilled with
+            # whatever is there so a typo can be fixed rather than retyped.
+            first_line = clipboard.strip().splitlines()
+            self.text = first_line[0][: self.PREFILL_LIMIT] if first_line else ""
+            return context.window_manager.invoke_props_dialog(self, width=420)
+        self.text = clipboard
+        return self.execute(context)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Paste west,south,east,north in decimal degrees")
+        layout.label(text=f"Example: {BOUNDS_TEXT_EXAMPLE}")
+        layout.prop(self, "text", text="")
+
+    def execute(self, context):
+        settings = context.scene.jarvizar_city_model
+        try:
+            bounds = parse_bounds_text(self.text)
+        except ValueError as exc:
+            settings.last_status = f"Paste failed: {exc}"
+            self.report({"ERROR"}, settings.last_status)
+            return {"CANCELLED"}
+        settings.west = format_degrees(bounds.west)
+        settings.south = format_degrees(bounds.south)
+        settings.east = format_degrees(bounds.east)
+        settings.north = format_degrees(bounds.north)
+        settings.last_status = (
+            f"Bounding box set to {settings.west},{settings.south},"
+            f"{settings.east},{settings.north}"
+        )
+        self.report({"INFO"}, settings.last_status)
+        return {"FINISHED"}
 
 
 class JARVIZAR_OT_download_cache(Operator):
@@ -720,6 +795,7 @@ class JARVIZAR_OT_clear_model(Operator):
 
 
 CLASSES = (
+    JARVIZAR_OT_paste_bounds,
     JARVIZAR_OT_download_cache,
     JARVIZAR_OT_generate_model,
     JARVIZAR_OT_export_3mf,
