@@ -10,7 +10,12 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from ..data.geojson import feature_id, feature_properties, geometry_polygons
-from .planar import interior_grid_points, point_in_polygon, ring_bounds
+from .planar import (
+    effective_width,
+    interior_grid_points,
+    point_in_polygon,
+    ring_bounds,
+)
 
 # A building without parts whose footprint is at least this fraction inside
 # another building's parts is that building's outline published twice.  On the
@@ -255,6 +260,34 @@ def _ring_area(ring: Sequence[Tuple[float, float]]) -> float:
         ring[i][0] * ring[(i + 1) % count][1] - ring[(i + 1) % count][0] * ring[i][1]
         for i in range(count)
     )
+
+
+def footprint_admits_minimum_height(
+    ring: Sequence[Tuple[float, float]], minimum_size_mm: float
+) -> bool:
+    """Whether a footprint is big enough to be stretched to a minimum height.
+
+    A short mass can be raised so it reads over the roads, but only where the
+    result still looks like a building.  The test is a *size* test in printed
+    millimetres, and it has two halves because either one alone lets through
+    the shape this is meant to avoid:
+
+    * the footprint covers at least a ``minimum_size`` square, and
+    * it is not a ribbon of that area.  A square of side S has an effective
+      width -- twice area over perimeter -- of S/2, so anything thinner than
+      that is a wall fragment, a covered walkway or a row of garages mapped as
+      one strip.  Stretching one of those to the minimum height is exactly the
+      skinny tower the threshold exists to prevent.
+
+    A non-positive *minimum_size_mm* admits every footprint.
+    """
+    if minimum_size_mm <= 0.0:
+        return True
+    if len(ring) < 3:
+        return False
+    if abs(_ring_area(ring)) < minimum_size_mm * minimum_size_mm:
+        return False
+    return effective_width(ring) >= 0.5 * minimum_size_mm
 
 
 def _samples(rings: Sequence[Sequence[Tuple[float, float]]]) -> List[Tuple[float, float]]:

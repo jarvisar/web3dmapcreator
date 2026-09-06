@@ -4,6 +4,7 @@ import unittest
 
 from jarvizar_city_model.geometry.buildings import (
     class_default_height_m,
+    footprint_admits_minimum_height,
     resolve_vertical_profile,
     select_building_geometry,
 )
@@ -118,6 +119,55 @@ class SelectionTests(unittest.TestCase):
         selection = select_building_geometry([parent], [orphan])
         self.assertEqual(selection.buildings, ())
         self.assertEqual(selection.parts, ())
+
+
+class MinimumHeightFootprintTests(unittest.TestCase):
+    """The size gate on stretching a mass to the minimum printed height."""
+
+    def square(self, side):
+        return [(0.0, 0.0), (side, 0.0), (side, side), (0.0, side)]
+
+    def rectangle(self, width, length):
+        return [(0.0, 0.0), (length, 0.0), (length, width), (0.0, width)]
+
+    def test_square_of_exactly_the_threshold_qualifies(self):
+        self.assertTrue(footprint_admits_minimum_height(self.square(0.6), 0.6))
+
+    def test_larger_square_qualifies(self):
+        self.assertTrue(footprint_admits_minimum_height(self.square(2.4), 0.6))
+
+    def test_shed_below_the_threshold_is_left_alone(self):
+        # A garden shed: big enough to print, too small to stretch.
+        self.assertFalse(footprint_admits_minimum_height(self.square(0.4), 0.6))
+
+    def test_ribbon_with_enough_area_is_left_alone(self):
+        # A wall fragment or a row of garages: 0.1 x 4.0 has more than twice
+        # the area of the threshold square and would stretch into a fin.
+        ribbon = self.rectangle(0.1, 4.0)
+        self.assertGreater(abs(_area(ribbon)), 0.6 * 0.6)
+        self.assertFalse(footprint_admits_minimum_height(ribbon, 0.6))
+
+    def test_wide_low_building_qualifies(self):
+        # A warehouse: short in real life, and exactly what the minimum is for.
+        self.assertTrue(footprint_admits_minimum_height(self.rectangle(1.2, 6.0), 0.6))
+
+    def test_winding_does_not_matter(self):
+        clockwise = list(reversed(self.square(1.0)))
+        self.assertTrue(footprint_admits_minimum_height(clockwise, 0.6))
+
+    def test_zero_threshold_admits_everything(self):
+        self.assertTrue(footprint_admits_minimum_height(self.square(0.01), 0.0))
+
+    def test_degenerate_ring_is_rejected(self):
+        self.assertFalse(footprint_admits_minimum_height([(0.0, 0.0), (1.0, 1.0)], 0.6))
+
+
+def _area(ring):
+    count = len(ring)
+    return 0.5 * sum(
+        ring[i][0] * ring[(i + 1) % count][1] - ring[(i + 1) % count][0] * ring[i][1]
+        for i in range(count)
+    )
 
 
 if __name__ == "__main__":

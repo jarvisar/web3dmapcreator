@@ -226,6 +226,9 @@ class JARVIZAR_PT_buildings(Panel):
         settings = context.scene.jarvizar_city_model
         layout.prop(settings, "default_building_height_m")
         layout.prop(settings, "floor_height_m")
+        layout.prop(settings, "building_height_scale")
+        layout.prop(settings, "minimum_building_height_mm")
+        layout.prop(settings, "minimum_height_footprint_mm")
         layout.prop(settings, "generate_roof_shapes")
         layout.separator()
         layout.label(text="Printability")

@@ -283,6 +283,44 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         soft_max=100.0,
         precision=2,
     )
+    building_height_scale: FloatProperty(
+        name="Building Height Scale",
+        description=(
+            "Multiply every building's height above its own terrain base. 1.1 "
+            "gives the massing a little lift over the 0.6 mm roads without "
+            "touching the horizontal scale; footprints are unchanged"
+        ),
+        default=1.1,
+        min=0.1,
+        soft_max=3.0,
+        precision=2,
+    )
+    minimum_building_height_mm: FloatProperty(
+        name="Minimum Building Height (mm)",
+        description=(
+            "Shortest a building may print above the ground. A mass under this "
+            "is stretched upwards until its top clears the highest terrain "
+            "under its footprint by exactly this much; taller ones are left "
+            "alone. Zero switches the floor off"
+        ),
+        default=0.8,
+        min=0.0,
+        soft_max=5.0,
+        precision=2,
+    )
+    minimum_height_footprint_mm: FloatProperty(
+        name="Raise Only Footprints Over (mm)",
+        description=(
+            "A mass is only stretched to the minimum height when its footprint "
+            "covers at least this square and is not a ribbon of that area. "
+            "Sheds, garages and wall fragments stay their real height instead "
+            "of becoming needles"
+        ),
+        default=0.6,
+        min=0.0,
+        soft_max=10.0,
+        precision=2,
+    )
     floor_height_m: FloatProperty(
         name="Floor Height (m)",
         description="Real-world metres per floor for height fallback and min_floor",

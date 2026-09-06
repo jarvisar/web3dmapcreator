@@ -46,6 +46,16 @@ extruded downward by the deck thickness, producing a closed mesh in `BRIDGES`.
 The deck is as thick as a road by default (0.6 mm, three layers), so a bridge
 continues the road it carries with the same number of printed layers.
 
+Simple ribbons use paired cross-sections at every solved profile station
+(`geometry/deck_mesh.py`). Cap triangles connect only adjacent stations;
+tessellating the entire outline can span past a crest and carve a long diagonal
+dip into the deck. In the cached Cincinnati model this repair removes up to
+0.51 mm of profile error: all 166 simple decks now match their centerline
+stations to numerical precision. Widths, solved heights and thickness are
+unchanged. `tests/test_deck_mesh.py` checks station edges, closure, winding and
+thickness; `tests/blender_bridge_caps.py` measures the real mesh profile and
+checks that every pier top remains inside its deck (820/820 in the sample).
+
 A deck whose centerline is too tight to offset into one simple ring -- an
 interchange loop ramp, typically -- is built from overlapping convex pieces
 instead, exactly as a tight surface road is, with every ring vertex taking

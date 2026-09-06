@@ -288,6 +288,43 @@ Bottom elevation uses `min_height`, then `min_floor * Floor Height`, then zero.
 `roof_height` is retained as metadata but never added. Missing heights are
 never randomized.
 
+**Buildings are boosted 10% on Z by default.** **Building Height Scale**
+(default 1.1) multiplies every mass's height above its own terrain base, so
+the massing reads clearly over the 0.6 mm road ribbons. Footprints, roads,
+terrain, trees, and the print scale itself do not move, and a building's parts
+are scaled with it, so parts still sit inside their parent and equal-height
+masses still end level. The recorded `height_m` metadata stays the source
+value; the multiplier is reported once as `building_height_scale`. Two side
+effects on the sample bbox, both from measuring the *printed* mass: 73 more
+roofs clear the 0.15 mm minimum and get their real shape (320 shaped, was
+247), and 34 more sub-nozzle needles fail the slenderness test (144, was 110)
+-- masses already under 0.45 mm wide, which the scale makes 10% more slender.
+Set it to 1.0 for true scale.
+
+**A qualifying building prints at least 0.8 mm tall.** Roads stand 0.6 mm
+over the ground, so a two-storey building at true scale barely clears them and
+prints as a plate. **Minimum Building Height** is a floor on that clearance: a
+mass shorter than it is stretched upwards -- walls only, so a shaped roof keeps
+its pitch -- until its top clears the *highest* terrain under its footprint by
+exactly the minimum. Measuring from the highest, not the lowest, is what makes
+the guarantee hold on the uphill side of a slope; for a building with parts the
+figure is taken over the whole building, so sibling parts are stretched by the
+same amount and their tops stay level.
+
+**Only footprints over the threshold are stretched.** **Raise Only Footprints
+Over** (0.6 mm, about 8.6 m square at print scale) demands two things of a
+footprint: it covers at least that square, and it is not a ribbon of that area
+-- a square of side S has an effective width of S/2, so anything thinner is a
+wall fragment, a covered walkway or a row of garages mapped as one strip.
+Stretching one of those is what would produce a fin. On the sample bbox 5,504
+buildings and 212 parts are raised of 10,823 masses, by a median 0.36 mm and at
+most 2.03 mm, and every raised mass ends exactly at the minimum. The threshold
+is worth tuning to the city: at 0.4 mm 8,765 masses are raised, at 1.0 mm only
+1,023, and at 1.5 mm 422. Set **Minimum Building Height** to 0 to switch the
+floor off entirely. Counts are `buildings_raised_to_minimum` and
+`building_parts_raised_to_minimum`, and each unmerged object records its own
+`minimum_height_lift_mm`.
+
 **Sidewalks and crossings are left out by default.** Overture maps the
 pavement beside a street and the crossing at each corner as footways and
 cycleways of their own, carrying `subclass` `sidewalk`, `crosswalk`, or
@@ -429,6 +466,19 @@ outline and the shoreline cross the same grid line, the slab ends at whichever
 comes first from the land, so it never reaches out over the opening. The count
 is `land_surfaces_clipped_to_land`.
 
+**Ground roads take priority over land cover.** Generated road footprints cut
+full-depth openings in grass, parks, forest floors, plazas, sand and rock slabs.
+The openings follow the actual road mesh, including bends, junctions and end
+caps, with 0.005 mm of clearance per XY axis (at most 0.0071 mm diagonally).
+The terrain/base, water, individual trees and structures remain intact, and
+elevated bridges keep the landcover beneath them. Excluded roads leave no cuts.
+Surviving slab pieces retain their original slopes and thickness and are closed
+solids. This adds geometry and generation time. Footprints are extracted from
+road outlines, avoiding the many interior triangles needed only for terrain
+draping; progress updates during footprint preparation and surface cutting.
+On the cached Milwaukee selection, this reduced the cutting step from about
+134 seconds to 46 seconds. Road dimensions are unchanged.
+
 **Everything sits on the ground, not in it.** Roads, land cover, buildings,
 and piers reach 0.15 mm below the terrain surface (**Embed Into Terrain**) and
 no further. That is enough for the solids to overlap in a slicer, which is all
@@ -463,7 +513,7 @@ the shoreline sits between a grid node and the bank rather than on either. The
 solid measures its own vertices rather than the height field, so the requested
 thickness is exact.
 
-**Overlapping solids are not booleaned.** Roads overlap each other at
+**Other overlapping solids are not booleaned.** Roads overlap each other at
 junctions, and surfaces overlap the terrain. Each object is individually
 watertight, which is what slicers need, but the model is not one fused
 manifold. Union is left to Blender, where you can control it.

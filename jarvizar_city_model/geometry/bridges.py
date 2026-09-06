@@ -12,12 +12,12 @@ from typing import Callable, Optional, Sequence, Tuple
 from ..blender.mesh_utils import MeshBuilder
 from ..data.linework import cumulative_positions
 from .deck_graph import point_segment_distance
+from .deck_mesh import deck_strip_geometry
 from .deck_profile import interpolate_profile, point_and_direction, support_stations
 from .planar import (
     EPSILON,
     buffer_polyline_convex_pieces,
     offset_is_safe,
-    parametric_ribbon,
 )
 
 
@@ -69,14 +69,9 @@ def add_bridge_deck(
     """
     positions = cumulative_positions(points)
     if offset_is_safe(points, half_width):
-        ring, parameters = parametric_ribbon(points, half_width)
-        if ring:
-            prism = []
-            for (x, y), t in zip(ring, parameters):
-                top = interpolate_profile(positions, deck_heights, t)
-                prism.append((x, y, top - thickness, top))
-            if builder.add_prism([prism]):
-                return True
+        vertices, faces = deck_strip_geometry(points, half_width, deck_heights, thickness)
+        if vertices and builder.add_raw(vertices, faces):
+            return True
 
     added = False
     for ring in buffer_polyline_convex_pieces(

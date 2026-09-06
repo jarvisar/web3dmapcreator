@@ -62,10 +62,9 @@ def main() -> int:
     scene = bpy.context.scene
     settings = scene.jarvizar_city_model
     settings.cache_directory = cache_root
-    settings.west = "-84.53370"
-    settings.south = "39.08554"
-    settings.east = "-84.47422"
-    settings.north = "39.11094"
+    settings.west, settings.south, settings.east, settings.north = _argument(
+        "--bbox", "-84.53370,39.08554,-84.47422,39.11094"
+    ).split(",")
     settings.terrain_source = "DEM"
     settings.terrain_resolution = 192
     settings.generate_border_rim = True

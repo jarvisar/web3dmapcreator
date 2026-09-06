@@ -105,7 +105,96 @@ before force-closing** (he has said yes once; that was not standing permission).
 
 ## Current state
 
-- Repo is at **0.9.1**; `dist/jarvizar_city_model-0.9.1-{blender36,extension}.zip` built.
+- Repo is at **0.9.6**; `dist/jarvizar_city_model-0.9.6-{blender36,extension}.zip` built.
+- 0.9.6 = **Minimum Building Height** (0.8 mm) with a footprint gate
+  (**Raise Only Footprints Over**, 0.6 mm). A mass whose finished top does not
+  clear the ground by the minimum has its walls stretched until it does; the
+  roof rides up unchanged, so a gable keeps its pitch. Two decisions worth
+  keeping:
+  * The clearance is measured from the **highest** terrain under the footprint,
+    not the base, so the roof stands proud on the uphill side; and for a
+    building with parts that maximum is taken over the whole building
+    (`shared_ground` returns min *and* max, cached per parent exactly like the
+    old `shared_base`), because a per-part maximum would stretch siblings by
+    different amounts and break the level-tops invariant.
+  * The gate is `footprint_admits_minimum_height` in `geometry/buildings.py`:
+    area >= size^2 **and** `effective_width >= size / 2`. Both halves are
+    needed -- a 0.1 x 4.0 mm wall strip has four times the area of a 0.6 mm
+    square and is exactly the fin the gate exists to stop. Raised masses are
+    at least 0.3 mm wide and 0.8 mm tall, slenderness 2.7, so nothing the
+    minimum creates can become a needle.
+  Bug found and fixed while measuring: the lift was first taken from
+  `max(top, roof_top)`, but a shaped roof that falls back to flat still
+  carries its unbuilt apex in `roof_top`, so 15 masses landed 0.13 mm short.
+  It now measures `roof_top if shaped else top`; after the fix every raised
+  mass ends at exactly the minimum (raised clearance min 0.800, max 0.820, the
+  0.02 being multipolygon features whose metadata records the last ring).
+  Sample bbox at the defaults: **5,504 buildings + 212 parts raised of 10,823
+  masses**, lift p50 0.361 / p90 0.588 / max 2.027 mm, 3,959 masses left below
+  the minimum on purpose (they failed the footprint gate). Threshold
+  sensitivity, same run: 0.4 mm -> 8,765 raised, 0.6 -> 5,715, 1.0 -> 1,023,
+  1.5 -> 422. Nothing else moves: 42 objects, 0 non-manifold, 265,802
+  BUILDINGS polygons (identical to 0.9.5), 38.9 s, embed probe unchanged.
+  Measured with `scratchpad/probe_minimum_height.py` (buildings on the real
+  DEM only, merge off, so every mass keeps `minimum_height_lift_mm` and
+  `terrain_top_mm`).
+- 0.9.5 = **Building Height Scale**, default **1.1**. One multiplier on the
+  vertical scale inside `generate_buildings` (`height_scale`), applied to the
+  shared `transform.vertical_meters_to_model_mm` so every height a mass is
+  built from -- top, elevated underside, wall top, roof apex -- moves
+  together, and parts scale with their parent. Nothing else moves: footprints,
+  roads, terrain, trees, `mm_per_metre` and the recorded `height_m` metadata
+  are unchanged; the factor is reported as `building_height_scale`. Measured
+  on the sample bbox, 1.0 vs 1.1: tallest mass 15.47 -> 16.89 mm, shaped roofs
+  247 -> 320 (`roofs_below_minimum` 315 -> 228, since a 10% taller roof clears
+  the 0.15 mm minimum), `rejected_too_slender` 110 -> 144 and
+  `building_parts` 1,238 -> 1,204 -- slenderness is judged on printed
+  thickness, so the boost costs 34 masses already under 0.45 mm wide, which is
+  the intended reading (a taller needle is a worse needle) and is the one
+  knock-on effect to remember. 42 objects, 0 non-manifold of 42, 38.7 s
+  either way. The smoke test's roof assertions are in real metres so its first
+  pass pins the scale at 1.0; a third pass at 1.1 checks the tops scale
+  exactly, no mass is dropped, and every `SURFACE_ROADS` object keeps its
+  z-range to 1e-6.
+- 0.9.4 = road-cut performance and progress fix for Milwaukee
+  (`-87.94324,43.01613,-87.87543,43.05647`, cache `bbox_75148b916e86`).
+  0.9.3 built over 1.5M individual cutters from refined road caps and did not
+  report progress until a whole surface category finished; reproduction took
+  187 s total, ~134 s cutting. Footprints now come from built prism wall rings,
+  with redundant boundary points removed at 0.0001 mm, below the 0.005 mm
+  clearance; an invalid ring graph/triangulation falls back to the original
+  cap method. The cut takes ~46 s on the saved pre-cut model. Progress reports
+  while preparing roads and every 2048 cap triangles, weighted by surface size.
+  No road, bridge, terrain or placement changes. Regression test includes a
+  heavily refined L-shaped road whose footprint needs only four cutters and
+  verifies monotonic progress. `blender_live_full.py` now accepts `--bbox`.
+  Full Milwaukee validation: 38 meshes, 0 non-manifold, 0 overlaps across
+  1,902,680 BVH samples and 30 other meshes bit-identical; 12,435 ground roads,
+  164 decks. Full run including the audit took 114 s. Installed and verified
+  0.9.4 with Blender closed; previous 0.9.3 add-on and preferences are backed
+  up in `dist/install-backup-20260905-195556/`.
+- 0.9.3 = ground-road footprints cut full-depth openings through landcover
+  slabs after roads are generated (`surface_priority.py`, pure clipping in
+  `footprint_cut.py`). Built cap triangles supply the footprint, so skipped
+  roads leave no gaps and demoted bridges do cut. Adam explicitly chose to
+  keep landcover under elevated bridges. Terrain/base, water, trees, buildings,
+  causeways and piers are untouched. Clearance is 0.005 mm per XY axis, bounded
+  to 0.0071 mm diagonally even at sharp corners. Surviving cap fragments keep
+  interpolated Z and original thickness, each as a closed independent shell.
+  Sample: 4 landcover objects cut, 2145.9078 mm² removed (sum over layers),
+  0 overlaps in 1,096,184 independent BVH rays, 34 other meshes bit-identical,
+  42 objects and 0 non-manifold meshes. Geometry grows 1.35M → 2.36M polygons;
+  generation ~14 → 45 seconds. 304 unit tests and Blender smoke pass. Regression
+  probes: `tests/blender_road_cut.py` and `tests/blender_road_cut_live.py`.
+- 0.9.2 = bridge cap triangulation preserves every profile cross-section
+  (`geometry/deck_mesh.py`). Whole-outline tessellation skipped crests and
+  made diagonal divots: sample max error 0.51 mm, 51/167 decks over 0.01 mm.
+  All 166 simple ribbons now match profile stations to numerical precision;
+  the one tightly looping fallback is unchanged (overlapping turns make its
+  topmost-hit error ambiguous). No solver, width, pier or causeway changes.
+  298 unit tests, Blender smoke and live full pass; 42 meshes, 0 non-manifold,
+  polygon count unchanged, 820/820 pier tops inside their own decks. Reproduce
+  with `tests/blender_bridge_caps.py -- --cache <cache-root>` in Blender.
 - 0.9.1 = **Paste Coordinates**. One button under the bbox fields fills all
   four from `west,south,east,north` on the clipboard, which is what the Copy
   button at prochitecture.com/blender-osm produces. `parse_bounds_text` /
@@ -226,7 +315,8 @@ imports bpy, so anything testable must not live there — that is why
 5. Terrain solid → returns its real `bottom_z`
 6. `SupportBuilder(heightfield, bottom_z)` → pedestals for mapped decks
 7. Land surfaces (slabs reaching the water are grid-clipped) → water →
-   roads/bridges (causeways registered *before* piers are placed) → trees →
+   roads/bridges (causeways registered *before* piers are placed) → road footprint
+   subtraction from landcover slabs only → trees →
    buildings (pedestals) → supports built into `TERRAIN_SUPPORTS`
 
 Steps 3–4 must precede everything that asks the height field for ground.
@@ -661,7 +751,28 @@ deck (`scratchpad/probe_bridges2.py`).
   from the intact installed 0.8.0 add-on and verified (no
   `orient_faces_outward`, version tuple `(0, 8, 0)`); bump the manifest and the
   zip name now follows.
-- **Installed is 0.9.1** (matches the repo), installed 2026-09-05 with
+- **Installed is 0.9.6**, installed 2026-09-05 with Blender closed via the
+  `install-addon` skill. Version tuple `(0, 9, 6)`, module path, the three new
+  defaults on a fresh scene (`building_height_scale` 1.1,
+  `minimum_building_height_mm` 0.8, `minimum_height_footprint_mm` 0.6), the
+  matching arguments on `generate_buildings`,
+  `footprint_admits_minimum_height` (square yes / shed no / strip no), the
+  preference path and `probe_client` ->
+  `{'ok': True, 'client_version': '1.0.2'}` all verified against the installed
+  copy with the repo kept off `sys.path`. Prior 0.9.5 add-on and preferences
+  backed up in `dist/install-backup-20260905-210001/`, 0.9.4 in
+  `dist/install-backup-20260905-201614/`.
+  NB a scratch copy of `render_preview.py` must have its `root` pointed at the
+  repo: it derives it from `__file__`, so a copy outside `tests/` silently
+  renders the *installed* add-on instead (that is why the first 1.0-vs-1.1
+  comparison came out byte-identical).
+- Previously **installed 0.9.4**, 2026-09-05 with Blender closed, following
+  `.claude/commands/install-addon.md`. Installed module path and version,
+  bridge helper, road-cut clearance and downloader probe verified in Blender;
+  preferences saved and all installed source files match the release ZIP.
+  Prior 0.9.3 add-on and preferences backed up in `dist/install-backup-20260905-195556/`;
+  the earlier 0.9.1 backup remains in `dist/install-backup-20260905-194050/`.
+  Previously, 0.9.1 was installed 2026-09-05 with
   Blender closed via the `install-addon` skill; version tuple, module path,
   preference path and `probe_client` verified against the installed copy with
   the repo kept off `sys.path`, and `jarvizar.paste_bounds` round-tripped
@@ -719,7 +830,8 @@ deck (`scratchpad/probe_bridges2.py`).
   `base/infrastructure` (current ones are schematic, placed by spacing);
   connector topology downloaded but unused; downloads block the Blender UI;
   antimeridian bboxes.
-- Overlapping solids are **not** booleaned. Each object is individually
+- Except for ground-road footprints subtracted from landcover, overlapping
+  solids are **not** booleaned. Each object is individually
   watertight, which is what slicers need; union is left to Blender. Supports
   deliberately overlap the bank and each other (parallel carriageways each get
   a causeway).

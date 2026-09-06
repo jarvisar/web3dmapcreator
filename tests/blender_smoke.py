@@ -211,6 +211,37 @@ def main():
                         roof_shape="pyramidal",
                         roof_height=10.0,
                     ),
+                    # Two masses the minimum printed height must leave alone:
+                    # a shed too small to stretch (0.30 x 0.39 mm) and a wall
+                    # strip with plenty of area but only 0.23 mm across.
+                    polygon(
+                        "shed-small",
+                        [
+                            [
+                                [-84.5040, 39.0930],
+                                [-84.50395, 39.0930],
+                                [-84.50395, 39.09305],
+                                [-84.5040, 39.09305],
+                                [-84.5040, 39.0930],
+                            ]
+                        ],
+                        has_parts=False,
+                        height=3.0,
+                    ),
+                    polygon(
+                        "wall-strip",
+                        [
+                            [
+                                [-84.5090, 39.0950],
+                                [-84.5082, 39.0950],
+                                [-84.5082, 39.09503],
+                                [-84.5090, 39.09503],
+                                [-84.5090, 39.0950],
+                            ]
+                        ],
+                        has_parts=False,
+                        height=4.0,
+                    ),
                     # A boathouse mapped inside the river.  The cut takes the
                     # ground from under it; a pedestal must put it back.
                     polygon(
@@ -474,6 +505,11 @@ def main():
             # placement, so the first pass keeps every feature its own object;
             # the merged output is checked in a second pass at the end.
             settings.merge_buildings_and_trees = False
+            # Roof semantics are asserted in real metres, so the first pass
+            # runs unboosted and unraised; the height multiplier and the
+            # minimum printed height each get their own pass.
+            settings.building_height_scale = 1.0
+            settings.minimum_building_height_mm = 0.0
 
             result = bpy.ops.jarvizar.generate_model()
             if result != {"FINISHED"}:
@@ -958,6 +994,123 @@ def main():
                 vertex.co.z <= 0.0 for vertex in merged_trees.data.vertices
             ):
                 raise AssertionError("A merged tree reaches below the terrain base")
+
+            # --- building height scale --------------------------------------
+            # The multiplier lifts every mass above its own terrain base and
+            # touches nothing else: footprints, roads and terrain are the
+            # heights they were.
+            road_extent = {
+                obj.name: object_z_range(obj)
+                for obj in bpy.data.collections["SURFACE_ROADS"].objects
+            }
+            settings.merge_buildings_and_trees = False
+            settings.building_height_scale = 1.1
+            result = bpy.ops.jarvizar.generate_model()
+            if result != {"FINISHED"}:
+                raise AssertionError(f"Boosted generation failed: {settings.last_status}")
+            boosted_counts = json.loads(
+                bpy.data.collections["CITY_MODEL"]["generation_counts_json"]
+            )
+            if abs(boosted_counts.get("building_height_scale", 0.0) - 1.1) > 1.0e-9:
+                raise AssertionError(
+                    f"Counts report scale {boosted_counts.get('building_height_scale')}"
+                )
+            for key in ("buildings", "building_parts", "roofs_built"):
+                if boosted_counts.get(key) != counts.get(key):
+                    raise AssertionError(
+                        f"Boosted {key} differs: {boosted_counts.get(key)} vs "
+                        f"{counts.get(key)}; the multiplier must not drop masses"
+                    )
+            boosted = [
+                obj
+                for collection in ("BUILDINGS", "BUILDING_PARTS")
+                for obj in bpy.data.collections[collection].objects
+            ]
+
+            def boosted_top_above_base(identifier):
+                obj = next(o for o in boosted if o.get("overture_id") == identifier)
+                _low, high = object_z_range(obj)
+                return obj, (high - float(obj["terrain_base_mm"])) / scale_z
+
+            for identifier, unboosted in (
+                ("house-gabled", 8.0),
+                ("pyramid-tower", 30.0),
+                ("part-dome", 20.0),
+            ):
+                obj, top = boosted_top_above_base(identifier)
+                if abs(top - unboosted * 1.1) > 0.05:
+                    raise AssertionError(
+                        f"{identifier} tops out {top:.2f} m above its base, expected "
+                        f"{unboosted * 1.1:.2f} m at a 1.1 scale"
+                    )
+                assert_manifold(obj)
+            for obj in bpy.data.collections["SURFACE_ROADS"].objects:
+                was = road_extent.get(obj.name)
+                if was is None:
+                    continue
+                now = object_z_range(obj)
+                if abs(now[0] - was[0]) > 1.0e-6 or abs(now[1] - was[1]) > 1.0e-6:
+                    raise AssertionError(
+                        f"{obj.name} moved from {was} to {now}; the building height "
+                        "scale must not touch roads"
+                    )
+
+            # --- minimum printed height -------------------------------------
+            # A qualifying mass is stretched until its top clears the highest
+            # terrain under its footprint by exactly the minimum; a shed and a
+            # wall strip are left at their own height.
+            settings.building_height_scale = 1.0
+            settings.minimum_building_height_mm = 0.8
+            settings.minimum_height_footprint_mm = 0.6
+            result = bpy.ops.jarvizar.generate_model()
+            if result != {"FINISHED"}:
+                raise AssertionError(f"Minimum-height generation failed: {settings.last_status}")
+            raised_counts = json.loads(
+                bpy.data.collections["CITY_MODEL"]["generation_counts_json"]
+            )
+            if raised_counts.get("buildings_raised_to_minimum", 0) < 1:
+                raise AssertionError(f"Nothing was raised: {raised_counts}")
+            for key in ("buildings", "building_parts"):
+                if raised_counts.get(key) != counts.get(key):
+                    raise AssertionError(
+                        f"Raised {key} differs: {raised_counts.get(key)} vs "
+                        f"{counts.get(key)}; the minimum must not drop masses"
+                    )
+            raised = [
+                obj
+                for collection in ("BUILDINGS", "BUILDING_PARTS")
+                for obj in bpy.data.collections[collection].objects
+            ]
+
+            def raised_object(identifier):
+                return next(o for o in raised if o.get("overture_id") == identifier)
+
+            # 8 m at 0.07 mm/m is 0.56 mm, so the house is stretched; its top
+            # must end 0.8 mm over the highest ground it covers, not its base.
+            house = raised_object("house-gabled")
+            _low, high = object_z_range(house)
+            clearance = high - float(house["terrain_top_mm"])
+            if abs(clearance - 0.8) > 0.01:
+                raise AssertionError(
+                    f"House tops out {clearance:.3f} mm over its terrain, expected 0.80"
+                )
+            if house.get("roof_geometry") != "gabled":
+                raise AssertionError("Raising the house lost its gabled roof")
+            if float(house.get("minimum_height_lift_mm", 0.0)) <= 0.0:
+                raise AssertionError("The house does not record its lift")
+            # The pyramid tower is 2.1 mm tall and must not move at all.
+            tower = raised_object("pyramid-tower")
+            if float(tower.get("minimum_height_lift_mm", 0.0)) != 0.0:
+                raise AssertionError("A tall building was stretched by the minimum")
+            for identifier in ("shed-small", "wall-strip"):
+                small = raised_object(identifier)
+                if float(small.get("minimum_height_lift_mm", 0.0)) != 0.0:
+                    raise AssertionError(
+                        f"{identifier} was stretched to the minimum; its footprint "
+                        "is below the threshold"
+                    )
+                assert_manifold(small)
+            assert_manifold(house)
 
             result = bpy.ops.jarvizar.clear_model()
             if result != {"FINISHED"} or bpy.data.collections.get("CITY_MODEL") is not None:

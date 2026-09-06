@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..blender.mesh_utils import MeshBuilder, projected_polygon_rings
 from ..data.geojson import feature_id, feature_properties, first_osm_id
-from .buildings import resolve_vertical_profile, select_building_geometry
+from .buildings import (
+    footprint_admits_minimum_height,
+    resolve_vertical_profile,
+    select_building_geometry,
+)
 from .planar import EPSILON, clean_ring, densify_ring, effective_width
 from .roofs import (
     RoofProfile,
@@ -168,6 +172,9 @@ def generate_buildings(
     minimum_roof_mm: float = 0.15,
     slenderness_exempt_width_mm: float = 0.45,
     merge: bool = False,
+    height_scale: float = 1.0,
+    minimum_height_mm: float = 0.0,
+    minimum_height_footprint_mm: float = 0.0,
 ) -> Dict[str, Any]:
     """Generate selected parent and part meshes, returning honest counts.
 
@@ -199,6 +206,26 @@ def generate_buildings(
     Roofs follow ``roof_shape`` where the shape is one the project can build
     and the result would be at least *minimum_roof_mm* tall; anything else is
     a flat extrusion, and the object records which it got.
+
+    *height_scale* multiplies every vertical distance measured from a mass's
+    terrain base -- its top, an elevated part's underside and its roof -- so
+    the massing can be given a little lift over the road ribbons without the
+    footprints or the shared print scale moving.  It applies to the whole
+    building including its parts, so parts still sit inside their parent and
+    equal-height masses still end level.  Recorded heights in metres stay the
+    source values; the multiplier is reported once, in the counts.
+
+    *minimum_height_mm* is a floor on how far a mass's top stands over the
+    ground, applied after every other height rule: a mass shorter than that is
+    stretched upwards until it clears the terrain by exactly the minimum, and
+    a taller one is untouched.  The clearance is measured from the *highest*
+    terrain under the mass's own footprint -- and, for a building with parts,
+    under the whole building -- so the guarantee holds on the uphill side too
+    and sibling parts are stretched by the same amount, which keeps their tops
+    level.  Only footprints that pass *minimum_height_footprint_mm* are
+    eligible: stretching a shed or a wall fragment to a printable height is
+    what turns it into a needle.  A shaped roof rides up with its walls
+    instead of being scaled, so the roof keeps its own pitch.
     """
     selection = select_building_geometry(building_features, part_features)
     building_features = list(building_features)
@@ -208,23 +235,31 @@ def generate_buildings(
         parent_id = str(feature_properties(part).get("building_id") or "")
         if parent_id:
             parts_by_parent[parent_id].append(part)
-    base_cache: Dict[str, Optional[float]] = {}
+    ground_cache: Dict[str, Optional[Tuple[float, float]]] = {}
     embed = float(embed_mm)
     spacing = float(drape_spacing_mm)
 
-    def shared_base(parent_id: str) -> Optional[float]:
-        if parent_id in base_cache:
-            return base_cache[parent_id]
+    def shared_ground(parent_id: str) -> Optional[Tuple[float, float]]:
+        """The lowest and highest terrain under a whole building.
+
+        The lowest is what every part of the building is founded on, so that
+        equal-height parts end level.  The highest is what a minimum height is
+        measured from, for the same reason: sibling parts must be stretched by
+        the same amount or the floors they share stop lining up.
+        """
+        if parent_id in ground_cache:
+            return ground_cache[parent_id]
         bases: List[float] = []
+        ceilings: List[float] = []
         parent = parent_lookup.get(parent_id)
-        if parent is not None:
-            for rings in projected_polygon_rings(parent.get("geometry") or {}, transform):
+        features = [parent] if parent is not None else []
+        features.extend(parts_by_parent.get(parent_id, []))
+        for feature in features:
+            for rings in projected_polygon_rings(feature.get("geometry") or {}, transform):
                 bases.append(heightfield.minimum_over(rings[0]))
-        for sibling in parts_by_parent.get(parent_id, []):
-            for rings in projected_polygon_rings(sibling.get("geometry") or {}, transform):
-                bases.append(heightfield.minimum_over(rings[0]))
-        base_cache[parent_id] = min(bases) if bases else None
-        return base_cache[parent_id]
+                ceilings.append(heightfield.maximum_over(rings[0]))
+        ground_cache[parent_id] = (min(bases), max(ceilings)) if bases else None
+        return ground_cache[parent_id]
 
     jobs = [
         (feature, "building", building_collection, building_material, "BLDG")
@@ -244,13 +279,32 @@ def generate_buildings(
         "rejected_too_narrow": 0,
         "rejected_too_slender": 0,
         "buildings_grounded_over_water": 0,
+        "buildings_raised_to_minimum": 0,
+        "building_parts_raised_to_minimum": 0,
         "parts_founded_on_parent_base": 0,
         "roofs_built": {},
         "roofs_fallback_flat": 0,
         "roofs_unsupported_shape": 0,
         "roofs_below_minimum": 0,
     }
-    vertical = transform.vertical_meters_to_model_mm
+    # One multiplier on the shared vertical scale covers every height a mass
+    # is built from -- top, elevated underside, wall top, roof apex -- so a
+    # boosted building keeps its own proportions and its parts keep theirs.
+    # Slenderness is judged on the printed thickness, so it reads it too.
+    scale = float(height_scale)
+    if scale <= 0.0 or not math.isfinite(scale):
+        scale = 1.0
+    counts["building_height_scale"] = round(scale, 6)
+    minimum_height = max(0.0, float(minimum_height_mm))
+    minimum_footprint = max(0.0, float(minimum_height_footprint_mm))
+    counts["minimum_building_height_mm"] = round(minimum_height, 6)
+    counts["minimum_height_footprint_mm"] = round(minimum_footprint, 6)
+    base_vertical = transform.vertical_meters_to_model_mm
+    vertical = (
+        base_vertical
+        if scale == 1.0
+        else (lambda distance_m: base_vertical(distance_m) * scale)
+    )
     horizontal_scale = max(transform.scale_x_mm_per_m, 1.0e-12)
     total = max(1, len(jobs))
     merged = MeshBuilder("BUILDINGS") if merge else None
@@ -272,6 +326,11 @@ def generate_buildings(
         )
 
         terrain_mm = 0.0
+        terrain_top_mm = 0.0
+        lift_mm = 0.0
+        raised_key = (
+            "building_parts_raised_to_minimum" if is_part else "buildings_raised_to_minimum"
+        )
         base_source = "own_footprint"
         narrow = slender = False
         roof: Optional[RoofProfile] = None
@@ -303,11 +362,12 @@ def generate_buildings(
             ):
                 slender = True
                 continue
-            base = shared_base(parent_id) if parent_id else None
-            if base is None:
+            ground = shared_ground(parent_id) if parent_id else None
+            if ground is None:
                 terrain_mm = heightfield.minimum_over(rings[0])
+                terrain_top_mm = heightfield.maximum_over(rings[0])
             else:
-                terrain_mm = base
+                terrain_mm, terrain_top_mm = ground
                 base_source = "parent_footprint"
             bottom = terrain_mm + vertical(profile.bottom_m)
             top = terrain_mm + vertical(profile.top_m)
@@ -338,6 +398,28 @@ def generate_buildings(
                 else:
                     shaped = True
                     ceiling = wall_top
+
+            # A mass that would print flush with the streets around it is
+            # stretched up -- walls only, so a shaped roof keeps its pitch --
+            # until its highest point clears the ground by the minimum.  The
+            # clearance is measured over the *highest* terrain the footprint
+            # covers, so the roof stands proud on the uphill side as well.
+            if minimum_height > 0.0 and footprint_admits_minimum_height(
+                rings[0], minimum_footprint
+            ):
+                # The finished top, which is the apex only where the shaped
+                # roof is actually built.  A roof that fell back to flat still
+                # carries its apex in *roof_top*, and measuring the clearance
+                # from that left 15 masses short of the minimum.
+                finished_top = roof_top if shaped else top
+                raise_by = minimum_height - (finished_top - terrain_top_mm)
+                if raise_by > 0.0:
+                    top += raise_by
+                    wall_top += raise_by
+                    roof_top += raise_by
+                    ceiling += raise_by
+                    lift_mm = max(lift_mm, raise_by)
+                    counts[raised_key] += 1
 
             def floor(
                 x: float,
@@ -397,6 +479,8 @@ def generate_buildings(
                 _attach_metadata(obj, feature, feature_type, profile, roof, roof_geometry)
                 obj["terrain_base_mm"] = float(terrain_mm)
                 obj["terrain_base_source"] = base_source
+                obj["terrain_top_mm"] = float(terrain_top_mm)
+                obj["minimum_height_lift_mm"] = float(lift_mm)
                 obj["underside"] = "draped_to_terrain" if grounded else "elevated"
             if base_source == "parent_footprint":
                 counts["parts_founded_on_parent_base"] += 1

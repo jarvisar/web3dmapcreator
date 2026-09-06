@@ -47,6 +47,7 @@ from .geometry.dem_terrain import generate_border_rim, generate_terrain_solid
 from .geometry.heightfield import ModelHeightField
 from .geometry.roads import RoadSettings, generate_roads
 from .geometry.support import SupportBuilder
+from .geometry.surface_priority import cut_road_footprints
 from .geometry.surfaces import (
     SurfaceSettings,
     cut_water_from_terrain,
@@ -558,10 +559,16 @@ class JARVIZAR_OT_generate_model(Operator):
                         hierarchy["bridge_supports"],
                         materials,
                         road_settings,
-                        progress_callback=lambda f: progress(0.25 + f * 0.30),
+                        progress_callback=lambda f: progress(0.25 + f * 0.25),
                         ground_support=ground_support,
                     )
                 )
+                if settings.generate_land_surfaces:
+                    counts.update(cut_road_footprints(
+                        hierarchy["land_surfaces"], hierarchy["surface_roads"],
+                        surface_settings.surface_rise_mm + surface_settings.surface_embed_mm,
+                        progress_callback=lambda f: progress(0.50 + f * 0.05),
+                    ))
             progress(0.55)
 
             if settings.generate_trees:
@@ -597,6 +604,9 @@ class JARVIZAR_OT_generate_model(Operator):
                         heightfield,
                         floor_height_m=settings.floor_height_m,
                         default_height_m=settings.default_building_height_m,
+                        height_scale=settings.building_height_scale,
+                        minimum_height_mm=settings.minimum_building_height_mm,
+                        minimum_height_footprint_mm=settings.minimum_height_footprint_mm,
                         building_collection=hierarchy["buildings"],
                         part_collection=hierarchy["building_parts"],
                         building_material=materials["building"],
