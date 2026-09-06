@@ -16,6 +16,7 @@ from jarvizar_city_model.data.land import (
     is_printable_water,
     is_regional_feature,
     is_tree_point,
+    is_water_deck,
     surface_priority,
     tree_point_coordinates,
 )
@@ -113,6 +114,29 @@ class WaterTests(unittest.TestCase):
             "geometry": {"type": "LineString", "coordinates": [[0, 0], [1, 1]]},
         }
         self.assertFalse(is_printable_water(feature))
+
+
+class WaterDeckTests(unittest.TestCase):
+    def test_marina_area_does_not_restore_a_harbor_as_ground(self):
+        for feature_type in ("infrastructure", "land", "land_use"):
+            for properties in ({"class": "marina", "subtype": "recreation"},
+                               {"subtype": "marina"}):
+                with self.subTest(feature_type=feature_type, properties=properties):
+                    self.assertFalse(is_water_deck(feature_type, polygon(0, 0, 1, 1, **properties)))
+
+    def test_physical_water_structures_still_keep_their_ground(self):
+        for deck in ("pier", "breakwater", "quay", "dam", "weir", "boardwalk", "groyne"):
+            for properties in ({"class": deck, "subtype": "water"}, {"subtype": deck}):
+                with self.subTest(deck=deck, properties=properties):
+                    self.assertTrue(is_water_deck("infrastructure", polygon(0, 0, 1, 1, **properties)))
+
+    def test_unmapped_extents_and_non_polygon_structures_are_not_decks(self):
+        self.assertFalse(is_water_deck("land_use", polygon(0, 0, 1, 1, **{"class": "harbour"})))
+        self.assertFalse(is_water_deck("water", polygon(0, 0, 1, 1, **{"class": "pier"})))
+        self.assertFalse(is_water_deck("infrastructure", {
+            "properties": {"class": "pier"},
+            "geometry": {"type": "LineString", "coordinates": [[0, 0], [1, 1]]},
+        }))
 
 
 class ExtentGuardTests(unittest.TestCase):

@@ -98,8 +98,11 @@ EXCLUDED_WATER_CLASSES = frozenset({"swimming_pool", "fountain"})
 # leaves it, and everything standing on it, hanging over a hole.  Overture
 # publishes these in ``base/infrastructure`` (subtype ``pier`` or ``water``);
 # the land types are still checked for older caches and other vocabularies.
+# A marina describes a facility's land AND water area, not a physical deck.
+# Restoring that footprint fills entire harbors and creates matching terrain
+# support slabs. Only the separately mapped piers/quays keep their ground.
 WATER_DECK_CLASSES = frozenset(
-    {"pier", "breakwater", "quay", "dam", "weir", "boardwalk", "marina", "groyne"}
+    {"pier", "breakwater", "quay", "dam", "weir", "boardwalk", "groyne"}
 )
 WATER_DECK_TYPES = frozenset({"land", "land_use", "infrastructure"})
 

@@ -124,13 +124,12 @@ class WaterMaskTests(unittest.TestCase):
     def test_a_slab_clipped_to_the_land_stops_at_the_water_not_at_its_own_outline(self):
         """Where a slab outline and the shore cross one grid edge, the slab ends at the shore.
 
-        From the dry node, whichever outline is met first ends the slab: the
-        default rule takes the crossing nearest the wet node, which is the
-        slab's own outline out over the water.
+        The slab outline out over the water is internal to the final wet
+        region. It must disappear before either crossing policy is applied.
         """
         slab = [[(1.2, 1.5), (4.8, 1.5), (4.8, 8.5), (1.2, 8.5)]]
         water = [[(4.3, -1.0), (12.0, -1.0), (12.0, 12.0), (4.3, 12.0)]]
-        for prefer_dry_end, expected in ((True, 4.3), (False, 4.8)):
+        for prefer_dry_end, expected in ((True, 4.3), (False, 4.3)):
             mask = WaterMask(11, 11, 0.0, 0.0, 1.0, 1.0, prefer_dry_end=prefer_dry_end)
             mask.fill_wet()
             mask.remove_polygon(slab)
@@ -141,7 +140,7 @@ class WaterMaskTests(unittest.TestCase):
         # Mirrored: the slab's dry node on the right, the water ending at 5.7.
         slab = [[(5.2, 1.5), (9.5, 1.5), (9.5, 8.5), (5.2, 8.5)]]
         water = [[(-1.0, -1.0), (5.7, -1.0), (5.7, 12.0), (-1.0, 12.0)]]
-        for prefer_dry_end, expected in ((True, 5.7), (False, 5.2)):
+        for prefer_dry_end, expected in ((True, 5.7), (False, 5.7)):
             mask = WaterMask(11, 11, 0.0, 0.0, 1.0, 1.0, prefer_dry_end=prefer_dry_end)
             mask.fill_wet()
             mask.remove_polygon(slab)
@@ -149,6 +148,72 @@ class WaterMaskTests(unittest.TestCase):
             self.assertTrue(mask.is_wet(5, 5))
             self.assertFalse(mask.is_wet(6, 5))
             self.assertAlmostEqual(mask.row_crossing(5, 5, wet_on_left=True), expected)
+
+
+class ComposedShorelineTests(unittest.TestCase):
+    def test_overlapping_water_uses_only_union_boundaries_in_both_axes_and_orders(self):
+        for mirror in (False, True):
+            first = [(4.2, -1), (12, -1), (12, 12), (4.2, 12)]
+            second = [(4.8, -1), (12, -1), (12, 12), (4.8, 12)]
+            if mirror:
+                first = [(10 - x, y) for x, y in first]
+                second = [(10 - x, y) for x, y in second]
+            for transpose in (False, True):
+                rings = [first, second]
+                if transpose:
+                    rings = [[(y, x) for x, y in ring] for ring in rings]
+                for ordered in (rings, rings[::-1]):
+                    mask = WaterMask(11, 11, 0, 0, 1, 1)
+                    for ring in ordered:
+                        mask.add_polygon([ring])
+                    edge = 5 if mirror else 4
+                    actual = (
+                        mask.column_crossing(edge, 5, mirror)
+                        if transpose else mask.row_crossing(5, edge, mirror)
+                    )
+                    self.assertAlmostEqual(actual, 5.8 if mirror else 4.2)
+
+    def test_an_overlapping_water_polygon_fills_part_of_a_hole_in_either_order(self):
+        lake = [
+            [(1.2, 1.2), (9.8, 1.2), (9.8, 9.8), (1.2, 9.8)],
+            [(3.2, 3.2), (6.8, 3.2), (6.8, 6.8), (3.2, 6.8)],
+        ]
+        overlap = [[(6.3, 2.2), (9.2, 2.2), (9.2, 8.8), (6.3, 8.8)]]
+        for polygons in ((lake, overlap), (overlap, lake)):
+            mask = WaterMask(11, 11, 0, 0, 1, 1)
+            for polygon in polygons:
+                mask.add_polygon(polygon)
+            self.assertFalse(mask.is_wet(5, 5), "the remaining island stays dry")
+            self.assertTrue(mask.is_wet(7, 5))
+            self.assertAlmostEqual(mask.row_crossing(5, 6, False), 6.3)
+
+    def test_overlapping_dry_footprints_remove_internal_boundaries(self):
+        for reverse in (False, True):
+            mask = WaterMask(11, 11, 0, 0, 1, 1, prefer_dry_end=True)
+            mask.fill_wet()
+            footprints = [
+                [[(-1, -1), (4.2, -1), (4.2, 12), (-1, 12)]],
+                [[(-1, -1), (4.8, -1), (4.8, 12), (-1, 12)]],
+            ]
+            for footprint in reversed(footprints) if reverse else footprints:
+                mask.remove_polygon(footprint)
+            self.assertAlmostEqual(mask.row_crossing(5, 4, False), 4.8)
+
+    def test_genuine_subcell_water_and_land_transitions_keep_resolution_policy(self):
+        for prefer_dry_end, expected in ((False, 4.6), (True, 4.2)):
+            mask = WaterMask(11, 11, 0, 0, 1, 1, prefer_dry_end=prefer_dry_end)
+            mask.add_polygon([[(4.2, -1), (4.4, -1), (4.4, 12), (4.2, 12)]])
+            mask.add_polygon([[(4.6, -1), (12, -1), (12, 12), (4.6, 12)]])
+            self.assertAlmostEqual(mask.row_crossing(5, 4, False), expected)
+
+    def test_fill_wet_discards_previous_boundaries_before_a_new_subtraction(self):
+        mask = WaterMask(11, 11, 0, 0, 1, 1, prefer_dry_end=True)
+        mask.add_polygon([[(4.2, -1), (12, -1), (12, 12), (4.2, 12)]])
+        mask.fill_wet()
+        self.assertEqual(mask._row_crossings, {})
+        self.assertEqual(mask._column_crossings, {})
+        mask.remove_polygon([[(-1, -1), (4.8, -1), (4.8, 12), (-1, 12)]])
+        self.assertAlmostEqual(mask.row_crossing(5, 4, False), 4.8)
 
 
 class TerrainSolidTests(unittest.TestCase):

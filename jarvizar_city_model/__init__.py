@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Jarvizar City Model",
     "author": "Jarvizar workflow / OpenAI",
-    "version": (0, 9, 6),
+    "version": (0, 9, 7),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > City Model",
     "description": (
@@ -33,4 +33,3 @@ def unregister():
     config.unregister_scene_properties()
     for cls in reversed((*config.CLASSES, *operators.CLASSES, *ui.CLASSES)):
         bpy.utils.unregister_class(cls)
-

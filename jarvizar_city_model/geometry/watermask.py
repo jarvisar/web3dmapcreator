@@ -23,6 +23,7 @@ from typing import Dict, List, Sequence, Tuple
 
 Point = Tuple[float, float]
 Ring = Sequence[Point]
+Interval = Tuple[float, float]
 
 # A shoreline crossing is pulled this far away from the grid node it lands on,
 # as a fraction of the cell.  A crossing exactly on a node would produce two
@@ -60,6 +61,45 @@ def _line_crossings(rings: Sequence[Ring], value: float, axis: int) -> List[floa
     return crossings
 
 
+def _combine_intervals(
+    current: Sequence[Interval], incoming: Sequence[Interval], wet: bool
+) -> List[Interval]:
+    """Union water spans, or subtract dry spans, along one grid line.
+
+    A polygon edge inside another water polygon is not a shoreline. Keeping
+    the composed intervals removes those internal edges, including edges of
+    overlapping restored decks, before a terrain cell chooses its crossing.
+    """
+    if wet:
+        result: List[Interval] = []
+        for low, high in sorted(list(current) + list(incoming)):
+            if result and low <= result[-1][1]:
+                result[-1] = (result[-1][0], max(result[-1][1], high))
+            else:
+                result.append((low, high))
+        return result
+
+    result = []
+    first = 0
+    for low, high in current:
+        while first < len(incoming) and incoming[first][1] <= low:
+            first += 1
+        cursor = low
+        for cut_low, cut_high in incoming[first:]:
+            if cut_low >= high:
+                break
+            if cut_high <= cursor:
+                continue
+            if cut_low > cursor:
+                result.append((cursor, cut_low))
+            cursor = max(cursor, cut_high)
+            if cursor >= high:
+                break
+        if cursor < high:
+            result.append((cursor, high))
+    return result
+
+
 class WaterMask:
     """Grid nodes under water, plus the shoreline's exact grid-line crossings."""
 
@@ -85,19 +125,19 @@ class WaterMask:
         self.step_y = float(step_y)
         self.wet = bytearray(self.columns * self.rows)
         self.polygons = 0
-        # Which recorded crossing a mixed edge transitions at.  The terrain
-        # takes the one nearest the *wet* node: only water is ever added and
-        # what is taken back out (a pier) extends the land, so the far
-        # crossing keeps the most land.  A mask built the other way round --
-        # a slab taken out of an all-wet grid and the water put back in over
-        # it -- must take the crossing nearest the *dry* node, because from
-        # the dry node whichever outline is met first ends the dry run, and
-        # the far one would stretch the slab out over the water.
+        # When several genuine transitions share a mixed grid edge, retain
+        # the existing resolution policy: terrain keeps the most land (the
+        # crossing nearest the wet node), while a clipped slab stops at the
+        # first boundary from its dry node. Internal operand edges have
+        # already been removed by composing the scanline intervals.
         self.prefer_dry_end = bool(prefer_dry_end)
         # Crossings bucketed by the grid edge they land on.  A horizontal key
         # is the edge between nodes (row, column) and (row, column + 1).
         self._row_crossings: Dict[Tuple[int, int], List[float]] = {}
         self._column_crossings: Dict[Tuple[int, int], List[float]] = {}
+        self._row_intervals: Dict[int, List[Interval]] = {}
+        self._column_intervals: Dict[int, List[Interval]] = {}
+        self._initial_wet = False
         self._dry_polygons: Dict[Tuple[int, int], List[Point]] = {}
 
     # ------------------------------------------------------------------ build
@@ -116,6 +156,11 @@ class WaterMask:
         must never sit.
         """
         self.wet = bytearray(b"\x01") * (self.columns * self.rows)
+        self._initial_wet = True
+        self._row_intervals.clear()
+        self._column_intervals.clear()
+        self._row_crossings.clear()
+        self._column_crossings.clear()
         self._dry_polygons.clear()
 
     def remove_polygon(self, rings: Sequence[Ring]) -> int:
@@ -144,7 +189,7 @@ class WaterMask:
         self.polygons += 1
         self._dry_polygons.clear()
         changed = self._scan_rows(usable, window, wet)
-        self._scan_columns(usable, window)
+        self._scan_columns(usable, window, wet)
         return changed
 
     def _window(self, ring: Ring):
@@ -185,10 +230,7 @@ class WaterMask:
             crossings = _line_crossings(rings, y, axis=1)
             if not crossings:
                 continue
-            for x in crossings:
-                column = int(math.floor((x - self.min_x) / self.step_x))
-                if 0 <= column < self.columns - 1:
-                    self._row_crossings.setdefault((row, column), []).append(x)
+            self._compose_line(row, crossings, wet, axis=1)
             offset = row * self.columns
             for index in range(0, len(crossings) - 1, 2):
                 left, right = crossings[index], crossings[index + 1]
@@ -202,15 +244,52 @@ class WaterMask:
                         changed += 1
         return changed
 
-    def _scan_columns(self, rings: Sequence[Ring], window) -> None:
+    def _scan_columns(self, rings: Sequence[Ring], window, wet: bool) -> None:
         """Record crossings on vertical grid lines. Wetness is already known."""
         _first_row, _last_row, first_column, last_column = window
         for column in range(first_column, last_column + 1):
             x = self.min_x + self.step_x * column
-            for y in _line_crossings(rings, x, axis=0):
-                row = int(math.floor((y - self.min_y) / self.step_y))
-                if 0 <= row < self.rows - 1:
-                    self._column_crossings.setdefault((row, column), []).append(y)
+            crossings = _line_crossings(rings, x, axis=0)
+            if crossings:
+                self._compose_line(column, crossings, wet, axis=0)
+
+    def _compose_line(self, line: int, crossings: List[float], wet: bool, axis: int) -> None:
+        """Replace a line's crossing buckets with the final wet/dry boundaries."""
+        if axis == 1:
+            intervals, buckets = self._row_intervals, self._row_crossings
+            minimum, step, count = self.min_x, self.step_x, self.columns
+        else:
+            intervals, buckets = self._column_intervals, self._column_crossings
+            minimum, step, count = self.min_y, self.step_y, self.rows
+        current = intervals.get(line, [(-math.inf, math.inf)] if self._initial_wet else [])
+        incoming = [
+            (low, high)
+            for low, high in zip(crossings[::2], crossings[1::2])
+            if low < high
+        ]
+        combined = _combine_intervals(current, incoming, wet)
+        if combined == current:
+            return
+
+        def key(position):
+            if not math.isfinite(position):
+                return None
+            edge = int(math.floor((position - minimum) / step))
+            if 0 <= edge < count - 1:
+                return (line, edge) if axis == 1 else (edge, line)
+            return None
+
+        for interval in current:
+            for position in interval:
+                bucket = key(position)
+                if bucket is not None:
+                    buckets.pop(bucket, None)
+        for interval in combined:
+            for position in interval:
+                bucket = key(position)
+                if bucket is not None:
+                    buckets.setdefault(bucket, []).append(position)
+        intervals[line] = combined
 
     # ------------------------------------------------------------------ query
 

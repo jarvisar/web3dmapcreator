@@ -401,6 +401,8 @@ the cut threshold (0.5 ha by default) is removed from the terrain solid, so the
 river reads as an opening. The bank is not a staircase along cell boundaries:
 the shoreline's exact crossing of each grid line is recorded when the polygon
 is rasterised, and every cell the shore passes through is clipped against it.
+Overlapping water polygons are combined before choosing those crossings, so
+an edge inside another water body cannot leave a false strip of terrain.
 Small water — ponds, fountain basins, rooftop pools — stays a surface slab,
 because a hole a few tenths of a millimetre across only weakens the print.
 
@@ -420,6 +422,12 @@ base; the rest of the water stays open. Supports are batched into one object
 in `TERRAIN_SUPPORTS`, in the terrain material, and are counted per kind as
 `terrain_support_kinds`. **Keep Ground Under Structures** turns them off, in
 which case piers over the opening are dropped as before.
+
+Marina and harbor facility boundaries can include open water; they do not
+restore terrain or create supports. Their separately mapped physical piers,
+quays, and breakwaters still keep their ground. See the
+[water cutout investigation](docs/WATER_CUTOUTS.md) for the source comparison
+and regression checks behind this behavior.
 
 **Bridges are solved as one network.** Overture splits an interchange into
 dozens of short flagged pieces that meet at forks and merge back into each
