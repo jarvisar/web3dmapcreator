@@ -105,11 +105,18 @@ before force-closing** (he has said yes once; that was not standing permission).
 
 ## Current state
 
-- Repo and installed Blender 3.6 add-on are at **0.9.11**;
-  `dist/jarvizar_city_model-0.9.11-{blender36,extension}.zip` built. Installed
-  with Blender closed, all 41 files hash-checked, installed overlap geometry,
-  priority reordering/scene persistence and palette checks passed. Preferences
-  saved; prior add-on backed up in `scratchpad/installed-before-0911.zip`.
+- Repo and installed Blender 3.6 add-on are at **0.9.12**;
+  `dist/jarvizar_city_model-0.9.12-{blender36,extension}.zip` built. Installed
+  with Blender closed, all 41 files hash-checked; installed cone geometry,
+  tree UI defaults and palette checks passed. Preferences saved; prior add-on
+  backed up in `scratchpad/installed-before-0912.zip`.
+- 0.9.12 = simple solid cone trees, no trunk/overhanging canopy. UI width
+  floor 1.2 mm, height floor 2.0 mm and size variation; final varied trees
+  respect both floors. Trees sample actual generated land/road slab caps,
+  including holes, and use the existing surface embed. Smoke and focused
+  tree geometry checks passed; full Chicago generated 1,864 trees and all
+  33 model meshes were closed. Bambu CLI slicing timed out; no completed
+  slicer or physical print validation yet.
 - 0.9.11 = mutually exclusive land-surface categories with scene-configurable
   priority. Default paved > sand > rock > green > forest, arrows in Ground
   Surfaces reorder all five, saved in `surface_priority_order`. Generation
@@ -634,10 +641,9 @@ embed to "be safe": 0.15 is three-quarters of a layer over a draped surface
 that tracks the terrain to ~0.01 mm.
 
 **Land surface rise is 0.4 mm** (two layers) so greenery reads as its own
-colour region; roads at 0.6 still stand one layer above it. Trees are still
-placed at the terrain height, so a canopy base now sits 0.15 mm inside a slab
-instead of on it — visible only as slightly shorter trees; not changed on
-purpose ("don't go overboard").
+colour region; roads at 0.6 still stand one layer above it. As of 0.9.12,
+trees sample those actual slab caps instead of being buried at terrain
+height; their simple cone bases use the same surface embed.
 
 **The slab-clip mask takes the crossing nearest the DRY node
 (`WaterMask(prefer_dry_end=True)`).** The terrain's mask only ever *adds*

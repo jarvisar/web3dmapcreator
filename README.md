@@ -374,10 +374,15 @@ height and clamped to the parent's stated total. A shaped roof with no
 `roof_height` gets an ordinary pitch recorded as `roof_height_source =
 default`.
 
-**Trees are deliberately enlarged.** A real 11 m tree at this scale is about
-0.2 mm and neither prints nor reads. Trees are scaled up to **Minimum Tree
-Height**, and the applied factor is recorded as `tree_size_exaggeration` in the
-generation metadata.
+**Trees are simple solid cones.** They have broad, flat bases seated on the
+actual terrain, land surface, or surface road, with the usual surface embed.
+Under **Ground Surfaces > Trees**, **Minimum Tree Width** (1.2 mm) and
+**Minimum Tree Height** (2.0 mm) set model-space size floors intended for a
+0.4 mm nozzle and 0.2 mm layers. **Size Variation** retains natural variation
+without shrinking below either minimum. Width is measured across the cone's
+base flats. The narrow pointed tip can lose its final layers when sliced;
+the wider body remains. Regenerate the model to apply these settings.
+Existing saved height settings are retained.
 
 **Regional source polygons are rejected.** Overture's bbox filter returns every
 feature that *intersects* the selection, including continental ones — a single
