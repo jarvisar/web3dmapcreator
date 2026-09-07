@@ -31,6 +31,7 @@ from .planar import (
     buffer_polyline_convex_pieces,
     clean_ring,
     densify_ring,
+    interior_grid_points,
     offset_is_safe,
     signed_area,
 )
@@ -64,23 +65,60 @@ class SupportBuilder:
         self.builder = MeshBuilder(name)
         self.counts: Dict[str, int] = {}
         self.rejected = 0
+        self.already_grounded = 0
+        self._grounded_footprints = set()
+
+    def _needs_support(self, rings: Sequence[Ring]) -> bool:
+        """Test the surviving ground, after deck restoration and prior supports.
+
+        Mapped decks are collected using a broad water-window test before the
+        terrain is built. That only makes them candidates: a nearby dry quay,
+        or a deck fully restored by the terrain grid, needs no second solid.
+        Check the outline finely enough to keep narrow piers, and the interior
+        as well so an opening enclosed by a wide footprint is still supported.
+        """
+        field = self.heightfield
+        if field.void_mask is None or not field.void_mask.touches_water(rings):
+            return False
+        spacing = min(0.5, field.cell_size_mm * 0.25)
+        if any(field.over_open_water(x, y)
+               for ring in rings for x, y in densify_ring(ring, spacing)):
+            return True
+        return any(field.over_open_water(x, y)
+                   for x, y in interior_grid_points(rings, spacing, limit=600))
+
+    def _levels(self, x: float, y: float):
+        """Shared outline and cap sampling, keeping the flat model underside."""
+        top = max(
+            self.heightfield.height_mm(x, y) - self.top_offset_mm,
+            self.bottom_z + 0.05,
+        )
+        return self.bottom_z, top
 
     def _draped(self, ring: Ring):
         dense = clean_ring(densify_ring(ring, self.drape_spacing_mm), EPSILON)
         if len(dense) < 3:
             return None
-        floor = self.bottom_z
-        prism = []
-        for x, y, height in self.heightfield.sample_ring(dense):
-            top = max(height - self.top_offset_mm, floor + 0.05)
-            prism.append((x, y, floor, top))
-        return prism
+        return [(x, y, *self._levels(x, y)) for x, y in dense]
 
     def footprint(self, rings: Sequence[Ring], kind: str) -> bool:
         """Add a pedestal under a polygon (outer ring first, then holes)."""
         if not rings or len(rings[0]) < 3:
             return False
         if abs(signed_area(rings[0])) < self.minimum_area_mm2:
+            return False
+        footprint_key = tuple(tuple(tuple(point) for point in ring) for ring in rings)
+        known = footprint_key in self._grounded_footprints
+        # Point-in-polygon tests exclude some boundary edges, so an identical
+        # footprint must not appear unsupported along its own outline.
+        if known or not self._needs_support(rings):
+            # Even without another solid, this footprint is usable ground.
+            # Bridge piers use has_ground(), whose conservative shoreline-cell
+            # test needs this registration to recognize a dry quay/deck.
+            if not known and self.heightfield.void_mask is not None:
+                self.heightfield.add_support(rings)
+                self._grounded_footprints.add(footprint_key)
+            self.already_grounded += 1
             return False
         outer = self._draped(rings[0])
         if outer is None:
@@ -91,10 +129,16 @@ class SupportBuilder:
             draped_hole = self._draped(hole)
             if draped_hole is not None:
                 prism_rings.append(draped_hole)
-        if not self.builder.add_prism(prism_rings):
+        # Perimeter heights alone can span straight across an interior hollow
+        # and put a pedestal above the terrain it should blend into. Use the
+        # same cap refinement already used by draped roads and land slabs.
+        if not self.builder.add_prism(
+            prism_rings, refine=(self.drape_spacing_mm, self._levels)
+        ):
             self.rejected += 1
             return False
         self.heightfield.add_support(rings)
+        self._grounded_footprints.add(footprint_key)
         self.counts[kind] = self.counts.get(kind, 0) + 1
         return True
 
@@ -135,4 +179,5 @@ class SupportBuilder:
             "terrain_supports": sum(self.counts.values()),
             "terrain_support_kinds": dict(sorted(self.counts.items())),
             "terrain_supports_rejected": self.rejected,
+            "terrain_supports_already_grounded": self.already_grounded,
         }

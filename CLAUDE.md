@@ -105,7 +105,24 @@ before force-closing** (he has said yes once; that was not standing permission).
 
 ## Current state
 
-- Repo is at **0.9.6**; `dist/jarvizar_city_model-0.9.6-{blender36,extension}.zip` built.
+- Repo and installed Blender 3.6 add-on are at **0.9.8**;
+  `dist/jarvizar_city_model-0.9.8-{blender36,extension}.zip` built.
+- 0.9.8 = targeted terrain-support refinement. `SupportBuilder` checks outline
+  and interior against remaining open water before adding a pedestal, skips
+  exact repeated footprints, and refines cap interiors through the existing
+  draping routine. Boundary-only caps previously bridged terrain hollows and
+  protruded above ground. **Keep the existing 0.05 mm embed**: it prevents
+  coincident faces at bank overlaps; larger interpolation errors caused the
+  visible raised patches. Skipped solid candidates still register usable
+  ground so `has_ground` recognizes dry decks in mixed shoreline cells and
+  does not suppress valid bridge piers. Chicago supports 312 -> 282, with no
+  measured protrusions above actual terrain at the audited cap samples.
+  320 unit tests, Blender smoke, water and support geometry checks passed;
+  the installed package was hash-checked and ran both geometry regressions.
+  Tests: `tests/blender_ground_support.py`, `tests/blender_water_cut.py`.
+- 0.9.7 = water cutout fix: marina extents no longer restore entire harbors as
+  land; water masks compose scanline unions/differences before choosing shore
+  crossings. See `docs/WATER_CUTOUTS.md`. This remains in 0.9.8.
 - 0.9.6 = **Minimum Building Height** (0.8 mm) with a footprint gate
   (**Raise Only Footprints Over**, 0.6 mm). A mass whose finished top does not
   clear the ground by the minimum has its walls stretched until it does; the

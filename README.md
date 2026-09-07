@@ -423,6 +423,16 @@ in `TERRAIN_SUPPORTS`, in the terrain material, and are counted per kind as
 `terrain_support_kinds`. **Keep Ground Under Structures** turns them off, in
 which case piers over the opening are dropped as before.
 
+Support candidates are checked against the surviving terrain and supports
+already built, so a dry quay or a deck fully restored by the terrain grid does
+not get a redundant pedestal. Required supports keep their exact footprints;
+their caps are sampled across the interior as well as the outline, using the
+same draping refinement as roads and land slabs. This prevents a broad support
+from spanning over a terrain hollow and protruding through the ground. The
+existing small embed below the terrain is retained to avoid coincident faces
+where a necessary support meets the bank. Skipped candidates are reported as
+`terrain_supports_already_grounded`.
+
 Marina and harbor facility boundaries can include open water; they do not
 restore terrain or create supports. Their separately mapped physical piers,
 quays, and breakwaters still keep their ground. See the

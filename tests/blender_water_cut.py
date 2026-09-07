@@ -119,8 +119,8 @@ def test_marina_does_not_refill_the_harbor():
     marina = feature("marina", rectangle(11.2, 4.2, 17.2, 15.8))
     # These actual structures are narrower than the 0.5 mm terrain grid;
     # their pedestals must survive even when no grid node can be restored.
-    pier = feature("pier", rectangle(12.3, 1.5, 12.5, 7.5))
-    breakwater = feature("breakwater", rectangle(15.3, 10.5, 15.5, 18.5))
+    pier = feature("pier", rectangle(12.3, 1.5, 12.45, 7.5))
+    breakwater = feature("breakwater", rectangle(15.3, 10.5, 15.45, 18.5))
     bodies = solve(field, [lake])
     counts = cut_water_from_terrain(
         field, bodies,
@@ -146,6 +146,7 @@ def test_marina_does_not_refill_the_harbor():
         assert field.over_open_water(*point), point
     assert supports.summary()["terrain_supports"] == 2, supports.summary()
     assert counts["water_cut_decks_over_water"] == 2, counts
+    assert counts["water_cut_decks_restored"] == 0, counts
     assert_closed(support_obj)
     for point in ((12.4, 5.3), (15.4, 13.3)):
         assert hits(support_tree, point), ("Mapped structure lost its support", point)
