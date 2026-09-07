@@ -8,6 +8,7 @@ from jarvizar_city_model.data.land import (
     FOREST,
     GREEN,
     PAVED,
+    ROCK,
     SAND,
     TREE_BEARING_CATEGORIES,
     classify_surface,
@@ -75,8 +76,9 @@ class ClassificationTests(unittest.TestCase):
         self.assertIn(FOREST, TREE_BEARING_CATEGORIES)
         self.assertNotIn(GREEN, TREE_BEARING_CATEGORIES)
 
-    def test_specific_surfaces_are_drawn_over_coarse_cover(self):
-        self.assertGreater(surface_priority(GREEN), surface_priority(FOREST))
+    def test_surface_priority_order(self):
+        order = [FOREST, GREEN, ROCK, SAND, PAVED]
+        self.assertTrue(all(surface_priority(a) < surface_priority(b) for a, b in zip(order, order[1:])))
 
 
 class TreePointTests(unittest.TestCase):

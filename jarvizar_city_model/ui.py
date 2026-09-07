@@ -164,6 +164,18 @@ class JARVIZAR_PT_surfaces(Panel):
         settings = context.scene.jarvizar_city_model
         layout.prop(settings, "surface_rise_mm")
         layout.prop(settings, "surface_embed_mm")
+        box = layout.box()
+        box.label(text="Surface Priority")
+        box.label(text="Highest priority first")
+        order = settings.surface_order()
+        for index, category in enumerate(order):
+            row = box.row(align=True)
+            row.label(text="Greens" if category == "green" else category.title())
+            for direction, icon in ((-1, "TRIA_UP"), (1, "TRIA_DOWN")):
+                button = row.row(align=True)
+                button.enabled = 0 <= index + direction < len(order)
+                move = button.operator("jarvizar.move_surface_priority", text="", icon=icon)
+                move.index, move.direction = index, direction
         layout.prop(settings, "cut_water_from_terrain")
         column = layout.column(align=True)
         column.enabled = settings.cut_water_from_terrain
@@ -177,6 +189,8 @@ class JARVIZAR_PT_surfaces(Panel):
         layout.prop(settings, "include_land_cover_scatter")
         layout.prop(settings, "tree_spacing_m")
         layout.prop(settings, "tree_minimum_height_mm")
+        layout.prop(settings, "tree_minimum_width_mm")
+        layout.prop(settings, "tree_size_variation")
         layout.prop(settings, "maximum_trees")
 
 

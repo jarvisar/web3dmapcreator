@@ -23,6 +23,7 @@ underneath it so its piers have ground.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -35,6 +36,7 @@ from ..data.linework import (
     RAIL_WIDTH_M,
     SubSegment,
     clip_polyline_to_rectangle,
+    cumulative_positions,
     densify_polyline,
     linestring_coordinates,
     polyline_length,
@@ -45,6 +47,7 @@ from ..data.linework import (
 from .bridge_network import node_key, open_water_corridors, split_at_open_water
 from .bridges import add_bridge_deck, add_bridge_supports
 from .deck_graph import SegmentIndex, solve_deck_network
+from .deck_profile import interpolate_profile, point_and_direction
 from .planar import (
     EPSILON,
     buffer_polyline,
@@ -94,8 +97,8 @@ class RoadSettings:
     # The printed gap between a deck's underside and whatever it crosses: two
     # 0.2 mm layers of daylight is what makes a bridge read as one.
     bridge_clearance_mm: float = 0.4
-    # The steepest a deck may climb or fall, rise over run.  A deck too short
-    # to reach its lift at this grade humps as high as the grade allows.
+    # The steepest a deck may climb or fall, rise over run. Simple short
+    # bridges only rise above their approaches to clear a crossing or terrain.
     bridge_maximum_grade: float = 0.08
     # A deck whose whole network never rises this far above the road surface
     # would print as a bump; it is built as an ordinary road instead.
@@ -132,6 +135,7 @@ class RoadCounts:
     bridge_open_ends: int = 0
     bridge_stacked_crossings: int = 0
     bridge_road_crossing_components: int = 0
+    bridge_span_adapted_components: int = 0
     bridge_decks_demoted: int = 0
     bridge_causeways: int = 0
     crossings_recovered: int = 0
@@ -159,6 +163,7 @@ class RoadCounts:
             "bridge_open_ends": self.bridge_open_ends,
             "bridge_stacked_crossings": self.bridge_stacked_crossings,
             "bridge_road_crossing_components": self.bridge_road_crossing_components,
+            "bridge_span_adapted_components": self.bridge_span_adapted_components,
             "bridge_decks_demoted": self.bridge_decks_demoted,
             "bridge_demoted_by_class": dict(sorted(self.demoted.items())),
             "bridge_causeways": self.bridge_causeways,
@@ -458,6 +463,7 @@ def _solve_deck_heights(
     counts.bridge_open_ends = solution.open_ends
     counts.bridge_stacked_crossings = solution.stacked_constraints
     counts.bridge_road_crossing_components = solution.road_crossing_components
+    counts.bridge_span_adapted_components = solution.span_adapted_components
     # A deck standing over the cut water is a deck because the water is
     # there, whatever its lift: built as a road it would hang in the opening.
     # That covers a crossing recovered from the water and a flagged bridge
@@ -546,6 +552,25 @@ def generate_roads(
     for index in sorted(demoted):
         surface.append(decks[index][0])
 
+    # Supplemental low supports must leave the road/rail opening clear. This
+    # index affects only new supports; established interchange piers keep
+    # their placement. Use each crossing road's actual printed width.
+    support_obstacles = SegmentIndex(max(2.0, settings.maximum_width_mm * 4.0))
+    obstacle_width = 0.0
+    for piece in surface:
+        width = _half_width_m(piece, transform, settings) * transform.scale_x_mm_per_m
+        obstacle_width = max(obstacle_width, width)
+        line = _metric_ring_to_model(piece.points, transform)
+        support_obstacles.add_polyline(line, width)
+
+    lower_decks = SegmentIndex(support_obstacles.cell_size)
+    for deck, ((piece, line), profile) in enumerate(zip(decks, deck_heights)):
+        if deck in demoted:
+            continue
+        width = _half_width_m(piece, transform, settings) * transform.scale_x_mm_per_m
+        for a, b, za, zb in zip(line, line[1:], profile, profile[1:]):
+            lower_decks.add_segment(a, b, (deck, width, za, zb))
+
     total = max(1, len(pieces))
     progress_index = 0
 
@@ -559,6 +584,14 @@ def generate_roads(
         if hasattr(heightfield, "has_ground"):
             return not heightfield.has_ground(x, y)
         return heightfield.is_void(x, y)
+
+    def foundation_height(x: float, y: float) -> float:
+        height = heightfield.height_mm(x, y)
+        # Over cut water the printed causeway is below the sampled field.
+        # Even a deck resting at field height still has that gap beneath it.
+        if ground_support is not None and heightfield.in_cut_water(x, y):
+            return max(height - ground_support.top_offset_mm, ground_support.bottom_z + 0.05)
+        return height
 
     for index, ((piece, centerline), heights) in enumerate(zip(decks, deck_heights)):
         if index in demoted:
@@ -597,11 +630,30 @@ def generate_roads(
                 ):
                     counts.bridge_causeways += 1
 
+        positions = cumulative_positions(centerline)
+        minimum_half_size = settings.bridge_support_minimum_size_mm * 0.5
+        support_radius = math.hypot(
+            max(half_width_mm * 0.35, minimum_half_size),
+            max(half_width_mm, minimum_half_size),
+        )
+
+        def obstructed(station):
+            point, _direction = point_and_direction(centerline, positions, station)
+            if any(distance <= support_radius + width
+                   for distance, width, _t in support_obstacles.within(
+                       point, support_radius + obstacle_width)):
+                return True
+            underside = interpolate_profile(positions, heights, station) - deck_thickness
+            return any(other != index and distance <= support_radius + width
+                       and za + (zb - za) * t < underside
+                       for distance, (other, width, za, zb), t in lower_decks.within(
+                           point, support_radius + settings.maximum_width_mm * 0.5))
+
         counts.bridge_supports += add_bridge_supports(
             support_builder,
             centerline,
             heights,
-            heightfield.height_mm,
+            foundation_height,
             half_width_mm,
             deck_thickness,
             support_spacing_mm,
@@ -610,6 +662,7 @@ def generate_roads(
             embed,
             has_no_ground,
             settings.bridge_support_minimum_size_mm,
+            is_obstructed=obstructed,
         )
         tick()
 

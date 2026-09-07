@@ -5,9 +5,9 @@ shading most modelling work happens in, and as a Principled BSDF base colour so
 Material Preview and render output agree with it.  Setting only one of the two
 makes the model look completely different depending on the shading mode.
 
-The palette is a light architectural-model scheme: warm neutral ground, near
-white massing, and desaturated greens and blues, so that height and layout read
-clearly rather than competing with surface colour.
+The palette pairs white buildings with ash-grey terrain, charcoal roads and
+paving, dark-green vegetation, and desert-tan sand and rock. Values are linear
+RGB, shared by the viewport and shader materials.
 """
 
 from __future__ import annotations
@@ -18,19 +18,19 @@ import bpy
 
 
 PALETTE: Dict[str, Tuple[float, float, float, float]] = {
-    "terrain": (0.82, 0.76, 0.65, 1.0),
-    "building": (0.90, 0.90, 0.89, 1.0),
-    "building_part": (0.85, 0.86, 0.87, 1.0),
-    "road": (0.87, 0.86, 0.84, 1.0),
-    "bridge": (0.90, 0.89, 0.88, 1.0),
-    "bridge_support": (0.62, 0.61, 0.60, 1.0),
+    "terrain": (0.36, 0.38, 0.38, 1.0),
+    "building": (1.0, 1.0, 1.0, 1.0),
+    "building_part": (1.0, 1.0, 1.0, 1.0),
+    "road": (0.06, 0.06, 0.06, 1.0),
+    "bridge": (0.06, 0.06, 0.06, 1.0),
+    "bridge_support": (0.06, 0.06, 0.06, 1.0),
     "water": (0.36, 0.70, 0.82, 1.0),
-    "surface_green": (0.64, 0.80, 0.63, 1.0),
-    "surface_forest": (0.50, 0.71, 0.53, 1.0),
-    "surface_sand": (0.87, 0.82, 0.68, 1.0),
-    "surface_rock": (0.71, 0.70, 0.68, 1.0),
-    "surface_paved": (0.85, 0.84, 0.82, 1.0),
-    "tree": (0.31, 0.52, 0.35, 1.0),
+    "surface_green": (0.06, 0.18, 0.08, 1.0),
+    "surface_forest": (0.06, 0.18, 0.08, 1.0),
+    "surface_sand": (0.55, 0.39, 0.22, 1.0),
+    "surface_rock": (0.55, 0.39, 0.22, 1.0),
+    "surface_paved": (0.06, 0.06, 0.06, 1.0),
+    "tree": (0.06, 0.18, 0.08, 1.0),
     "rim": (0.16, 0.16, 0.17, 1.0),
 }
 

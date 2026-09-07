@@ -8,6 +8,7 @@ from pathlib import Path
 import bpy
 import mathutils
 from bpy.types import Operator
+from bpy.props import IntProperty
 from bpy_extras.io_utils import ExportHelper
 
 from .blender.collections import (
@@ -298,6 +299,26 @@ class JARVIZAR_OT_download_cache(Operator):
             context.window_manager.progress_end()
 
 
+class JARVIZAR_OT_move_surface_priority(Operator):
+    bl_idname = "jarvizar.move_surface_priority"
+    bl_label = "Move Surface Priority"
+    bl_description = "Move this surface up or down; the higher surface wins overlaps"
+    bl_options = {"UNDO"}
+
+    index: IntProperty(options={"HIDDEN"})
+    direction: IntProperty(default=1, min=-1, max=1, options={"HIDDEN"})
+
+    def execute(self, context):
+        settings = context.scene.jarvizar_city_model
+        order = list(settings.surface_order())
+        destination = self.index + self.direction
+        if not (0 <= self.index < len(order) and 0 <= destination < len(order)):
+            return {"CANCELLED"}
+        order[self.index], order[destination] = order[destination], order[self.index]
+        settings.surface_priority_order = ",".join(order)
+        return {"FINISHED"}
+
+
 class JARVIZAR_OT_generate_model(Operator):
     bl_idname = "jarvizar.generate_model"
     bl_label = "Generate Model"
@@ -397,6 +418,7 @@ class JARVIZAR_OT_generate_model(Operator):
             counts = dict(terrain_metadata)
 
             surface_settings = SurfaceSettings(
+                priority_order=settings.surface_order(),
                 surface_rise_mm=settings.surface_rise_mm,
                 surface_embed_mm=settings.surface_embed_mm,
                 water_thickness_mm=settings.water_thickness_mm,
@@ -583,6 +605,9 @@ class JARVIZAR_OT_generate_model(Operator):
                         TreeSettings(
                             scatter_spacing_m=settings.tree_spacing_m,
                             minimum_height_mm=settings.tree_minimum_height_mm,
+                            minimum_canopy_diameter_mm=settings.tree_minimum_width_mm,
+                            size_variation=settings.tree_size_variation,
+                            embed_mm=settings.surface_embed_mm,
                             maximum_trees=settings.maximum_trees,
                             include_mapped_points=settings.include_mapped_trees,
                             include_forest_scatter=settings.include_forest_scatter,
@@ -591,6 +616,8 @@ class JARVIZAR_OT_generate_model(Operator):
                         bounds=bounds.as_tuple(),
                         progress_callback=lambda f: progress(0.55 + f * 0.15),
                         merge=settings.merge_buildings_and_trees,
+                        ground_objects=(list(hierarchy["land_surfaces"].objects)
+                                        + list(hierarchy["surface_roads"].objects)),
                     )
                 )
             progress(0.70)
@@ -805,6 +832,7 @@ class JARVIZAR_OT_clear_model(Operator):
 
 
 CLASSES = (
+    JARVIZAR_OT_move_surface_priority,
     JARVIZAR_OT_paste_bounds,
     JARVIZAR_OT_download_cache,
     JARVIZAR_OT_generate_model,

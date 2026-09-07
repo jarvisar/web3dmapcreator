@@ -15,6 +15,8 @@ from bpy.props import (
 )
 from bpy.types import AddonPreferences, PropertyGroup
 
+from .data.land import DEFAULT_SURFACE_PRIORITY
+
 
 def _default_cache_directory() -> str:
     override = os.environ.get("JARVIZAR_CITY_CACHE")
@@ -500,6 +502,18 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     )
 
     # ----------------------------------------------------------- land surface
+    surface_priority_order: StringProperty(
+        name="Surface Priority",
+        description="Surface overlap order, highest priority first",
+        default=",".join(DEFAULT_SURFACE_PRIORITY),
+        options={"HIDDEN"},
+    )
+
+    def surface_order(self):
+        order = tuple(self.surface_priority_order.split(","))
+        return order if (len(order) == len(DEFAULT_SURFACE_PRIORITY)
+                         and set(order) == set(DEFAULT_SURFACE_PRIORITY)) else DEFAULT_SURFACE_PRIORITY
+
     surface_rise_mm: FloatProperty(
         name="Land Surface Rise (mm)",
         description=(
@@ -540,10 +554,20 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
             "Trees are enlarged to at least this height so they stay printable "
             "and legible. The applied exaggeration is recorded on the objects"
         ),
-        default=0.9,
+        default=2.0,
         min=0.05,
         soft_max=10.0,
         precision=2,
+    )
+    tree_minimum_width_mm: FloatProperty(
+        name="Minimum Tree Width (mm)",
+        description="Minimum cone base width across flats, after size variation; default for a 0.4 mm nozzle",
+        default=1.2, min=0.1, soft_max=5.0, precision=2,
+    )
+    tree_size_variation: FloatProperty(
+        name="Size Variation",
+        description="Random tree scaling, always clamped to the minimum printable dimensions",
+        default=0.28, min=0.0, max=0.8, subtype="FACTOR",
     )
     maximum_trees: IntProperty(
         name="Maximum Trees",

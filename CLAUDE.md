@@ -105,8 +105,47 @@ before force-closing** (he has said yes once; that was not standing permission).
 
 ## Current state
 
-- Repo and installed Blender 3.6 add-on are at **0.9.8**;
-  `dist/jarvizar_city_model-0.9.8-{blender36,extension}.zip` built.
+- Repo and installed Blender 3.6 add-on are at **0.9.11**;
+  `dist/jarvizar_city_model-0.9.11-{blender36,extension}.zip` built. Installed
+  with Blender closed, all 41 files hash-checked, installed overlap geometry,
+  priority reordering/scene persistence and palette checks passed. Preferences
+  saved; prior add-on backed up in `scratchpad/installed-before-0911.zip`.
+- 0.9.11 = mutually exclusive land-surface categories with scene-configurable
+  priority. Default paved > sand > rock > green > forest, arrows in Ground
+  Surfaces reorder all five, saved in `surface_priority_order`. Generation
+  passes the order through `SurfaceSettings` to `cut_surface_overlaps` in
+  `geometry/surface_priority.py`. Cuts built cap footprints after water clipping
+  and before the existing road cut, preserving holes, cap Z, slab thickness and
+  materials. Reuses `FootprintIndex` / `fragment_solid`; same-category pieces
+  retain their existing shared-material behavior. Existing `EPSILON` (0.0001 mm)
+  clearance prevents float32 edge rounding from leaving microscopic overlaps.
+  334 pure tests, Blender smoke, geometry/road-cut and reorder/persistence
+  regressions pass. Live Chicago: 0/251036 overlap rays, 33 closed meshes;
+  Cincinnati: 0/2059768 overlap rays, 42 closed meshes. Other existing meshes
+  were fingerprinted before/after the cut and remained identical. Tests:
+  `tests/blender_surface_priority.py`, `tests/blender_surface_priority_live.py`,
+  `tests/blender_surface_priority_settings.py`.
+- 0.9.10 = palette only: white buildings and parts, ash-grey terrain/supports,
+  charcoal roads/bridges/paving, matching dark-green forest/grass/trees, and
+  matching desert-tan sand/rock. Water and rim colors retain their prior values.
+  `model_materials()` updates existing named materials on Generate Model.
+- 0.9.9 = targeted short-bridge refinement. Two-ended, unbranched components
+  too short to gain normal road clearance at the grade start at the bank chord,
+  raised for terrain and local crossing-road height. Parallel roads do not
+  add a hump; crossings between coarse profile samples are detected. Long,
+  branched, stacked, cropped and internally anchored networks keep their solve.
+  Regular pier stations remain; a supplemental pass measures actual gaps to
+  ground and built piers, adding low abutments or piers where a run exceeds
+  spacing. New supports avoid roads, rail and lower decks and require ground.
+  Foundation heights over water include the causeway's existing 0.05 mm offset.
+  Tests: `tests/test_bridge_supports.py`, `tests/test_deck_graph.py`,
+  `tests/blender_short_bridges.py`, cached `tests/blender_bridge_caps.py`.
+  334 pure tests and Blender smoke passed. Exact user Chicago bounds
+  `-87.64721,41.87279,-87.62438,41.89432`: 211 decks, 739 pier contacts passed,
+  33 closed meshes. Cincinnati `-84.53563,39.08084,-84.48014,39.11634`:
+  178 decks, 1143 pier contacts passed, 42 closed meshes. All 102 Chicago and
+  107 Cincinnati deck pieces in components >=25 mm retained identical heights
+  to 0.9.8. Existing tight-curve cap fallback remains; simple caps match profiles.
 - 0.9.8 = targeted terrain-support refinement. `SupportBuilder` checks outline
   and interior against remaining open water before adding a pedestal, skips
   exact repeated footprints, and refines cap interiors through the existing
@@ -768,7 +807,7 @@ deck (`scratchpad/probe_bridges2.py`).
   from the intact installed 0.8.0 add-on and verified (no
   `orient_faces_outward`, version tuple `(0, 8, 0)`); bump the manifest and the
   zip name now follows.
-- **Installed is 0.9.6**, installed 2026-09-05 with Blender closed via the
+- **Previously installed 0.9.6**, installed 2026-09-05 with Blender closed via the
   `install-addon` skill. Version tuple `(0, 9, 6)`, module path, the three new
   defaults on a fresh scene (`building_height_scale` 1.1,
   `minimum_building_height_mm` 0.8, `minimum_height_footprint_mm` 0.6), the

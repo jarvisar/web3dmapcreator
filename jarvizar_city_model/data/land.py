@@ -23,6 +23,7 @@ ROCK = "rock"
 PAVED = "paved"
 
 SURFACE_CATEGORIES = (GREEN, FOREST, SAND, ROCK, PAVED)
+DEFAULT_SURFACE_PRIORITY = (PAVED, SAND, ROCK, GREEN, FOREST)
 
 # Categories whose polygons are dense enough with vegetation to justify
 # scattering trees inside them when explicit tree points are unavailable.
@@ -260,10 +261,6 @@ def is_water_deck(feature_type: str, feature: Mapping[str, Any]) -> bool:
 
 
 def surface_priority(category: str) -> int:
-    """Return draw priority so overlapping surfaces resolve deterministically.
-
-    Coarse satellite cover must not paint over a mapped park, so more specific
-    categories are generated last and therefore sit on top.
-    """
-    order = {FOREST: 0, SAND: 1, ROCK: 1, GREEN: 2, PAVED: 3}
-    return order.get(category, 2)
+    """Higher priority owns overlapping land-surface footprints."""
+    return (len(DEFAULT_SURFACE_PRIORITY) - 1 - DEFAULT_SURFACE_PRIORITY.index(category)
+            if category in DEFAULT_SURFACE_PRIORITY else 1)

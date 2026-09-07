@@ -13,7 +13,7 @@ from ..blender.mesh_utils import MeshBuilder
 from ..data.linework import cumulative_positions
 from .deck_graph import point_segment_distance
 from .deck_mesh import deck_strip_geometry
-from .deck_profile import interpolate_profile, point_and_direction, support_stations
+from .deck_profile import additional_support_stations, interpolate_profile, point_and_direction, support_stations
 from .planar import (
     EPSILON,
     buffer_polyline_convex_pieces,
@@ -103,12 +103,14 @@ def add_bridge_supports(
     embed: float,
     is_void: Optional[Callable[[float, float], bool]] = None,
     minimum_size: float = 0.0,
+    is_obstructed: Optional[Callable[[float], bool]] = None,
 ) -> int:
     """Add schematic rectangular piers from the deck underside to the ground.
 
     Piers are deliberately plain: they must be watertight and above the minimum
-    printable cross-section, and nothing more.  A pier is dropped rather than
-    forced whenever the deck is barely above the ground at that station.
+    printable cross-section, and nothing more. Regular piers omit shallow
+    gaps. If this leaves an excessive unsupported run, add a low abutment
+    or another pier where there is ground and no crossing-road obstruction.
 
     Where the river a bridge crosses has been cut out of the terrain there is
     no ground to reach, so *is_void* suppresses the piers that would otherwise
@@ -123,27 +125,42 @@ def add_bridge_supports(
     added = 0
     pier_half_length = max(half_width * 0.35, minimum_size * 0.5, 1.0e-3)
     pier_half_width = max(half_width * 0.55, minimum_size * 0.5, 1.0e-3)
-    for station in support_stations(points, spacing, end_exclusion):
+    built_stations = []
+
+    def add_at(station, supplement=False):
         centre, direction = point_and_direction(points, positions, station)
         if is_void is not None and is_void(*centre):
-            continue
+            return False
         underside = interpolate_profile(positions, deck_heights, station) - thickness
         ground = terrain_height(*centre)
-        if underside - ground < minimum_height:
-            continue
+        gap = underside - ground
+        if gap < (1e-6 if supplement else minimum_height):
+            return False
+        # A shallow gap wants a simple full-width abutment, not a tiny column.
+        width = half_width if supplement and gap < minimum_height else pier_half_width
         top = underside + min(PIER_OVERLAP_MM, thickness * 0.5)
         normal = (-direction[1], direction[0])
         corners = [
             (
                 centre[0]
                 + direction[0] * sx * pier_half_length
-                + normal[0] * sy * pier_half_width,
+                + normal[0] * sy * width,
                 centre[1]
                 + direction[1] * sx * pier_half_length
-                + normal[1] * sy * pier_half_width,
+                + normal[1] * sy * width,
             )
             for sx, sy in ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0))
         ]
-        if builder.add_flat_prism(corners, ground - embed, top):
+        return builder.add_flat_prism(corners, ground - embed, top)
+
+    for station in support_stations(points, spacing, end_exclusion):
+        if add_at(station):
+            added += 1
+            built_stations.append(station)
+    for station in additional_support_stations(
+        points, deck_heights, terrain_height, thickness, spacing,
+        built_stations, pier_half_length, is_void, is_obstructed,
+    ):
+        if add_at(station, supplement=True):
             added += 1
     return added

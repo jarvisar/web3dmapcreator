@@ -454,13 +454,12 @@ approach was never mapped, a footbridge landing a few metres from its path --
 touches down the same way rather than hanging at floor height, and a stub too
 short to climb a layer from there is built as a path on the ground; only an
 end on the selection edge, where the bbox cut the bridge off, keeps its
-height. Every node
-stays at least **Bridge Clearance** (0.4 mm, two layers of daylight) plus the
+height. The general network solver requests **Bridge Clearance**
+(0.4 mm, two layers of daylight) plus the
 deck's thickness above the terrain, plus one road thickness when the deck
 passes over a road, plus a lower deck's top where it crosses one at a real
-angle. The deck never rises or falls faster than **Maximum Deck Grade** (8 %).
-What comes out is the lowest profile that satisfies all of that: a piece too
-short to reach its clearance humps as high as the grade allows, and a network
+angle, subject to the approaches and **Maximum Deck Grade** (8 %).
+A network
 that never rises **Minimum Bridge Lift** (0.2 mm, one layer) above the road
 surface is built as an ordinary road, counted in `bridge_decks_demoted`. Decks
 are as thick as roads (0.6 mm), and piers reach 0.1 mm up into the deck they
@@ -470,6 +469,29 @@ bridge flag at all has that crossing recovered as a deck, recorded as
 the minimum span is mapping slop along a bank and stays a surface road, draped
 to the bank's grade rather than dipping to the water. Railway bridges come
 from `rail_flags`, which the road-only reader used to ignore.
+
+Short, simple bridges use the available approach length to choose their height.
+If the connected span cannot gain the usual road clearance at the configured
+grade, it starts with a straight profile between its bank/approach heights.
+Terrain and actual crossing roads can raise that profile; a parallel road or
+bare ground alone does not add a hump. Long, branched, stacked and boundary-cut
+overpasses retain their existing height policy.
+
+Pier spacing also limits the unsupported run between ground contact and actual
+piers. Short end exclusions or a gap below **Minimum Pier Height** no longer
+leave a long section unsupported: an extra pier, or a full-width low abutment,
+fills an excessive gap where there is a foundation. Added supports avoid road,
+rail and lower-deck openings. Existing piers retain their positions. Where no
+clear foundation is available, the gap remains open; this is not a guarantee
+that every bridge can be printed without slicer supports.
+
+**Surface types do not overlap.** The default order is **paved > sand > rock >
+greens > forest**. In **Ground Surfaces > Surface Priority**, use the up/down
+arrows to reorder the five categories; the top entry wins. The order is saved
+with the scene and applied when you click **Generate Model**. Higher-priority
+footprints are removed through the full thickness of lower-priority slabs,
+preserving their terrain slopes and polygon holes. Ground roads retain their
+existing priority over all land surfaces.
 
 **Land cover stops at the water.** A slab polygon that runs out over cut water
 -- typically coarse satellite forest along a riverbank, or a riverside park

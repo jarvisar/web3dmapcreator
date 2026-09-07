@@ -524,87 +524,52 @@ def create_box_object(
 
 def tree_solid_geometry(
     canopy_radius_mm: float,
-    canopy_height_mm: float,
-    trunk_height_mm: float,
+    height_mm: float,
     sides: int = 6,
+    embed_mm: float = 0.0,
 ) -> Tuple[List[Tuple[float, float, float]], List[Tuple[int, ...]]]:
-    """Vertices and faces of one watertight stylized tree standing at the origin.
+    """A closed, flat-bottomed cone with a short embedded base.
 
-    The form is a short prism trunk under a canopy that tapers to a point,
-    which reads correctly at miniature scale and stays printable.  Every tree
-    in a model is a scaled, turned copy of this one solid.
+    The full base width is retained at ground level. There is no thin trunk
+    or unsupported canopy underside for the slicer to discard.
     """
     sides = max(3, int(sides))
-    trunk_radius = max(canopy_radius_mm * 0.22, 1.0e-3)
-    canopy_base = max(trunk_height_mm, 1.0e-3)
-    apex = canopy_base + max(canopy_height_mm, 1.0e-3)
-
-    vertices: List[Tuple[float, float, float]] = []
-    faces: List[Tuple[int, ...]] = []
-
-    def ring(radius: float, z: float) -> List[int]:
-        indices = []
-        for step in range(sides):
-            angle = 2.0 * math.pi * step / sides
-            indices.append(len(vertices))
-            vertices.append((math.cos(angle) * radius, math.sin(angle) * radius, z))
-        return indices
-
-    trunk_bottom = ring(trunk_radius, 0.0)
-    trunk_top = ring(trunk_radius, canopy_base)
-    canopy_ring = ring(canopy_radius_mm, canopy_base)
-    apex_index = len(vertices)
-    vertices.append((0.0, 0.0, apex))
-
-    faces.append(tuple(reversed(trunk_bottom)))
-    for index in range(sides):
-        following = (index + 1) % sides
-        faces.append(
-            (
-                trunk_bottom[index],
-                trunk_bottom[following],
-                trunk_top[following],
-                trunk_top[index],
-            )
-        )
-    # Annulus closing the trunk top to the wider canopy underside.
-    for index in range(sides):
-        following = (index + 1) % sides
-        faces.append(
-            (
-                trunk_top[index],
-                trunk_top[following],
-                canopy_ring[following],
-                canopy_ring[index],
-            )
-        )
-    for index in range(sides):
-        following = (index + 1) % sides
-        faces.append((canopy_ring[index], canopy_ring[following], apex_index))
+    vertices = [(math.cos(math.tau*i/sides)*canopy_radius_mm,
+                 math.sin(math.tau*i/sides)*canopy_radius_mm,
+                 -max(0.0, embed_mm)) for i in range(sides)]
+    faces = [tuple(reversed(range(sides)))]
+    base = list(range(sides))
+    if embed_mm > 0.0:
+        vertices.extend((x, y, 0.0) for x, y, _z in list(vertices))
+        base = list(range(sides, sides*2))
+        for i in range(sides):
+            j = (i+1) % sides
+            faces.append((i, j, base[j], base[i]))
+    apex = len(vertices)
+    vertices.append((0.0, 0.0, height_mm))
+    for i in range(sides):
+        faces.append((base[i], base[(i+1) % sides], apex))
     return vertices, faces
 
 
 def tree_mesh_datablock(
     name: str,
     canopy_radius_mm: float,
-    canopy_height_mm: float,
-    trunk_height_mm: float,
+    height_mm: float,
     sides: int = 6,
+    embed_mm: float = 0.0,
 ) -> bpy.types.Mesh:
-    """Create one reusable stylized tree mesh for linked duplicates.
-
-    Used when trees are emitted one object each: thousands of them then share
-    this single datablock, and a mesh per tree would dominate both memory and
-    generation time.
-    """
+    """Reuse one cone mesh for all linked tree objects of the same shape."""
+    shape = (canopy_radius_mm, height_mm, sides, embed_mm)
     existing = bpy.data.meshes.get(name)
-    if existing is not None:
+    if existing is not None and tuple(existing.get('tree_shape', ())) == shape:
         return existing
     vertices, faces = tree_solid_geometry(
-        canopy_radius_mm, canopy_height_mm, trunk_height_mm, sides
+        canopy_radius_mm, height_mm, sides, embed_mm,
     )
     mesh = bpy.data.meshes.new(name)
     mesh["jarvizar_generated"] = True
+    mesh['tree_shape'] = shape
     mesh.from_pydata(vertices, [], faces)
     mesh.validate(clean_customdata=False)
     mesh.update(calc_edges=True)

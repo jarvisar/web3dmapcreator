@@ -20,6 +20,7 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from ..blender.mesh_utils import MeshBuilder, projected_polygon_rings
 from ..data.land import (
+    DEFAULT_SURFACE_PRIORITY,
     MAXIMUM_EXTENT_RATIO,
     MINIMUM_WATER_CUT_AREA_M2,
     SURFACE_CATEGORIES,
@@ -30,6 +31,7 @@ from ..data.land import (
     surface_priority,
 )
 from .planar import EPSILON, clean_ring, densify_ring, interior_grid_points
+from .surface_priority import cut_surface_overlaps
 from .terrain_mesh import terrain_solid_geometry
 from .watermask import WaterMask
 
@@ -37,6 +39,8 @@ from .watermask import WaterMask
 @dataclass
 class SurfaceSettings:
     """Vertical placement of ground surfaces, in model millimetres."""
+
+    priority_order: Tuple[str, ...] = DEFAULT_SURFACE_PRIORITY
 
     # Two 0.2 mm layers above the ground: enough to read as a colour region
     # of its own in a multi-material print, still below a 0.6 mm road.
@@ -212,7 +216,7 @@ def generate_land_surfaces(
                 continue
             classified.append((surface_priority(category), category, feature, feature_type))
 
-    # Generate coarse cover first so specific mapped features sit on top of it.
+    # Stable category ordering; actual overlaps are cut from the finished slabs.
     classified.sort(key=lambda item: item[0])
     total = max(1, len(classified))
 
@@ -254,7 +258,7 @@ def generate_land_surfaces(
         else:
             rejected += 1
         if progress_callback is not None and index % 32 == 0:
-            progress_callback((index + 1) / total)
+            progress_callback(.75 * (index + 1) / total)
 
     for category in SURFACE_CATEGORIES:
         builder = builders.get(category)
@@ -266,14 +270,17 @@ def generate_land_surfaces(
             obj["surface_category"] = category
             obj["source"] = "Overture base land / land_use / land_cover"
 
-    if progress_callback is not None:
-        progress_callback(1.0)
+    overlap_counts = cut_surface_overlaps(
+        collection, rise + embed, settings.priority_order,
+        progress_callback=(lambda f: progress_callback(.75 + .25*f)) if progress_callback else None,
+    )
     return {
         "land_surfaces": sum(counts.values()),
         "land_surface_categories": dict(sorted(counts.items())),
         "land_surfaces_rejected": rejected,
         "land_surfaces_regional_skipped": regional,
         "land_surfaces_clipped_to_land": clipped,
+        **overlap_counts,
     }
 
 

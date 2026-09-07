@@ -143,6 +143,67 @@ class SolveHeightsTests(unittest.TestCase):
 
 
 class NetworkTests(unittest.TestCase):
+    def test_short_bridge_does_not_hump_over_bare_ground_or_a_parallel_road(self):
+        deck = line(0, 8)
+        roads = SegmentIndex(2)
+        roads.add_polyline(line(0, 8, y=0.4), 'parallel')
+        solution = solve([deck], roads=roads)
+        self.assertEqual(solution.span_adapted_components, 1)
+        self.assertEqual(solution.road_crossing_components, 0)
+        self.assertTrue(all(abs(h-ROAD) < 1e-9 for h in solution.heights[0]))
+
+    def test_short_bridge_clears_the_crossed_road_at_its_actual_height(self):
+        deck = line(0, 12)
+        roads = SegmentIndex(2)
+        roads.add_polyline(vertical(-5, 5, x=6), 'crossing')
+        terrain = lambda x, y: max(0, 0.6-0.1*min(x, 12-x))
+        solution = solve([deck], terrain=terrain, roads=roads)
+        heights = solution.heights[0]
+        self.assertEqual(solution.span_adapted_components, 1)
+        self.assertEqual(solution.road_crossing_components, 1)
+        self.assertAlmostEqual(heights[6]-DECK, terrain(6, 0)+ROAD+GAP)
+        self.assertAlmostEqual(heights[0], terrain(0, 0)+ROAD)
+        self.assertAlmostEqual(heights[-1], terrain(12, 0)+ROAD)
+        self.assertTrue(all(abs(a-b) <= GRADE+1e-9 for a, b in zip(heights, heights[1:])))
+
+    def test_short_water_bridge_connects_bank_heights_without_an_extra_hump(self):
+        terrain = lambda x, y: 0.0 if x==0 else (0.2 if x==8 else -1.0)
+        solution = solve([line(0, 8)], terrain=terrain)
+        self.assertEqual(solution.demoted, set())
+        for i, height in enumerate(solution.heights[0]):
+            self.assertAlmostEqual(height, ROAD+0.2*i/8)
+
+    def test_a_road_crossing_between_profile_stations_still_gets_clearance(self):
+        roads = SegmentIndex(2)
+        roads.add_polyline(vertical(-5, 5, x=4.5), 'crossing')
+        terrain = lambda x, y: 0.8 if x in (0, 12) else 0.0
+        result = solve([line(0, 12, step=3)], terrain=terrain, roads=roads)
+        self.assertEqual(result.road_crossing_components, 1)
+        self.assertEqual(result.demoted, set())
+        self.assertGreaterEqual((result.heights[0][1]+result.heights[0][2])*0.5-DECK, ROAD+GAP)
+
+    def test_split_short_bridge_uses_whole_component_length_and_one_joint_height(self):
+        terrain = lambda x, y: -0.3 if 2<x<10 else 0.0
+        whole = solve([line(0, 12)], terrain=terrain)
+        split = solve([line(0, 6), line(6, 12)], terrain=terrain)
+        self.assertEqual(split.span_adapted_components, 1)
+        self.assertEqual(split.heights[0][-1], split.heights[1][0])
+        self.assertEqual(whole.heights[0], split.heights[0]+split.heights[1][1:])
+
+    def test_long_branched_and_stacked_components_keep_the_existing_height_policy(self):
+        long = solve([line(0, 40)])
+        branched = solve([line(0, 4), line(4, 8), vertical(0, 4, x=4)])
+        stacked = solve([line(0, 8), vertical(-4, 4, x=4)], levels=[1, 2])
+        for result in (long, branched, stacked):
+            self.assertEqual(result.span_adapted_components, 0)
+        self.assertAlmostEqual(long.heights[0][20], GAP+DECK)
+        self.assertGreater(branched.heights[0][-1], ROAD)
+        self.assertGreater(stacked.stacked_constraints, 0)
+
+    def test_an_interior_road_anchor_keeps_the_existing_network_policy(self):
+        result = solve([line(0, 6), line(6, 12)], blocked=[node_key((6, 0))])
+        self.assertEqual(result.span_adapted_components, 0)
+
     def test_a_deck_cut_off_at_both_edges_gets_gap_plus_thickness(self):
         # A viaduct passing through the selection: both ends on the boundary.
         deck = line(0.0, 20.0)

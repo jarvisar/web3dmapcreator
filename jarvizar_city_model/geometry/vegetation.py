@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import bpy
+from mathutils import Vector
+from mathutils.bvhtree import BVHTree
 
 from ..blender.mesh_utils import (
     MeshBuilder,
@@ -47,12 +49,12 @@ class TreeSettings:
 
     canopy_diameter_m: float = 7.0
     height_m: float = 11.0
-    trunk_fraction: float = 0.28
-    # A literal 11 m tree on a 1:30000 miniature is a fifth of a millimetre and
-    # neither prints nor reads.  Trees are therefore scaled up on purpose, and
-    # the applied exaggeration is recorded on the generated object.
-    minimum_height_mm: float = 0.9
-    minimum_canopy_diameter_mm: float = 0.55
+    # Defaults target the normal 0.4 mm nozzle / 0.2 mm layer profile.
+    # Widths are the narrow dimension across polygon flats. These floors
+    # apply to the finished tree, including its random size variation.
+    minimum_height_mm: float = 2.0
+    minimum_canopy_diameter_mm: float = 1.2
+    embed_mm: float = 0.15
     size_variation: float = 0.28
     scatter_spacing_m: float = 22.0
     scatter_jitter: float = 0.42
@@ -125,19 +127,51 @@ def scatter_points_in_polygon(
     return results
 
 
-def _tree_dimensions(transform, settings: TreeSettings) -> Tuple[float, float, float, float]:
-    """Return canopy radius, canopy height, trunk height, and exaggeration."""
+def _tree_dimensions(transform, settings: TreeSettings) -> Tuple[float, float, float]:
+    """Return cone radius, visible height, and exaggeration."""
     true_height_mm = transform.vertical_meters_to_model_mm(settings.height_m)
     true_diameter_mm = settings.canopy_diameter_m * transform.scale_x_mm_per_m
+    flat_factor = math.cos(math.pi / max(3, settings.sides))
     height_scale = max(1.0, settings.minimum_height_mm / max(true_height_mm, 1.0e-9))
     diameter_scale = max(
-        1.0, settings.minimum_canopy_diameter_mm / max(true_diameter_mm, 1.0e-9)
+        1.0, settings.minimum_canopy_diameter_mm / max(true_diameter_mm * flat_factor, 1.0e-9)
     )
     exaggeration = max(height_scale, diameter_scale)
     height_mm = true_height_mm * exaggeration
     diameter_mm = true_diameter_mm * exaggeration
-    trunk_mm = height_mm * settings.trunk_fraction
-    return diameter_mm * 0.5, height_mm - trunk_mm, trunk_mm, exaggeration
+    return diameter_mm * 0.5, height_mm, exaggeration
+
+
+def _tree_scale(size, radius, height, settings):
+    """Apply variation without shrinking below either finished dimension."""
+    flat_factor = math.cos(math.pi / max(3, settings.sides))
+    minimum = max(settings.minimum_height_mm / height,
+                  settings.minimum_canopy_diameter_mm / (2*radius*flat_factor))
+    return max(minimum, 1.0 + (size-0.5)*2.0*settings.size_variation)
+
+
+def _ground_sampler(heightfield, ground_objects):
+    """Stand on the actual generated slabs/roads, including their cutouts."""
+    surfaces = []
+    for obj in ground_objects:
+        if obj.type != 'MESH' or not obj.data.polygons:
+            continue
+        corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+        bounds = (min(p.x for p in corners), min(p.y for p in corners),
+                  max(p.x for p in corners), max(p.y for p in corners), max(p.z for p in corners))
+        tree = BVHTree.FromPolygons([obj.matrix_world @ v.co for v in obj.data.vertices],
+                                   [tuple(p.vertices) for p in obj.data.polygons])
+        surfaces.append((bounds, tree))
+
+    def height(x, y):
+        z = heightfield.height_mm(x, y)
+        for (x0, y0, x1, y1, top), tree in surfaces:
+            if x0 <= x <= x1 and y0 <= y <= y1 and top >= z:
+                hit = tree.ray_cast(Vector((x, y, top+1)), Vector((0, 0, -1)))[0]
+                if hit is not None:
+                    z = max(z, hit.z)
+        return z
+    return height
 
 
 def generate_trees(
@@ -151,6 +185,7 @@ def generate_trees(
     bounds: Tuple[float, float, float, float] | None = None,
     progress_callback=None,
     merge: bool = False,
+    ground_objects: Iterable = (),
 ) -> Dict[str, Any]:
     """Place mapped trees and scattered forest trees.
 
@@ -158,7 +193,7 @@ def generate_trees(
     its own object, a linked duplicate of one shared mesh.
     """
     settings = settings or TreeSettings()
-    canopy_radius, canopy_height, trunk_height, exaggeration = _tree_dimensions(
+    canopy_radius, tree_height, exaggeration = _tree_dimensions(
         transform, settings
     )
 
@@ -237,19 +272,21 @@ def generate_trees(
         placements = placements[: settings.maximum_trees]
 
     total = max(1, len(placements))
+    ground_height = _ground_sampler(heightfield, ground_objects) if placements else heightfield.height_mm
+    shape_options = dict(sides=settings.sides, embed_mm=settings.embed_mm)
     if merge:
         # Every tree is the one solid scaled, turned about Z, and moved onto
         # the ground: the same transform the linked duplicates carry as
         # object properties, baked into the vertices instead.
         vertices, faces = tree_solid_geometry(
-            canopy_radius, canopy_height, trunk_height, sides=settings.sides
+            canopy_radius, tree_height, **shape_options
         )
         builder = MeshBuilder("TREES")
         for index, (x, y, size) in enumerate(placements):
-            factor = 1.0 + (size - 0.5) * 2.0 * settings.size_variation
+            factor = _tree_scale(size, canopy_radius, tree_height, settings)
             angle = size * math.tau
             cos_a, sin_a = math.cos(angle), math.sin(angle)
-            base = heightfield.height_mm(x, y)
+            base = ground_height(x, y)
             builder.add_raw(
                 [
                     (
@@ -272,9 +309,8 @@ def generate_trees(
         mesh = tree_mesh_datablock(
             "JCM_Tree",
             canopy_radius,
-            canopy_height,
-            trunk_height,
-            sides=settings.sides,
+            tree_height,
+            **shape_options,
         )
         if material is not None and not mesh.materials:
             mesh.materials.append(material)
@@ -282,8 +318,8 @@ def generate_trees(
             obj = bpy.data.objects.new(f"TREE_{index:06d}", mesh)
             collection.objects.link(obj)
             obj["jarvizar_generated"] = True
-            obj.location = (x, y, heightfield.height_mm(x, y))
-            factor = 1.0 + (size - 0.5) * 2.0 * settings.size_variation
+            obj.location = (x, y, ground_height(x, y))
+            factor = _tree_scale(size, canopy_radius, tree_height, settings)
             obj.scale = (factor, factor, factor)
             obj.rotation_euler = (0.0, 0.0, size * math.tau)
             if progress_callback is not None and index % 256 == 0:
@@ -296,6 +332,8 @@ def generate_trees(
         "trees_mapped": min(mapped_count, len(placements)),
         "trees_scattered": max(0, len(placements) - mapped_count),
         "tree_size_exaggeration": round(exaggeration, 3),
+        "tree_minimum_height_mm": settings.minimum_height_mm,
+        "tree_minimum_canopy_width_mm": settings.minimum_canopy_diameter_mm,
         "tree_capped": len(placements) >= settings.maximum_trees,
         "trees_skipped_over_water": skipped_over_water,
     }

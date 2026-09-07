@@ -114,8 +114,10 @@ class SegmentIndex:
             for cy in range(min(y0, y1), max(y0, y1) + 1):
                 self._cells.setdefault((cx, cy), []).append(index)
 
-    def within(self, point: Point, radius: float) -> Iterator[Tuple[float, Any, float]]:
-        """Yield ``(distance, tag, t)`` for every segment within *radius*."""
+    def nearby_segments(
+        self, point: Point, radius: float
+    ) -> Iterator[Tuple[float, Tuple[Point, Point, Any], float]]:
+        """Yield ``(distance, (a, b, tag), t)`` for segments within *radius*."""
         reach = int(math.ceil(radius / self.cell_size))
         cx, cy = self._cell(*point)
         seen: Set[int] = set()
@@ -128,7 +130,12 @@ class SegmentIndex:
                     a, b, tag = self.segments[index]
                     distance, t = point_segment_distance(point, a, b)
                     if distance <= radius:
-                        yield distance, tag, t
+                        yield distance, (a, b, tag), t
+
+    def within(self, point: Point, radius: float) -> Iterator[Tuple[float, Any, float]]:
+        """Yield ``(distance, tag, t)`` for every segment within *radius*."""
+        for distance, (_a, _b, tag), t in self.nearby_segments(point, radius):
+            yield distance, tag, t
 
     def nearest(self, point: Point, radius: float) -> Optional[Tuple[float, Any, float]]:
         best = None
@@ -273,6 +280,7 @@ class DeckSolution:
     # Which connected component each deck belongs to, so a caller that keeps
     # one deck of a component can keep the joints it shares as well.
     deck_components: List[int] = field(default_factory=list)
+    span_adapted_components: int = 0
 
 
 def solve_deck_network(
@@ -410,6 +418,88 @@ def solve_deck_network(
                         continue
                 stacked.append((node, other, other_position, t))
 
+    # An isolated short bridge has only its two approaches to gain height.
+    # Do not give it a hump merely for daylight over bare ground/water, or
+    # because an approach/parallel road is nearby. Keep the existing solve for
+    # branched interchanges, cropped ends and every stacked component.
+    component_nodes: Dict[int, List[int]] = {}
+    for node, component in enumerate(component_of):
+        component_nodes.setdefault(component, []).append(node)
+    stacked_components = {component_of[node] for node, _other, _position, _t in stacked}
+    stacked_components.update(
+        component_of[graph.deck_nodes[other][0]] for _node, other, _position, _t in stacked
+    )
+    adapted = set()
+    for component, nodes in component_nodes.items():
+        ends = [node for node in nodes if len(graph.adjacency[node]) == 1]
+        if (component in stacked_components or len(ends) != 2
+                or any(len(graph.adjacency[node]) > 2 for node in nodes)
+                or any(end not in anchors for end in ends)
+                or sum(node in anchors for node in nodes) != 2):
+            continue
+        length = sum(distance for node in nodes for _other, distance in graph.adjacency[node]) * 0.5
+        # This is the approach length needed to achieve the existing road
+        # clearance at the configured grade, not a city/road-class threshold.
+        if grade <= 0.0 or length * grade >= 2.0 * (clearance + road_thickness):
+            continue
+        distances = lowest_cones(graph, {ends[0]: 0.0}, 1.0)
+        for node in nodes:
+            t = distances[node] / max(length, 1e-12)
+            approach = anchors[ends[0]] * (1.0 - t) + anchors[ends[1]] * t
+            floors[node] = max(approach, terrain_at[node] + deck_thickness)
+        adapted.add(component)
+        crosses_road.discard(component)
+
+    if roads is not None and adapted:
+        for deck, indices in enumerate(graph.deck_nodes):
+            if component_of[indices[0]] not in adapted:
+                continue
+            reach = half_widths[deck] + road_half_width + CROSSING_MARGIN
+            for position, node in enumerate(indices):
+                if node in anchors:
+                    continue
+                heading = direction(
+                    graph.nodes[indices[max(0, position - 1)]],
+                    graph.nodes[indices[min(len(indices) - 1, position + 1)]],
+                )
+                for _distance, (a, b, _tag), t in roads.nearby_segments(graph.nodes[node], reach):
+                    across = direction(a, b)
+                    if heading is None or across is None:
+                        continue
+                    if abs(heading[0] * across[1] - heading[1] * across[0]) < MINIMUM_CROSSING_SINE:
+                        continue
+                    road_point = (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+                    needed = anchor_height(*road_point) + road_thickness + clearance + deck_thickness
+                    floors[node] = max(floors[node], needed)
+                    crosses_road.add(component_of[node])
+
+            # A narrow road can cross between the existing profile stations
+            # (normally up to 3 mm apart) without being near either node.
+            # Keep clearance across that cap interval instead of flattening
+            # a real crossing merely because its centerline was sampled coarsely.
+            for first, second in zip(indices, indices[1:]):
+                p, q = graph.nodes[first], graph.nodes[second]
+                span = math.dist(p, q)
+                if span <= 2.0 * reach:
+                    continue
+                dx, dy = q[0] - p[0], q[1] - p[1]
+                midpoint = ((p[0]+q[0])*0.5, (p[1]+q[1])*0.5)
+                for _distance, (a, b, _tag), _t in roads.nearby_segments(midpoint, span*0.5):
+                    ex, ey = b[0]-a[0], b[1]-a[1]
+                    cross = dx*ey - dy*ex
+                    if abs(cross) <= span * math.hypot(ex, ey) * MINIMUM_CROSSING_SINE:
+                        continue
+                    u = ((a[0]-p[0])*ey - (a[1]-p[1])*ex) / cross
+                    v = ((a[0]-p[0])*dy - (a[1]-p[1])*dx) / cross
+                    if not (reach < u*span < span-reach and 0.0 <= v <= 1.0):
+                        continue
+                    road_point = (p[0]+u*dx, p[1]+u*dy)
+                    needed = anchor_height(*road_point) + road_thickness + clearance + deck_thickness
+                    for node in (first, second):
+                        if node not in anchors:
+                            floors[node] = max(floors[node], needed)
+                    crosses_road.add(component_of[first])
+
     heights = solve_heights(graph, floors, anchors, grade)
     for _round in range(rounds):
         if not stacked:
@@ -452,4 +542,5 @@ def solve_deck_network(
         touchdowns=touchdowns,
         open_ends=boundary_ends,
         deck_components=[component_of[indices[0]] for indices in graph.deck_nodes],
+        span_adapted_components=len(adapted),
     )

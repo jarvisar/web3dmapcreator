@@ -126,7 +126,26 @@ run level at the bank road's height and the causeway below them stays at the
 water level. A `level` tag decides only *which* of two crossing decks is on
 top; it no longer scales any height.
 
-Remaining simplifications:
+### Short simple spans (0.9.9)
+
+The whole-network solve and shared joints remain. A component with just two
+anchored ends, no branches or interior road anchors, and no stacked crossings
+uses a lower starting profile when its full length is insufficient to gain
+the normal road clearance at the configured grade:
+`length * grade < 2 * (clearance + road_thickness)`.
+This uses the connected span, so splitting a source way does not make its
+pieces independently short. Cropped ends keep the existing policy.
+
+For these short components the floor begins at the line between approach
+heights, or terrain plus deck thickness where that is higher. A crossing
+surface road adds clearance locally using its draped road height. Parallel
+roads do not count. A crossing between coarse profile samples is checked
+against the intervening segment, so it cannot disappear just because neither
+sample is close to the road. The original anchor and grade constraints still
+apply; unavailable approach length can still limit achievable clearance.
+Water crossings retain their existing protection against demotion.
+
+Remaining simplifications for the general overpass policy:
 
 - what a deck crosses is inferred from proximity to surface road centerlines
   and to lower decks; it does not read `connector` topology, so a road that
@@ -167,17 +186,24 @@ is not consulted, so no support is ever recovered from source data.
 
 The implemented placement is the derived fallback:
 
-1. omit supports below the configurable short-span threshold;
-2. reserve exclusion distances from both span ends/shore intersections;
-3. distribute candidates approximately at the requested real-world spacing;
-4. **not implemented** — shift/reject candidates near connector-based
-   intersections;
-5. **not implemented** — reject candidates whose footprint overlaps a building;
-6. construct a simple rectangular pier, aligned with the deck, from the deck
-   underside down into the shared terrain height field, skipping any station
-   where the deck is barely above the ground, and skipping any station with no
-   ground beneath it at all -- which, now that decks over the river stand on a
-   causeway, means only the bank cells the strip does not reach.
+1. Keep the established candidates, end exclusions and minimum pier height.
+2. Measure positive gaps between the deck underside and its foundation along
+   the profile. Subtract ground contacts and footprints of piers actually built.
+3. Where a remaining unsupported run exceeds the requested spacing, add enough
+   supports to break it up. A shallow gap gets a plain low abutment as wide as
+   the deck; a higher gap gets the usual rectangular pier. Short exclusions
+   and minimum column height are not treated as evidence of ground contact.
+4. Added supports require ground and avoid surface roads/rail and lower decks,
+   using the support footprint radius and printed crossing widths. They do
+   not move existing piers. Without an available foundation the run remains
+   open; neither floating piers nor walls across a road are substituted.
+
+Over cut water the foundation height is the printed causeway top, including
+its existing 0.05 mm offset below the terrain field. This prevents a level deck
+from being treated as grounded when there is still a gap to that causeway.
+Building-footprint rejection and connector-based intersection rules remain
+unimplemented. Placement and ground contacts are sampled along the centerline;
+the spacing is a model setting, not a guarantee for every printer or material.
 
 A pier's top is pushed 0.1 mm up into the deck it carries. The deck's underside
 between two ring vertices is a straight line while the pier reads the
@@ -189,7 +215,8 @@ Supports are intentionally schematic. They must be watertight, above the
 minimum printable cross-section -- both plan dimensions are held at or above
 **Minimum Pier Size**, 0.6 mm by default, because a footbridge deck at the
 minimum ribbon width would otherwise get piers a fraction of a nozzle across
--- and live only in `BRIDGE_SUPPORTS`. No railings, lamps, trusses, or
+-- except low abutments which follow the printable deck width. They live only
+in `BRIDGE_SUPPORTS`. No railings, lamps, trusses, or
 photorealistic details are planned. The sample bbox's `base/infrastructure`
 does carry `bridge:structure` tags (suspension, arch, truss) on its named river
 bridges; using them for towers and arches is a possible next step, not a
@@ -207,6 +234,7 @@ audit trail currently lives on the batched object (`feature_type`,
 `road_class`, `bridge_evidence`, `source`) and in the root collection's
 generation counts (`bridge_components`, `bridge_anchored_ends`,
 `bridge_road_crossing_components`, `bridge_stacked_crossings`,
+`bridge_span_adapted_components`,
 `bridge_decks_demoted`, `bridge_demoted_by_class`), rather than per individual
 deck. Per-deck provenance — `overture_id`, source OSM ID, resolved width
 source, level, support-placement source, and endpoint elevations — is not
