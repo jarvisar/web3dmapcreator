@@ -248,7 +248,7 @@ Feature-specific vertical behavior:
 | Land cover, roads | Draped: the outline *and the interior* follow the terrain, 0.15 mm below it and a fixed height above it (0.4 mm for land cover, 0.6 mm for roads), so the slab fuses with the ground in a slicer without burying its colour in the hill |
 | Water | Level per feature, at the median of the terrain sampled *inside* it. Bodies above the cut threshold are removed from the terrain entirely; the optional slab then fills the opening from the model's underside up to that level |
 | Buildings | Heights are measured from the **lowest** terrain point under the footprint, so no corner floats on a slope, and every part of one building shares that building's base, so parts of equal height end level with each other. The underside itself follows the terrain 0.15 mm below it, so the walls are as tall as the slope makes them but nothing is hidden deeper in the hill |
-| Roofs | Taken out of a whole building's stated height; added on top of a part's height, clamped to the parent's total, because that is how the source publishes a tower's crown |
+| Roofs | Explicit total heights include the roof for buildings and parts; floor-derived walls receive the roof once, with a narrow parent-corroborated legacy crown exception |
 | Bridges | Every deck vertex is a node of one graph. A deck's top is pinned to the road surface where a surface road ends, kept at least a printed gap plus its own thickness above the terrain (plus a road thickness where it passes over a road, plus a lower deck's top where it crosses one), and never steeper than the maximum grade |
 | Ground supports | From the terrain's own underside up to the ground surface, over exactly the footprint of the bridge corridor, building, or pier that needs it |
 | Trees | Placed on the terrain surface, scaled up for printability; never planted in cut-out water |
@@ -281,12 +281,45 @@ These are honest descriptions of what the generator does, not aspirations.
 
 1. Overture `height`;
 2. otherwise `num_floors * Floor Height`;
-3. otherwise `Default Building Height`.
+3. otherwise a class-specific default, then `Default Building Height`.
 
 Bottom elevation uses `min_height`, then `min_floor * Floor Height`, then zero.
-`height` is an extrusion extent, so the top is `terrain + min_height + height`.
-`roof_height` is retained as metadata but never added. Missing heights are
-never randomized.
+The top is `terrain + height`; `min_height` is the underside, not an extra
+height. Explicit totals include roofs, for buildings and parts. Inverted
+intervals are reported and skipped instead of inventing a taller top.
+Missing heights are never randomized.
+
+**Optional USGS LiDAR buildings (0.14.0).** Install `requirements-lidar.txt`
+in the existing external downloader environment, cache buildings normally,
+then use **Buildings > USGS LiDAR Buildings > Prepare LiDAR Buildings** and
+**Generate Model**. This measures heights, printable roof tiers, and supported
+shed/gable/hip roof planes inside the existing footprints. Keep **Generate
+Roof Shapes** enabled for measured slopes. **Prefer LiDAR on Conflicts** is on
+by default: use a usable measured envelope even when source heights, floor
+counts, construction dates, other surveys or mapped roof detail disagree.
+Turn it off to restore conservative source-height and capture-age checks.
+OSM/Overture still supplies footprints, identity, tags and fallback geometry;
+measurements from different surveys are never combined. Invalid, sparse or
+unbuildable measurements still fall back. Incomplete source roof assemblies
+can receive a measured main mass and corrected part heights while keeping
+their mapped shapes. Neighboring roof edges do not determine a part's height.
+Default detail settings are **0.1 mm width / 0.05 mm step**; width can go down
+to **0.01 mm**. This controls filtering, not the resolution of the survey.
+Major shafts, setbacks and separate crowns retain their supporting geometry.
+Minimum Building Height also raises low measured podiums, carrying tiers up
+together while preserving their steps.
+Preparation runs in the background;
+Esc cancels and the next preparation resumes completed work. Small building
+batches replace the old whole-map point, area, download and time caps. Larger
+selections require more time and disk space. Preparation and generation counts
+appear in Buildings. Overlapping surveys are compared using supported roof detail,
+coverage and capture age.
+After upgrading from 0.13.0 or earlier, or changing the conflict preference or
+detail settings, **Prepare LiDAR Buildings again**; downloaded tiles are reused.
+Existing scenes retain explicitly saved detail values; set width/step to
+0.1/0.05 mm to use the new defaults.
+See [LiDAR setup, height diagnosis,
+validation and limits](docs/LIDAR_BUILDINGS.md).
 
 **Buildings are boosted 10% on Z by default.** **Building Height Scale**
 (default 1.1) multiplies every mass's height above its own terrain base, so
@@ -365,12 +398,11 @@ closed solid rising to an apex; a skillion is a prism with a sloping top along
 (checked against the eight facets of a tower crown, whose directions all point
 away from its centre). A roof shorter than 0.15 mm at print scale is left flat
 and counted as `roofs_below_minimum`. Where the roof sits relative to
-`height` is the one place this project departs from the OpenStreetMap
-definition: a whole building's `height` includes its roof, but the parts in
-the data do not -- the Great American Tower's crown is published as
-`min_height` 140, `height` 162.7, `roof_height` 40 under a parent of 202.7 m,
-which only adds up with the dome on top -- so a part's roof is added above its
-height and clamped to the parent's stated total. A shaped roof with no
+`height` follows the same total-height rule for buildings and parts. The
+legacy additive reading survives only when the roof cannot fit inside its
+part interval and the parent total corroborates the sum, as with Great
+American Tower's 162.7 + 40 = 202.7 m crown. This fixes double-counted part
+roofs, including a Chicago part inflated from 177.4 to 250.4 m. A shaped roof with no
 `roof_height` gets an ordinary pitch recorded as `roof_height_source =
 default`.
 

@@ -175,6 +175,8 @@ def generate_buildings(
     height_scale: float = 1.0,
     minimum_height_mm: float = 0.0,
     minimum_height_footprint_mm: float = 0.0,
+    lidar_profiles=None,
+    prefer_lidar=False,
 ) -> Dict[str, Any]:
     """Generate selected parent and part meshes, returning honest counts.
 
@@ -227,8 +229,9 @@ def generate_buildings(
     what turns it into a needle.  A shaped roof rides up with its walls
     instead of being scaled, so the roof keeps its own pitch.
     """
-    selection = select_building_geometry(building_features, part_features)
     building_features = list(building_features)
+    part_features = list(part_features)
+    selection = select_building_geometry(building_features, part_features)
     parent_lookup = {feature_id(feature): feature for feature in building_features}
     parts_by_parent: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for part in selection.parts:
@@ -276,6 +279,7 @@ def generate_buildings(
         "suppressed_parents": len(selection.suppressed_parent_ids),
         "duplicate_outlines_suppressed": len(selection.duplicate_ids),
         "buildings_rejected_geometry": 0,
+        "buildings_invalid_vertical_interval": 0,
         "rejected_too_narrow": 0,
         "rejected_too_slender": 0,
         "buildings_grounded_over_water": 0,
@@ -308,11 +312,112 @@ def generate_buildings(
     horizontal_scale = max(transform.scale_x_mm_per_m, 1.0e-12)
     total = max(1, len(jobs))
     merged = MeshBuilder("BUILDINGS") if merge else None
+    enhanced_ids = set()
+    infilled_parent_ids = set()
+    measured_parent_ids = set()
+    part_height_updates = {}
+    counts["lidar_buildings"] = 0
+    counts["lidar_tier_solids"] = 0
+    counts["lidar_geometry_fallbacks"] = 0
+    counts['lidar_roof_plane_buildings'] = 0
+    counts['lidar_roof_plane_solids'] = 0
+    counts['lidar_part_boundaries_used'] = 0
+    counts['lidar_source_detail_preserved'] = 0
+    counts['lidar_part_heights'] = 0
+    counts['lidar_infill_buildings'] = 0
+    counts['lidar_estimated_heights_corrected'] = 0
+    if lidar_profiles:
+        from .lidar_buildings import measured_builder, prefer_source_detail
+        for identifier, feature in parent_lookup.items():
+            record = lidar_profiles.get(identifier)
+            if not record or identifier in selection.duplicate_ids:
+                continue
+            supplement = record.get('method') == 'source_parts'
+            if supplement and identifier not in selection.suppressed_parent_ids and not prefer_lidar:
+                continue
+            part_updates = {feature_id(part): record.get('part_heights', {})[feature_id(part)]
+                            for part in parts_by_parent.get(identifier, ())
+                            if feature_id(part) in record.get('part_heights', {})}
+            if supplement and not record.get('infill_geometry'):
+                part_height_updates.update(part_updates)
+                continue
+            source_assembly = list(parts_by_parent.get(identifier, ()))
+            if identifier not in selection.suppressed_parent_ids:
+                source_assembly.append(feature)
+            if not supplement and not prefer_lidar and prefer_source_detail(source_assembly, feature, record,
+                    transform, vertical, floor_height_m, default_height_m, minimum_width_mm,
+                    maximum_slenderness, slenderness_exempt_width_mm, generate_roofs, minimum_roof_mm):
+                counts['lidar_source_detail_preserved'] += 1
+                continue
+            ground = shared_ground(identifier)
+            if ground is None:
+                continue
+            try:
+                built = measured_builder(feature, record, transform, heightfield, ground, vertical,
+                    embed, spacing, minimum_width_mm, maximum_slenderness,
+                    slenderness_exempt_width_mm, minimum_height, minimum_footprint)
+            except (ValueError, TypeError, KeyError, IndexError):
+                built = None
+            if built is None:
+                counts["lidar_geometry_fallbacks"] += 1
+                continue
+            measured, metadata = built
+            if merged is not None:
+                merged.add_raw(measured.vertices, measured.faces)
+            else:
+                measured.name = "BLDG_LIDAR_" + identifier.replace("-", "")[:12]
+                obj = measured.build(building_collection, building_material)
+                obj["overture_id"] = identifier
+                obj["feature_type"] = "building"
+                obj["height_source"] = "lidar:" + record.get("method", "measured")
+                obj["height_m"] = metadata['height_m']
+                obj["roof_geometry"] = ('lidar_infill' if supplement else 'lidar_planes' if record.get('roof_surfaces') else
+                                        'lidar_tiers' if record['tiers'] else 'lidar_height')
+                obj["lidar_source"] = record.get("source", "")
+                obj["lidar_coverage"] = record.get("coverage", 0.0)
+                obj["terrain_base_source"] = "parent_footprint"
+                obj["underside"] = "draped_to_terrain"
+                for key, value in metadata.items():
+                    obj[key] = value
+            if ground_support is not None:
+                for rings in projected_polygon_rings(record.get('infill_geometry') or feature.get("geometry") or {}, transform):
+                    if _needs_ground(rings, heightfield) and ground_support.footprint(rings, "building"):
+                        counts["buildings_grounded_over_water"] += 1
+            if not supplement:
+                enhanced_ids.add(identifier)
+            else:
+                counts['lidar_infill_buildings'] += 1
+                infilled_parent_ids.add(identifier)
+                # Commit the source-part corrections only after the missing
+                # main mass has passed every geometry check.
+                part_height_updates.update(part_updates)
+            counts["buildings"] += 1
+            counts["lidar_buildings"] += 1
+            measured_parent_ids.add(identifier)
+            counts["lidar_tier_solids"] += metadata["lidar_tiers"]
+            counts['lidar_roof_plane_buildings'] += bool(metadata['lidar_roof_planes'])
+            counts['lidar_roof_plane_solids'] += metadata['lidar_roof_planes']
+            counts['lidar_part_boundaries_used'] += record.get('part_boundaries_used', 0)
+            counts['lidar_estimated_heights_corrected'] += record.get('source_height_decision', record.get('height_decision')) == 'corrected_estimated_height'
+            if metadata["minimum_height_lift_mm"] > 0:
+                counts["buildings_raised_to_minimum"] += 1
     for index, (feature, feature_type, collection, material, prefix) in enumerate(jobs):
+        if feature_type == 'building' and feature_id(feature) in infilled_parent_ids:
+            continue
+        # Preserve identity, footprint, underside and roof shape. Copies leave
+        # source caches untouched; a failed infill keeps the entire old assembly.
+        if feature_type == 'building_part' and feature_id(feature) in part_height_updates:
+            feature = {**feature, 'properties': {**feature_properties(feature),
+                       'height': part_height_updates[feature_id(feature)]}}
         properties = feature_properties(feature)
+        if feature_id(feature) in enhanced_ids or str(properties.get("building_id") or "") in enhanced_ids:
+            continue
         profile = resolve_vertical_profile(
             properties, floor_height_m=floor_height_m, default_height_m=default_height_m
         )
+        if profile.thickness_m <= 0.0:
+            counts["buildings_invalid_vertical_interval"] += 1
+            continue
         source_id = feature_id(feature)
         short_id = source_id.replace("-", "")[:12] or f"{index:08d}"
         builder = merged if merged is not None else MeshBuilder(f"{prefix}_{short_id}")
@@ -477,6 +582,8 @@ def generate_buildings(
             if merged is None:
                 obj = builder.build(collection, material)
                 _attach_metadata(obj, feature, feature_type, profile, roof, roof_geometry)
+                if source_id in part_height_updates:
+                    obj['height_source'] = 'lidar:source_part'
                 obj["terrain_base_mm"] = float(terrain_mm)
                 obj["terrain_base_source"] = base_source
                 obj["terrain_top_mm"] = float(terrain_top_mm)
@@ -488,6 +595,11 @@ def generate_buildings(
                 counts["buildings"] += 1
             else:
                 counts["building_parts"] += 1
+                if source_id in part_height_updates:
+                    counts['lidar_part_heights'] += 1
+                    if parent_id not in measured_parent_ids:
+                        counts['lidar_buildings'] += 1
+                        measured_parent_ids.add(parent_id)
         if progress_callback is not None and index % 64 == 0:
             progress_callback((index + 1) / total)
     if merged is not None:
@@ -499,7 +611,7 @@ def generate_buildings(
         obj = merged.build(building_collection, materials=slots or None)
         if obj is not None:
             obj["feature_type"] = "buildings"
-            obj["source"] = "Overture buildings/building and building_part"
+            obj["source"] = "Overture buildings/building and building_part; optional USGS LiDAR measurements"
             obj["buildings"] = counts["buildings"]
             obj["building_parts"] = counts["building_parts"]
     if progress_callback is not None:

@@ -28,6 +28,10 @@ He cuts the model manually to fit the plate, so **do not add build-plate fitting
   0.45 mm minimum feature width his slicer resolves. That is not a coincidence —
   the whole scale is chosen for it.
 - Roads are **0.6 mm tall** = 3 layers at 0.2 mm.
+- For building/LiDAR detail, Adam's current guidelines are **0.1 mm wide /
+  0.05 mm tall**, preserving useful silhouettes and removing noise. These are
+  practical guidelines, not universal printability thresholds. The LiDAR width
+  control permits 0.01 mm; survey sampling still limits actual resolution.
 - Terrain base is **1.3 mm** below the lowest surviving land.
 - **Export STL with "Scene Unit" UNCHECKED, import into Bambu at 100%.**
   Scene Unit on exports metres (0.1516) instead of mm (151.6).
@@ -54,7 +58,7 @@ Shell is Git Bash **and** PowerShell. `$APPDATA` works in Bash.
 ### Commands
 
 ```bash
-# unit tests (294, all pure, no bpy) -- note the -t tests
+# unit tests (413, all pure, no bpy) -- note the -t tests
 python -m unittest discover -s tests -p "test_*.py" -t tests
 
 # synthetic full-pipeline test inside Blender (writes its own fixtures)
@@ -105,7 +109,140 @@ before force-closing** (he has said yes once; that was not standing permission).
 
 ## Current state
 
-- Repo and installed Blender 3.6 add-on are at **0.9.12**;
+- Repository/release version is **0.14.0**, LiDAR algorithm **6**. At the start
+  of this completion pass (2026-09-09), the user-installed **0.13.0** Python
+  files matched the working tree exactly. **0.14.0 installed 2026-09-09** at
+  the user's request with Blender closed. All 51 archive files, installed
+  module/version, preference defaults, 0.01 mm width limit and dependency
+  probes verified; add-on enabled and downloader preferences saved. Backup:
+  `dist/install-backup-0140-20260909-071947/` (add-on and user preferences).
+  User map/LiDAR caches remain unchanged.
+  **Prepare LiDAR Buildings again after upgrading**, reusing downloaded tiles.
+  Cache signatures include the algorithm, footprint files, scale, detail
+  settings, roof-plane setting and the new conflict preference.
+
+  **Prefer LiDAR on Conflicts is enabled by default**, as Adam explicitly
+  requested on 2026-09-09. Use a usable measured envelope despite source
+  heights/floors/construction dates, richer mapped roof detail or competing
+  survey observations. Keep the original source-height decision and ignored
+  survey conflicts in the audit; never blend surveys. Turn the toggle off to
+  restore the prior conservative conflict policy (including stale tall scans).
+  Data/geometry failures still fall back: missing ground, insufficient roof
+  coverage, mixed epochs within one candidate, footprint mismatch, positive
+  absence observations, unsupported major sections or failed closed meshes.
+  OSM/Overture remains the footprint/identity/tag source and fallback.
+
+  LiDAR defaults are **0.1 mm width / 0.05 mm step**, width minimum **0.01 mm**.
+  Existing scenes retain explicitly saved settings. A 1.5 m roof-cell floor
+  and multiple-return support checks limit sampling resolution; the width
+  control filters detail, it does not create finer measurements.
+
+  THE MART's 0.13.0 regression was a high edge return from its main roof on a
+  low glass part, causing a floor-count conflict that rejected the infill.
+  Source-part scalar heights now use stable aggregation and interior checks;
+  narrow consensus bands keep different shallow roofs from winning the main
+  base vote together. The **76.4 m main mass** is restored, with rooftop shapes
+  retained. Failed part fits keep their original parts. Preferred LiDAR also
+  updates the central crown when its usable scan disagrees with the source.
+
+  413 pure tests, Blender smoke, focused geometry/preference, six minimum-height
+  and modal/cancel regressions pass. The four Chicago targets build closed,
+  consistently wound positive-volume meshes with no geometry fallback.
+  Full Chicago preparation accepts **518/1542** buildings, **430 tiered**,
+  **9 plane roofs**, **3 infills**, **11 part heights**, **31 corrected derived
+  heights**. No network requests were needed. Evidence, snapshots and comparison
+  renders are in `scratchpad/lidar-v6/`; design in `docs/LIDAR_BUILDINGS.md`.
+  Full generation uses **487 LiDAR buildings / 5,353 tier solids / 9 plane
+  roofs**, with 3 infills and 11 part corrections. Thirty measured envelopes
+  fail mesh construction and retain source geometry. All **34 model meshes /
+  2,056,294 faces** pass manifold and winding checks; the 3MF export succeeds.
+  With LiDAR off every mesh fingerprint matches installed 0.13.0; enabled,
+  only BUILDINGS and TERRAIN_SUPPORTS differ. No physical print was performed.
+- User-installed **0.13.0** improved massing and minimum height, following the
+  0.12.0 source-confidence/infill changes. Diagnosed against actual cached data:
+  311 South Wacker's main tower lost about 40% of its area because only accepted
+  flat roof patches supplied the geometry beneath them. Supported higher
+  returns now contribute to that mass, small crowns use a physical support
+  floor instead of 1.5% of the whole building, and up to 24 levels replace the
+  old six-level cap. Discarding >20% of a section rejects the whole envelope.
+  Aon lacks reliable LiDAR ground; its 340 m parent was suppressed by one
+  346 m roof part covering 29.9%. Source selection now retains a credible parent
+  under incomplete higher roof parts, without swallowing lower setbacks.
+  Minimum Building Height uses the low measured base terrace instead of a tall
+  tower above it; tiers move together, roof pitch remains, zero disables lift,
+  and artificial lift does not trigger slenderness rejection. This applies the
+  same footprint gate and highest shared terrain as source buildings.
+  Prior measurements/evidence are in `scratchpad/lidar-v4/` and `lidar-v5/`.
+- Previously installed **0.11.2** after a
+  focused LiDAR reliability review. Installed 2026-09-08 after the user closed
+  Blender; all 50 archive files, installed module/version, dependency probes and
+  preferences verified. Backup: `dist/install-backup-0112-20260908-142826/`.
+  Five reproduced failure cases fixed: malformed checkpoints,
+  malformed survey metadata, cancellation timeout, empty upper-tier polygons,
+  and nonfinite roof bases. Shared standard-library record validation protects
+  both preparation/checkpoints and Blender cache loading. LAS/LAZ decode errors
+  are recoverable source failures. Failed cancellation retains worker ownership
+  until exit, preventing concurrent writes. No geometry/measurement algorithm
+  changes; algorithm 3 caches remain compatible.
+  381 unit tests, Blender smoke, focused geometry and lifecycle tests pass.
+  All 57 real Manhattan checkpoints resume with exactly the same 677 records,
+  survey choices and rejected buildings, zero network requests. Evidence and
+  installation/verification scripts: `scratchpad/lidar-review/`. Existing user
+  map and LiDAR caches were preserved; no preparation is required for this patch.
+- Previously installed **0.11.1**, installed 2026-09-08 with Blender
+  closed. All 49 archive files, installed module/version, dependency probes,
+  preferences and the installed Prepare operator were verified. Rollback:
+  `dist/install-backup-0111-20260908-102730/`.
+  Algorithm 3 compares all overlapping EPT projects using supported roof
+  coverage/detail and capture age; no first-result or three-project cutoff.
+  GPS years may be declared or explicitly inferred from known-mirror EPT;
+  project publication and OSM edit dates are not acquisition/construction dates.
+  Reject mixed capture epochs, partial/absent roof coverage, outside-footprint
+  roof extensions (excluding mapped neighbors), symmetric source height
+  conflicts, and ambiguous differing survey heights/tier layouts. Keep the
+  whole source assembly on conflict; never blend surveys or resurrect an
+  older LiDAR building against newer contradictory observations. New buildings
+  absent from the footprint source are not generated from LiDAR alone.
+  Updated Manhattan cache: 677/1708 accepted, 109 tiered, 4 plane buildings;
+  2 surveys compared, 278 compatibility conflicts kept source geometry.
+  Generation uses 615 measured buildings, 168 tier solids, 8 plane solids;
+  preserves 56 richer source assemblies and has 6 existing geometry fallbacks.
+  376 unit tests, focused Blender geometry/lifecycle, full map and 3MF pass.
+  LiDAR off: all 36 mesh fingerprints unchanged from 0.11.0. On: only BUILDINGS
+  and TERRAIN_SUPPORTS change; 36 closed consistently wound meshes, 1,906,376
+  faces. Evidence in `scratchpad/lidar-v3/`, design in `docs/LIDAR_BUILDINGS.md`.
+  Other selections need Prepare again; cached LAZ files are reused.
+- Previously installed **0.11.0** (installed 2026-09-08 with Blender
+  closed). All 48 installed archive files, version/module path, downloader
+  dependencies and the refreshed Manhattan measurement cache were verified.
+  Preferences saved. Rollback addon/preferences/LiDAR cache are in
+  `dist/install-backup-0110-20260908-093235/`.
+  0.11.0 implements resumable 400 m LiDAR groups, background preparation
+  with Esc cancellation, measured shed/gable/hip planes, matching part edges,
+  and persistent preparation/generation counts. Whole-map area/point/byte/time
+  caps are removed; per-group guards subdivide work. No new dependencies.
+  The user's Manhattan bbox `-74.01953,40.69919,-73.98726,40.71415`
+  (`bbox_91680650326b`) previously yielded just 5 measurements after the NYC
+  survey hit the point cap. Now 819 measurements, 122 tiered, 4 sloped roofs;
+  full generation uses 747 buildings / 201 tier solids / 8 plane solids.
+  66 richer mapped assemblies/crowns are kept, 6 geometry fallbacks. Never
+  leave only a podium when an upper measured tier fails. Strong conflicts
+  with source heights reject uncertain measurements, not clamp heights.
+  362 unit tests, Blender smoke, plane geometry and modal lifecycle pass.
+  All 36 full Manhattan meshes match 0.10.0 exactly with LiDAR off. Enabled:
+  36 closed, consistently wound meshes / 1,908,023 faces; 3MF export passed.
+  Only buildings and their foundations change. See `docs/LIDAR_BUILDINGS.md`.
+- Previously installed **0.10.0**, with the part-roof
+  height correction and opt-in USGS LiDAR heights/tiers. Installed on
+  2026-09-07 with Blender closed; all 46 archive files matched the installed
+  copy, its module path/version and LiDAR settings were verified, Overture
+  and LiDAR dependency probes passed, and downloader preferences were saved.
+  Rollback add-on and preferences: `dist/install-backup-0100-20260907-220129/`.
+  Read `docs/LIDAR_BUILDINGS.md` for the pipeline trace,
+  measured Chicago bug, acquisition contract, validation and current limits.
+  LiDAR uses only the external Python for laspy/lazrs/pyproj/Shapely; Blender
+  consumes small cached measurements through its existing prism builder.
+- Previous installed Blender 3.6 add-on is **0.9.12**;
   `dist/jarvizar_city_model-0.9.12-{blender36,extension}.zip` built. Installed
   with Blender closed, all 41 files hash-checked; installed cone geometry,
   tree UI defaults and palette checks passed. Preferences saved; prior add-on
@@ -408,14 +545,15 @@ Tower's shaft (slenderness 21.9) and Great American Tower's wings (20) — the
 buildings Adam noticed were "missing details". A mass a line wide prints at
 any height.
 
-**A part's roof sits ON TOP of its `height`; a building's roof is INSIDE its
-`height`.** Evidence: GAT crown `min_height` 140 / `height` 162.7 /
-`roof_height` 40 under parent 202.7 (= 162.7 + 40 exactly); PNC pyramid
-146 + 24 = 170 vs real 175; 11 of 317 parts are impossible under the "inside"
-reading; parents match `max(height + roof_height)` 3× vs `max(height)` 1×. A
-whole building's `height` is the OSM total. Parts are clamped to the parent's
-stated height. `resolve_roof` in `geometry/roofs.py` records the source
-(`roof_height`, `default`, `+clamped_to_parent`) on every object.
+**Explicit heights include roofs for parts too (corrected in 0.10.0).** The
+blanket additive rule inflated Chicago part `w284816229@2` from 177.4 to
+250.4 m by adding its 73 m roof. Its 177 m parent bypassed the old clamp.
+The GAT crown retains a narrow legacy exception: a roof that cannot fit
+inside the part interval, with an additive top corroborated by the explicit
+parent total within 0.5 m (162.7 + 40 = 202.7). No general height cap.
+Floor-derived walls receive the roof once. Invalid/inverted height intervals
+are skipped and reported rather than raised above a suspect `min_height`.
+The intentional 1.1 scale and 0.8 mm minimum-height defaults remain.
 
 **All parts of one building share one terrain base** (min over the parent's
 footprint and every sibling part). 82 of 157 multi-part buildings had parts
@@ -801,7 +939,10 @@ deck (`scratchpad/probe_bridges2.py`).
 - Report honestly: say what was skipped and why. Counts go into
   `generation_counts_json` on the CITY_MODEL collection.
 - Don't fabricate data to make output look better. Class defaults for *missing*
-  values are fine; overriding a recorded height is not.
+  values are fine. Adam explicitly prefers measured LiDAR over conflicting
+  recorded heights with **Prefer LiDAR on Conflicts** enabled (default since
+  0.14.0); disable it for conservative source confidence checks. No arbitrary
+  height clamps, invented footprints or building-specific exceptions.
 
 ---
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import bpy
@@ -28,6 +29,7 @@ from .data.cache import (
     WATER_TYPES,
 )
 from .data.dem import DEMTerrain, ElevationGrid, ElevationGridError
+from .data.lidar import request_signature, load_measurements, prepare_lidar, LidarPreparation, measurement_summary
 from .data.geojson import load_feature_collection, polygon_features
 from .config import preferred_python_path
 from .data.overture import (
@@ -297,6 +299,127 @@ class JARVIZAR_OT_download_cache(Operator):
             return {"CANCELLED"}
         finally:
             context.window_manager.progress_end()
+
+
+def _lidar_signature(settings, bundle, transform=None):
+    if transform is None:
+        if settings.scale_mode == "FIXED":
+            transform = create_fixed_scale_transform(*bundle.bounds.as_tuple(), mm_per_metre=settings.mm_per_metre)
+        else:
+            transform = create_miniature_transform(*bundle.bounds.as_tuple(),
+                target_width_mm=settings.target_width_mm, target_height_mm=settings.target_height_mm,
+                preserve_aspect=settings.preserve_aspect_ratio)
+    return request_signature(bundle, min(transform.scale_x_mm_per_m, transform.scale_y_mm_per_m),
+        transform.scale_z_mm_per_m * settings.building_height_scale,
+        settings.lidar_minimum_width_mm, settings.lidar_minimum_step_mm, settings.lidar_source_url,
+        settings.generate_roof_shapes, settings.lidar_prefer_measured)
+
+
+class JARVIZAR_OT_prepare_lidar(Operator):
+    bl_idname = "jarvizar.prepare_lidar"
+    bl_label = "Prepare LiDAR Buildings"
+    bl_description = "Prepare USGS heights, tiers and roof planes in small resumable groups; Esc cancels and keeps completed work"
+    _running = False
+
+    @classmethod
+    def poll(cls, context):
+        return not cls._running
+
+    def finish(self, context, result):
+        settings = context.scene.jarvizar_city_model
+        message = (f"Prepared {result['buildings']}/{result.get('candidate_buildings', result['buildings'])} buildings; "
+                   f"{result['tiered_buildings']} tiered, {result.get('roof_plane_buildings', 0)} with roof planes")
+        if result.get('infill_buildings') or result.get('part_heights'):
+            message += f"; {result.get('infill_buildings', 0)} main masses restored, {result.get('part_heights', 0)} part heights"
+        if result.get('compared_sources'):
+            message += f"; compared {result['compared_sources']} surveys"
+        if result.get('conflict_buildings'):
+            message += f"; {result['conflict_buildings']} buildings failed consistency checks"
+        if result.get('failures'):
+            message += '; incomplete downloads: Prepare again to resume'
+        elif not result['buildings']:
+            message += '; no reliable measurements for this selection'
+        settings.lidar_preparation_status = settings.last_status = message
+        settings.use_lidar_buildings = True
+        self.report({'WARNING'} if result.get('failures') or not result['buildings'] else {'INFO'}, message)
+        return {'FINISHED'}
+
+    def cleanup(self, context):
+        try:
+            context.window_manager.event_timer_remove(self._timer)
+        finally:
+            type(self)._running = False
+            self._settings.lidar_preparing = False
+
+    def modal(self, context, event):
+        settings = self._settings
+        if event.type == 'ESC':
+            try:
+                self._job.cancel()
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                settings.lidar_preparation_status = f'Cancellation failed: {exc}'
+                self.report({'ERROR'}, settings.lidar_preparation_status)
+                # Keep polling a worker we could not stop. Releasing ownership
+                # here would allow a second job to write the same cache.
+                if self._job.process.poll() is None:
+                    return {'RUNNING_MODAL'}
+                self.cleanup(context)
+                return {'CANCELLED'}
+            self.cleanup(context)
+            settings.lidar_preparation_status = 'Cancelled; Prepare again to resume completed work'
+            return {'CANCELLED'}
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+        if self._job.process.poll() is None:
+            settings.lidar_preparation_status = self._job.progress()
+            for area in context.screen.areas if context.screen else ():
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+            return {'PASS_THROUGH'}
+        self.cleanup(context)
+        try:
+            result = self._job.result()
+            # Settings may have changed while the worker ran. Its cache stays
+            # valid for the original request, never silently for a new area.
+            if context.scene != self._scene or _lidar_signature(settings, _cache_bundle(settings)) != self._signature:
+                settings.lidar_preparation_status = 'Prepared previous selection/settings; prepare again for current settings'
+                self.report({'WARNING'}, settings.lidar_preparation_status)
+                return {'FINISHED'}
+            return self.finish(context, result)
+        except (ValueError, OSError) as exc:
+            settings.lidar_preparation_status = settings.last_status = f'LiDAR unavailable: {exc}'
+            self.report({'ERROR'}, settings.last_status)
+            return {'CANCELLED'}
+
+    def execute(self, context):
+        settings = context.scene.jarvizar_city_model
+        try:
+            if hasattr(bpy.app, "online_access") and not bpy.app.online_access:
+                raise ValueError("Blender online access is disabled")
+            bundle = _cache_bundle(settings)
+            signature = _lidar_signature(settings, bundle)
+            records, message = load_measurements(bundle, signature)
+            if not settings.force_redownload and message.startswith("LiDAR measurements:"):
+                summary = measurement_summary(bundle)
+                if not summary['failures']:
+                    return self.finish(context, summary)
+            settings.lidar_preparation_status = 'Preparing LiDAR buildings... (Esc to cancel)'
+            python_path = _resolve_downloader(context, settings)
+            if bpy.app.background:
+                return self.finish(context, prepare_lidar(python_path, bundle, signature, settings.force_redownload))
+            self._signature = signature
+            self._settings, self._scene = settings, context.scene
+            self._job = LidarPreparation(python_path, bundle, signature, settings.force_redownload)
+            self._timer = context.window_manager.event_timer_add(0.5, window=context.window)
+            context.window_manager.modal_handler_add(self)
+            settings.lidar_preparing = True
+            type(self)._running = True
+            return {'RUNNING_MODAL'}
+        except (ValueError, OSError, OvertureDownloadError) as exc:
+            settings.last_status = f"LiDAR unavailable: {exc}. Source generation remains available."
+            settings.lidar_preparation_status = settings.last_status
+            self.report({"ERROR"}, settings.last_status)
+            return {"CANCELLED"}
 
 
 class JARVIZAR_OT_move_surface_priority(Operator):
@@ -622,7 +745,14 @@ class JARVIZAR_OT_generate_model(Operator):
                 )
             progress(0.70)
 
+            settings.lidar_generation_status = 'LiDAR disabled' if not settings.use_lidar_buildings else 'Buildings disabled'
             if settings.generate_buildings:
+                lidar_profiles = {}
+                if settings.use_lidar_buildings:
+                    lidar_profiles, lidar_status = load_measurements(bundle, _lidar_signature(settings, bundle, transform))
+                    counts["lidar_status"] = lidar_status
+                    if not lidar_profiles:
+                        self.report({"WARNING"}, lidar_status)
                 counts.update(
                     generate_buildings(
                         _load_polygons(bundle, "building"),
@@ -647,8 +777,22 @@ class JARVIZAR_OT_generate_model(Operator):
                         generate_roofs=settings.generate_roof_shapes,
                         slenderness_exempt_width_mm=settings.slenderness_exempt_width_mm,
                         merge=settings.merge_buildings_and_trees,
+                        lidar_profiles=lidar_profiles,
+                        prefer_lidar=settings.lidar_prefer_measured,
                     )
                 )
+                if settings.use_lidar_buildings:
+                    if not lidar_profiles:
+                        settings.lidar_generation_status = lidar_status
+                    else:
+                        settings.lidar_generation_status = (
+                            f"Used LiDAR on {counts.get('lidar_buildings', 0)} buildings: "
+                            f"{counts.get('lidar_tier_solids', 0)} tier sections, "
+                            f"{counts.get('lidar_roof_plane_buildings', 0)} sloped roofs; "
+                            f"{counts.get('lidar_infill_buildings', 0)} main masses restored, "
+                            f"{counts.get('lidar_part_heights', 0)} part heights; "
+                            f"{counts.get('lidar_source_detail_preserved', 0)} richer source buildings kept; "
+                            f"{counts.get('lidar_geometry_fallbacks', 0)} geometry fallbacks")
 
             if ground_support is not None:
                 ground_support.build(hierarchy["terrain_supports"], materials["terrain"])
@@ -680,7 +824,9 @@ class JARVIZAR_OT_generate_model(Operator):
                 f"{counts.get('terrain_supports', 0)} supports"
             )
             settings.last_status = message
-            self.report({"INFO"}, message)
+            if settings.use_lidar_buildings:
+                settings.last_status += ' | ' + settings.lidar_generation_status
+            self.report({"INFO"}, settings.last_status)
             return {"FINISHED"}
         except Exception as exc:
             if hierarchy is not None:
@@ -835,6 +981,7 @@ CLASSES = (
     JARVIZAR_OT_move_surface_priority,
     JARVIZAR_OT_paste_bounds,
     JARVIZAR_OT_download_cache,
+    JARVIZAR_OT_prepare_lidar,
     JARVIZAR_OT_generate_model,
     JARVIZAR_OT_export_3mf,
     JARVIZAR_OT_clear_model,

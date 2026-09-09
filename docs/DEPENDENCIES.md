@@ -1,5 +1,15 @@
 # Downloader dependencies
 
+Optional USGS LiDAR preparation adds `laspy[lazrs]==2.7.0`, `pyproj==3.7.2`
+and `shapely==2.1.2` through `requirements-lidar.txt`, installed explicitly in
+the same external environment. Blender imports none of these. See
+[LiDAR setup and limits](LIDAR_BUILDINGS.md). PDAL is not required; 0.11.0 adds
+roof-plane fitting and resumable batches using these same dependencies.
+Version 0.12.0 adds source confidence, missing main masses and part-height
+corrections using the same dependencies; no packages are added inside Blender.
+Versions 0.13.0–0.14.0 improve massing, minimum height and LiDAR preference
+using those same dependencies; there are no additional installation steps.
+
 Jarvizar City Model keeps Overture's Python client outside Blender. The
 Blender add-on itself uses Blender's `bpy` module and the Python standard
 library; a separate virtual environment performs Overture downloads and writes

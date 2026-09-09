@@ -278,8 +278,8 @@ def main():
                         num_floors=2,
                         min_floor=1,
                     ),
-                    # A crown section whose dome sits on top of its own height,
-                    # the way the source publishes a tower's crown.
+                    # An ambiguous crown: its roof is inside its stated total.
+                    # The parent (22 m) does not corroborate 14 + 6 = 20 m.
                     polygon(
                         "part-dome",
                         [
@@ -597,10 +597,10 @@ def main():
                     f"Pyramid tower: {tower.get('roof_geometry')}, top {tower_top:.2f} m"
                 )
             dome, dome_top = object_top_above_base("part-dome")
-            if dome.get("roof_geometry") != "dome" or abs(dome_top - 20.0) > 0.05:
+            if dome.get("roof_geometry") != "dome" or abs(dome_top - 14.0) > 0.05:
                 raise AssertionError(
                     f"Dome part: {dome.get('roof_geometry')}, top {dome_top:.2f} m; a "
-                    "part's roof sits on top of its height"
+                    "part's roof stays inside its stated total"
                 )
             # Every part of parent-a stands on one shared base.
             bases = {
@@ -1035,7 +1035,7 @@ def main():
             for identifier, unboosted in (
                 ("house-gabled", 8.0),
                 ("pyramid-tower", 30.0),
-                ("part-dome", 20.0),
+                ("part-dome", 14.0),
             ):
                 obj, top = boosted_top_above_base(identifier)
                 if abs(top - unboosted * 1.1) > 0.05:

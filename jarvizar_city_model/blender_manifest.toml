@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "jarvizar_city_model"
-version = "0.9.12"
+version = "0.14.0"
 name = "Jarvizar City Model"
 tagline = "Generate printable city miniatures from Overture data"
 maintainer = "Jarvizar workflow"
@@ -9,5 +9,5 @@ blender_version_min = "4.2.0"
 license = ["SPDX:GPL-3.0-or-later"]
 
 [permissions]
-network = "Download selected Overture map data and public elevation tiles"
+network = "Download selected Overture map data, elevation tiles, and optional USGS LiDAR crops"
 files = "Cache downloaded map data for model generation"

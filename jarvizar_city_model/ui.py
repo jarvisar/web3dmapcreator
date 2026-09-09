@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import textwrap
 
 import bpy
 from bpy.types import Panel
@@ -244,6 +245,24 @@ class JARVIZAR_PT_buildings(Panel):
         layout.prop(settings, "minimum_building_height_mm")
         layout.prop(settings, "minimum_height_footprint_mm")
         layout.prop(settings, "generate_roof_shapes")
+        box = layout.box()
+        box.label(text="USGS LiDAR Buildings")
+        box.prop(settings, "use_lidar_buildings")
+        box.prop(settings, "lidar_prefer_measured")
+        box.prop(settings, "lidar_minimum_width_mm")
+        box.prop(settings, "lidar_minimum_step_mm")
+        box.prop(settings, "lidar_source_url")
+        box.operator("jarvizar.prepare_lidar", icon="IMPORT")
+        if settings.lidar_preparing:
+            box.label(text='Preparing in background; Esc cancels', icon='TIME')
+        else:
+            box.label(text="Prepare after caching buildings")
+        for title, message in (('Preparation', settings.lidar_preparation_status),
+                               ('Last generation', settings.lidar_generation_status)):
+            if message:
+                box.label(text=title+':')
+                for line in textwrap.wrap(message, width=max(25, int(context.region.width/7)-6)):
+                    box.label(text=line)
         layout.separator()
         layout.label(text="Printability")
         layout.prop(settings, "minimum_building_width_mm")

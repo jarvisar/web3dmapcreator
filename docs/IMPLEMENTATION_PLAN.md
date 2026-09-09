@@ -1,5 +1,19 @@
 # Architecture and staged implementation plan
 
+For the implemented height correction and optional USGS LiDAR pipeline through
+0.14.0, see [LiDAR buildings](LIDAR_BUILDINGS.md). The existing generation order,
+shared height field and export path remain intact. New external readers and
+measurements feed `data/lidar.py` and the existing building generator.
+Algorithm 4 adds source-height confidence and exposed-part checks in
+`external/lidar_source.py`, plus measured infill/part heights for incomplete OSM
+assemblies. No source-free building detector or new geometry engine is added.
+Algorithm 6 retains supported tower mass beneath non-flat roof returns and
+smaller crowns, restores incomplete source fallback masses, and adds the
+default-on LiDAR conflict preference. Source-part scalar height estimation
+uses stable roof aggregation and interior checks. The existing prism builder
+still commits each measured building transactionally and applies the minimum
+height to its low base terrace while retaining the roof steps.
+
 ## Design boundaries
 
 This project is intentionally optimized for roughly 1–3 km printable city

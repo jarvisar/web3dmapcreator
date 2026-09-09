@@ -43,13 +43,12 @@ assumed:
   `height`. (The original reading, `terrain + min_height + height`, turned a
   tower's crown into a spire.)
 - `min_floor` is a fallback for absent `min_height`.
-- `roof_height` behaves differently for buildings and parts. For a whole
-  building it is inside `height`, as OpenStreetMap defines it. For a *part*
-  the mappers put the roof on top: the Great American Tower's crown is
-  `min_height` 140, `height` 162.7, `roof_height` 40 under a parent of 202.7,
-  and 11 of 317 parts with both fields would have their roof base below their
-  own floor under the other reading. Parts therefore get their roof added
-  above `height`, clamped to the parent's stated total where there is one.
+- `roof_height` is inside explicit total heights for buildings and parts.
+  The former blanket additive part rule was disproved by Chicago's
+  177.4 m part with a 73 m roof (generated at 250.4 m). The Cincinnati
+  162.7 + 40 = 202.7 m crown retains a narrow exception: the roof must not
+  fit inside the part interval and an explicit parent must corroborate the
+  additive top. See [the 0.10.0 investigation](LIDAR_BUILDINGS.md).
 - `roof_direction` is the compass bearing the roof slopes down towards,
   verified on the eight skillion facets of a tower crown, whose directions all
   point away from the crown's centre.

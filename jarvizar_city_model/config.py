@@ -233,6 +233,29 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     )
 
     # -------------------------------------------------------------- buildings
+    lidar_preparation_status: StringProperty(name='Last LiDAR Preparation', default='')
+    lidar_generation_status: StringProperty(name='Last LiDAR Generation', default='')
+    lidar_preparing: BoolProperty(default=False, options={'SKIP_SAVE'})
+    use_lidar_buildings: BoolProperty(
+        name="Use Prepared LiDAR", default=False,
+        description="Use measured USGS heights, roof tiers and supported roof planes; other buildings retain source geometry",
+    )
+    lidar_prefer_measured: BoolProperty(
+        name="Prefer LiDAR on Conflicts", default=True,
+        description="Prefer a usable measured building over conflicting source heights, dates or roof detail; disable for conservative source checks. Prepare again after changing",
+    )
+    lidar_minimum_width_mm: FloatProperty(
+        name="Minimum LiDAR Detail Width (mm)", default=0.1, min=0.01, soft_max=2.0,
+        description="Remove roof islands and narrow strips below this printed width",
+    )
+    lidar_minimum_step_mm: FloatProperty(
+        name="Minimum Roof Step (mm)", default=0.05, min=0.02, soft_max=1.0,
+        description="Smallest measured height difference retained as a separate roof tier",
+    )
+    lidar_source_url: StringProperty(
+        name="USGS EPT URL (optional)", default="",
+        description="Leave empty to discover USGS coverage; set an ept.json HTTPS URL to select a particular survey",
+    )
     minimum_building_width_mm: FloatProperty(
         name="Minimum Building Width (mm)",
         description=(

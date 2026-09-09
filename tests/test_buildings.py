@@ -64,11 +64,28 @@ class AbsoluteHeightTests(unittest.TestCase):
         block = resolve_vertical_profile({"height": 40.0}, 3.0, 10.0)
         self.assertEqual((block.bottom_m, block.top_m, block.thickness_m), (0.0, 40.0, 40.0))
 
-    def test_a_mass_that_ends_below_where_it_starts_still_gets_substance(self):
+    def test_inverted_interval_does_not_invent_a_taller_top(self):
         broken = resolve_vertical_profile({"height": 5.0, "min_height": 9.0}, 3.0, 10.0)
         self.assertEqual(broken.bottom_m, 9.0)
-        self.assertEqual(broken.top_m, 12.0)
-        self.assertIn("inverted", broken.height_source)
+        self.assertEqual(broken.top_m, 5.0)
+        self.assertLess(broken.thickness_m, 0.0)
+        self.assertIn("invalid_interval", broken.height_source)
+
+    def test_finite_values_and_explicit_units(self):
+        for value in (float("inf"), float("nan"), True, "20;40"):
+            self.assertEqual(resolve_vertical_profile({"height": value}, 3, 10).top_m, 10)
+        self.assertAlmostEqual(resolve_vertical_profile({"height": "100 ft"}, 3, 10).top_m, 30.48)
+        self.assertAlmostEqual(resolve_vertical_profile({"height": "7'4\""}, 3, 10).top_m, 2.2352)
+
+    def test_osm_levels_are_top_levels_not_added_to_minimum(self):
+        profile = resolve_vertical_profile({"building:levels": 10, "building:min_level": 8}, 3, 10)
+        self.assertEqual((profile.bottom_m, profile.top_m), (24, 30))
+
+    def test_minimum_only_part_does_not_suppress_parent(self):
+        parent = feature("parent", has_parts=True, height=20)
+        selection = select_building_geometry([parent], [feature("part", building_id="parent", min_height=200)])
+        self.assertEqual(selection.buildings, (parent,))
+        self.assertFalse(selection.parts)
 
 
 class ClassDefaultHeightTests(unittest.TestCase):
@@ -93,6 +110,69 @@ class ClassDefaultHeightTests(unittest.TestCase):
 
 
 class SelectionTests(unittest.TestCase):
+    def rectangle(self, identifier, bounds=(0, 0, 10, 10), **properties):
+        result = feature(identifier, **properties)
+        x0, y0, x1, y1 = bounds
+        result["geometry"]["coordinates"] = [
+            [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
+        ]
+        return result
+
+    def test_partial_upper_roof_keeps_explicit_main_mass(self):
+        parent = self.rectangle("parent", has_parts=True, height=340)
+        roof = self.rectangle("roof", (2, 2, 8, 8), building_id="parent", height=346)
+        selection = select_building_geometry([parent], [roof])
+        self.assertEqual(selection.buildings, (parent,))
+        self.assertEqual(selection.parts, (roof,))
+        self.assertFalse(selection.suppressed_parent_ids)
+
+    def test_complete_upper_parts_already_supply_main_mass(self):
+        parent = self.rectangle("parent", has_parts=True, height=340)
+        parts = [
+            self.rectangle("west", (0, 0, 5, 10), building_id="parent", height=346),
+            self.rectangle("east", (5, 0, 10, 10), building_id="parent", height=346),
+        ]
+        selection = select_building_geometry([parent], parts)
+        self.assertFalse(selection.buildings)
+        self.assertEqual(selection.parts, tuple(parts))
+
+    def test_lower_setback_prevents_filling_parent_to_total_height(self):
+        parent = self.rectangle("parent", has_parts=True, height=100)
+        parts = [
+            self.rectangle("roof", (3, 3, 7, 7), building_id="parent", height=105),
+            self.rectangle("podium", (0, 0, 3, 10), building_id="parent", height=20),
+        ]
+        selection = select_building_geometry([parent], parts)
+        self.assertFalse(selection.buildings)
+        self.assertEqual(selection.parts, tuple(parts))
+
+    def test_incomplete_heights_do_not_infer_a_parent_main_mass(self):
+        roof = self.rectangle("roof", (2, 2, 8, 8), building_id="parent", height=346)
+        for props in ({}, {"num_floors": 83}):
+            parent = self.rectangle("parent", has_parts=True, **props)
+            self.assertFalse(select_building_geometry([parent], [roof]).buildings)
+        parent = self.rectangle("parent", has_parts=True, height=340)
+        unknown = self.rectangle("unknown", (0, 0, 2, 10), building_id="parent")
+        self.assertFalse(select_building_geometry([parent], [roof, unknown]).buildings)
+
+    def test_derived_parent_height_does_not_supply_missing_main_mass(self):
+        roof = self.rectangle("roof", (2, 2, 8, 8), building_id="parent", height=346)
+        for dataset in ("Microsoft ML Buildings", "USGS Lidar"):
+            parent = self.rectangle("parent", has_parts=True, height=12, sources=[{
+                "property": "/properties/height", "dataset": dataset,
+            }])
+            self.assertFalse(select_building_geometry([parent], [roof]).buildings)
+        # The footprint's provider does not imply that its height was estimated.
+        parent["properties"]["sources"][0]["property"] = ""
+        self.assertEqual(select_building_geometry([parent], [roof]).buildings, (parent,))
+
+    def test_equal_height_partial_part_keeps_recorded_parent_extent(self):
+        parent = self.rectangle("parent", has_parts=True, height=100)
+        part = self.rectangle("part", (2, 2, 8, 8), building_id="parent", height=100)
+        selection = select_building_geometry([parent], [part])
+        self.assertEqual(selection.buildings, (parent,))
+        self.assertEqual(selection.parts, (part,))
+
     def test_useful_parts_replace_advertised_parent(self):
         parent = feature("parent", has_parts=True, height=20)
         parts = [
@@ -172,4 +252,3 @@ def _area(ring):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -20,9 +20,8 @@ caller passes.  Shapes fall into four constructions:
   rings for a dome, and a single apex, closed by construction;
 * anything else -- flat, recorded as such.
 
-Where ``roof_height`` sits relative to ``height`` differs between a whole
-building and a part in the data this project was built against, and
-:func:`resolve_roof` records the decision on every object.
+Explicit total heights include roofs. A narrowly corroborated legacy
+wall-height exception is documented in :func:`resolve_roof`.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple
 
-from .buildings import VerticalProfile
+from .buildings import VerticalProfile, length_metres
 from .planar import EPSILON, clean_ring, ear_clip, oriented_ring, signed_area
 
 Point = Tuple[float, float]
@@ -130,17 +129,16 @@ def resolve_roof(
 
     For a whole building ``height`` is the total height including the roof, as
     OpenStreetMap defines it, so the roof is taken out of the top of the mass.
-    For a *part* the data says otherwise: the Great American Tower's crown is
-    published as ``min_height`` 140, ``height`` 162.7, ``roof_height`` 40 under a
-    parent of 202.7 m, which only adds up if the dome sits *on top of* the
-    part's height -- and reading it the other way would put the dome's base
-    below the part's own floor.  So a part's roof is added above its height,
-    and clamped to the parent's stated total where there is one.
+    Parts use that same rule. The historical blanket additive rule inflated
+    Chicago's 177.4 m / 73 m roof part to 250.4 m. Only a contradictory roof
+    that cannot fit inside its interval AND whose additive top agrees with
+    the parent's total retains the legacy wall-height interpretation (the
+    documented 162.7 + 40 = 202.7 m Cincinnati crown).
 
     A shaped roof with no ``roof_height`` gets an ordinary pitch for its kind,
     recorded as ``default`` rather than passed off as data.
     """
-    shape = str(properties.get("roof_shape") or "")
+    shape = str(properties.get("roof_shape", properties.get("roof:shape")) or "")
     kind = roof_kind(shape)
     top = float(profile.top_m)
     if kind == "flat":
@@ -148,7 +146,8 @@ def resolve_roof(
     if kind == "unsupported":
         return RoofProfile(kind, shape, top, top, None, None, f"unsupported:{shape}")
 
-    roof_height = _positive(properties.get("roof_height"))
+    roof_height = _positive(length_metres(properties.get("roof_height", properties.get("roof:height"))))
+    explicit_roof = roof_height is not None
     if roof_height is None:
         if kind in ("pyramid", "dome"):
             roof_height = max(0.5 * footprint_width_m, 0.5)
@@ -158,20 +157,20 @@ def resolve_roof(
     else:
         source = "roof_height"
 
-    direction = _finite(properties.get("roof_direction"))
-    orientation = properties.get("roof_orientation")
+    direction = _finite(properties.get("roof_direction", properties.get("roof:direction")))
+    orientation = properties.get("roof_orientation", properties.get("roof:orientation"))
     orientation = str(orientation).strip().lower() if orientation else None
 
-    if is_part:
+    corroborated_wall_height = (
+        is_part and explicit_roof and profile.height_source == "height"
+        and roof_height > profile.thickness_m
+        and parent_top_m is not None and math.isfinite(parent_top_m)
+        and abs(top + roof_height - parent_top_m) <= 0.5
+    )
+    if profile.height_source == "num_floors" or corroborated_wall_height:
         wall_top = top
         roof_top = top + roof_height
-        if (
-            parent_top_m is not None
-            and parent_top_m > wall_top
-            and roof_top > parent_top_m + 0.5
-        ):
-            roof_top = float(parent_top_m)
-            source += "+clamped_to_parent"
+        source += "+parent_corroborated_walls" if corroborated_wall_height else "+floors"
     else:
         thickness = top - float(profile.bottom_m)
         wall_top = max(top - roof_height, float(profile.bottom_m) + MINIMUM_WALL_FRACTION * thickness)

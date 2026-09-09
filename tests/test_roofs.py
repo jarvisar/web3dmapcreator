@@ -48,14 +48,37 @@ class RoofSemanticsTests(unittest.TestCase):
         self.assertEqual(roof.kind, "dome")
         self.assertAlmostEqual(roof.wall_top_m, 162.7)
         self.assertAlmostEqual(roof.roof_top_m, 202.7)
-        self.assertEqual(roof.source, "roof_height")
+        self.assertEqual(roof.source, "roof_height+parent_corroborated_walls")
 
-    def test_a_part_roof_is_clamped_to_the_parent_total(self):
+    def test_a_part_roof_is_inside_its_own_total(self):
         properties = {"height": 30.0, "roof_shape": "pyramidal", "roof_height": 20.0}
         profile = resolve_vertical_profile(properties, 3.0, 10.0)
         roof = resolve_roof(properties, profile, is_part=True, parent_top_m=40.0, footprint_width_m=10.0)
-        self.assertAlmostEqual(roof.roof_top_m, 40.0)
-        self.assertIn("clamped_to_parent", roof.source)
+        self.assertAlmostEqual(roof.roof_top_m, 30.0)
+        self.assertEqual(roof.source, "roof_height")
+
+    def test_chicago_roof_height_is_not_counted_twice(self):
+        properties = {"height": 177.4, "roof_height": 73, "roof_shape": "skillion"}
+        for parent in (177, 177.4, None):
+            roof = resolve_roof(properties, resolve_vertical_profile(properties, 3, 10), True, parent, 30)
+            self.assertAlmostEqual(roof.roof_top_m, 177.4)
+            self.assertAlmostEqual(roof.wall_top_m, 104.4)
+
+    def test_default_part_roof_cannot_increase_explicit_height(self):
+        properties = {"height": 184, "roof_shape": "hipped"}
+        roof = resolve_roof(properties, resolve_vertical_profile(properties, 3, 10), True, 184, 20)
+        self.assertEqual(roof.roof_top_m, 184)
+
+    def test_roof_is_added_once_to_floor_derived_walls(self):
+        properties = {"num_floors": 3, "roof_shape": "gabled", "roof_height": 2}
+        for is_part in (False, True):
+            roof = resolve_roof(properties, resolve_vertical_profile(properties, 3, 10), is_part, None, 10)
+            self.assertEqual((roof.wall_top_m, roof.roof_top_m), (9, 11))
+
+    def test_ambiguous_crown_does_not_get_legacy_addition(self):
+        properties = {"height": 162.7, "min_height": 140, "roof_shape": "dome", "roof_height": 40}
+        roof = resolve_roof(properties, resolve_vertical_profile(properties, 3, 10), True, None, 20)
+        self.assertEqual(roof.roof_top_m, 162.7)
 
     def test_a_whole_building_keeps_its_roof_inside_its_height(self):
         properties = {"height": 8.0, "roof_shape": "gabled", "roof_height": 3.0}

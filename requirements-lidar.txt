@@ -1,0 +1,5 @@
+# Optional external downloader additions; never install into Blender Python.
+-r requirements-downloader.txt
+laspy[lazrs]==2.7.0
+pyproj==3.7.2
+shapely==2.1.2

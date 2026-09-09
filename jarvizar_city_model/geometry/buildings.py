@@ -7,6 +7,8 @@ creation lives in :mod:`jarvizar_city_model.blender.mesh_utils`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from ..data.geojson import feature_id, feature_properties, geometry_polygons
@@ -150,7 +152,7 @@ def _positive_number(value: Any) -> float | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number if number > 0.0 else None
+    return number if math.isfinite(number) and number > 0.0 else None
 
 
 def _nonnegative_number(value: Any) -> float | None:
@@ -160,7 +162,27 @@ def _nonnegative_number(value: Any) -> float | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number if number >= 0.0 else None
+    return number if math.isfinite(number) and number >= 0.0 else None
+
+
+def length_metres(value: Any) -> float | None:
+    """Read numeric Overture metres or an explicitly unit-tagged OSM length.
+
+    Never strip a unit and accidentally treat feet as metres. Ambiguous lists
+    and malformed values remain missing; they are not guessed.
+    """
+    number = _nonnegative_number(value)
+    if number is not None:
+        return number
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(m|metres|meters|ft|feet)\s*", value)
+    if match:
+        return float(match[1]) * (0.3048 if match[2] in ("ft", "feet") else 1.0)
+    match = re.fullmatch(r'''\s*(\d+)'\s*(\d+(?:\.\d+)?)?"?\s*''', value)
+    if match:
+        return float(match[1]) * 0.3048 + float(match[2] or 0) * 0.0254
+    return None
 
 
 def class_default_height_m(
@@ -182,11 +204,11 @@ def resolve_vertical_profile(
 
     Both ``height`` and ``num_floors`` describe the whole feature measured from
     the ground, so each resolves to the *top* of the mass rather than to a
-    thickness.  A part that claims to end at or below where it starts is data
-    noise; it is given one floor of substance so it still prints as something.
+    thickness. Contradictory intervals remain invalid and are skipped by the
+    generator. Never manufacture a new top above a suspect min_height.
     """
-    explicit_height = _positive_number(properties.get("height"))
-    floor_count = _positive_number(properties.get("num_floors"))
+    explicit_height = _positive_number(length_metres(properties.get("height")))
+    floor_count = _positive_number(properties.get("num_floors", properties.get("building:levels")))
     if explicit_height is not None:
         top_m = explicit_height
         height_source = "height"
@@ -196,8 +218,8 @@ def resolve_vertical_profile(
     else:
         top_m, height_source = class_default_height_m(properties, default_height_m)
 
-    explicit_min_height = _nonnegative_number(properties.get("min_height"))
-    min_floor = _nonnegative_number(properties.get("min_floor"))
+    explicit_min_height = length_metres(properties.get("min_height"))
+    min_floor = _nonnegative_number(properties.get("min_floor", properties.get("building:min_level")))
     if explicit_min_height is not None:
         bottom_m = explicit_min_height
         min_height_source = "min_height"
@@ -209,8 +231,7 @@ def resolve_vertical_profile(
         min_height_source = "ground"
 
     if top_m <= bottom_m:
-        top_m = bottom_m + max(floor_height_m, 0.1)
-        height_source = f"{height_source}+inverted"
+        height_source = f"{height_source}+invalid_interval"
 
     return VerticalProfile(bottom_m, top_m, height_source, min_height_source)
 
@@ -218,10 +239,8 @@ def resolve_vertical_profile(
 def part_has_useful_vertical_data(feature: Mapping[str, Any]) -> bool:
     """Return whether Phase 1 can derive meaningful variable-height geometry."""
     properties = feature_properties(dict(feature))
-    return any(
-        _positive_number(properties.get(field)) is not None
-        for field in ("height", "num_floors", "min_height", "min_floor")
-    )
+    profile = resolve_vertical_profile(properties, 3.0, 10.0)
+    return profile.thickness_m > 0.0 and profile.height_source in ("height", "num_floors")
 
 
 def is_above_ground(feature: Mapping[str, Any]) -> bool:
@@ -419,6 +438,37 @@ def find_duplicate_outlines(
     return duplicates
 
 
+def _parent_supplies_main_mass(building, parts) -> bool:
+    """A small upper roof section does not replace a recorded main mass.
+
+    Lower or heightless parts might describe real setbacks, so they retain the
+    ordinary assembly rule. Derived parent heights are insufficient evidence
+    for filling the footprint. Use the same coverage sampling as duplicates;
+    a complete upper part already supplies the mass below it.
+    """
+    from ..external.lidar_source import estimated_height
+
+    properties = feature_properties(building)
+    profile = resolve_vertical_profile(properties, 3.0, 10.0)
+    if (profile.height_source != "height" or profile.thickness_m <= 0
+            or estimated_height(properties)):
+        return False
+    outlines = _outer_rings(building)
+    if not outlines:
+        return False
+    part_rings = []
+    for part in parts:
+        top = resolve_vertical_profile(feature_properties(part), 3.0, 10.0)
+        if top.height_source != "height" or top.thickness_m <= 0 or top.top_m < profile.top_m:
+            return False
+        rings = _outer_rings(part)
+        if not rings:
+            return False
+        part_rings.extend(rings)
+    samples = _samples(outlines)
+    return bool(samples) and _coverage(samples, part_rings) < MUTUAL_COVERAGE
+
+
 def select_building_geometry(
     buildings: Sequence[Dict[str, Any]], parts: Sequence[Dict[str, Any]]
 ) -> BuildingSelection:
@@ -427,7 +477,9 @@ def select_building_geometry(
     A parent is replaced only when it advertises ``has_parts`` and at least one
     associated part carries vertical data that Phase 1 actually uses.  Once that
     decision is made, all above-ground parts belonging to that parent are emitted
-    so a part lacking a height can still receive the configured fallback.
+    so a part lacking a height can still receive the configured fallback. An
+    explicit parent mass is retained when the parts describe only higher roof
+    sections and leave a substantial portion of its footprint uncovered.
 
     A building whose footprint is already modelled by another building's parts,
     or by a better-described twin of itself, is dropped as a duplicate outline
@@ -459,7 +511,10 @@ def select_building_geometry(
         associated = parts_by_parent.get(parent_id, [])
         useful = any(part_has_useful_vertical_data(part) for part in associated)
         if properties.get("has_parts") is True and useful:
-            suppressed.add(parent_id)
+            if _parent_supplies_main_mass(building, associated):
+                selected_buildings.append(building)
+            else:
+                suppressed.add(parent_id)
             for part in associated:
                 part_id = feature_id(part)
                 if part_id not in selected_part_ids:
