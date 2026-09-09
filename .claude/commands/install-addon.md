@@ -1,42 +1,83 @@
 ---
-description: Build the add-on and install it into Blender 3.6 safely
+description: Build, install, and verify the Blender add-on while preserving rollback and preferences
 ---
 
-Build and install the add-on. **Blender must be closed** — it writes
-`userpref.blend` on exit and will clobber preferences written underneath it,
-and it does not re-import an already-loaded package, so a "live" install
-silently keeps running the old code.
+Use after packaged add-on changes and relevant passing checks, or when the user
+requests installation. Documentation-only edits outside `jarvizar_city_model/`
+change neither archive and need no reinstall. Read
+[shared context](../../CLAUDE.md) and [verification](verify.md).
 
-1. Build: `python scripts/build_addon.py` (writes both zips to `dist/`).
+1. Inspect the executable, installed module location, downloader path, and
+   running Blender processes. The local classic target is normally
+   `C:\Program Files\Blender Foundation\Blender 3.6\blender.exe`, with add-ons under
+   `%APPDATA%\Blender Foundation\Blender\3.6\scripts\addons`. Do not infer installed
+   state from an old release note or archive filename.
 
-2. Check whether Blender is running:
-   `Get-Process blender -ErrorAction SilentlyContinue`
-   If it is, **ask the user before force-closing.** They have agreed to a force
-   close once before; that is not standing permission.
+2. Verify `bl_info["version"]` in `jarvizar_city_model/__init__.py` agrees with
+   `blender_manifest.toml`. Preserve any same-version archives needed for rollback,
+   then build from the repository root:
 
-3. Install (PowerShell), replacing `<VERSION>`:
    ```powershell
-   $addons = Join-Path $env:APPDATA "Blender Foundation\Blender\3.6\scripts\addons"
-   $target = Join-Path $addons "jarvizar_city_model"
-   if (Test-Path $target) { Remove-Item -Recurse -Force $target }
-   Expand-Archive -Path "dist\jarvizar_city_model-<VERSION>-blender36.zip" -DestinationPath $addons -Force
-   Get-ChildItem -Recurse -Directory -Filter "__pycache__" $target | ForEach-Object { Remove-Item -Recurse -Force $_.FullName }
+   python scripts/build_addon.py
    ```
-   Removing the folder first matters: `Expand-Archive -Force` merges, so files
-   deleted in the new version would survive as orphans.
 
-4. Enable and persist preferences headless (do **not** use `--factory-startup`,
-   it disables add-on preferences):
+   Both archives go to `dist/`; names use the manifest version. `-blender36.zip`
+   contains the package directory; `-extension.zip` has its manifest at the root
+   and targets Blender 4.2+. Inspect the file list and use the right layout.
+
+3. Check `Get-Process blender -ErrorAction SilentlyContinue`. **Blender must be
+   closed before replacement or preference persistence.** Replacing files does
+   not reload an imported package; a running instance can overwrite
+   `userpref.blend` on exit. If open, have the user save and close it; ask before
+   force-closing unless already authorized in this session.
+
+4. Back up the existing add-on and `userpref.blend` to a new timestamped directory
+   under workspace `dist/`. Classic 3.6 preferences normally live at
+   `%APPDATA%\Blender Foundation\Blender\3.6\config\userpref.blend`.
+   Verify the backup before replacement. Preserve map/LiDAR caches.
+
+5. Replace only the resolved `jarvizar_city_model` installation directory, then
+   extract the verified classic archive to its `addons` parent. Before recursive
+   removal/move, verify the absolute target is exactly that package under the
+   intended Blender scripts directory. Use native PowerShell with `-LiteralPath`;
+   do not construct cross-shell deletion commands. A clean replacement removes
+   stale modules/bytecode; `Expand-Archive -Force` alone leaves files deleted from
+   the new version. Use the environment's permission mechanism for external writes.
+
+6. Enable the installed package in fresh background Blender while retaining
+   existing preferences. Run outside the checkout and keep repository code off
+   `sys.path`/`PYTHONPATH`. Do **not** use `--factory-startup` here. Use
+   `--python-exit-code 1` with a verification script whose core is:
+
    ```python
+   import bpy
+   import jarvizar_city_model as addon
+   from pathlib import Path
+   from jarvizar_city_model.data.overture import probe_client
+
    bpy.ops.preferences.addon_enable(module="jarvizar_city_model")
-   a = bpy.context.preferences.addons["jarvizar_city_model"]
-   a.preferences.overture_python_path = r"C:\Users\adamj\Desktop\3dmapcreator\.venv-overture\Scripts\python.exe"
+   prefs = bpy.context.preferences.addons["jarvizar_city_model"].preferences
+   # Preserve a valid existing path. If unset/invalid, assign the verified
+   # external interpreter (locally: <repo>/.venv-overture/Scripts/python.exe).
+   print("INSTALLED_MODULE", addon.__file__)
+   print("INSTALLED_VERSION", addon.bl_info["version"])
+   print("DOWNLOADER", prefs.overture_python_path)
+   print("CLIENT", probe_client(Path(prefs.overture_python_path)))
+   # Assert the expected installed path/version and relevant properties here.
+   # Save only after those checks and dependency probes succeed.
    bpy.ops.wm.save_userpref()
    ```
 
-5. Verify against the **installed** copy, not the repo (do not put the repo on
-   `sys.path`): print `bl_info["version"]`, `m.__file__`, the preference value,
-   and `probe_client(...)`. Expect `{'ok': True, 'client_version': '1.0.2'}`.
+   Compare the client probe to the requirements pin. Probe optional LiDAR packages
+   in external Python when in scope; never import their native libraries into
+   Blender. Check changed properties/defaults in a fresh scene as applicable.
 
-Then tell the user to open Blender. Say plainly that the sidebar's
-**Override** box being blank is correct — the path lives in add-on preferences.
+7. Compare installed package files to the archive, including absence of stale
+   source files (generated bytecode can be ignored). Verify saved enablement and
+   downloader preferences in another fresh process if persistence changed.
+   Repository tests normally prepend the checkout to `sys.path`, so do not use
+   them as proof of a correct installation.
+
+Report the installed path/version, checks actually run, and rollback location.
+Claim completion only after verification succeeds. A blank sidebar **Override**
+is expected when the interpreter is configured in add-on preferences.
