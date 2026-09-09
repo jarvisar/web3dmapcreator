@@ -58,7 +58,7 @@ Shell is Git Bash **and** PowerShell. `$APPDATA` works in Bash.
 ### Commands
 
 ```bash
-# unit tests (413, all pure, no bpy) -- note the -t tests
+# unit tests (438, no bpy; optional LiDAR tests need downloader venv) -- note the -t tests
 python -m unittest discover -s tests -p "test_*.py" -t tests
 
 # synthetic full-pipeline test inside Blender (writes its own fixtures)
@@ -108,6 +108,46 @@ before force-closing** (he has said yes once; that was not standing permission).
 ---
 
 ## Current state
+
+- **0.14.2 LiDAR consistency accounting (2026-09-09; not installed):** algorithm
+  **7** corrects clipped-cell area estimates in preparation. The latest Chicago
+  cache (`bbox_fc293ec456a2`, 2,240 candidates, 0.01 mm width / 0.02 mm step)
+  reported 704 consistency skips: 434 roof-coverage mismatches, 158 ground-inside
+  observations and 112 exterior-roof extensions. Partial boundary cells and
+  neighbor masks were counted as whole missing/occupied squares.
+
+  Failed roof coverage gets a second check using actual supported footprint
+  area at the same **85%** threshold, separately for every polygon component.
+  Already accepted coverage fits stay intact. Ground/exterior evidence counts
+  only cell intersections with the inset footprint / neighbor-masked test ring.
+  Existing point support, ground reference, registration margin, area limits,
+  roof fitting and print-detail cleanup remain; no interpolation or new toggle.
+  `rejection_counts` reports unique final skips, while `counts` remains cumulative
+  survey observations. The UI now breaks consistency skips down by reason.
+
+  A full replay from immutable cached tiles accepts **851 buildings (+121)**
+  and reduces consistency skips to **553 (-151 / 21.4%)**. Sixty-two recoveries
+  previously failed roof coverage, 58 exterior-roof checks, and one complex
+  source assembly recovered a part. All 730 prior accepted buildings survive:
+  729 records are identical, and one adds an 18.6 m part height while retaining
+  its prior measurement. Twenty-eight false ground-area vetoes clear that check
+  but still fail roof coverage/density; they remain source fallback. No download
+  failures or network requests. Checkpoint resumption reproduces the result.
+
+  438 pure tests pass, plus Blender LiDAR geometry/roof, minimum-height and
+  modal/cancel/status regressions. THE MART, 71 South Wacker, 311 South Wacker
+  and Aon produce identical closed, consistently wound, positive-volume
+  geometry before/after. At this cache's fine step setting, 311 and Aon use the
+  same source fallback as before; THE MART's restored main mass is unchanged.
+  Full-map generation uses **819 LiDAR buildings (+115)** and 16,578 tier solids.
+  All **39 meshes / 4,090,514 faces** pass manifold/winding checks and 3MF export
+  succeeds. Only BUILDINGS and TERRAIN_SUPPORTS fingerprints change; the other
+  37 meshes match the baseline. Six additional fits fail geometry construction
+  and safely retain source fallback (29 total, previously 23).
+  Reviewed recovered roof-detail renders are in `scratchpad/lidar-consistency/`.
+  See `docs/LIDAR_BUILDINGS.md`. **Prepare LiDAR Buildings again after upgrading**;
+  old measurement/checkpoint signatures are stale, downloaded tiles are reused.
+  User caches and the installed add-on were left unchanged.
 
 - **0.14.1 export cutout (2026-09-09; not installed):** `cutout` is a mesh
   frame whose evaluated inner through opening bounds Export 3MF for Bambu.

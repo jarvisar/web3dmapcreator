@@ -42,6 +42,12 @@ class PointIndex:
         return self.points[np.concatenate(selected)] if selected else np.empty((0, self.points.shape[1]))
 
 
+def occupied_area(keys, region, cell):
+    """Area inside the tested region, not the full squares crossing its edge."""
+    return sum(box(x*cell, y*cell, (x+1)*cell, (y+1)*cell).intersection(region).area
+               for x,y in keys)
+
+
 def observed_empty_area(footprint, points, ground):
     """Positive ground observations, not missing returns, indicate absence."""
     interior = footprint.buffer(-1.5)
@@ -55,8 +61,9 @@ def observed_empty_area(footprint, points, ground):
             ground_cells[key] += 1
         elif row[3] in (1, 6) and row[2]-ground > 2:
             roof_cells.add(key)
-    empty = sum(count >= 3 and key not in roof_cells for key,count in ground_cells.items())
-    return empty >= 4 and empty*9 >= interior.area*.2
+    empty = [key for key,count in ground_cells.items() if count >= 3 and key not in roof_cells]
+    return (len(empty) >= 4 and len(empty)*9 >= interior.area*.2
+            and occupied_area(empty, interior, 3) >= interior.area*.2)
 
 
 def polygons(geometry):
@@ -153,6 +160,7 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
         groups.setdefault(key, []).append(row)
     cells, samples, expected, supported_points = {}, {}, 0, 0
     expected_by_piece, supported_by_piece = Counter(), Counter()
+    supported_area_by_piece = Counter()
     pieces = polygons(rotated)
     for ix in range(nx):
         for iy in range(ny):
@@ -181,16 +189,27 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
             start = starts[-1]
             cells[(ix, iy)] = float(np.median(z[start:ends[start]]))
             supported_by_piece[component] += 1
+            supported_area_by_piece[component] += (area if len(pieces)==1
+                else tile.intersection(pieces[component]).area)
             supported_points += int(ends[start]-start)
             band = rows[np.argsort(rows[:,2], kind='stable')[start:ends[start]]]
             # The XYZ centroid stays exactly on a plane; independent medians
             # do not, particularly on oblique slopes and at cell boundaries.
             samples[(ix, iy)] = [float(np.mean(band[:,0])), float(np.mean(band[:,1])), float(np.mean(band[:,2])-ground)]
     coverage = len(cells) / max(expected, 1)
+    area_coverage = False
     if coverage < 0.65 or len(cells) < 4:
         return None, "sparse_or_noisy_roof"
     if coverage < .85 or any(supported_by_piece[i] < count*.85 for i,count in expected_by_piece.items()):
-        return None, 'footprint_roof_mismatch'
+        # A clipped boundary cell is not a full missing roof square. Retry the
+        # same 85% check using actual supported footprint area, including every
+        # polygon component. No extra points, interpolated cells or lower point
+        # thresholds enter the measurement. Already accepted fits stay intact.
+        coverage = sum(supported_area_by_piece.values()) / footprint.area
+        if coverage < .85 or any(supported_area_by_piece[i] < piece.area*.85
+                                  for i,piece in enumerate(pieces)):
+            return None, 'footprint_roof_mismatch'
+        area_coverage = True
     # A broad classified roof beyond the outline can indicate an enlarged or
     # replaced building. Ignore modest registration error and mapped neighbors.
     ring = footprint.buffer(6).difference(footprint.buffer(2))
@@ -208,7 +227,11 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
                 occupied[tuple(np.floor(row[:2]/3).astype(int))] += 1
         area = sum(n >= 3 for n in occupied.values())*9
         if area >= max(36, footprint.area*.08) and area >= ring.area*.25:
-            return None, 'roof_extends_outside_footprint'
+            # Neighbor masks and the narrow test ring often clip most of a
+            # square. Counting its full area exaggerated apparent extensions.
+            area = occupied_area((key for key,n in occupied.items() if n >= 3), ring, 3)
+            if area >= max(36, footprint.area*.08) and area >= ring.area*.25:
+                return None, 'roof_extends_outside_footprint'
 
     # Flood-fill *continuous* surfaces, then test each region's flatness.
     # A pitched roof remains connected across its small successive rises.
@@ -252,6 +275,8 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
              "cell_m": cell, "classified_fraction": float(np.mean(points[:, 3] == 6)),
              'roof_support_density_m2': supported_points/footprint.area,
              'explained_fraction': sum(len(group) for _,group in regions)/max(expected,1)}
+    if area_coverage:
+        stats['coverage_basis'] = 'footprint_area'
     if roof_planes and max(map(len, continuous)) >= len(cells)*0.85:
         group = max(continuous, key=len)
         elevations = [cells[key] for key in group]

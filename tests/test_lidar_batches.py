@@ -101,6 +101,8 @@ class BatchTests(unittest.TestCase):
                 return np.empty((0,5)),{'url':url,'points':0}
             def measure(*args,**kwargs):
                 i=current[-1]
+                if i == 0:
+                    return {}, {'footprint_roof_mismatch':1}, {'one':'footprint_roof_mismatch'}
                 return {'one':{'height_m':30,'tiers':[],'capture_year':2010+i,'coverage':1,
                                'roof_support_density_m2':2,'explained_fraction':1}}, {'height_only':1}, {}
             with patch.object(ept.Fetcher,'json',return_value=catalog),patch.object(ept,'read_ept',side_effect=read),\
@@ -113,6 +115,13 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(first['compared_sources'],5)
             self.assertEqual(first['buildings']['one']['source'],'Project_4')
             self.assertEqual(first['buildings'],second['buildings'])
+            # One survey's rejection is not a skipped building once a usable
+            # survey is selected; the resumed result must report the same.
+            self.assertEqual(first['counts']['footprint_roof_mismatch'],1)
+            for payload in (first,second):
+                self.assertEqual(payload['rejected'],{})
+                self.assertEqual(payload['rejection_counts'],{})
+                self.assertEqual(payload['conflict_buildings'],0)
 
     def test_malformed_source_does_not_abort_later_surveys(self):
         external=str(Path(__file__).resolve().parents[1]/'jarvizar_city_model/external')

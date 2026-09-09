@@ -8,11 +8,12 @@ import hashlib
 import json
 import subprocess
 import tempfile
+from collections import Counter
 from pathlib import Path
 from ..external.lidar_records import validate_records
 
 FORMAT_VERSION = 1
-ALGORITHM_VERSION = 6
+ALGORITHM_VERSION = 7
 
 
 def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True):
@@ -60,6 +61,8 @@ def measurement_summary(bundle):
             'roof_plane_buildings': sum(bool(r.get('roof_surfaces')) for r in records.values()),
             'compared_sources': payload.get('compared_sources', 0),
             'conflict_buildings': payload.get('conflict_buildings', 0),
+            'rejection_counts': dict(Counter(reason for key, reason in payload.get('rejected', {}).items()
+                                            if key not in records)),
             'failures': payload.get('failures', []), 'counts': payload.get('counts', {})}
 
 

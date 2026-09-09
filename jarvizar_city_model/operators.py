@@ -336,7 +336,15 @@ class JARVIZAR_OT_prepare_lidar(Operator):
         if result.get('compared_sources'):
             message += f"; compared {result['compared_sources']} surveys"
         if result.get('conflict_buildings'):
-            message += f"; {result['conflict_buildings']} buildings failed consistency checks"
+            reasons = result.get('rejection_counts', {})
+            labels = {'footprint_roof_mismatch': 'roof coverage',
+                      'observed_ground_in_footprint': 'ground inside footprints',
+                      'roof_extends_outside_footprint': 'outside roofs'}
+            details = [f"{reasons[key]} {label}" for key, label in labels.items() if reasons.get(key)]
+            other = result['conflict_buildings'] - sum(reasons.get(key, 0) for key in labels)
+            if other > 0:
+                details.append(f"{other} source/survey conflicts")
+            message += f"; {result['conflict_buildings']} consistency skips ({', '.join(details)})"
         if result.get('failures'):
             message += '; incomplete downloads: Prepare again to resume'
         elif not result['buildings']:

@@ -187,14 +187,73 @@ class MeasurementsTests(unittest.TestCase):
         result,reason=measure_building(box(0,0,60,60),PointIndex(points),6,3)
         self.assertIsNone(result);self.assertEqual(reason,'footprint_roof_mismatch')
 
+    def test_partial_boundary_cells_use_supported_footprint_area(self):
+        from shapely.affinity import rotate, translate
+        # A densely observed flat roof with narrow unsampled edges. Partial
+        # boundary cells outnumber their actual share of this small footprint.
+        points = np.array([(x,y,30,6,1) for x in np.arange(.65,8.9,.3)
+                           for y in np.arange(.65,8.9,.3)])
+        for angle in (0, .37):
+            rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+            moved = points.copy()
+            moved[:,:2] = moved[:,:2] @ rotation.T + [103.2,-27.4]
+            footprint = translate(rotate(box(0,0,9.5,9.5), angle, origin=(0,0), use_radians=True), 103.2,-27.4)
+            result, reason = measure_building(footprint, PointIndex(moved), 1.43, .65, ground_m=0)
+            self.assertIsNotNone(result, reason)
+            self.assertAlmostEqual(result['height_m'], 30)
+            self.assertEqual(result['coverage_basis'], 'footprint_area')
+            self.assertGreaterEqual(result['coverage'], .85)
+            self.assertFalse(result['tiers'])
+        # Removing substantial interior roof evidence still cannot pass.
+        points = points[points[:,0] < 6.5]
+        result, reason = measure_building(box(0,0,9.5,9.5), PointIndex(points), 1.43, .65, ground_m=0)
+        self.assertIsNone(result)
+        self.assertIn(reason, ('footprint_roof_mismatch', 'sparse_or_noisy_roof'))
+
+    def test_area_recovery_requires_every_footprint_component(self):
+        from shapely.geometry import MultiPolygon
+        points = np.array([(x,y,30,6,1) for x in np.arange(.65,8.9,.3)
+                           for y in np.arange(.65,8.9,.3)])
+        # The unobserved small component is only ~9% of the total footprint.
+        footprint = MultiPolygon([box(0,0,9.5,9.5), box(12,0,15,3)])
+        result, reason = measure_building(footprint, PointIndex(points), 1.43, .65, ground_m=0)
+        self.assertIsNone(result)
+        self.assertEqual(reason, 'footprint_roof_mismatch')
+
+    def test_ground_boundary_slivers_are_not_whole_empty_squares(self):
+        from jarvizar_city_model.external.lidar_measurements import observed_empty_area
+        footprint = box(1.4,1.4,31.6,31.6)
+        points = np.array([(x,y,0,2,1) for edge in (2.95,30.05)
+                           for pos in np.arange(3.3,30,.8)
+                           for x,y in ((edge,pos),(pos,edge))])
+        self.assertFalse(observed_empty_area(footprint, points, 0))
+        # Broad interior ground is still positive evidence of absence.
+        ground = np.array([(x,y,0,2,1) for x in np.arange(9.2,24,.8)
+                           for y in np.arange(9.2,24,.8)])
+        self.assertTrue(observed_empty_area(footprint, ground, 0))
+
+    def test_outside_roof_boundary_slivers_do_not_imply_a_broad_extension(self):
+        points = self.cloud(lambda x,y:30)
+        outside = np.array([(x,y,230,6,1) for edge in (-2.2,62.2)
+                            for pos in np.arange(.2,60,1)
+                            for x,y in ((edge,pos),(pos,edge))])
+        result, reason = measure_building(box(0,0,60,60), PointIndex(np.concatenate((points,outside))), 6,3)
+        self.assertIsNotNone(result, reason)
+        self.assertAlmostEqual(result['height_m'],30)
+        self.assertFalse(result['tiers'])
+
     def test_expanded_roof_rejected_but_mapped_neighbor_is_allowed(self):
         points=self.cloud(lambda x,y:30)
-        mask=(points[:,0]>60)&(points[:,0]<66)&(points[:,1]>0)&(points[:,1]<60)
+        # Two full sides exceed both area thresholds after excluding the 2 m
+        # registration margin. One side is only 240 m2, below the 288 m2 gate;
+        # full-cell overcounting previously misrepresented it as 360 m2.
+        mask=(((points[:,0]>60)&(points[:,0]<66)&(points[:,1]>0)&(points[:,1]<60)) |
+              ((points[:,1]>60)&(points[:,1]<66)&(points[:,0]>0)&(points[:,0]<60)))
         points[mask,2:4]=[230,6]
         result,reason=measure_building(box(0,0,60,60),PointIndex(points),6,3)
         self.assertIsNone(result);self.assertEqual(reason,'roof_extends_outside_footprint')
         result,_=measure_building(box(0,0,60,60),PointIndex(points),6,3,
-                                  neighboring_footprints=[box(60,0,70,60)])
+                                  neighboring_footprints=[box(60,0,70,60),box(0,60,60,70)])
         self.assertIsNotNone(result)
 
     def test_capture_epoch_and_explicit_construction_date(self):

@@ -29,6 +29,11 @@ for key,value in zip(('west','south','east','north'),data['request']['bbox']):se
 s.cache_directory=str(args.bundle.resolve().parent)
 s.terrain_source='DEM';s.terrain_resolution=192
 s.use_lidar_buildings=args.lidar
+s.lidar_minimum_width_mm=data['request']['min_width_mm']
+s.lidar_minimum_step_mm=data['request']['min_step_mm']
+s.lidar_prefer_measured=data['request'].get('prefer_lidar', True)
+s.lidar_source_url=data['request']['source_url']
+s.generate_roof_shapes=data['request'].get('roof_planes', True)
 assert bpy.ops.jarvizar.generate_model()=={'FINISHED'}
 root=bpy.data.collections['CITY_MODEL']
 counts=json.loads(root['generation_counts_json'])

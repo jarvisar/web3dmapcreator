@@ -55,7 +55,7 @@ def prepare(bundle, request, refresh=False, progress_path=None):
     from lidar_selection import choose_measurement, project_year, POLICY, CONTRADICTIONS
     from shapely import STRtree
 
-    if request["algorithm"] != 6:
+    if request["algorithm"] != 7:
         raise ValueError("Unsupported LiDAR algorithm version")
     for name, expected in request["footprint_sha256"].items():
         if name not in ("building", "building_part"):
@@ -200,14 +200,18 @@ def prepare(bundle, request, refresh=False, progress_path=None):
         else:
             rejected[identifier] = audit['reason']
             counts[audit['reason']] += 1
-    conflict_buildings = sum(key not in measured and
+    # Observation counts may include several surveys and buildings recovered by
+    # another survey. User-facing skip counts must describe final rejections.
+    rejected = {key: reason for key, reason in rejected.items() if key not in measured}
+    rejection_counts = dict(Counter(rejected.values()))
+    conflict_buildings = sum(
         (reason in CONTRADICTIONS or reason in ('newer_or_same_age_conflict',
          'conflicting_surveys_unknown_order', 'newer_survey_building_changed'))
-        for key,reason in rejected.items())
+        for reason in rejected.values())
     validate_records(measured)
     payload = {"format": 1, "request": request, "buildings": measured,
                "sources": provenance, "failures": failures, "counts": dict(counts),
-               "rejected": {key: value for key, value in rejected.items() if key not in measured},
+               "rejected": rejected, 'rejection_counts': rejection_counts,
                "prepared_at_utc": datetime.now(timezone.utc).isoformat(),
                "catalog": CATALOG_URL, "source_selection": POLICY,
                'selection':selection, 'observations':observations,
@@ -226,7 +230,7 @@ def prepare(bundle, request, refresh=False, progress_path=None):
             'roof_plane_buildings': sum(bool(r.get('roof_surfaces')) for r in measured.values()),
             "candidate_buildings": payload['candidate_buildings'],
             'compared_sources':payload['compared_sources'], 'conflict_buildings':conflict_buildings,
-            "sources": provenance, "counts": dict(counts), "failures": failures,
+            "sources": provenance, "counts": dict(counts), 'rejection_counts': rejection_counts, "failures": failures,
             "bytes_read": fetch.bytes, "prepared_at_utc": payload["prepared_at_utc"]}
 
 

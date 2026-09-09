@@ -20,7 +20,9 @@ class Driver:
 
 settings=bpy.context.scene.jarvizar_city_model
 context=SimpleNamespace(scene=bpy.context.scene,window=object(),screen=SimpleNamespace(areas=[]),window_manager=Mock())
-summary={'buildings':10,'candidate_buildings':20,'tiered_buildings':3,'roof_plane_buildings':2,'failures':[]}
+summary={'buildings':10,'candidate_buildings':20,'tiered_buildings':3,'roof_plane_buildings':2,'failures':[],
+         'conflict_buildings':7, 'rejection_counts':{'footprint_roof_mismatch':3,
+             'observed_ground_in_footprint':2,'roof_extends_outside_footprint':1,'source_height_conflict':1}}
 fake_bpy=SimpleNamespace(app=SimpleNamespace(background=False,online_access=True))
 with patch.object(module,'bpy',fake_bpy),patch.object(module,'_cache_bundle',return_value=Mock()), \
      patch.object(module,'_lidar_signature',return_value={'algorithm':2}), \
@@ -43,6 +45,8 @@ with patch.object(module,'bpy',fake_bpy),patch.object(module,'_cache_bundle',ret
             assert driver.modal(context,SimpleNamespace(type='TIMER'))=={'FINISHED'}
             assert settings.use_lidar_buildings
             assert '10/20' in settings.lidar_preparation_status
+            assert '7 consistency skips' in settings.lidar_preparation_status
+            assert '3 roof coverage, 2 ground inside footprints, 1 outside roofs, 1 source/survey conflicts' in settings.lidar_preparation_status
         assert not settings.lidar_preparing and not Driver._running
     driver=Driver();job.process.poll.return_value=None
     assert driver.execute(context)=={'RUNNING_MODAL'}

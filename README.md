@@ -311,7 +311,7 @@ height. Explicit totals include roofs, for buildings and parts. Inverted
 intervals are reported and skipped instead of inventing a taller top.
 Missing heights are never randomized.
 
-**Optional USGS LiDAR buildings (0.14.0).** Install `requirements-lidar.txt`
+**Optional USGS LiDAR buildings (0.14.2).** Install `requirements-lidar.txt`
 in the existing external downloader environment, cache buildings normally,
 then use **Buildings > USGS LiDAR Buildings > Prepare LiDAR Buildings** and
 **Generate Model**. This measures heights, printable roof tiers, and supported
@@ -336,7 +336,10 @@ batches replace the old whole-map point, area, download and time caps. Larger
 selections require more time and disk space. Preparation and generation counts
 appear in Buildings. Overlapping surveys are compared using supported roof detail,
 coverage and capture age.
-After upgrading from 0.13.0 or earlier, or changing the conflict preference or
+Consistency skips now report roof coverage, ground inside footprints and outside
+roofs separately. Boundary cells count only their tested area, reducing false
+rejections without lowering the coverage or point-support requirements.
+After upgrading from 0.14.1 or earlier, or changing the conflict preference or
 detail settings, **Prepare LiDAR Buildings again**; downloaded tiles are reused.
 Existing scenes retain explicitly saved detail values; set width/step to
 0.1/0.05 mm to use the new defaults.

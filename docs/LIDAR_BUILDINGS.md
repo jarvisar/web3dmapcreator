@@ -1,4 +1,98 @@
-# Building heights and USGS LiDAR — 0.14.0
+# Building heights and USGS LiDAR — 0.14.2
+
+## Preparation consistency checks (0.14.2)
+
+The 2026-09-09 Chicago cache (`bbox_fc293ec456a2`, 2,240 candidates,
+0.01 mm width / 0.02 mm step at the default output scale) accepted 730 buildings
+and reported **704 consistency skips**. Those were 434 `footprint_roof_mismatch`,
+158 `observed_ground_in_footprint`, and 112 `roof_extends_outside_footprint`.
+They were scan/footprint checks, not source-height conflicts: the cache already
+had Prefer LiDAR on Conflicts enabled.
+
+The general cause of recoverable failures was **overcounting clipped grid
+cells**. Roof coverage treated a partially clipped boundary cell like a full
+missing roof square. Ground and exterior-roof checks credited the full 9 m²
+square even when most of it lay outside the tested region or behind an excluded
+neighbor footprint. Narrow boundaries could therefore look like broad evidence
+of a missing or enlarged building.
+
+Targeted corrections in `external/lidar_measurements.py`:
+
+* If the existing roof-cell coverage check fails, retry the **same 85%** limit
+  with the actual supported footprint area. Every disconnected footprint
+  component must independently reach 85%; the denominator includes the full
+  footprint, including ignored boundary slivers. The existing 65% coarse gate,
+  four-cell minimum and at least three consistent returns per cell remain.
+  No missing cells are interpolated. Already accepted coverage fits are kept.
+* Ground-only evidence uses each occupied cell's intersection with the inset
+  footprint. The four-cell and 20% area requirements, ground classification,
+  roof exclusion and same-survey reference remain unchanged.
+* Exterior-roof evidence uses each occupied cell's intersection with the test
+  ring after neighboring footprints are masked. The 2 m registration margin,
+  6 m halo, matching roof elevations, three-return requirement, 36 m² / 8% of
+  footprint / 25% of ring gates all remain unchanged.
+
+Many skips remain necessary. Broad interior ground observations provide no
+reliable roof for the mapped building in that survey; missing returns alone do
+not prove demolition. Substantial unobserved roof sections, broad unexplained
+roof extensions, missing ground, noisy elevations and unresolved upper masses
+still retain source geometry. Later roof fitting, print-detail cleanup, survey
+selection and transactional closed-mesh fallback are unchanged. No new toggle,
+default change, building detector or city-specific exception was added.
+
+`download_lidar.prepare` now supplies `rejection_counts` for **unique final
+rejected buildings**. Historical `counts` still counts individual observations
+across surveys and must not be presented as the number of skipped buildings.
+`data.lidar.measurement_summary` derives the same breakdown from cached final
+rejections, and the preparation status displays the three footprint checks
+separately from source/survey conflicts.
+
+Algorithm **7** invalidates prior measurement checkpoints and results.
+**Prepare LiDAR Buildings again** after upgrading; immutable downloaded tiles
+are reused. The installed add-on and user caches were not changed during this
+investigation. Diagnostic samples, workspace cache replay and validation logs
+are in `scratchpad/lidar-consistency/`.
+
+### Validation against the user's cached selection
+
+| Result | Before | After |
+|---|---:|---:|
+| Accepted buildings | 730 | 851 |
+| Roof-coverage consistency skips | 434 | 368 |
+| Ground-inside consistency skips | 158 | 130 |
+| Exterior-roof consistency skips | 112 | 55 |
+| All consistency skips | 704 | 553 |
+
+That is **121 additional accepted buildings** and **21.4% fewer consistency
+skips**. Sixty-two new acceptances previously failed roof coverage, 58 exterior
+checks, and one complex source assembly recovered a part. Some cleared checks
+lead to a different rejection: all 28 relieved ground-area vetoes still fail
+roof coverage or density. A reduced consistency count is not itself an accepted
+building, and no absent roof is manufactured to improve the headline number.
+
+All 730 previously accepted buildings remain. **729 records are identical**;
+one adds a usable 18.6 m part height, preserving its prior measurements. The
+replay makes zero network requests and has no download failures; checkpoint
+resumption reproduces the records and counts. All 438 pure tests pass, including
+rotated boundary coverage, missing multipart sections, positive ground evidence,
+real roof extensions, neighbor masks, unique rejection counts and algorithm-6
+cache invalidation. The exterior-extension fixture now exceeds the actual area
+gates; its old one-sided case depended on counting 240 m² as 360 m².
+
+Blender geometry/roof, minimum-height and modal/cancel/status regressions pass.
+THE MART, 71 South Wacker, 311 South Wacker and Aon retain identical geometry,
+with closed, consistently wound positive-volume meshes. At this cache's fine
+step setting, 311 and Aon use the same source fallback as before. Reviewed
+source-versus-recovered-LiDAR renders show Heyworth Building and Two First
+National Building in `scratchpad/lidar-consistency/`. No physical print was made.
+
+Full-map generation uses **819 LiDAR buildings versus 704 before**, with 16,578
+tier solids, five measured sloped roofs, three restored main masses and 15 part
+heights. Six of the additional fits fail mesh construction and safely retain
+source geometry (29 geometry fallbacks total, previously 23). All **39 meshes /
+4,090,514 faces** pass manifold and winding checks, and full 3MF export succeeds.
+Only BUILDINGS and TERRAIN_SUPPORTS change; the other 37 mesh fingerprints match
+the baseline exactly.
 
 ## Current behavior: massing and LiDAR preference (0.14.0)
 
@@ -24,7 +118,7 @@ Defaults are **0.1 mm detail width / 0.05 mm roof step**, with the width control
 allowing **0.01 mm**. At the default scale these defaults correspond to about
 1.43 m width / 0.65 m rise. Survey cells have a 1.5 m sampling floor and require
 multiple consistent returns; lowering the width does not invent sub-survey
-resolution. Existing scenes keep explicitly saved values. Algorithm **6** and
+resolution. Existing scenes keep explicitly saved values. Algorithm **7** and
 the conflict preference are part of the cache signature: **prepare again after
 upgrading or changing the preference/detail settings**, reusing downloaded tiles.
 

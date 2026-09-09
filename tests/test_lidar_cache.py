@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from jarvizar_city_model.data.cache import Bounds, CacheBundle
-from jarvizar_city_model.data.lidar import load_measurements, request_signature
+from jarvizar_city_model.data.lidar import load_measurements, request_signature, measurement_summary
 
 
 class LidarCacheTests(unittest.TestCase):
@@ -69,6 +69,26 @@ class LidarCacheTests(unittest.TestCase):
         payload=json.loads(path.read_text());payload['request']['algorithm']=3
         path.write_text(json.dumps(payload))
         self.assertIn('stale',load_measurements(self.bundle,self.signature)[1])
+
+    def test_previous_area_accounting_cache_requires_new_preparation(self):
+        self.write({'one':{'height_m':30, 'tiers':[]}})
+        path = self.bundle.path/'lidar_buildings.json'
+        payload = json.loads(path.read_text())
+        payload['request']['algorithm'] = 6
+        path.write_text(json.dumps(payload))
+        self.assertIn('stale', load_measurements(self.bundle,self.signature)[1])
+
+    def test_summary_counts_final_rejections_not_observations(self):
+        self.write({'accepted':{'height_m':30, 'tiers':[]}})
+        path = self.bundle.path/'lidar_buildings.json'
+        payload = json.loads(path.read_text())
+        payload.update(counts={'footprint_roof_mismatch':7, 'height_only':1},
+                       rejected={'accepted':'footprint_roof_mismatch',
+                                 'rejected':'footprint_roof_mismatch',
+                                 'ground':'observed_ground_in_footprint'})
+        path.write_text(json.dumps(payload))
+        self.assertEqual(measurement_summary(self.bundle)['rejection_counts'],
+                         {'footprint_roof_mismatch':1, 'observed_ground_in_footprint':1})
 
     def test_empty_tier_polygon_is_not_silently_dropped_to_podium(self):
         self.write({'one':{'height_m':20,'tiers':[{'bottom_m':20,'top_m':90,
