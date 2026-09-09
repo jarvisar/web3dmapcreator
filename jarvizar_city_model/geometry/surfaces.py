@@ -16,9 +16,11 @@ optionally fills the opening is a full-depth plug rather than a floating sheet.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import copy
+import math
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
-from ..blender.mesh_utils import MeshBuilder, projected_polygon_rings
+from ..blender.mesh_utils import MeshBuilder, _prism_geometry, projected_polygon_rings
 from ..data.land import (
     DEFAULT_SURFACE_PRIORITY,
     MAXIMUM_EXTENT_RATIO,
@@ -28,12 +30,14 @@ from ..data.land import (
     is_printable_water,
     is_regional_feature,
     is_water_deck,
+    recessed_water_kind,
     surface_priority,
 )
 from .planar import EPSILON, clean_ring, densify_ring, interior_grid_points
 from .surface_priority import cut_surface_overlaps
 from .terrain_mesh import terrain_solid_geometry
 from .watermask import WaterMask
+from .water_geometry import projected_water_polygons, valid_water_polygon
 
 
 @dataclass
@@ -65,6 +69,17 @@ class SurfaceSettings:
     # Cut open water out of the terrain rather than covering it over.
     cut_from_terrain: bool = True
     minimum_cut_area_m2: float = MINIMUM_WATER_CUT_AREA_M2
+    recess_ponds_and_fountains: bool = True
+    pond_recess_depth_mm: float = 1.0
+    pond_water_thickness_mm: float = 0.8
+
+    def __post_init__(self):
+        if self.recess_ponds_and_fountains and not (
+            math.isfinite(self.pond_recess_depth_mm)
+            and math.isfinite(self.pond_water_thickness_mm)
+            and 0 < self.pond_water_thickness_mm <= self.pond_recess_depth_mm
+        ):
+            raise ValueError("Pond/fountain water thickness must be positive and not exceed recess depth")
 
 
 def _densified(ring: Sequence[Tuple[float, float]], spacing: float):
@@ -195,6 +210,12 @@ def generate_land_surfaces(
     """
     settings = settings or SurfaceSettings()
     builders: Dict[str, MeshBuilder] = {}
+    if getattr(heightfield, "basins", None):
+        # Build the surrounding park/paving at its original surface. Drape
+        # refinement through a basin would otherwise slope adjacent dry slabs
+        # into it. The exact basin footprint is removed from these slabs later.
+        heightfield = copy(heightfield)
+        heightfield.basins = []
     counts: Dict[str, int] = {}
     rejected = 0
     regional = 0
@@ -286,13 +307,15 @@ def generate_land_surfaces(
 
 @dataclass
 class WaterBody:
-    """One clipped water polygon with its solved surface and bed heights."""
+    """One validated water polygon, including its ready-to-place unit prism."""
 
     rings: List[List[Tuple[float, float]]]
     bed_mm: float
     top_mm: float
+    geometry: Tuple[List[Tuple[float, float, float]], List[Tuple[int, ...]]]
     area_m2: float = 0.0
     cut: bool = False
+    basin_kind: str = ""
 
 
 def solve_water_bodies(
@@ -313,6 +336,10 @@ def solve_water_bodies(
     bodies: List[WaterBody] = []
     skipped_non_polygon = 0
     rejected = 0
+    invalid_polygons = 0
+    failed_meshes = 0
+    basin_duplicates = 0
+    seen_basins = set()
     # Model millimetres square per real square metre, so a clipped ring can be
     # judged against a real-world threshold without reprojecting it.
     area_scale = max(
@@ -320,13 +347,37 @@ def solve_water_bodies(
     )
 
     for feature in features:
-        if not is_printable_water(feature):
+        basin_kind = recessed_water_kind(feature) if settings.recess_ponds_and_fountains else None
+        if not basin_kind and not is_printable_water(feature):
             skipped_non_polygon += 1
             continue
         added = False
-        for rings in projected_polygon_rings(feature.get("geometry") or {}, transform):
-            model_area = _ring_area(rings[0])
+        polygons, invalid = projected_water_polygons(feature.get("geometry") or {}, transform)
+        invalid_polygons += invalid
+        for polygon in polygons:
+            # Never discard a failed hole: doing so turns an island into water.
+            rings = [clean_ring(ring, EPSILON) for ring in polygon]
+            if not all(rings) or not valid_water_polygon(rings):
+                invalid_polygons += 1
+                continue
+            model_area = _ring_area(rings[0]) - sum(_ring_area(hole) for hole in rings[1:])
             if model_area < settings.minimum_area_mm2:
+                continue
+            if basin_kind:
+                def canonical(ring):
+                    start = min(range(len(ring)), key=ring.__getitem__)
+                    return tuple(ring[start:] + ring[:start])
+                key = (canonical(rings[0]), tuple(sorted(canonical(ring) for ring in rings[1:])))
+                if key in seen_basins:
+                    basin_duplicates += 1
+                    added = True
+                    continue
+            # Water is flat, so densification adds no shape and can make the
+            # triangulator fail on long, almost-collinear coastlines. Build the
+            # exact prism once, before either flattening or cutting terrain.
+            geometry = _prism_geometry([[(x, y, 0.0, 1.0) for x, y in ring] for ring in rings])
+            if not geometry[0] or not geometry[1]:
+                failed_meshes += 1
                 continue
             interior = interior_grid_points(rings, settings.water_sample_spacing_mm)
             samples = (
@@ -335,17 +386,26 @@ def solve_water_bodies(
                 else densify_ring(rings[0], settings.drape_spacing_mm)
             )
             bed = heightfield.percentile_over(samples, settings.water_level_percentile)
+            if basin_kind:
+                bank = heightfield.minimum_over(
+                    point for ring in rings for point in densify_ring(ring, settings.drape_spacing_mm)
+                )
+                bed = bank - settings.pond_recess_depth_mm
+                seen_basins.add(key)
             area_m2 = model_area / area_scale
             bodies.append(
                 WaterBody(
                     rings=[list(ring) for ring in rings],
                     bed_mm=bed,
-                    top_mm=bed + settings.water_surface_offset_mm,
+                    top_mm=bed + (settings.pond_water_thickness_mm if basin_kind
+                                  else settings.water_surface_offset_mm),
+                    geometry=geometry,
                     area_m2=area_m2,
                     cut=(
-                        settings.cut_from_terrain
+                        not basin_kind and settings.cut_from_terrain
                         and area_m2 >= settings.minimum_cut_area_m2
                     ),
+                    basin_kind=basin_kind or "",
                 )
             )
             added = True
@@ -356,6 +416,10 @@ def solve_water_bodies(
         "water_bodies": len(bodies),
         "water_rejected": rejected,
         "water_skipped_non_polygon": skipped_non_polygon,
+        "water_invalid_polygons": invalid_polygons,
+        "water_meshes_rejected": failed_meshes,
+        "water_basins": sum(bool(body.basin_kind) for body in bodies),
+        "water_basin_duplicates": basin_duplicates,
     }
 
 
@@ -363,7 +427,8 @@ def flatten_terrain_under_water(heightfield, bodies: Sequence[WaterBody]) -> int
     """Carve the terrain down to each solved water surface. Returns node count."""
     lowered = 0
     for body in bodies:
-        lowered += heightfield.lower_inside(body.rings, body.bed_mm)
+        if not body.basin_kind:
+            lowered += heightfield.lower_inside(body.rings, body.bed_mm)
     return lowered
 
 
@@ -460,17 +525,20 @@ def generate_water(
     plugs = 0
     total = max(1, len(bodies))
     for index, body in enumerate(bodies):
-        outline = _densified(body.rings[0], settings.drape_spacing_mm)
-        if outline is None:
-            continue
-        holes = [hole for hole in (clean_ring(h, EPSILON) for h in body.rings[1:]) if hole]
-        if body.cut and terrain_bottom_mm is not None:
+        if body.basin_kind:
+            bottom = body.bed_mm
+        elif body.cut and terrain_bottom_mm is not None:
             bottom = terrain_bottom_mm
-            plugs += 1
         else:
             bottom = body.top_mm - settings.water_thickness_mm
-        if builder.add_flat_prism(outline, bottom, body.top_mm, holes):
+        vertices, faces = body.geometry
+        # Reuse the topology accepted by the solver; only the two Z levels
+        # change now that terrain generation has established the model base.
+        placed = [(x, y, body.top_mm if z else bottom) for x, y, z in vertices]
+        if builder.add_raw(placed, faces):
             built += 1
+            if body.cut and terrain_bottom_mm is not None:
+                plugs += 1
         if progress_callback is not None and index % 8 == 0:
             progress_callback((index + 1) / total)
 
@@ -486,4 +554,5 @@ def generate_water(
 
     if progress_callback is not None:
         progress_callback(1.0)
-    return {"water_surfaces_built": built, "water_full_depth_plugs": plugs}
+    return {"water_surfaces_built": built, "water_full_depth_plugs": plugs,
+            "water_basin_surfaces": sum(bool(body.basin_kind) for body in bodies)}

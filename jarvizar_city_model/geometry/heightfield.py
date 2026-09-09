@@ -67,6 +67,8 @@ class ModelHeightField:
         # mask.  They are remembered so a pedestal can be built under the part
         # of them the grid could not resolve.
         self.restored_footprints: List[List[Ring]] = []
+        # Exact shallow basins retain solid ground and never enter void_mask.
+        self.basins = []
 
     @classmethod
     def build(
@@ -204,7 +206,7 @@ class ModelHeightField:
         """
         mask = self.void_mask
         if mask is None or not mask.any_wet:
-            return self.minimum_mm
+            return min([self.minimum_mm] + [floor for _bounds, _rings, floor in self.basins])
         lowest = None
         for row in range(self.rows):
             offset = row * self.columns
@@ -214,7 +216,8 @@ class ModelHeightField:
                 value = self.values[offset + column]
                 if lowest is None or value < lowest:
                     lowest = value
-        return self.minimum_mm if lowest is None else lowest
+        return min([self.minimum_mm if lowest is None else lowest]
+                   + [floor for _bounds, _rings, floor in self.basins])
 
     def _borders_dry(self, column: int, row: int) -> bool:
         mask = self.void_mask
@@ -376,7 +379,15 @@ class ModelHeightField:
         columns = self.columns
         lower = values[y0 * columns + x0] * (1.0 - tx) + values[y0 * columns + x1] * tx
         upper = values[y1 * columns + x0] * (1.0 - tx) + values[y1 * columns + x1] * tx
-        return lower * (1.0 - ty) + upper * ty
+        height = lower * (1.0 - ty) + upper * ty
+        for bounds, rings, floor in self.basins:
+            if bounds[0] <= x <= bounds[2] and bounds[1] <= y <= bounds[3] and point_in_polygon((x, y), rings):
+                height = min(height, floor)
+        return height
+
+    def register_basin(self, rings, floor_mm):
+        """Share the actual recessed floor with later ground-aligned geometry."""
+        self.basins.append((ring_bounds(rings[0]), rings, floor_mm))
 
     def minimum_over(self, points: Iterable[Tuple[float, float]]) -> float:
         samples = [self.height_mm(x, y) for x, y in points]

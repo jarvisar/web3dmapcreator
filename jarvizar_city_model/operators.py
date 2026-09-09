@@ -30,7 +30,8 @@ from .data.cache import (
 )
 from .data.dem import DEMTerrain, ElevationGrid, ElevationGridError
 from .data.lidar import request_signature, load_measurements, prepare_lidar, LidarPreparation, measurement_summary
-from .data.geojson import load_feature_collection, polygon_features
+from .data.geojson import load_feature_collection, polygon_features, first_osm_id
+from .data.land import recessed_water_kind
 from .config import preferred_python_path
 from .data.overture import (
     OvertureDownloadError,
@@ -60,6 +61,7 @@ from .geometry.surfaces import (
     solve_water_bodies,
 )
 from .geometry.vegetation import TreeSettings, generate_trees
+from .geometry.basins import recess_terrain_basins, cut_basin_land_surfaces
 
 
 def _bounds_from_settings(settings) -> Bounds:
@@ -81,7 +83,7 @@ def _cache_bundle(settings) -> CacheBundle:
 def _needs_water_data(settings) -> bool:
     """Whether the source water layer is needed, for a slab or for the cut."""
     return bool(settings.generate_water) or bool(
-        settings.cut_water_from_terrain and settings.generate_terrain
+        (settings.cut_water_from_terrain or settings.recess_ponds_and_fountains) and settings.generate_terrain
     )
 
 
@@ -100,7 +102,7 @@ def _required_types(settings) -> tuple:
         required.extend(WATER_TYPES)
     if settings.generate_land_surfaces or settings.generate_trees:
         required.extend(LAND_TYPES)
-    if _cuts_water(settings):
+    if _cuts_water(settings) or (settings.recess_ponds_and_fountains and settings.generate_terrain):
         # Piers, quays, and breakwaters are mapped here; the cut needs them to
         # know which ground out over the water is real.
         required.extend(INFRASTRUCTURE_TYPES)
@@ -547,6 +549,9 @@ class JARVIZAR_OT_generate_model(Operator):
                 water_thickness_mm=settings.water_thickness_mm,
                 cut_from_terrain=settings.cut_water_from_terrain,
                 minimum_cut_area_m2=settings.minimum_water_cut_area_m2,
+                recess_ponds_and_fountains=(settings.recess_ponds_and_fountains and settings.generate_terrain),
+                pond_recess_depth_mm=settings.pond_recess_depth_mm,
+                pond_water_thickness_mm=settings.pond_water_thickness_mm,
             )
 
             # Water is solved before anything else reads the height field.  The
@@ -561,8 +566,17 @@ class JARVIZAR_OT_generate_model(Operator):
             # turned the blue part off.
             water_bodies = []
             if _needs_water_data(settings):
+                water_features = _load_polygons(bundle, "water")
+                if surface_settings.recess_ponds_and_fountains:
+                    known = {first_osm_id(f.get("properties") or {}) for f in water_features}
+                    for feature in _load_polygons(bundle, "infrastructure"):
+                        osm = first_osm_id(feature.get("properties") or {})
+                        if recessed_water_kind(feature) and (not osm or osm not in known):
+                            water_features.append(feature)
+                            if osm:
+                                known.add(osm)
                 water_bodies, water_counts = solve_water_bodies(
-                    _load_polygons(bundle, "water"),
+                    water_features,
                     transform,
                     heightfield,
                     surface_settings,
@@ -611,6 +625,10 @@ class JARVIZAR_OT_generate_model(Operator):
                 # The terrain measured its own surface, so a water plug and the
                 # rim use the underside the terrain actually has.
                 terrain_bottom_mm = counts["terrain_bottom_z_mm"]
+                counts.update(recess_terrain_basins(
+                    heightfield, water_bodies, hierarchy["terrain"], settings.base_thickness_mm,
+                ))
+                terrain_bottom_mm = counts.get("terrain_bottom_z_mm", terrain_bottom_mm)
                 if settings.generate_border_rim:
                     counts.update(
                         generate_border_rim(
@@ -658,6 +676,11 @@ class JARVIZAR_OT_generate_model(Operator):
                     )
                 )
             progress(0.20)
+
+            counts.update(cut_basin_land_surfaces(
+                hierarchy["land_surfaces"], water_bodies,
+                surface_settings.surface_rise_mm + surface_settings.surface_embed_mm,
+            ))
 
             if settings.generate_water:
                 counts.update(

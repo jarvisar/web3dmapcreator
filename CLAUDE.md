@@ -109,6 +109,57 @@ before force-closing** (he has said yes once; that was not standing permission).
 
 ## Current state
 
+- **Unreleased water changes in the working tree (2026-09-09; not installed):**
+  coastline clipping preserves land holes crossing the crop, splits disconnected
+  water components, and rejects incomplete/invalid polygons atomically. Water
+  prism topology is prepared before terrain subtraction and reused for the fill.
+  Clearwater's five discarded land holes and San Francisco's self-intersecting
+  clipped boundary are fixed; 427 pure tests and full Clearwater/SF/Chicago/
+  Cincinnati mesh audits passed for that change. See `docs/WATER_CUTOUTS.md`.
+
+  **Ponds/fountains now have a configurable shallow basin mode, enabled by
+  default.** Ground Surfaces → Ponds and Fountains exposes
+  `recess_ponds_and_fountains`, `pond_recess_depth_mm` (1.0), and
+  `pond_water_thickness_mm` (0.8). The UI shows the resulting 0.2 mm water drop;
+  thickness must be positive and no greater than depth. Water stays level,
+  referenced to the lowest sampled bank; higher banks naturally have a larger
+  drop. Connected overlapping basin parts share the lowest bank reference.
+
+  Selection uses OSM `amenity=fountain`, `natural=water` + `water=pond`, and
+  normalized pond/fountain class/subtype. Raw `source_tags` key/value arrays,
+  maps, and importer `tags` are supported. Do not infer ponds from names or area.
+  Rivers, streams, lakes, reservoirs, canals, ocean/coastline water retain their
+  existing policy. Include polygon fountains from infrastructure, deduplicating
+  OSM identities shared with water and identical projected basin footprints.
+  Point/line fountains have no inferred outline. The existing 0.25 mm² minimum
+  water surface area remains; basins bypass the 5,000 m² through-cut threshold.
+
+  `geometry/basins.py` cuts finite-depth recesses in the built terrain using
+  Blender 3.6's Exact Boolean on a temporary copy. This preserves small basins
+  below grid resolution and islands. Check closure AND ray-test the requested
+  floors before committing; failed cuts leave the original mesh intact. Extend
+  the underside if necessary to retain `base_thickness_mm` below basin floors.
+  Basin floors register on the shared height field without entering `void_mask`.
+  Pond/fountain overlaps with other water types are skipped and counted, so an
+  ambiguous reservoir/fountain overlap cannot alter the reservoir's policy or
+  leave its old surface hiding the recess.
+  Land slabs use the original terrain heights and then have basin footprints
+  removed, so park/paving cannot cover the water or sag around its edge.
+  Disabling Water keeps the basin; disabling the basin mode restores legacy
+  pond/fountain handling. Terrain must be enabled for basin mode.
+
+  Validation for this mode: 432 pure tests; `tests/blender_pond_basins.py`
+  checks dimensions, sub-cell/clipped/holed basins, unchanged river through-cuts,
+  slab exclusion, slope reference, duplicate handling, transactional failure,
+  toggle/data requirements and saved-scene persistence. Blender smoke and
+  existing water-cut regressions pass. Full cached Cincinnati generation also
+  passes: 14 basin parts / 12 connected groups, 2 land-surface objects cleared
+  over basins, 42 closed meshes / 2,256,320 faces. Real cached geometry audits
+  additionally pass Clearwater (3 basins / 123 floor-and-water probes), San
+  Francisco (16 / 238), and Chicago (22 / 590; 2 ambiguous overlaps skipped).
+  `tests/blender_pond_basins_live.py` reproduces those checks. A synthetic basin
+  render is `scratchpad/pond-basin-preview.png`; diagnostics: `scratchpad/pond-*`.
+
 - Repository/release version is **0.14.0**, LiDAR algorithm **6**. At the start
   of this completion pass (2026-09-09), the user-installed **0.13.0** Python
   files matched the working tree exactly. **0.14.0 installed 2026-09-09** at

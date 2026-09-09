@@ -523,6 +523,24 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         soft_max=10.0,
         precision=2,
     )
+    recess_ponds_and_fountains: BoolProperty(
+        name="Recess Ponds and Fountains",
+        description=(
+            "Keep a solid basin beneath mapped ponds and fountains instead of a "
+            "through-cut. Disable to restore their previous water behavior"
+        ),
+        default=True,
+    )
+    pond_recess_depth_mm: FloatProperty(
+        name="Recess Depth (mm)",
+        description="Depth of pond and fountain basins below the local bank",
+        default=1.0, min=0.01, soft_max=5.0, precision=2,
+    )
+    pond_water_thickness_mm: FloatProperty(
+        name="Basin Water Thickness (mm)",
+        description="Water thickness from the basin floor; must not exceed recess depth",
+        default=0.8, min=0.01, soft_max=5.0, precision=2,
+    )
 
     # ----------------------------------------------------------- land surface
     surface_priority_order: StringProperty(

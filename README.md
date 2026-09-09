@@ -440,8 +440,15 @@ the shoreline's exact crossing of each grid line is recorded when the polygon
 is rasterised, and every cell the shore passes through is clipped against it.
 Overlapping water polygons are combined before choosing those crossings, so
 an edge inside another water body cannot leave a false strip of terrain.
-Small water — ponds, fountain basins, rooftop pools — stays a surface slab,
-because a hole a few tenths of a millimetre across only weakens the print.
+**Ponds and fountains have shallow basins by default.** Under Ground Surfaces →
+Ponds and Fountains, enable/disable the mode and set recess depth (1.0 mm) and
+water thickness (0.8 mm). The water top is therefore 0.2 mm below the lowest
+sampled local bank. Water stays level; higher banks have a larger drop. The
+terrain retains a solid floor, and park/paving surfaces are excluded from the
+basin. Turning Water off leaves the empty recess; disabling basin mode restores
+the previous behavior. Only mapped pond/fountain polygons qualify, including
+OSM tags retained by the importer. Other water keeps the existing cut/slab
+thresholds, and swimming pools remain excluded.
 
 **Ground is kept under anything the cut leaves standing over the opening.**
 Removing the river also removes the ground under every bridge that crosses it,

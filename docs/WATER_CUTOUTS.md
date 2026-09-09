@@ -1,4 +1,156 @@
-# Water cutout investigation (0.9.7)
+# Water and coastline geometry
+
+## Pond and fountain basins
+
+Ground Surfaces → **Ponds and Fountains** offers an enabled-by-default
+**Recess Ponds and Fountains** toggle and two model-millimetre dimensions:
+
+| Setting | Default |
+| --- | ---: |
+| Recess depth below the local bank | 1.0 mm |
+| Water thickness above the basin floor | 0.8 mm |
+| Resulting water surface below the bank (depth minus thickness) | 0.2 mm |
+
+The water stays level, using the lowest sampled bank height (including island
+banks) as the local reference. On a slope the drop below higher banks is larger.
+Overlapping mapped parts of one basin share the lowest reference. Water
+thickness must be positive and no greater than depth; the UI shows the resulting
+drop and identifies invalid dimensions. The base extends downward if needed
+to preserve the configured solid base thickness beneath the recessed floor.
+
+Selection primarily uses OSM `source_tags`: `amenity=fountain` or
+`natural=water` + `water=pond`, with normalized pond/fountain class/subtype as
+fallback. Other explicit water types do not become basins; neither names nor
+small area imply a pond. Infrastructure fountain polygons are included, with
+OSM-identity and identical-footprint deduplication across layers. Points and
+lines have no invented basin. The existing minimum surface area still applies.
+
+Basins retain solid floors rather than entering the river/ocean void mask.
+Their exact prepared polygons cut the built terrain with a finite-depth Exact
+Boolean, so a basin smaller than one terrain cell still appears. Construction
+uses a temporary mesh and checks closure plus actual floor heights before
+committing. Islands and clipped outlines survive. Basins overlapping another
+water type are skipped and counted, preserving that type's existing behavior
+and preventing its surface from hiding the recessed fill.
+Park/paving footprints are removed over basins, even with water visibility off.
+
+Turning off **Water** hides the fill while retaining the recess. Turning off
+**Recess Ponds and Fountains** restores the previous pond/fountain rules.
+**Cut Water From Terrain** continues to control other water and its existing
+minimum cut area. Terrain must be enabled for the new basin mode.
+
+Run `tests/blender_pond_basins.py` inside Blender for exact dimension, island,
+sub-cell, crop, slope, overlap, failure, UI/toggle and scene-persistence checks.
+The new classification tests are in `tests/test_land.py`. Generation reports
+`water_basins`, `water_recesses_built`, `water_basin_surfaces`,
+`water_basin_duplicates`, `water_basin_groups`, `water_basin_other_water_skipped`,
+and `land_surface_basin_cuts`.
+
+Validation: 432 pure tests, Blender smoke, focused basin/settings tests and the
+existing water-cut regression pass. Full Cincinnati generation has 14 basin
+parts in 12 groups and 42 closed meshes. `tests/blender_pond_basins_live.py`
+checks actual cached DEM and water/infrastructure geometry: Clearwater has 3
+basins / 123 floor-and-fill probes, San Francisco 16 / 238, and Chicago 22 /
+590. Chicago skips two ambiguous overlaps with other mapped water. Each built
+basin's water is 0.8 mm thick and its floor matches the solved local reference.
+
+## Cropped islands and missing coastal water (2026-09-09)
+
+The cached source polygons in both reported selections are valid. The defects
+were introduced after loading the Overture water layer:
+
+- Clearwater `-82.83485,27.96044,-82.79572,27.98152`: the ocean polygon has
+  783 land holes. Five intersect the model frame; the shared ring projector
+  discarded them because they were no longer closed interior holes. That
+  replaced **4,379.15 mm² of model land (893,704 m² at 0.07 mm/m)** with water.
+  One completely enclosed island was already retained.
+- San Francisco `-122.44417,37.76678,-122.37834,37.81745`: clipping the shell
+  as a single ring created an overlapping return edge on the west frame. The
+  clipped ring self-intersected at model `(-203.00958, 105.87386)`. Terrain
+  subtraction accepted it, but the later densified water prism failed mesh
+  construction. The missing coastal body covers **54,191.73 mm²** in the model.
+  The raw undensified ring happened to triangulate, hiding the clipping defect
+  until the extra boundary vertices were introduced.
+
+`geometry/water_geometry.py` validates each Polygon member, including all its
+holes, and intersects the complete area with the model rectangle. It retains
+directed source edges inside the frame and closes them with only the frame
+intervals inside that polygon. Crossing holes become notches; concave shells
+and land strips that cross the frame may produce several independent water
+polygons. Enclosed holes are assigned to their containing component. Source
+winding is normalized by ring role, not used to guess land/water tags.
+
+Malformed coordinates, unclosed rings, self-intersections, orphan/overlapping
+holes, and ambiguous boundary graphs reject the affected Polygon. A bad hole
+is never dropped while its surrounding water is kept. Valid siblings of a
+MultiPolygon still work. This is an area clip, not reconstruction of incomplete
+coastlines or inference of water from lines.
+
+`solve_water_bodies` continues to use `is_printable_water`. It cleans and
+validates the clipped rings, then constructs a closed unit-height prism with
+the existing mesh builder **before** flattening or subtracting terrain. Only
+accepted bodies reach either operation. `generate_water` reuses that exact
+topology at the solved water height and terrain bottom. Flat water requires no
+boundary densification. Minimum-area/cut thresholds use net water area, with
+islands subtracted. Counts include `water_invalid_polygons` and
+`water_meshes_rejected`; surface/plug counts measure successfully added meshes.
+
+The shared non-water projector, tag classification, physical deck restoration,
+building foundations, bridge support logic, and water-mask interval composition
+are unchanged. Turning off water visibility still leaves intentional cutouts.
+The clipper and validation use the standard library; Shapely was used only as
+an independent test oracle in the downloader environment.
+
+### Coastline detail
+
+The source has detailed shoreline and pier outlines. The self-intersecting
+frame spur was a clipping bug; remaining small irregularities in the terrain
+edge are largely its finite grid approximation, not missing source vertices.
+Grid-line intersections retain exact shore positions, but a cell joins them
+with straight edges and retains the existing 2% node inset. Multiple turns,
+narrow channels, or tiny islands within one cell cannot all be represented.
+San Francisco's cell spacing is about 2.13 mm at resolution 192, 1.59 mm at 256,
+and 0.80 mm at 512. Comparing those footprints to the source shows the error
+shrinking with resolution. The fix does not smooth away mapped coastline or
+alter the terrain/bridge resolution policy.
+
+### Coastline regressions
+
+`tests/test_water_geometry.py` covers each frame edge, corners, enclosing and
+enclosed holes, split components, reversed winding, coincident edges, the
+self-intersecting crop-spur pattern, malformed rings and MultiPolygon isolation.
+`tests/blender_water_cut.py` additionally ray-tests terrain and water over
+cropped islands, rejects mesh failures before terrain mutation, and verifies
+net-area thresholds alongside the existing harbor/support tests.
+
+The cached real-data audit is reproducible without downloading:
+
+```text
+blender --background --factory-startup --python-exit-code 1 --python tests/blender_coastline_live.py -- --cache <cache-root> --area clearwater
+blender --background --factory-startup --python-exit-code 1 --python tests/blender_coastline_live.py -- --cache <cache-root> --area sf
+```
+
+Optional `--render <image.png>` and `--report <report.json>` save an overhead
+model preview and mesh/probe results. The test runs full generation, asserts
+every accepted body has a water surface, ray-tests source land/water locations,
+and checks every generated mesh for closure and consistent winding.
+
+The full pure suite passes 427 tests. Independent Shapely intersections match
+all printable source polygons in both selections to less than 1e-5 mm², and
+450 randomized valid concave polygon clips also match. Local diagnostic data,
+mesh audit reports and previews are in `scratchpad/*coast*`.
+
+Full generation checks passed for Clearwater (28 closed, consistently wound
+meshes / 777,742 faces; 2 water bodies and surfaces) and San Francisco (35
+meshes / 4,144,483 faces; 11 bodies and surfaces). The six Clearwater land
+probes cover all five formerly discarded islands plus the already preserved
+island; neighboring channels and three San Francisco bay probes have water
+surfaces and no terrain. Neither selection rejected water for topology or
+mesh failure. The existing Chicago harbor regression passes all four probes
+with 40 closed meshes, and Cincinnati passes with 42 closed meshes. Blender
+smoke, focused water geometry and ground-support regressions also pass.
+
+## Earlier Chicago cutout investigation (0.9.7)
 
 The Chicago selection `-87.64875,41.84962,-87.59743,41.89455` already contained
 the missing harbor water in its cached Overture polygons. The failure happened
@@ -104,7 +256,7 @@ by the production fix. Coastline reconstruction, shared polygon projection,
 and mesh construction have not been replaced.
 
 The terrain still has finite grid resolution: multiple shore turns or narrow
-openings inside one cell can be approximated. The shared polygon projector
-also still drops holes crossing the crop boundary; correcting those into open
-notches requires a separate clipping change. This release does not infer water
-where the input lacks a usable polygon.
+openings inside one cell can be approximated. The shared non-water polygon
+projector still drops holes crossing the crop boundary; water now uses the
+complete-area clip described above. Water is not inferred where the input
+lacks a usable polygon.

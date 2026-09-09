@@ -18,6 +18,7 @@ from jarvizar_city_model.data.land import (
     is_regional_feature,
     is_tree_point,
     is_water_deck,
+    recessed_water_kind,
     surface_priority,
     tree_point_coordinates,
 )
@@ -116,6 +117,47 @@ class WaterTests(unittest.TestCase):
             "geometry": {"type": "LineString", "coordinates": [[0, 0], [1, 1]]},
         }
         self.assertFalse(is_printable_water(feature))
+
+
+class RecessedWaterTests(unittest.TestCase):
+    def test_osm_pond_and_fountain_tags(self):
+        for field in ('source_tags', 'tags'):
+            for tags, expected in (({'natural': 'water', 'water': 'pond'}, 'pond'),
+                                   ({'amenity': 'fountain'}, 'fountain')):
+                for representation in (tags, list(tags.items()),
+                                       [{'key': k, 'value': v} for k, v in tags.items()]):
+                    with self.subTest(field=field, tags=representation):
+                        self.assertEqual(recessed_water_kind(polygon(0,0,1,1, **{field: representation})), expected)
+        self.assertEqual(recessed_water_kind(polygon(0,0,1,1, natural='water', water='pond')), 'pond')
+        self.assertEqual(recessed_water_kind(polygon(0,0,1,1, amenity='fountain')), 'fountain')
+
+    def test_normalized_importer_class_and_subtype(self):
+        for kind in ('pond', 'fountain'):
+            for props in ({'class': kind}, {'subtype': kind}, {'class': 'water', 'subtype': kind}):
+                self.assertEqual(recessed_water_kind(polygon(0,0,1,1, **props)), kind)
+
+    def test_other_water_types_are_never_selected_by_size_or_name(self):
+        for kind in ('river', 'stream', 'lake', 'reservoir', 'canal', 'ocean', 'bay',
+                     'sea', 'coastline', 'strait', 'drain', 'ditch', 'swimming_pool', 'water'):
+            self.assertIsNone(recessed_water_kind(polygon(0,0,.001,.001, **{
+                'class': kind, 'subtype': kind, 'names': {'primary': 'Fountain Pond'},
+            })))
+
+    def test_explicit_osm_type_overrides_fallback(self):
+        self.assertIsNone(recessed_water_kind(polygon(0,0,1,1, **{
+            'class': 'pond', 'source_tags': [['natural','water'],['water','lake']],
+        })))
+        self.assertIsNone(recessed_water_kind(polygon(0,0,1,1, **{
+            'class': 'fountain', 'source_tags': [['waterway','river']],
+        })))
+        self.assertEqual(recessed_water_kind(polygon(0,0,1,1, **{
+            'class': 'water', 'source_tags': [['natural','water'],['water','pond']],
+        })), 'pond')
+
+    def test_fountain_points_and_lines_have_no_invented_basin(self):
+        for kind in ('Point', 'LineString'):
+            self.assertIsNone(recessed_water_kind({'properties': {'amenity': 'fountain'},
+                                                 'geometry': {'type': kind, 'coordinates': []}}))
 
 
 class WaterDeckTests(unittest.TestCase):

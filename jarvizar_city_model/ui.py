@@ -183,6 +183,20 @@ class JARVIZAR_PT_surfaces(Panel):
         column.prop(settings, "minimum_water_cut_area_m2")
         column.prop(settings, "support_structures_over_water")
         layout.prop(settings, "water_thickness_mm")
+        box = layout.box()
+        box.label(text="Ponds and Fountains")
+        box.prop(settings, "recess_ponds_and_fountains")
+        column = box.column(align=True)
+        column.enabled = settings.recess_ponds_and_fountains and settings.generate_terrain
+        column.prop(settings, "pond_recess_depth_mm")
+        column.prop(settings, "pond_water_thickness_mm")
+        gap = settings.pond_recess_depth_mm - settings.pond_water_thickness_mm
+        row = column.row()
+        row.alert = gap < -1e-6
+        row.label(text=(f"Water below bank: {max(0.0, gap):.2f} mm" if gap >= -1e-6
+                        else "Water thickness must not exceed depth"))
+        if settings.recess_ponds_and_fountains and not settings.generate_terrain:
+            box.label(text="Enable Terrain to build basins")
         layout.separator()
         layout.label(text="Trees")
         layout.prop(settings, "include_mapped_trees")

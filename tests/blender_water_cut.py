@@ -10,6 +10,7 @@ independent of geographic projection and do not require downloaded data.
 import sys
 from collections import Counter
 from pathlib import Path
+from unittest.mock import patch
 
 import bpy
 from mathutils.bvhtree import BVHTree
@@ -24,7 +25,9 @@ from jarvizar_city_model.geometry.support import SupportBuilder
 from jarvizar_city_model.geometry.surfaces import (
     SurfaceSettings,
     cut_water_from_terrain,
+    flatten_terrain_under_water,
     generate_land_surfaces,
+    generate_water,
     solve_water_bodies,
 )
 
@@ -180,9 +183,56 @@ def test_overlapping_water_uses_the_complete_union():
             assert hits(tree, (1.9, 8.25)), ("Union removed the dry bank", obj.name)
 
 
+def test_cropped_islands_and_water_mesh_share_the_solved_area():
+    field = flat_field()
+    water = feature('lake', rectangle(-5, -5, 25, 25),
+                    rectangle(8, -2, 12, 22), rectangle(2, 6, 4, 8))
+    bodies, stats = solve_water_bodies([water], FixtureTransform(), field)
+    assert len(bodies) == 2 and stats['water_invalid_polygons'] == 0, stats
+    cut_water_from_terrain(field, bodies)
+    terrain, bottom = build_terrain(field, 'cropped_islands_terrain')
+    target = collection('cropped_islands_water')
+    stats = generate_water(bodies, target, None, terrain_bottom_mm=bottom)
+    assert stats['water_surfaces_built'] == stats['water_full_depth_plugs'] == 2, stats
+    assert_closed(target.objects[0])
+    terrain_tree, water_tree = mesh_tree(terrain), mesh_tree(target.objects[0])
+    for point in ((10.1, 1.1), (10.1, 19.1), (3.1, 7.1)):
+        assert hits(terrain_tree, point) and not hits(water_tree, point), ('Land flooded', point)
+    for point in ((5.1, 7.1), (15.1, 7.1), (3.1, 12.1)):
+        assert not hits(terrain_tree, point) and hits(water_tree, point), ('Water missing', point)
+
+
+def test_unusable_water_cannot_flatten_or_cut_terrain():
+    water = feature('lake', rectangle(1, 1, 19, 19))
+    field = flat_field()
+    field.values = [float(i % 5) for i in range(41 * 41)]
+    before = list(field.values)
+    with patch('jarvizar_city_model.geometry.surfaces._prism_geometry', return_value=([], [])):
+        bodies, stats = solve_water_bodies([water], FixtureTransform(), field)
+    assert not bodies and stats['water_meshes_rejected'] == 1, stats
+    assert flatten_terrain_under_water(field, bodies) == 0
+    assert cut_water_from_terrain(field, bodies)['water_cut_bodies'] == 0
+    assert field.values == before and field.void_mask is None
+    # Dropping this incomplete hole would cut almost the whole model.
+    water['geometry']['coordinates'].append([(4, 4), (15, 4), (15, 15)])
+    bodies, stats = solve_water_bodies([water], FixtureTransform(), field)
+    assert not bodies and stats['water_invalid_polygons'] == 1, stats
+
+
+def test_cut_threshold_uses_water_area_excluding_islands():
+    field = flat_field()
+    water = feature('lake', rectangle(1, 1, 19, 19), rectangle(1.1, 1.1, 18.9, 18.9))
+    bodies, stats = solve_water_bodies([water], FixtureTransform(), field)
+    assert len(bodies) == 1 and not bodies[0].cut, stats
+    assert bodies[0].area_m2 < 5000
+
+
 def main():
     test_marina_does_not_refill_the_harbor()
     test_overlapping_water_uses_the_complete_union()
+    test_cropped_islands_and_water_mesh_share_the_solved_area()
+    test_unusable_water_cannot_flatten_or_cut_terrain()
+    test_cut_threshold_uses_water_area_excluding_islands()
     print("JARVIZAR_WATER_CUT_OK")
 
 
