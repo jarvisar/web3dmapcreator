@@ -909,8 +909,8 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
     bl_idname = "jarvizar.export_3mf"
     bl_label = "Export 3MF for Bambu"
     bl_description = (
-        "Write every generated object to one 3MF object so Bambu Studio keeps "
-        "them aligned, at true millimetres. Needs the io_mesh_3mf add-on"
+        "Export generated geometry inside cutout's inner opening as one aligned "
+        "3MF assembly, at true millimetres. Needs the io_mesh_3mf add-on"
     )
     bl_options = {"REGISTER"}
 
@@ -939,48 +939,60 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
         # the lot to one empty makes the exporter write them as components of a
         # single object instead, which arrives as one object with one part per
         # collection and every relative height intact.
-        holder = bpy.data.objects.new("CITY_MODEL_EXPORT", None)
-        scene.collection.objects.link(holder)
-        holder.matrix_world = mathutils.Matrix.Identity(4)
+        from .blender.export_cutout import export_geometry
 
-        previous_parents = [(obj, obj.parent, obj.matrix_parent_inverse.copy()) for obj in objects]
-        previous_selection = [obj for obj in scene.objects if obj.select_get()]
+        holder = None
+        previous_selection = [obj for obj in context.view_layer.objects if obj.select_get()]
         previous_active = context.view_layer.objects.active
         scale = _millimetre_export_scale(scene)
         try:
-            for obj in objects:
-                obj.parent = holder
-                obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
-            for obj in scene.objects:
-                obj.select_set(False)
-            # Children are written recursively, but the material writer only
-            # looks at what is selected, so select them too or the parts lose
-            # their colours.
-            for obj in objects:
-                obj.select_set(True)
-            holder.select_set(True)
-            context.view_layer.objects.active = holder
-            bpy.ops.export_mesh.threemf(
-                filepath=self.filepath,
-                use_selection=True,
-                global_scale=scale,
-            )
+            with export_geometry(context, objects) as (parts, stats, opening):
+                if not parts:
+                    raise ValueError("Nothing to export inside cutout's inner opening")
+                holder = bpy.data.objects.new("CITY_MODEL_EXPORT", None)
+                scene.collection.objects.link(holder)
+                holder.matrix_world = mathutils.Matrix.Identity(4)
+                for obj in parts:
+                    world = obj.matrix_world.copy()
+                    obj.parent = holder
+                    obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+                    obj.matrix_world = world
+                for obj in context.view_layer.objects:
+                    obj.select_set(False)
+                # Children are recursive, but materials are selection-only.
+                for obj in parts:
+                    obj.select_set(True)
+                holder.select_set(True)
+                context.view_layer.objects.active = holder
+                context.view_layer.update()
+                result = bpy.ops.export_mesh.threemf(
+                    filepath=self.filepath,
+                    use_selection=True,
+                    global_scale=scale,
+                )
+                if 'FINISHED' not in result:
+                    raise RuntimeError("The 3MF writer cancelled the export")
+                part_count = len(parts)
+                crop_status = ""
+                if opening:
+                    crop_status = (f"; cutout: {stats['inside_objects']} inside objects, "
+                                   f"{stats['outside_objects']} outside objects skipped, "
+                                   f"{stats['crossing_shells']} crossing solids clipped")
+                    print(f"3MF cutout: {dict(stats)}")
         except Exception as exc:  # noqa: BLE001 - reported to the user
             settings.last_status = f"3MF export failed: {exc}"
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         finally:
-            for obj, parent, inverse in previous_parents:
-                obj.parent = parent
-                obj.matrix_parent_inverse = inverse
-            bpy.data.objects.remove(holder, do_unlink=True)
-            for obj in scene.objects:
+            if holder is not None:
+                bpy.data.objects.remove(holder, do_unlink=True)
+            for obj in context.view_layer.objects:
                 obj.select_set(obj in previous_selection)
             context.view_layer.objects.active = previous_active
 
         settings.last_status = (
-            f"Exported {len(objects)} parts as one 3MF object "
-            f"(scale {scale:g}) to {Path(self.filepath).name}"
+            f"Exported {part_count} parts as one 3MF object "
+            f"(scale {scale:g}) to {Path(self.filepath).name}{crop_status}"
         )
         self.report({"INFO"}, settings.last_status)
         return {"FINISHED"}

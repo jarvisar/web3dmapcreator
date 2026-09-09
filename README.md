@@ -177,6 +177,28 @@ terrain plus the 2 mm border rim. Exporting by hand instead needs **Scale
 It needs the `io_mesh_3mf` add-on enabled, and only exports what the add-on
 generated, so a leftover default cube in the scene is left out.
 
+To crop the export, name a mesh frame **`cutout`**. Its **inner closed opening**
+defines the export boundary; the frame itself is excluded. Move, rotate, scale,
+or edit the frame before exporting. The opening extends through the model's
+height along the frame's thickness direction, so the frame's height above the
+map does not trim buildings. The dimensions come from the evaluated frame
+geometry, including modifiers. A 170.5 × 119.5 opening therefore bounds an
+export of that size when the model spans all four edges; the export does not
+resize a smaller model to fill it.
+
+Inside geometry is retained, outside geometry is skipped, and crossing solids
+are clipped and capped on temporary copies. Rectangles and other convex
+openings use plane cuts. Concave openings use a slower intersection of just
+the crossing solids with a prism of the opening, with Boolean Self Intersection
+disabled. Parts, materials, colours, and their relative placement are retained;
+scene geometry, parenting, and selection are restored after export or failure.
+
+The frame must have one unambiguous through opening. Bevelled or tapered
+profiles use their tightest nested opening; incompatible profiles or multiple
+openings report an error. A cut that cannot preserve a closed solid also stops
+the export and identifies the source object. With no `cutout` object, the
+existing full-model export remains available. See [export crop details](docs/EXPORT_CUTOUT.md).
+
 ## Generate a model
 
 1. Enter the bbox as decimal degrees in west, south, east, north order. The

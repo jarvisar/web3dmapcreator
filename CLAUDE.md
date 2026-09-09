@@ -109,6 +109,28 @@ before force-closing** (he has said yes once; that was not standing permission).
 
 ## Current state
 
+- **0.14.1 export cutout (2026-09-09; not installed):** `cutout` is a mesh
+  frame whose evaluated inner through opening bounds Export 3MF for Bambu.
+  The frame never exports and is never used as a subtraction mesh. Temporary
+  export copies preserve world placement, materials, selection and originals.
+  Bounds reject whole outside objects; merged meshes are classified by closed
+  shell. Batch outside-shell removal and isolate crossing shells before any
+  BMesh operators: operator setup scans the entire BMesh even with restricted
+  input geometry. Rectangles/convex openings use capped plane cuts; concave
+  openings intersect only crossing shells with the opening prism, Self
+  Intersection off. Nested cap loops preserve holes, independent overlapping
+  solids never weld, and cap triangulation retains collinear wall vertices.
+  Invalid frames or unclosable cuts abort rather than exporting uncropped.
+  No cutout retains full-model export. See `docs/EXPORT_CUTOUT.md` and
+  `tests/blender_export_cutout*.py`. Cached Cincinnati cropping takes ~7.1 s:
+  149,308 outside shells skipped, 65,956 inside shells unchanged, 567 clipped,
+  38 closed meshes / ~698k faces. A 17-degree rotated crop also passes
+  (1,021 crossing shells, ~7.2 s); full 3MF export ~25.5 s including clipping.
+  432 pure tests and 15 focused Blender tests pass. The 170.5 × 119.5 mm
+  archive retains 13 materials; Bambu round-trip keeps 1 item / 38 parts and
+  reports zero repairs. No physical print or full slicing run was performed.
+  Archive, preview and fixture are in `scratchpad/export-cutout/`.
+
 - **Unreleased water changes in the working tree (2026-09-09; not installed):**
   coastline clipping preserves land holes crossing the crop, splits disconnected
   water components, and rejects incomplete/invalid polygons atomically. Water
@@ -160,7 +182,7 @@ before force-closing** (he has said yes once; that was not standing permission).
   `tests/blender_pond_basins_live.py` reproduces those checks. A synthetic basin
   render is `scratchpad/pond-basin-preview.png`; diagnostics: `scratchpad/pond-*`.
 
-- Repository/release version is **0.14.0**, LiDAR algorithm **6**. At the start
+- Previously released **0.14.0**, LiDAR algorithm **6**. At the start
   of this completion pass (2026-09-09), the user-installed **0.13.0** Python
   files matched the working tree exactly. **0.14.0 installed 2026-09-09** at
   the user's request with Blender closed. All 51 archive files, installed
