@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 from collections import Counter
@@ -89,7 +90,7 @@ class LidarPreparation:
         helper = Path(__file__).resolve().parents[1] / 'external' / 'download_lidar.py'
         command = [str(python_path), str(helper), '--bundle', str(bundle.path),
                    '--request', str(request), '--progress', str(self.progress_path),
-                   '--download-workers', str(download_workers)]
+                   '--download-workers', str(download_workers), '--parent-pid', str(os.getpid())]
         if refresh:
             command.append('--refresh')
         try:
@@ -120,7 +121,18 @@ class LidarPreparation:
 
     def cancel(self):
         if self.process.poll() is None:
-            self.process.terminate()
+            if os.name == 'nt':
+                # A Windows venv launcher has a separate real Python child.
+                try:
+                    result = subprocess.run(['taskkill', '/PID', str(self.process.pid), '/T', '/F'],
+                        capture_output=True, timeout=10,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                except subprocess.TimeoutExpired as exc:
+                    raise OSError('Timed out stopping the LiDAR process tree') from exc
+                if result.returncode and self.process.poll() is None:
+                    raise OSError('Could not terminate the LiDAR process tree')
+            else:
+                self.process.terminate()
             try:
                 self.process.wait(timeout=10)
             except subprocess.TimeoutExpired:

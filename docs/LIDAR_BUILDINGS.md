@@ -774,6 +774,24 @@ the connection and USGS server. Explicit total byte budgets serialize transfers
 to preserve the cap; normal preparation uses concurrent transfers with the
 existing per-tile size guard.
 
+The downloader reports per-tile throughput and identifies decoding/cropping
+separately. LAS header checks run during the initial transfer, before the point
+body: tiles lacking usable coordinate metadata fail early. EVLR-only CRS and
+large header regions defer to full-file validation. This preserves survey and
+geometry selection while avoiding transfers that cannot produce measurements.
+
+Interrupted transfers retain a partial file only when a strong HTTP ETag and
+total length are available. Retries and later preparations request the remaining
+bytes with Range/If-Range, checking the response identity and extent before
+appending. A changed resource or ignored Range restarts the full transfer.
+Completed files are still promoted atomically. Old partials without validation
+metadata cannot be reused safely and restart once.
+
+An OS lock allows one preparation per cache root, including across Blender
+instances. The worker monitors its owning Blender process and exits if it closes.
+On Windows, cancellation terminates the whole virtual-environment process tree,
+including the separate Python child, preventing orphaned duplicate transfers.
+
 The mirror uses EPSG:3857 XY. Its normalized metre Z convention is used only
 on recognized USGS mirror hosts; declared vertical CRS units are converted
 explicitly. Unknown units on other sources are refused. NOAA documents metre

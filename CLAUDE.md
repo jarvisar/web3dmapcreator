@@ -283,7 +283,7 @@ through the existing prism builder; raw point clouds never become Blender meshes
   LAZ transfers use `lidar_downloads.py` (default 4, allowed 1–16) while decoding
   and measurement stay sequential. EPT remains serial. Changing concurrency must
   not change measurement signatures or results. The UI passes the setting to
-  interactive jobs; the current background operator uses the helper's default.
+  interactive and background jobs.
 - `lidar_measurements.py` fits ground-relative scalar heights, supported terraces,
   and `lidar_planes.py` roof planes within source footprints. Enforce sufficient
   ground/roof support, component-wise coverage, footprint consistency, and capture
@@ -315,6 +315,16 @@ through the existing prism builder; raw point clouds never become Blender meshes
   are disposable. Publication uses a temporary file and replacement. Cancellation
   preserves previous published results and completed work; keep worker ownership
   until it actually exits so a second job cannot write concurrently.
+- `lidar_worker.py` holds an OS lock on the cache root for each preparation;
+  overlapping jobs fail before discovery or cache writes. Workers monitor their
+  owning Blender PID. Windows cancellation stops the whole process tree because
+  a virtual-environment python.exe can launch a separate real Python child.
+- `lidar_transfer.py` retains partial LAZ files only with a strong ETag and
+  known total length. Resumption uses Range/If-Range and validates the returned
+  ETag, offset and total before appending; changed resources restart. Streamed
+  LAS headers reject unusable CRS before point transfer, while EVLR-only CRS
+  and oversized header regions defer to the existing complete-file reader.
+  Transfer rates and decode/crop stages are reported independently.
 - `counts` aggregates survey observations; `rejection_counts` describes unique
   final skips. Prepared building totals can exceed generated totals because
   source selection and geometry validation run afterward. Report both stages.

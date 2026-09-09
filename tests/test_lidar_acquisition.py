@@ -317,6 +317,10 @@ class AcquisitionTests(unittest.TestCase):
         header = lidar_laz.header_bounds(fetch, 'https://example.com/evlr.laz')
         self.assertAlmostEqual(header['z_to_metres'], 1200/3937)
         self.assertGreater(fetch.range.call_count, 2)
+        # The early transfer check must defer EVLR-only CRS to the full reader.
+        prefix = lidar_laz.validate_download_prefix(io.BytesIO(data), len(data))
+        self.assertEqual(prefix, data[:len(prefix)])
+        self.assertLess(len(prefix), len(data))
 
 
 if __name__ == '__main__':

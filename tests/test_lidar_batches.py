@@ -1,6 +1,7 @@
 """Acquisition bounds, subdivision, resumption and cancellation contracts."""
 import importlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -170,12 +171,16 @@ class JobTests(unittest.TestCase):
             bundle=CacheBundle(Path(temp),Bounds(-74,40,-73,41));bundle.ensure_directory()
             previous=bundle.path/'lidar_buildings.json';previous.write_text('previous')
             checkpoint=bundle.path/'lidar_jobs';checkpoint.mkdir();(checkpoint/'one.json').write_text('completed')
-            with patch('subprocess.Popen') as process:
+            with patch('subprocess.Popen') as process, patch('subprocess.run') as kill_tree:
                 process.return_value.poll.return_value=None
+                kill_tree.return_value.returncode = 0
                 job=LidarPreparation('python',bundle,{'algorithm':2})
                 temporary=Path(job.temporary.name)
                 job.cancel()
-                process.return_value.terminate.assert_called_once()
+                if os.name == 'nt':
+                    self.assertEqual(kill_tree.call_args.args[0][-2:], ['/T', '/F'])
+                else:
+                    process.return_value.terminate.assert_called_once()
             self.assertFalse(temporary.exists())
             self.assertEqual(previous.read_text(),'previous')
             self.assertEqual((checkpoint/'one.json').read_text(),'completed')
@@ -184,8 +189,9 @@ class JobTests(unittest.TestCase):
         import subprocess
         with tempfile.TemporaryDirectory() as temp:
             bundle=CacheBundle(Path(temp),Bounds(-74,40,-73,41));bundle.ensure_directory()
-            with patch('subprocess.Popen') as process:
+            with patch('subprocess.Popen') as process, patch('subprocess.run') as kill_tree:
                 process.return_value.poll.return_value=None
+                kill_tree.return_value.returncode = 0
                 process.return_value.wait.side_effect=[subprocess.TimeoutExpired('worker',10),0]
                 job=LidarPreparation('python',bundle,{'algorithm':3})
                 directory=Path(job.temporary.name)

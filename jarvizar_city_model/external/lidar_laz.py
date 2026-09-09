@@ -46,6 +46,33 @@ def coordinate_system(header):
     return crs.to_2d(), factor
 
 
+def validate_download_prefix(stream, limit):
+    """Reject unusable CRS before streaming point records, without another GET.
+
+    EVLR-only CRS must wait for the full file. Unusually large VLR regions
+    likewise defer to the existing reader instead of rejecting valid data.
+    """
+    prefix = stream.read(min(227, limit+1))
+    if len(prefix) < 227 or prefix[:4] != b'LASF':
+        raise ValueError('Unreadable LAS header')
+    point_offset = struct.unpack_from('<I', prefix, 96)[0]
+    if not 227 <= point_offset <= min(4*1024**2, limit):
+        return prefix
+    prefix += stream.read(point_offset-len(prefix))
+    if len(prefix) != point_offset:
+        raise OSError('Incomplete LAS header download')
+    try:
+        header = laspy.LasHeader.read_from(io.BytesIO(prefix))
+        try:
+            coordinate_system(header)
+        except ValueError:
+            if not header.number_of_evlrs:
+                raise
+    except (LaspyException, LazrsError, struct.error, OverflowError) as exc:
+        raise ValueError(f'Unreadable LAS header: {exc}') from exc
+    return prefix
+
+
 class HeaderStream(io.RawIOBase):
     """Seekable, metadata-only HTTP stream with a per-tile allocation guard."""
     def __init__(self, fetch, url):
@@ -122,6 +149,7 @@ def read_laz(fetch, source, bbox, max_points=8_000_000, chunk_size=250_000):
     for tile in tiles:
         try:
             path = fetch.download(tile['url'], revision=tile.get('updated') or '')
+            fetch.progress(f"Decoding and cropping LAZ tile: {tile['url'].rsplit('/', 1)[-1]}")
             with laspy.open(path) as reader:
                 crs, factor = coordinate_system(reader.header)
                 query = Transformer.from_crs(4326, crs, always_xy=True).transform_bounds(*bbox, densify_pts=21)

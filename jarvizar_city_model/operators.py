@@ -416,7 +416,8 @@ class JARVIZAR_OT_prepare_lidar(Operator):
             settings.lidar_preparation_status = 'Preparing LiDAR buildings... (Esc to cancel)'
             python_path = _resolve_downloader(context, settings)
             if bpy.app.background:
-                return self.finish(context, prepare_lidar(python_path, bundle, signature, settings.force_redownload))
+                return self.finish(context, prepare_lidar(python_path, bundle, signature, settings.force_redownload,
+                                   download_workers=settings.lidar_download_workers))
             self._signature = signature
             self._settings, self._scene = settings, context.scene
             self._job = LidarPreparation(python_path, bundle, signature, settings.force_redownload,

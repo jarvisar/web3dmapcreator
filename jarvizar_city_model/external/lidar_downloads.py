@@ -19,8 +19,10 @@ class TileDownloads:
     Failures surface when their tile is consumed, preserving per-group recovery.
     Blender's Cancel terminates the owning worker process and all its threads.
     """
-    def __init__(self, fetch, tiles, workers=DEFAULT_DOWNLOAD_WORKERS):
+    def __init__(self, fetch, tiles, workers=DEFAULT_DOWNLOAD_WORKERS, validate_prefix=None):
         self.fetch = fetch
+        self.progress = fetch.progress
+        self.validate_prefix = validate_prefix
         self.tiles = tiles
         self.workers = validate_download_workers(workers)
         self.cancel = Event()
@@ -33,7 +35,8 @@ class TileDownloads:
                 key = (tile['url'], tile.get('updated') or '')
                 if key not in self.futures:
                     self.futures[key] = self.pool.submit(
-                        self.fetch.download, key[0], revision=key[1], cancel=self.cancel)
+                        self.fetch.download, key[0], revision=key[1], cancel=self.cancel,
+                        validate_prefix=self.validate_prefix)
         except BaseException:
             self.__exit__(None, None, None)
             raise
@@ -57,10 +60,15 @@ def prefetch_source(fetch, source, queries, workers=DEFAULT_DOWNLOAD_WORKERS):
         return nullcontext(fetch)
     from shapely.geometry import box
     from shapely import STRtree
+    try:
+        from .lidar_laz import validate_download_prefix
+    except ImportError:
+        from lidar_laz import validate_download_prefix
     tiles = source['tiles']
     tree = STRtree([box(*tile['bbox']) for tile in tiles])
     ordered = {}
     for query in queries:
         for i in sorted(tree.query(box(*query), predicate='intersects')):
             ordered.setdefault(int(i), tiles[i])
-    return TileDownloads(fetch, list(ordered.values()), workers=workers)
+    return TileDownloads(fetch, list(ordered.values()), workers=workers,
+                         validate_prefix=validate_download_prefix)

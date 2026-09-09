@@ -24,14 +24,12 @@ import numpy as np
 from pyproj import CRS, Transformer
 try:
     from .lidar_selection import gps_capture_years
+    from .lidar_transfer import BudgetExceeded, stream_tile
 except ImportError:
     from lidar_selection import gps_capture_years
+    from lidar_transfer import BudgetExceeded, stream_tile
 
 CATALOG_URL = "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson"
-
-
-class BudgetExceeded(ValueError):
-    pass
 
 
 class Fetcher:
@@ -87,7 +85,7 @@ class Fetcher:
     def json(self, url, fresh=False):
         return json.loads(self.get(url, fresh=fresh))
 
-    def download(self, url, limit=4 * 1024 ** 3, revision='', cancel=None):
+    def download(self, url, limit=4 * 1024 ** 3, revision='', cancel=None, validate_prefix=None):
         """Allow independent tiles in parallel; coalesce shared cache writes.
 
         Explicit total byte budgets retain serial admission/accounting. Normal
@@ -98,9 +96,9 @@ class Fetcher:
         with self._download_state:
             lock = self._download_keys.setdefault(key, threading.Lock())
         with lock, (self._download_budget if self.max_bytes is not None else nullcontext()):
-            return self._download(url, limit, revision, cancel)
+            return self._download(url, limit, revision, cancel, validate_prefix)
 
-    def _download(self, url, limit, revision, cancel):
+    def _download(self, url, limit, revision, cancel, validate_prefix):
         """Stream a staged tile to disk; never allocate its compressed contents."""
         def check_cancelled():
             if cancel is not None and cancel.is_set():
@@ -119,45 +117,12 @@ class Fetcher:
                 raise BudgetExceeded('LiDAR tile exceeds byte budget')
         else:
             temporary = path.with_suffix('.partial')
-            try:
-                for attempt in range(3):
-                    try:
-                        check_cancelled()
-                        with urllib.request.urlopen(url, timeout=45) as response, temporary.open('wb') as output:
-                            expected = response.headers.get('Content-Length')
-                            if expected and int(expected) > remaining:
-                                raise BudgetExceeded('LiDAR tile exceeds byte budget')
-                            size = 0
-                            last_progress = time.monotonic()
-                            self.progress('Downloading LAZ tile'+(f' ({int(expected)/1024**2:.1f} MiB)' if expected else ''))
-                            while True:
-                                check_cancelled()
-                                data = response.read(min(64 * 1024, max(1, remaining-size+1)))
-                                if not data:
-                                    break
-                                size += len(data)
-                                if size > remaining:
-                                    raise BudgetExceeded('LiDAR tile exceeds byte budget')
-                                output.write(data)
-                                if time.monotonic()-last_progress >= 5:
-                                    self.progress(f'Downloading LAZ tile: {size/1024**2:.1f} MiB received')
-                                    last_progress = time.monotonic()
-                            if expected and size != int(expected):
-                                raise OSError('Incomplete LiDAR tile download')
-                        break
-                    except OSError:
-                        if attempt == 2:
-                            raise
-                        if cancel is None:
-                            time.sleep(attempt+1)
-                        elif cancel.wait(attempt+1):
-                            check_cancelled()
-                check_cancelled()
-                temporary.replace(path)
-                with self._download_state:
-                    self.requests += 1
-            finally:
-                temporary.unlink(missing_ok=True)
+            size = stream_tile(url, temporary, remaining, self.progress, cancel, validate_prefix)
+            check_cancelled()
+            temporary.replace(path)
+            temporary.with_suffix('.partial.json').unlink(missing_ok=True)
+            with self._download_state:
+                self.requests += 1
         with self._download_state:
             if not repeated:
                 self.bytes += size

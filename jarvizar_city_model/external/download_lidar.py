@@ -16,9 +16,11 @@ from threading import Lock
 try:
     from .lidar_records import validate_records, finite_number
     from .lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
+    from .lidar_worker import cache_owner, watch_parent
 except ImportError:
     from lidar_records import validate_records, finite_number
     from lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
+    from lidar_worker import cache_owner, watch_parent
 
 
 def valid_checkpoint(cached, identifiers, source_url):
@@ -53,6 +55,11 @@ def valid_checkpoint(cached, identifiers, source_url):
 
 def prepare(bundle, request, refresh=False, progress_path=None, download_workers=DEFAULT_DOWNLOAD_WORKERS):
     download_workers = validate_download_workers(download_workers)
+    with cache_owner(bundle.parent):
+        return _prepare(bundle, request, refresh, progress_path, download_workers)
+
+
+def _prepare(bundle, request, refresh, progress_path, download_workers):
     from pyproj import CRS, Transformer
     from shapely.geometry import box, shape
     from shapely.ops import transform as map_geometry
@@ -249,10 +256,13 @@ def main():
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument('--progress', type=Path)
+    parser.add_argument('--parent-pid', type=int)
     parser.add_argument('--download-workers', type=int, choices=range(1, MAX_DOWNLOAD_WORKERS+1),
                         default=DEFAULT_DOWNLOAD_WORKERS, metavar=f'1-{MAX_DOWNLOAD_WORKERS}')
     args = parser.parse_args()
     try:
+        if args.parent_pid:
+            watch_parent(args.parent_pid)
         result = prepare(args.bundle, json.loads(args.request.read_text(encoding="utf-8")),
                          args.refresh, args.progress, args.download_workers)
     except ImportError as exc:
