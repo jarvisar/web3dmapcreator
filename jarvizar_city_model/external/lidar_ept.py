@@ -11,6 +11,8 @@ import io
 import json
 import math
 import time
+import threading
+from concurrent.futures import CancelledError
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
@@ -42,6 +44,9 @@ class Fetcher:
         self.refresh = refresh
         self.seen = set()
         self.progress = lambda _: None
+        self._download_state = threading.Lock()
+        self._download_keys = {}
+        self._download_budget = threading.Lock()
 
     def get(self, url, limit=32 * 1024 * 1024, fresh=False):
         if urlparse(url).scheme != "https":
@@ -82,8 +87,26 @@ class Fetcher:
     def json(self, url, fresh=False):
         return json.loads(self.get(url, fresh=fresh))
 
-    def download(self, url, limit=4 * 1024 ** 3, revision=''):
+    def download(self, url, limit=4 * 1024 ** 3, revision='', cancel=None):
+        """Allow independent tiles in parallel; coalesce shared cache writes.
+
+        Explicit total byte budgets retain serial admission/accounting. Normal
+        preparation has no total byte cap and keeps the per-file size guard.
+        """
+        from contextlib import nullcontext
+        key = url + ('#revision='+str(revision) if revision else '')
+        with self._download_state:
+            lock = self._download_keys.setdefault(key, threading.Lock())
+        with lock, (self._download_budget if self.max_bytes is not None else nullcontext()):
+            return self._download(url, limit, revision, cancel)
+
+    def _download(self, url, limit, revision, cancel):
         """Stream a staged tile to disk; never allocate its compressed contents."""
+        def check_cancelled():
+            if cancel is not None and cancel.is_set():
+                raise CancelledError('LAZ download cancelled')
+
+        check_cancelled()
         if urlparse(url).scheme != 'https':
             raise ValueError('LiDAR downloads require HTTPS')
         key = url + ('#revision='+str(revision) if revision else '')
@@ -99,6 +122,7 @@ class Fetcher:
             try:
                 for attempt in range(3):
                     try:
+                        check_cancelled()
                         with urllib.request.urlopen(url, timeout=45) as response, temporary.open('wb') as output:
                             expected = response.headers.get('Content-Length')
                             if expected and int(expected) > remaining:
@@ -107,6 +131,7 @@ class Fetcher:
                             last_progress = time.monotonic()
                             self.progress('Downloading LAZ tile'+(f' ({int(expected)/1024**2:.1f} MiB)' if expected else ''))
                             while True:
+                                check_cancelled()
                                 data = response.read(min(64 * 1024, max(1, remaining-size+1)))
                                 if not data:
                                     break
@@ -123,14 +148,20 @@ class Fetcher:
                     except OSError:
                         if attempt == 2:
                             raise
-                        time.sleep(attempt+1)
+                        if cancel is None:
+                            time.sleep(attempt+1)
+                        elif cancel.wait(attempt+1):
+                            check_cancelled()
+                check_cancelled()
                 temporary.replace(path)
-                self.requests += 1
+                with self._download_state:
+                    self.requests += 1
             finally:
                 temporary.unlink(missing_ok=True)
-        if not repeated:
-            self.bytes += size
-        self.seen.add(key)
+        with self._download_state:
+            if not repeated:
+                self.bytes += size
+            self.seen.add(key)
         return path
 
     def range(self, url, start, size):

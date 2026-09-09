@@ -758,6 +758,22 @@ additive, so ancestors must be included with descendants. The reader targets
 crops decoded points to the requested area plus a 75 m ground/boundary halo.
 [EPT format](https://entwine.io/en/latest/entwine-point-tile.html).
 
+Staged USGS LAZ acquisition downloads four required tiles concurrently by
+default. **Buildings → USGS LiDAR Buildings → LAZ Parallel Downloads** accepts
+1–16 transfers; the limit applies to the next preparation. Changing it preserves
+prepared measurements and checkpoints because it is a transport option, not a
+measurement setting. The external CLI exposes `--download-workers 1–16`.
+The worker looks ahead across building groups for the current
+survey, skipping groups with valid checkpoints and tiles outside those groups.
+Downloads overlap with sequential decoding and measurement; point-array memory
+limits and source selection remain unchanged. Shared URL/revision transfers are
+coalesced, cache replacement is atomic, and progress-file writes are serialized.
+Esc terminates the worker and its download threads; completed files remain
+reusable. A single large tile still uses one transfer, and throughput depends on
+the connection and USGS server. Explicit total byte budgets serialize transfers
+to preserve the cap; normal preparation uses concurrent transfers with the
+existing per-tile size guard.
+
 The mirror uses EPSG:3857 XY. Its normalized metre Z convention is used only
 on recognized USGS mirror hosts; declared vertical CRS units are converted
 explicitly. Unknown units on other sources are refused. NOAA documents metre

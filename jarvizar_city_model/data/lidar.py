@@ -11,6 +11,7 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 from ..external.lidar_records import validate_records
+from ..external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, validate_download_workers
 
 FORMAT_VERSION = 1
 ALGORITHM_VERSION = 7
@@ -75,7 +76,8 @@ class LidarPreparation:
     individual HTTP requests still have a timeout. Cancel preserves completed
     tile and measurement checkpoints and the previous public result.
     """
-    def __init__(self, python_path, bundle, signature, refresh=False):
+    def __init__(self, python_path, bundle, signature, refresh=False, download_workers=DEFAULT_DOWNLOAD_WORKERS):
+        download_workers = validate_download_workers(download_workers)
         self.bundle = bundle
         bundle.ensure_directory()
         self.temporary = tempfile.TemporaryDirectory(prefix='lidar_job_', dir=str(bundle.path))
@@ -86,7 +88,8 @@ class LidarPreparation:
         request.write_text(json.dumps(signature), encoding='utf-8')
         helper = Path(__file__).resolve().parents[1] / 'external' / 'download_lidar.py'
         command = [str(python_path), str(helper), '--bundle', str(bundle.path),
-                   '--request', str(request), '--progress', str(self.progress_path)]
+                   '--request', str(request), '--progress', str(self.progress_path),
+                   '--download-workers', str(download_workers)]
         if refresh:
             command.append('--refresh')
         try:
@@ -126,5 +129,5 @@ class LidarPreparation:
         self.temporary.cleanup()
 
 
-def prepare_lidar(python_path, bundle, signature, refresh=False):
-    return LidarPreparation(python_path, bundle, signature, refresh).result()
+def prepare_lidar(python_path, bundle, signature, refresh=False, download_workers=DEFAULT_DOWNLOAD_WORKERS):
+    return LidarPreparation(python_path, bundle, signature, refresh, download_workers).result()

@@ -1,6 +1,6 @@
 # 3dmapcreator Development Principles
 
-- Read `CLAUDE.md` before substantial changes.
+
 - Diagnose the general underlying cause.
 - Never special-case cities, buildings, or coordinates.
 - Prefer targeted changes over pipeline rewrites.
@@ -10,3 +10,4 @@
 - Preserve meaningful geometry while filtering noise and tiny/unprintable detail.
 - Use the addon's default output scale as the reference for printability.
 - Test known regression areas when modifying related systems.
+- After all changes are complete and all tests pass, install the updated add-on into Blender so the installed version reflects the latest code.

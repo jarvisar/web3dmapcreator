@@ -267,6 +267,9 @@ class JARVIZAR_PT_buildings(Panel):
         box.prop(settings, "lidar_minimum_step_mm")
         box.prop(settings, "lidar_source_url")
         box.prop(settings, "lidar_manifest_url")
+        download_row = box.row()
+        download_row.enabled = not settings.lidar_preparing
+        download_row.prop(settings, "lidar_download_workers")
         box.operator("jarvizar.prepare_lidar", icon="IMPORT")
         if settings.lidar_preparing:
             box.label(text='Preparing in background; Esc cancels', icon='TIME')

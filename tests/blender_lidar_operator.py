@@ -19,6 +19,7 @@ class Driver:
     report=Mock()
 
 settings=bpy.context.scene.jarvizar_city_model
+settings.lidar_download_workers=8
 context=SimpleNamespace(scene=bpy.context.scene,window=object(),screen=SimpleNamespace(areas=[]),window_manager=Mock())
 summary={'buildings':10,'candidate_buildings':20,'tiered_buildings':3,'roof_plane_buildings':2,'failures':[],
          'conflict_buildings':7, 'rejection_counts':{'footprint_roof_mismatch':3,
@@ -33,6 +34,7 @@ with patch.object(module,'bpy',fake_bpy),patch.object(module,'_cache_bundle',ret
         job=job_type.return_value;job.reset_mock();job.process.poll.return_value=None;job.result.return_value=summary
         driver=Driver()
         assert driver.execute(context)=={'RUNNING_MODAL'}
+        assert job_type.call_args.kwargs['download_workers']==8
         assert settings.lidar_preparing and Driver._running
         job.progress.return_value='Measuring test batch'
         assert driver.modal(context,SimpleNamespace(type='TIMER'))=={'PASS_THROUGH'}

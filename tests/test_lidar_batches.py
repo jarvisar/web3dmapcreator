@@ -152,6 +152,19 @@ class BatchTests(unittest.TestCase):
 
 
 class JobTests(unittest.TestCase):
+    def test_download_limit_is_transport_option_not_measurement_signature(self):
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = CacheBundle(Path(temp), Bounds(-74,40,-73,41))
+            signature = {'algorithm': 7}
+            with patch('subprocess.Popen') as process:
+                job = LidarPreparation('python', bundle, signature, download_workers=8)
+                try:
+                    command = process.call_args.args[0]
+                    self.assertEqual(command[command.index('--download-workers')+1], '8')
+                    self.assertEqual(json.loads(Path(command[command.index('--request')+1]).read_text()), signature)
+                finally:
+                    job.cancel()
+
     def test_cancel_preserves_previous_output_and_completed_checkpoints(self):
         with tempfile.TemporaryDirectory() as temp:
             bundle=CacheBundle(Path(temp),Bounds(-74,40,-73,41));bundle.ensure_directory()

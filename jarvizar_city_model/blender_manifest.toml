@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "jarvizar_city_model"
-version = "0.15.0"
+version = "0.15.2"
 name = "Jarvizar City Model"
 tagline = "Generate printable city miniatures from Overture data"
 maintainer = "Jarvizar workflow"

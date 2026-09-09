@@ -16,6 +16,7 @@ from bpy.props import (
 from bpy.types import AddonPreferences, PropertyGroup
 
 from .data.land import DEFAULT_SURFACE_PRIORITY
+from .external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS
 
 
 def _default_cache_directory() -> str:
@@ -251,6 +252,11 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     lidar_minimum_step_mm: FloatProperty(
         name="Minimum Roof Step (mm)", default=0.05, min=0.02, soft_max=1.0,
         description="Smallest measured height difference retained as a separate roof tier",
+    )
+    lidar_download_workers: IntProperty(
+        name="LAZ Parallel Downloads", default=DEFAULT_DOWNLOAD_WORKERS,
+        min=1, max=MAX_DOWNLOAD_WORKERS,
+        description="Simultaneous LAZ tile downloads for the next preparation. More may help on fast connections; reduce if transfers stall or the server throttles. Does not invalidate prepared LiDAR",
     )
     lidar_source_url: StringProperty(
         name="USGS EPT URL (optional)", default="",

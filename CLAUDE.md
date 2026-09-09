@@ -109,6 +109,32 @@ before force-closing** (he has said yes once; that was not standing permission).
 
 ## Current state
 
+- **0.15.2 configurable LAZ concurrency (2026-09-09; installed):** Buildings → USGS LiDAR
+  Buildings → LAZ Parallel Downloads permits 1–16 transfers, default four.
+  It is disabled during preparation; the next job receives it through
+  `--download-workers`, independently of measurement/checkpoint signatures.
+  Validation rejects out-of-range/noninteger worker counts before work starts.
+  464 Python tests pass, including synchronized 1/4/8/16-transfer tests and
+  checkpoint reuse after changing the limit. Blender modal/cancellation and
+  property/geometry checks pass. Installed and verified in Blender 3.6 (57
+  archive files, version, new default, downloader client and dependencies).
+  Backup: `dist/install-backup-0152-20260909-164638/`.
+
+- **0.15.1 parallel LAZ downloads (2026-09-09; installed):** up to four tile transfers
+  overlap with sequential point/building processing. Acquisition looks ahead
+  across required groups in the current survey and skips valid checkpoints.
+  URL/revision locks coalesce cache writes, progress writes are serialized,
+  and explicit total byte caps retain serial admission. EPT reads, source
+  selection, geometry, algorithm/signatures and existing caches are unchanged.
+  462 Python tests and Blender modal/cancellation checks pass, including
+  synchronized four-transfer and cross-group acquisition tests, duplicate
+  refresh, budget, cancellation cleanup, failure isolation and partial resume.
+  Cincinnati's cached LAZ sample reproduces the same 36 building records and
+  rejections with zero network requests. Both release ZIPs have 57 verified
+  files. Installed and enabled in Blender 3.6; module/version, archive contents,
+  downloader client and LiDAR dependencies verified. Backup:
+  `dist/install-backup-0151-20260909-164304/`.
+
 - **0.15.0 USGS LAZ acquisition (2026-09-09; installed):** installed and
   enabled in Blender 3.6; archive contents, installed module/version, LiDAR
   dependencies and saved downloader preference verified. Previous addon and

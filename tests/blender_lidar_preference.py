@@ -13,6 +13,11 @@ addon.register()
 settings = bpy.context.scene.jarvizar_city_model
 assert settings.lidar_prefer_measured is True
 assert settings.lidar_manifest_url == ''
+assert settings.lidar_download_workers == 4
+assert settings.bl_rna.properties['lidar_download_workers'].hard_min == 1
+assert settings.bl_rna.properties['lidar_download_workers'].hard_max == 16
+settings.lidar_download_workers = 8
+assert settings.lidar_download_workers == 8
 settings.lidar_manifest_url = 'https://example.com/0_file_download_links.txt'
 assert settings.lidar_manifest_url.endswith('0_file_download_links.txt')
 settings.lidar_minimum_width_mm = .01

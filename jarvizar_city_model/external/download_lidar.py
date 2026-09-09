@@ -12,10 +12,13 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+from threading import Lock
 try:
     from .lidar_records import validate_records, finite_number
+    from .lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
 except ImportError:
     from lidar_records import validate_records, finite_number
+    from lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
 
 
 def valid_checkpoint(cached, identifiers, source_url):
@@ -48,7 +51,8 @@ def valid_checkpoint(cached, identifiers, source_url):
     return True
 
 
-def prepare(bundle, request, refresh=False, progress_path=None):
+def prepare(bundle, request, refresh=False, progress_path=None, download_workers=DEFAULT_DOWNLOAD_WORKERS):
+    download_workers = validate_download_workers(download_workers)
     from pyproj import CRS, Transformer
     from shapely.geometry import box, shape
     from shapely.ops import transform as map_geometry
@@ -109,13 +113,15 @@ def prepare(bundle, request, refresh=False, progress_path=None):
     checkpoints = bundle / 'lidar_jobs'
     checkpoints.mkdir(exist_ok=True)
     total_candidates = sum(shape(f['geometry']).intersects(box(*bbox)) for f in features)
+    progress_lock = Lock()
     def progress(message):
-        print(message, file=sys.stderr, flush=True)
-        if progress_path:
-            temporary = progress_path.with_suffix('.partial')
-            temporary.write_text(json.dumps({'message': message, 'accepted': len(alternatives),
-                                            'candidates': total_candidates}), encoding='utf-8')
-            temporary.replace(progress_path)
+        with progress_lock:
+            print(message, file=sys.stderr, flush=True)
+            if progress_path:
+                temporary = progress_path.with_suffix('.partial')
+                temporary.write_text(json.dumps({'message': message, 'accepted': len(alternatives),
+                                                'candidates': total_candidates}), encoding='utf-8')
+                temporary.replace(progress_path)
     fetch.progress = progress
     sources, discovery_failures = discover_sources(fetch, query, request['source_url'],
         request.get('manifest_url', ''), progress)
@@ -126,12 +132,8 @@ def prepare(bundle, request, refresh=False, progress_path=None):
         if not candidates:
             continue
         progress(f"Measuring {source['name']}: {len(candidates)} candidate buildings")
-        batches = building_batches(candidates, geometries)
-        while batches:
-            batch = batches.pop(0)
-            progress(f"Comparing {len(alternatives)} measured buildings; {len(batches)+1} groups left in {source['name']}")
+        def batch_job(batch):
             batch_query = map_geometry(to_geographic, box(*batch_bounds(batch, geometries, selected))).bounds
-            batch_roi = map_geometry(to_metric, box(*batch_query))
             job_key = hashlib.sha256(json.dumps([request, source['url'], source.get('fingerprint', ''),
                 sorted(f['id'] for f in batch)], sort_keys=True).encode()).hexdigest()
             checkpoint = checkpoints / (job_key+'.json')
@@ -143,48 +145,56 @@ def prepare(bundle, request, refresh=False, progress_path=None):
                         cached = None
                 except (OSError, ValueError, TypeError):
                     cached = None
-            if cached is not None:
-                collect(cached['records'], cached['observations'], source, cached['info'])
-                counts.update(cached['reasons'])
-                rejected.update(cached['rejected'])
-                provenance.append(cached['info'])
-                continue
-            try:
-                points, info = read_source(fetch, source, batch_query)
-            except BudgetExceeded as exc:
-                split = split_batch(batch, geometries)
-                # Spatial subdivision can resolve point/node limits, but
-                # cannot manufacture more total download budget.
-                if split and 'byte' not in str(exc).lower() and 'response' not in str(exc).lower():
-                    batches[0:0] = split
+            return batch, batch_query, checkpoint, cached
+
+        jobs = [batch_job(batch) for batch in building_batches(candidates, geometries)]
+        with prefetch_source(fetch, source, [job[1] for job in jobs if job[3] is None], workers=download_workers) as source_fetch:
+            while jobs:
+                batch, batch_query, checkpoint, cached = jobs.pop(0)
+                progress(f"Comparing {len(alternatives)} measured buildings; {len(jobs)+1} groups left in {source['name']}")
+                batch_roi = map_geometry(to_metric, box(*batch_query))
+                if cached is not None:
+                    collect(cached['records'], cached['observations'], source, cached['info'])
+                    counts.update(cached['reasons'])
+                    rejected.update(cached['rejected'])
+                    provenance.append(cached['info'])
                     continue
-                failures.append({'source': source['name'], 'reason': str(exc), 'buildings': len(batch)})
-                if 'byte' in str(exc).lower():
-                    break
-                continue
-            except (ValueError, OSError, RuntimeError, KeyError, TypeError, IndexError, AttributeError) as exc:
-                failures.append({'source': source['name'], 'reason': str(exc), 'buildings': len(batch)})
-                continue
-            if len(points):
-                points[:, 0], points[:, 1] = to_metric(points[:, 0].copy(), points[:, 1].copy())
-            evidence = {}
-            records, reasons, rejected_features = measure_features(batch, points, to_metric, to_geographic,
-                request["min_width_mm"] / request["xy_scale"],
-                max(0.25, request["min_step_mm"] / request["z_scale"]), batch_roi,
-                roof_planes=request.get('roof_planes', True), parts_by_parent=parts_by_parent,
-                source_parts_by_parent=source_parts_by_parent,
-                observations_out=evidence, neighbors_by_id=neighbors_by_id,
-                prefer_lidar=request.get('prefer_lidar', True))
-            collect(records, evidence, source, info)
-            counts.update(reasons)
-            rejected.update(rejected_features)
-            info = {**info, "name": source["name"], "accepted": len(records), 'bbox': list(batch_query)}
-            provenance.append(info)
-            temporary = checkpoint.with_suffix('.partial')
-            temporary.write_text(json.dumps({'records': records, 'reasons': reasons,
-                'rejected': rejected_features, 'info': info, 'observations':evidence}, allow_nan=False), encoding='utf-8')
-            temporary.replace(checkpoint)
-            del points
+                try:
+                    points, info = read_source(source_fetch, source, batch_query)
+                except BudgetExceeded as exc:
+                    split = split_batch(batch, geometries)
+                    # Spatial subdivision can resolve point/node limits, but
+                    # cannot manufacture more total download budget.
+                    if split and 'byte' not in str(exc).lower() and 'response' not in str(exc).lower():
+                        jobs[0:0] = [batch_job(child) for child in split]
+                        continue
+                    failures.append({'source': source['name'], 'reason': str(exc), 'buildings': len(batch)})
+                    if 'byte' in str(exc).lower():
+                        break
+                    continue
+                except (ValueError, OSError, RuntimeError, KeyError, TypeError, IndexError, AttributeError) as exc:
+                    failures.append({'source': source['name'], 'reason': str(exc), 'buildings': len(batch)})
+                    continue
+                if len(points):
+                    points[:, 0], points[:, 1] = to_metric(points[:, 0].copy(), points[:, 1].copy())
+                evidence = {}
+                records, reasons, rejected_features = measure_features(batch, points, to_metric, to_geographic,
+                    request["min_width_mm"] / request["xy_scale"],
+                    max(0.25, request["min_step_mm"] / request["z_scale"]), batch_roi,
+                    roof_planes=request.get('roof_planes', True), parts_by_parent=parts_by_parent,
+                    source_parts_by_parent=source_parts_by_parent,
+                    observations_out=evidence, neighbors_by_id=neighbors_by_id,
+                    prefer_lidar=request.get('prefer_lidar', True))
+                collect(records, evidence, source, info)
+                counts.update(reasons)
+                rejected.update(rejected_features)
+                info = {**info, "name": source["name"], "accepted": len(records), 'bbox': list(batch_query)}
+                provenance.append(info)
+                temporary = checkpoint.with_suffix('.partial')
+                temporary.write_text(json.dumps({'records': records, 'reasons': reasons,
+                    'rejected': rejected_features, 'info': info, 'observations':evidence}, allow_nan=False), encoding='utf-8')
+                temporary.replace(checkpoint)
+                del points
     if failures and not provenance:
         raise ValueError("; ".join(item["reason"] for item in failures))
     selection = {}
@@ -239,9 +249,12 @@ def main():
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument('--progress', type=Path)
+    parser.add_argument('--download-workers', type=int, choices=range(1, MAX_DOWNLOAD_WORKERS+1),
+                        default=DEFAULT_DOWNLOAD_WORKERS, metavar=f'1-{MAX_DOWNLOAD_WORKERS}')
     args = parser.parse_args()
     try:
-        result = prepare(args.bundle, json.loads(args.request.read_text(encoding="utf-8")), args.refresh, args.progress)
+        result = prepare(args.bundle, json.loads(args.request.read_text(encoding="utf-8")),
+                         args.refresh, args.progress, args.download_workers)
     except ImportError as exc:
         result = {"ok": False, "detail": f"Install requirements-lidar.txt in the external downloader environment: {exc}"}
     except Exception as exc:
