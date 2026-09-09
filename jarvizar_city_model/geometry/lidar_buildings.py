@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from ..blender.mesh_utils import MeshBuilder, projected_polygon_rings
+from ..data.geojson import feature_id
 from .buildings import footprint_admits_minimum_height, resolve_vertical_profile
+from .building_printability import source_part_widths
 from .planar import clean_ring, densify_ring, effective_width, signed_area, EPSILON
 from .roofs import resolve_roof
 
@@ -17,6 +19,9 @@ def prefer_source_detail(features, parent, record, transform, vertical, floor_he
     Inspect only source masses that pass the generator's size checks.
     """
     levels = []
+    part_widths = source_part_widths([feature for feature in features if feature is not parent],
+        lambda geometry: projected_polygon_rings(geometry, transform), vertical,
+        floor_height, default_height, minimum_width, maximum_slenderness)
     parent_height = (parent.get('properties') or {}).get('height')
     if not isinstance(parent_height, (float,int)):
         parent_height = None
@@ -25,10 +30,11 @@ def prefer_source_detail(features, parent, record, transform, vertical, floor_he
         profile = resolve_vertical_profile(props, floor_height, default_height)
         if profile.thickness_m <= 0:
             continue
-        for rings in projected_polygon_rings(feature.get('geometry') or {}, transform):
+        for index, rings in enumerate(projected_polygon_rings(feature.get('geometry') or {}, transform)):
             width = effective_width(rings[0])
-            if width < minimum_width or (maximum_slenderness > 0 and width < exempt_width
-                    and vertical(profile.thickness_m) > width*maximum_slenderness):
+            filter_width = part_widths.get((feature_id(feature), index), width)
+            if filter_width < minimum_width or (maximum_slenderness > 0 and filter_width < exempt_width
+                    and vertical(profile.thickness_m) > filter_width*maximum_slenderness):
                 continue
             roof = resolve_roof(props, profile, feature is not parent, parent_height,
                                 width / max(transform.scale_x_mm_per_m, 1e-12))

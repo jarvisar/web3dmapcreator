@@ -31,7 +31,7 @@ retain explicitly stored values when defaults change.
 | Roads / decks | Both default to 0.6 mm; widths constrained to 0.45–0.7 mm |
 | Ground surfaces | 0.4 mm rise, 0.15 mm embed; roads and ground-founded buildings use that embed too |
 | Buildings | Height multiplier 1.1; minimum height 0.8 mm, gated by a 0.6 mm footprint setting |
-| Source building detail | Minimum effective width 0.08 mm; slenderness limit 15 below 0.45 mm width |
+| Source building detail | Minimum effective width 0.08 mm; slenderness limit 30 below 0.45 mm width |
 | LiDAR | Opt-in; Prefer LiDAR on Conflicts enabled; detail width 0.1 mm / step 0.05 mm |
 | Ponds / fountains | Recess enabled, depth 1.0 mm, water thickness 0.8 mm (0.2 mm below the lowest sampled bank) |
 | Trees | Solid cones, minimum width 1.2 mm / height 2.0 mm after variation |
@@ -225,6 +225,11 @@ colors, overwriting manual palette edits.
   `footprint_admits_minimum_height` requires area ≥ size² and effective width
   ≥ size/2. It stretches walls while retaining roof pitch. Slenderness uses the
   mass's own printed thickness, not its elevation above ground or artificial lift.
+- Adjoining source parts with a common base and compatible top heights use
+  their combined footprint width for filtering. Internal shared walls cancel
+  from its perimeter; holes remain. Gaps, point contacts, different bases and
+  excessive exposed height steps do not grant support. This changes selection
+  only: footprints, roof profiles and independent closed shells are preserved.
 - `roofs.py` implements skillion, gabled, hipped, pyramid and dome constructions
   with documented aliases (`round` currently approximates a gable). Explicit
   total heights include roofs for parts too. The only additive explicit-part

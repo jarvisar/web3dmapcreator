@@ -14,6 +14,7 @@ from .buildings import (
     select_building_geometry,
 )
 from .planar import EPSILON, clean_ring, densify_ring, effective_width
+from .building_printability import source_part_widths
 from .roofs import (
     RoofProfile,
     apex_levels,
@@ -165,7 +166,7 @@ def generate_buildings(
     embed_mm: float = 0.15,
     drape_spacing_mm: float = 1.5,
     minimum_width_mm: float = 0.08,
-    maximum_slenderness: float = 15.0,
+    maximum_slenderness: float = 30.0,
     progress_callback=None,
     ground_support=None,
     generate_roofs: bool = True,
@@ -401,6 +402,18 @@ def generate_buildings(
             counts['lidar_estimated_heights_corrected'] += record.get('source_height_decision', record.get('height_decision')) == 'corrected_estimated_height'
             if metadata["minimum_height_lift_mm"] > 0:
                 counts["buildings_raised_to_minimum"] += 1
+    # Apply the same committed LiDAR height corrections when deciding which
+    # source parts can support one another. Replaced assemblies do not qualify.
+    filter_parts = [
+        {**part, 'properties': {**feature_properties(part), 'height': part_height_updates[feature_id(part)]}}
+        if feature_id(part) in part_height_updates else part
+        for part in selection.parts
+        if str(feature_properties(part).get('building_id') or '') not in enhanced_ids
+    ]
+    part_widths = source_part_widths(filter_parts,
+        lambda geometry: projected_polygon_rings(geometry, transform), vertical,
+        floor_height_m, default_height_m, minimum_width_mm, maximum_slenderness)
+    counts['building_parts_kept_by_adjacency'] = 0
     for index, (feature, feature_type, collection, material, prefix) in enumerate(jobs):
         if feature_type == 'building' and feature_id(feature) in infilled_parent_ids:
             continue
@@ -448,25 +461,30 @@ def generate_buildings(
         # start 140 m up, and measuring it from the ground would discard it.
         thickness_mm = vertical(profile.thickness_m)
         polygons = projected_polygon_rings(feature.get("geometry") or {}, transform)
-        for rings in polygons:
+        for polygon_index, rings in enumerate(polygons):
             # Overture publishes chimneys, spires, and wall fragments as their
             # own masses.  Extruded literally they become needles far below the
             # nozzle width -- the sub-millimetre shards that read as glitched
             # geometry -- so they are dropped and counted rather than printed.
             # A mass at least a nozzle line wide prints whatever its height, so
-            # a tower's narrow shaft or wing is kept; only sub-line needles are
-            # judged on slenderness.
+            # a tower's narrow shaft or wing is kept. Adjoining sections use
+            # their assembly width for this filter, keeping their own width
+            # for the unchanged roof and minimum-height rules below.
             width_mm = effective_width(rings[0])
-            if width_mm < minimum_width_mm:
+            filter_width = part_widths.get((source_id, polygon_index), width_mm) if is_part else width_mm
+            if filter_width < minimum_width_mm:
                 narrow = True
                 continue
             if (
                 maximum_slenderness > 0.0
-                and width_mm < slenderness_exempt_width_mm
-                and thickness_mm > width_mm * maximum_slenderness
+                and filter_width < slenderness_exempt_width_mm
+                and thickness_mm > filter_width * maximum_slenderness
             ):
                 slender = True
                 continue
+            kept_by_adjacency = is_part and (width_mm < minimum_width_mm or (
+                    maximum_slenderness > 0 and width_mm < slenderness_exempt_width_mm
+                    and thickness_mm > width_mm * maximum_slenderness))
             ground = shared_ground(parent_id) if parent_id else None
             if ground is None:
                 terrain_mm = heightfield.minimum_over(rings[0])
@@ -570,6 +588,8 @@ def generate_buildings(
                     built = builder.add_flat_prism(
                         rings[0], bottom, top, rings[1:], material_index=material_index
                     )
+            if built and kept_by_adjacency:
+                counts['building_parts_kept_by_adjacency'] += 1
 
         if builder.solids == solids_before:
             if narrow:

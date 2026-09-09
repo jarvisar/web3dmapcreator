@@ -270,8 +270,8 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         name="Minimum Building Width (mm)",
         description=(
             "Drop building masses whose footprint is narrower than this. "
-            "Overture publishes chimneys and wall fragments as separate masses, "
-            "which extrude into unprintable needles"
+            "Adjoining supported sections use their combined footprint width; "
+            "isolated tiny details are still filtered"
         ),
         default=0.08,
         min=0.0,
@@ -281,11 +281,11 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     maximum_building_slenderness: FloatProperty(
         name="Maximum Building Slenderness",
         description=(
-            "Drop masses taller than this multiple of their own footprint width. "
-            "Real towers sit near 10; spires and antenna masts run past 40. "
-            "Set to 0 to disable"
+            "Drop masses taller than this multiple of their footprint width; "
+            "adjoining sections with compatible heights use their combined width. "
+            "Higher values keep more detail. Set to 0 to disable"
         ),
-        default=15.0,
+        default=30.0,
         min=0.0,
         soft_max=60.0,
         precision=1,
