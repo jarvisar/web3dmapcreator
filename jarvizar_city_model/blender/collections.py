@@ -9,6 +9,9 @@ import bpy
 
 ROOT_COLLECTION_NAME = "CITY_MODEL"
 GENERATED_KEY = "jarvizar_generated"
+ROOT_KEY = "jarvizar_city_root"
+STAGING_KEY = "jarvizar_staging"
+ROLE_KEY = "jarvizar_collection_role"
 
 
 def _new_child(name: str, parent: bpy.types.Collection) -> bpy.types.Collection:
@@ -18,9 +21,11 @@ def _new_child(name: str, parent: bpy.types.Collection) -> bpy.types.Collection:
     return collection
 
 
-def create_city_hierarchy(scene: bpy.types.Scene) -> Dict[str, bpy.types.Collection]:
-    root = bpy.data.collections.new(ROOT_COLLECTION_NAME)
+def create_city_hierarchy(scene: bpy.types.Scene, *, staging=False) -> Dict[str, bpy.types.Collection]:
+    root = bpy.data.collections.new("_CITY_MODEL_STAGING" if staging else ROOT_COLLECTION_NAME)
     root[GENERATED_KEY] = True
+    root[ROOT_KEY] = True
+    root[STAGING_KEY] = staging
     scene.collection.children.link(root)
 
     terrain = _new_child("TERRAIN", root)
@@ -34,7 +39,7 @@ def create_city_hierarchy(scene: bpy.types.Scene) -> Dict[str, bpy.types.Collect
     supports = _new_child("BRIDGE_SUPPORTS", roads)
     buildings = _new_child("BUILDINGS", root)
     building_parts = _new_child("BUILDING_PARTS", buildings)
-    return {
+    hierarchy = {
         "root": root,
         "terrain": terrain,
         "land_surfaces": land_surfaces,
@@ -48,6 +53,9 @@ def create_city_hierarchy(scene: bpy.types.Scene) -> Dict[str, bpy.types.Collect
         "buildings": buildings,
         "building_parts": building_parts,
     }
+    for role, collection in hierarchy.items():
+        collection[ROLE_KEY] = role
+    return hierarchy
 
 
 def _walk_collections(root: bpy.types.Collection) -> List[bpy.types.Collection]:
@@ -61,9 +69,7 @@ def generated_objects(scene: bpy.types.Scene) -> List[bpy.types.Object]:
     """Every mesh this add-on generated, in a stable order."""
     found: List[bpy.types.Object] = []
     seen = set()
-    for root in scene.collection.children:
-        if root.name != ROOT_COLLECTION_NAME or root.get(GENERATED_KEY) is not True:
-            continue
+    for root in generated_roots(scene):
         for collection in _walk_collections(root):
             for obj in collection.objects:
                 if obj.type != "MESH" or obj.get(GENERATED_KEY) is not True:
@@ -76,14 +82,19 @@ def generated_objects(scene: bpy.types.Scene) -> List[bpy.types.Object]:
     return found
 
 
-def clear_generated(scene: bpy.types.Scene) -> int:
-    """Remove only objects and collections tagged as add-on generated."""
-    roots = [
+def generated_roots(scene: bpy.types.Scene) -> List[bpy.types.Collection]:
+    """Find published roots, including legacy files and Blender name collisions."""
+    return [
         collection
         for collection in scene.collection.children
-        if collection.name == ROOT_COLLECTION_NAME
+        if (collection.get(ROOT_KEY) is True or collection.name == ROOT_COLLECTION_NAME)
         and collection.get(GENERATED_KEY) is True
+        and not collection.get(STAGING_KEY)
     ]
+
+
+def hierarchy_data(roots):
+    """Return owned objects, their meshes, and tagged collections by reference."""
     generated_objects = set()
     generated_meshes = set()
     generated_collections = set()
@@ -98,22 +109,42 @@ def clear_generated(scene: bpy.types.Scene) -> int:
                     if obj.type == "MESH" and obj.data is not None:
                         generated_meshes.add(obj.data)
 
-    removed_count = len(generated_objects)
-    if hasattr(bpy.data, "batch_remove"):
-        if generated_objects or generated_meshes:
-            bpy.data.batch_remove(ids=generated_objects | generated_meshes)
-        if generated_collections:
-            bpy.data.batch_remove(ids=generated_collections)
-    else:
-        # Compatibility path for Blender versions older than batch_remove.
-        for obj in generated_objects:
-            bpy.data.objects.remove(obj, do_unlink=True)
-        for mesh in generated_meshes:
-            if mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
-        for collection in sorted(
-            generated_collections, key=lambda item: len(_walk_collections(item))
-        ):
-            if collection.name in bpy.data.collections:
-                bpy.data.collections.remove(collection)
-    return removed_count
+    return generated_objects, generated_meshes, generated_collections
+
+
+def preserve_user_links(scene, objects, collections, links=None):
+    """Keep helpers reachable when deleting their generated parent collections.
+
+    Return added links so a generation transaction can undo this preparation.
+    """
+    if links is None:
+        links = []
+    for collection in collections:
+        for child in collection.children:
+            if child not in collections and child.name not in scene.collection.children:
+                scene.collection.children.link(child)
+                links.append((scene.collection.children, child))
+        for obj in collection.objects:
+            if obj not in objects and obj.name not in scene.collection.objects:
+                scene.collection.objects.link(obj)
+                links.append((scene.collection.objects, obj))
+    return links
+
+
+def removable_meshes(objects, meshes):
+    """Do not destroy mesh data reused by a surviving user object."""
+    users = {}
+    for obj in objects:
+        if obj.type == "MESH" and obj.data is not None:
+            users[obj.data] = users.get(obj.data, 0) + 1
+    return {mesh for mesh in meshes if mesh.users == users.get(mesh, 0)}
+
+
+def clear_generated(scene: bpy.types.Scene) -> int:
+    """Remove generated output while preserving helpers and shared mesh data."""
+    objects, meshes, collections = hierarchy_data(generated_roots(scene))
+    preserve_user_links(scene, objects, collections)
+    ids = objects | collections | removable_meshes(objects, meshes)
+    if ids:
+        bpy.data.batch_remove(ids=ids)
+    return len(objects)

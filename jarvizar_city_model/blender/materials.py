@@ -46,9 +46,12 @@ def _material_name(key: str) -> str:
     return "JCM_" + "".join(part.capitalize() for part in key.split("_"))
 
 
-def get_or_create_material(name: str, color, roughness: float = _DEFAULT_ROUGHNESS):
+def get_or_create_material(name: str, color, roughness: float = _DEFAULT_ROUGHNESS, *, staging=False):
     material = bpy.data.materials.get(name)
-    if material is None:
+    if staging:
+        material = material.copy() if material is not None else bpy.data.materials.new(name=name)
+        material.name = "_JCM_STAGING_" + name
+    elif material is None:
         material = bpy.data.materials.new(name=name)
     rgba = (*color[:3], color[3] if len(color) > 3 else 1.0)
     material.diffuse_color = rgba
@@ -63,14 +66,17 @@ def get_or_create_material(name: str, color, roughness: float = _DEFAULT_ROUGHNE
     return material
 
 
-def model_materials() -> Dict[str, bpy.types.Material]:
+def model_materials(*, staging=False) -> Dict[str, bpy.types.Material]:
     """Return every material the generators use, keyed by their role name."""
-    return {
+    materials = {
         key: get_or_create_material(
-            _material_name(key), color, _ROUGHNESS.get(key, _DEFAULT_ROUGHNESS)
+            _material_name(key), color, _ROUGHNESS.get(key, _DEFAULT_ROUGHNESS), staging=staging
         )
         for key, color in PALETTE.items()
     }
+    for role, material in materials.items():
+        material["jarvizar_material_role"] = role
+    return materials
 
 
 # Retained for callers written against the Phase 1 API.

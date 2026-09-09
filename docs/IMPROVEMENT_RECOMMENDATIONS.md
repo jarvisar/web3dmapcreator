@@ -1,7 +1,7 @@
 # High-impact improvement recommendations
 
-Reviewed against commit `84047c1` (`0.15.3`) on 2026-09-09. These are proposals,
-not implemented changes. Recheck the relevant code before starting a future
+Reviewed against commit `84047c1` (`0.15.3`) on 2026-09-09. These are proposals
+except where an implementation status is recorded below. Recheck the relevant code before starting a future
 session. Follow [the shared development context](../CLAUDE.md) and preserve the
 project's default-scale FDM behavior, existing successful geometry, and general
 solutions rather than location-specific exceptions.
@@ -25,6 +25,27 @@ Effort is relative; larger items should be delivered in bounded stages.
 | 10 | Improve transportation connectivity and local crossing constraints | More faithful, less unnecessarily elevated bridges | Large; targeted cases first |
 
 ## 1. Make regeneration transactional before adding cancellation
+
+**Implementation status (`0.15.4`):** the transactional first step is implemented
+in `blender/generation.py`. Generation retains previous output, builds owned
+staging collections and material copies, validates them, then publishes scene
+results and removes the previous hierarchy. Failed runs restore the prior model,
+shared material users, scene units, LiDAR status, and selection; the status text
+reports the error. User helpers and reused meshes survive cleanup. The offline
+`tests/blender_generation_transaction.py` exercises phase/publication failures,
+retries, invalid geometry, and ownership/name collisions.
+
+**Responsive generation (`0.15.5`):** interactive generation now runs the existing
+pipeline in an isolated background Blender process with visible phase progress
+and Esc/Cancel. The foreground retains the previous model until a validated
+result is appended and committed; imported ID ownership is sealed before any
+modal yield. Cancellation can stop a worker inside long geometry operations,
+and cleanup waits for confirmed worker exit. Tests cover each worker phase,
+foreground import/cancellation, failure, retry, and actual windowed event handling.
+Library append, final validation, and publication remain synchronous foreground
+operations; cancellation queued while appending is processed before commit.
+Overture/DEM download cancellation remains separate follow-up work. The confirmed
+gap below describes the reviewed `0.15.3` baseline.
 
 **Confirmed gap.** In [`operators.py`](../jarvizar_city_model/operators.py),
 `JARVIZAR_OT_generate_model.execute` clears the existing generated model before

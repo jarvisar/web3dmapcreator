@@ -9,6 +9,7 @@ import bpy
 from bpy.types import Panel
 
 from .data.projection import WGS84Bounds
+from .blender.generation_modal import active_session, is_generating
 
 
 def _scale_summary(settings):
@@ -59,6 +60,16 @@ class JARVIZAR_PT_city_model(Panel):
     def draw(self, context):
         layout = self.layout
         settings = context.scene.jarvizar_city_model
+
+        session = active_session()
+        if session is not None:
+            box = layout.box()
+            box.label(text=session.phase, icon="TIME")
+            box.label(text=f"{session.fraction * 100:.0f}% complete")
+            box.label(text="Previous model retained")
+            box.operator("jarvizar.cancel_generation", icon="CANCEL")
+            box.label(text="Esc also cancels")
+            return
 
         box = layout.box()
         box.label(text="WGS84 Bounding Box")
@@ -135,6 +146,7 @@ class JARVIZAR_PT_terrain(Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.enabled = not is_generating()
         settings = context.scene.jarvizar_city_model
         layout.prop(settings, "terrain_source")
         layout.prop(settings, "terrain_resolution")
@@ -162,6 +174,7 @@ class JARVIZAR_PT_surfaces(Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.enabled = not is_generating()
         settings = context.scene.jarvizar_city_model
         layout.prop(settings, "surface_rise_mm")
         layout.prop(settings, "surface_embed_mm")
@@ -220,6 +233,7 @@ class JARVIZAR_PT_transport(Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.enabled = not is_generating()
         settings = context.scene.jarvizar_city_model
         layout.prop(settings, "road_thickness_mm")
         layout.prop(settings, "minimum_road_width_mm")
@@ -252,6 +266,7 @@ class JARVIZAR_PT_buildings(Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.enabled = not is_generating()
         settings = context.scene.jarvizar_city_model
         layout.prop(settings, "default_building_height_m")
         layout.prop(settings, "floor_height_m")

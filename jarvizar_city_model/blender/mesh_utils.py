@@ -558,11 +558,13 @@ def tree_mesh_datablock(
     height_mm: float,
     sides: int = 6,
     embed_mm: float = 0.0,
+    *,
+    reuse: bool = True,
 ) -> bpy.types.Mesh:
     """Reuse one cone mesh for all linked tree objects of the same shape."""
     shape = (canopy_radius_mm, height_mm, sides, embed_mm)
     existing = bpy.data.meshes.get(name)
-    if existing is not None and tuple(existing.get('tree_shape', ())) == shape:
+    if reuse and existing is not None and tuple(existing.get('tree_shape', ())) == shape:
         return existing
     vertices, faces = tree_solid_geometry(
         canopy_radius_mm, height_mm, sides, embed_mm,

@@ -14,10 +14,10 @@ from bpy_extras.io_utils import ExportHelper
 
 from .blender.collections import (
     clear_generated,
-    create_city_hierarchy,
     generated_objects,
 )
-from .blender.materials import model_materials
+from .blender.generation import GenerationTransaction
+from .data.generation_job import GenerationCancelled
 from .data.cache import (
     ALL_TYPES,
     BUILDING_TYPES,
@@ -236,6 +236,11 @@ class JARVIZAR_OT_download_cache(Operator):
     )
     bl_options = {"REGISTER"}
 
+    @classmethod
+    def poll(cls, context):
+        from .blender.generation_modal import is_generating
+        return not is_generating()
+
     def execute(self, context):
         settings = context.scene.jarvizar_city_model
         try:
@@ -325,7 +330,8 @@ class JARVIZAR_OT_prepare_lidar(Operator):
 
     @classmethod
     def poll(cls, context):
-        return not cls._running
+        from .blender.generation_modal import is_generating
+        return not cls._running and not is_generating()
 
     def finish(self, context, result):
         settings = context.scene.jarvizar_city_model
@@ -434,6 +440,24 @@ class JARVIZAR_OT_prepare_lidar(Operator):
             return {"CANCELLED"}
 
 
+class JARVIZAR_OT_cancel_generation(Operator):
+    bl_idname = "jarvizar.cancel_generation"
+    bl_label = "Cancel Generation"
+    bl_description = "Stop generation and keep the previous model"
+
+    @classmethod
+    def poll(cls, context):
+        from .blender.generation_modal import is_generating
+        return is_generating()
+
+    def execute(self, context):
+        from .blender.generation_modal import active_session
+        session = active_session()
+        if session is not None:
+            session.request_cancel()
+        return {"FINISHED"}
+
+
 class JARVIZAR_OT_move_surface_priority(Operator):
     bl_idname = "jarvizar.move_surface_priority"
     bl_label = "Move Surface Priority"
@@ -457,14 +481,82 @@ class JARVIZAR_OT_move_surface_priority(Operator):
 class JARVIZAR_OT_generate_model(Operator):
     bl_idname = "jarvizar.generate_model"
     bl_label = "Generate Model"
-    bl_description = "Generate the enabled terrain, surface, and feature geometry"
+    bl_description = "Generate the model with phase progress; Esc or Cancel keeps the previous model"
     bl_options = {"REGISTER", "UNDO"}
 
+    @classmethod
+    def poll(cls, context):
+        from .blender.generation_modal import is_generating
+        return not is_generating() and not JARVIZAR_OT_prepare_lidar._running
+
     def execute(self, context):
-        settings = context.scene.jarvizar_city_model
-        hierarchy = None
-        window_manager = context.window_manager
+        if bpy.app.background:
+            return JARVIZAR_OT_generate_model.execute_sync(self, context)
+        from .blender.generation_modal import GenerationSession
         try:
+            self._session = GenerationSession(context)
+            self._session.start()
+            context.window_manager.modal_handler_add(self)
+            return {"RUNNING_MODAL"}
+        except Exception as exc:
+            session = getattr(self, "_session", None)
+            if session is not None:
+                session.error = True
+                session.message = f"Could not start generation: {exc}"
+                session.detach()
+            self.report({"ERROR"}, f"Could not start generation: {exc}")
+            return {"CANCELLED"}
+
+    def modal(self, context, event):
+        session = self._session
+        if session.done:
+            return {"CANCELLED"}
+        if event.type == "ESC":
+            session.request_cancel()
+            return {"RUNNING_MODAL"}
+        if event.type == "TIMER":
+            result = session.advance(context)
+            if result != {"RUNNING_MODAL"}:
+                self.report({"INFO"} if not session.error else {"ERROR"}, session.message)
+            return result
+        if event.type == "Z" and event.ctrl:
+            return {"RUNNING_MODAL"}
+        if session.transaction is not None:
+            # Permit clicks on the sidebar's Cancel button even when they were
+            # queued during append. Consume viewport edits before publication.
+            if event.type in {"LEFTMOUSE", "MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}:
+                for area in context.screen.areas if context.screen else ():
+                    for region in area.regions if area.type == "VIEW_3D" else ():
+                        if (region.type == "UI" and region.x <= event.mouse_x < region.x + region.width
+                                and region.y <= event.mouse_y < region.y + region.height):
+                            return {"PASS_THROUGH"}
+            return {"RUNNING_MODAL"}
+        # Navigation and the Cancel button remain available while building.
+        return {"PASS_THROUGH"}
+
+    def cancel(self, context):
+        session = getattr(self, "_session", None)
+        if session is not None:
+            session.detach()
+
+    def execute_sync(self, context):
+        settings = context.scene.jarvizar_city_model
+        transaction = None
+        window_manager = context.window_manager
+        phase_name = "Checking cached data"
+
+        def progress(fraction, phase=None):
+            nonlocal phase_name
+            if phase is not None:
+                phase_name = phase
+            window_manager.progress_update(int(max(0.0, min(1.0, fraction)) * 1000))
+            callback = getattr(self, "_generation_progress", None)
+            if callback is not None:
+                callback(phase_name, fraction)
+
+        try:
+            window_manager.progress_begin(0, 1000)
+            progress(0.0)
             bounds = _bounds_from_settings(settings)
             bundle = _cache_bundle(settings)
             required = _essential_types(settings)
@@ -487,17 +579,8 @@ class JARVIZAR_OT_generate_model(Operator):
                     target_height_mm=settings.target_height_mm,
                     preserve_aspect=settings.preserve_aspect_ratio,
                 )
-            if settings.set_scene_units:
-                context.scene.unit_settings.system = "METRIC"
-                context.scene.unit_settings.scale_length = 0.001
-                context.scene.unit_settings.length_unit = "MILLIMETERS"
-
-            window_manager.progress_begin(0, 1000)
-
-            def progress(fraction: float) -> None:
-                window_manager.progress_update(int(max(0.0, min(1.0, fraction)) * 1000))
-
             # ------------------------------------------------ terrain surface
+            progress(0.01, "Preparing terrain heights")
             terrain_metadata = {}
             if settings.terrain_source == "DEM" and settings.generate_terrain:
                 if not bundle.has_dem():
@@ -534,11 +617,10 @@ class JARVIZAR_OT_generate_model(Operator):
                     ),
                 )
                 terrain_metadata["dem_source"] = "flat"
-            progress(0.05)
+            progress(0.05, "Creating staging collections")
 
-            clear_generated(context.scene)
-            hierarchy = create_city_hierarchy(context.scene)
-            materials = model_materials()
+            transaction = GenerationTransaction(context)
+            hierarchy, materials = transaction.begin()
             root = hierarchy["root"]
             root["source"] = "Overture Maps"
             root["bbox_wgs84"] = bounds.canonical()
@@ -574,6 +656,7 @@ class JARVIZAR_OT_generate_model(Operator):
             # water slab, so the source is read whenever either one wants it.
             # Tying them together would refill the river the moment someone
             # turned the blue part off.
+            progress(.05, "Solving water")
             water_bodies = []
             if _needs_water_data(settings):
                 water_features = _load_polygons(bundle, "water")
@@ -592,12 +675,14 @@ class JARVIZAR_OT_generate_model(Operator):
                     surface_settings,
                 )
                 counts.update(water_counts)
+                progress(.06, "Flattening water terrain")
                 counts["terrain_nodes_flattened_to_water"] = (
                     flatten_terrain_under_water(heightfield, water_bodies)
                 )
                 # The cut is decided before the terrain is built, and before
                 # roads and piers ask the height field for ground, so every
                 # later stage agrees about where there is no longer any.
+                progress(.07, "Cutting water from terrain")
                 counts.update(
                     cut_water_from_terrain(
                         heightfield,
@@ -623,6 +708,7 @@ class JARVIZAR_OT_generate_model(Operator):
             terrain_bottom_mm = (
                 heightfield.printed_minimum_mm - settings.base_thickness_mm
             )
+            progress(.08, "Building terrain")
             if settings.generate_terrain:
                 counts.update(
                     generate_terrain_solid(
@@ -635,10 +721,12 @@ class JARVIZAR_OT_generate_model(Operator):
                 # The terrain measured its own surface, so a water plug and the
                 # rim use the underside the terrain actually has.
                 terrain_bottom_mm = counts["terrain_bottom_z_mm"]
+                progress(.085, "Recessing ponds and fountains")
                 counts.update(recess_terrain_basins(
                     heightfield, water_bodies, hierarchy["terrain"], settings.base_thickness_mm,
                 ))
                 terrain_bottom_mm = counts.get("terrain_bottom_z_mm", terrain_bottom_mm)
+                progress(.09, "Building border rim")
                 if settings.generate_border_rim:
                     counts.update(
                         generate_border_rim(
@@ -654,6 +742,7 @@ class JARVIZAR_OT_generate_model(Operator):
             # opening: mapped decks now, bridges and buildings as they are
             # generated.  The supports share the terrain's own underside, so
             # they can only be sized once that is known.
+            progress(.095, "Preparing ground supports")
             ground_support = None
             if (
                 settings.support_structures_over_water
@@ -666,7 +755,7 @@ class JARVIZAR_OT_generate_model(Operator):
                 )
                 for rings in heightfield.restored_footprints:
                     ground_support.footprint(rings, "mapped_deck")
-            progress(0.10)
+            progress(0.10, "Building land surfaces")
 
             if settings.generate_land_surfaces:
                 counts.update(
@@ -685,13 +774,14 @@ class JARVIZAR_OT_generate_model(Operator):
                         progress_callback=lambda f: progress(0.10 + f * 0.10),
                     )
                 )
-            progress(0.20)
+            progress(0.20, "Cutting basin surfaces")
 
             counts.update(cut_basin_land_surfaces(
                 hierarchy["land_surfaces"], water_bodies,
                 surface_settings.surface_rise_mm + surface_settings.surface_embed_mm,
             ))
 
+            progress(.20, "Building water")
             if settings.generate_water:
                 counts.update(
                     generate_water(
@@ -703,7 +793,7 @@ class JARVIZAR_OT_generate_model(Operator):
                         progress_callback=lambda f: progress(0.20 + f * 0.05),
                     )
                 )
-            progress(0.25)
+            progress(0.25, "Building roads and bridges")
 
             if settings.generate_roads or settings.generate_bridges:
                 road_settings = RoadSettings(
@@ -742,12 +832,13 @@ class JARVIZAR_OT_generate_model(Operator):
                     )
                 )
                 if settings.generate_land_surfaces:
+                    progress(.50, "Cutting road footprints")
                     counts.update(cut_road_footprints(
                         hierarchy["land_surfaces"], hierarchy["surface_roads"],
                         surface_settings.surface_rise_mm + surface_settings.surface_embed_mm,
                         progress_callback=lambda f: progress(0.50 + f * 0.05),
                     ))
-            progress(0.55)
+            progress(0.55, "Placing trees")
 
             if settings.generate_trees:
                 counts.update(
@@ -772,13 +863,14 @@ class JARVIZAR_OT_generate_model(Operator):
                         bounds=bounds.as_tuple(),
                         progress_callback=lambda f: progress(0.55 + f * 0.15),
                         merge=settings.merge_buildings_and_trees,
+                        reuse_mesh=False,
                         ground_objects=(list(hierarchy["land_surfaces"].objects)
                                         + list(hierarchy["surface_roads"].objects)),
                     )
                 )
-            progress(0.70)
+            progress(0.70, "Loading LiDAR measurements")
 
-            settings.lidar_generation_status = 'LiDAR disabled' if not settings.use_lidar_buildings else 'Buildings disabled'
+            lidar_generation_status = 'LiDAR disabled' if not settings.use_lidar_buildings else 'Buildings disabled'
             if settings.generate_buildings:
                 lidar_profiles = {}
                 if settings.use_lidar_buildings:
@@ -786,6 +878,7 @@ class JARVIZAR_OT_generate_model(Operator):
                     counts["lidar_status"] = lidar_status
                     if not lidar_profiles:
                         self.report({"WARNING"}, lidar_status)
+                progress(.70, "Building buildings")
                 counts.update(
                     generate_buildings(
                         _load_polygons(bundle, "building"),
@@ -816,9 +909,9 @@ class JARVIZAR_OT_generate_model(Operator):
                 )
                 if settings.use_lidar_buildings:
                     if not lidar_profiles:
-                        settings.lidar_generation_status = lidar_status
+                        lidar_generation_status = lidar_status
                     else:
-                        settings.lidar_generation_status = (
+                        lidar_generation_status = (
                             f"Used LiDAR on {counts.get('lidar_buildings', 0)} buildings: "
                             f"{counts.get('lidar_tier_solids', 0)} tier sections, "
                             f"{counts.get('lidar_roof_plane_buildings', 0)} sloped roofs; "
@@ -827,6 +920,7 @@ class JARVIZAR_OT_generate_model(Operator):
                             f"{counts.get('lidar_source_detail_preserved', 0)} richer source buildings kept; "
                             f"{counts.get('lidar_geometry_fallbacks', 0)} geometry fallbacks")
 
+            progress(1.0, "Building terrain supports")
             if ground_support is not None:
                 ground_support.build(hierarchy["terrain_supports"], materials["terrain"])
                 counts.update(ground_support.summary())
@@ -856,19 +950,23 @@ class JARVIZAR_OT_generate_model(Operator):
                 f"{counts.get('water_bodies', 0)} water bodies, "
                 f"{counts.get('terrain_supports', 0)} supports"
             )
-            settings.last_status = message
             if settings.use_lidar_buildings:
-                settings.last_status += ' | ' + settings.lidar_generation_status
-            self.report({"INFO"}, settings.last_status)
-            return {"FINISHED"}
+                message += ' | ' + lidar_generation_status
+            progress(1.0, "Validating model")
+            transaction.commit(message=message, lidar_status=lidar_generation_status,
+                               set_scene_units=settings.set_scene_units)
         except Exception as exc:
-            if hierarchy is not None:
-                clear_generated(context.scene)
-            settings.last_status = f"Generation failed: {exc}"
-            self.report({"ERROR"}, str(exc))
+            if transaction is not None:
+                transaction.rollback()
+            cancelled = isinstance(exc, GenerationCancelled)
+            settings.last_status = ("Generation cancelled; previous model kept" if cancelled
+                                    else f"Generation failed: {exc}")
+            self.report({"INFO"} if cancelled else {"ERROR"}, str(exc))
             return {"CANCELLED"}
         finally:
             window_manager.progress_end()
+        self.report({"INFO"}, settings.last_status)
+        return {"FINISHED"}
 
 
 # io_mesh_3mf multiplies the scene's ``scale_length`` by the metre value of the
@@ -926,6 +1024,11 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
 
     filename_ext = ".3mf"
     filter_glob: bpy.props.StringProperty(default="*.3mf", options={"HIDDEN"})
+
+    @classmethod
+    def poll(cls, context):
+        from .blender.generation_modal import is_generating
+        return not is_generating()
 
     def execute(self, context):
         scene = context.scene
@@ -1014,6 +1117,11 @@ class JARVIZAR_OT_clear_model(Operator):
     bl_description = "Remove only collections and objects generated by this add-on"
     bl_options = {"REGISTER", "UNDO"}
 
+    @classmethod
+    def poll(cls, context):
+        from .blender.generation_modal import is_generating
+        return not is_generating()
+
     def execute(self, context):
         removed = clear_generated(context.scene)
         settings = context.scene.jarvizar_city_model
@@ -1023,6 +1131,7 @@ class JARVIZAR_OT_clear_model(Operator):
 
 
 CLASSES = (
+    JARVIZAR_OT_cancel_generation,
     JARVIZAR_OT_move_surface_priority,
     JARVIZAR_OT_paste_bounds,
     JARVIZAR_OT_download_cache,

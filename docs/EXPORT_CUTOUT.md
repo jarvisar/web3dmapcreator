@@ -8,9 +8,12 @@ named exactly `cutout` is excluded even if it has the generated tag.
 
 ## Opening extraction
 
-The evaluated frame supplies its geometry and complete world transform. Cap
-normal areas determine a local section plane, including applied rotations and
-triangulated imports. A temporary frame mesh is centred and duplicate import
+The evaluated frame supplies its geometry and complete world transform. Face
+normal areas rank candidate section planes, including applied rotations and
+triangulated imports. Each candidate must have an inner closed loop throughout
+its thickness profile. Surface area alone cannot select the axis: tall frame
+walls can have more area than the annular caps, producing a side-on section
+with no opening. A temporary frame mesh is centred and duplicate import
 vertices are welded before sectioning. Of the closed section loops, the loop
 nested inside the outside perimeter is the opening. The frame's physical mesh
 is never a subtraction tool.

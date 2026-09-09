@@ -13,7 +13,7 @@ import zipfile
 
 import bpy
 import bmesh
-from mathutils import Matrix, Vector
+from mathutils import Euler, Matrix, Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import jarvizar_city_model as addon
@@ -166,6 +166,45 @@ class CutoutTests(unittest.TestCase):
         bm.to_mesh(cutout.data);bm.free()
         obj=self.source('terrain',rectangle(100,100))
         self.crop([obj],lambda p,s,o:self.assertAlmostEqual(audit(p[0].data),400,places=2))
+
+    def test_tall_frames_sizes_and_independent_transforms(self):
+        # Wall area outranks annular cap area in these frames. The opening's
+        # topology must identify its axis, including after applying transforms.
+        for width,height,depth in [(40,25,90),(170.5,119.5,40),(240,150,100)]:
+            for angles in [(0,0,0),(0,0,37),(0,0,90),(0,0,180),(12,25,41),(90,0,0),(0,90,0)]:
+                for applied in (False,True):
+                    with self.subTest(size=(width,height,depth),angles=angles,applied=applied):
+                        cutout=mesh_object('cutout',[rectangle(width+40,height+40),list(reversed(rectangle(width,height)))],0,depth)
+                        transform=Matrix.Translation((17,-11,4)) @ Euler(tuple(math.radians(a) for a in angles)).to_matrix().to_4x4() @ Matrix.Diagonal((-1.3,0.7,1.15,1))
+                        if applied:
+                            cutout.data.transform(transform)
+                        else:
+                            cutout.matrix_world=transform
+                        obj=self.source('stationary map',rectangle(1200,1200),-600,600)
+                        def check(parts,stats,opening):
+                            self.assertEqual(len(parts),1)
+                            # Independent expected coordinates, not the detected
+                            # frame basis (which is exactly what regressed).
+                            points=[transform.inverted() @ parts[0].matrix_world @ v.co for v in parts[0].data.vertices]
+                            for axis,size in [(0,width),(1,height)]:
+                                self.assertAlmostEqual(min(p[axis] for p in points),-size/2,delta=0.001)
+                                self.assertAlmostEqual(max(p[axis] for p in points),size/2,delta=0.001)
+                        self.crop([obj],check)
+                        bpy.data.objects.remove(cutout,do_unlink=True)
+                        bpy.data.objects.remove(obj,do_unlink=True)
+
+    def test_current_edit_mode_opening(self):
+        cutout=frame(rectangle(20,10))
+        bpy.context.view_layer.objects.active=cutout;cutout.select_set(True)
+        bpy.ops.object.mode_set(mode='EDIT')
+        try:
+            bm=bmesh.from_edit_mesh(cutout.data)
+            for v in bm.verts:v.co.x*=1.5
+            bmesh.update_edit_mesh(cutout.data)
+            opening=Opening.from_object(cutout,bpy.context.evaluated_depsgraph_get())
+            self.assertAlmostEqual(max(p[0] for p in opening.ring)-min(p[0] for p in opening.ring),30,places=3)
+        finally:
+            bpy.ops.object.mode_set(mode='OBJECT')
 
     def test_convex_nonrectangle(self):
         ring=[(7*math.cos(i*math.tau/12),5*math.sin(i*math.tau/12)) for i in range(12)]

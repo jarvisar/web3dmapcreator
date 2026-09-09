@@ -27,7 +27,7 @@ parser.add_argument('--bbox',default='-84.53370,39.08554,-84.47422,39.11094')
 parser.add_argument('--blend')
 parser.add_argument('--export',action='store_true')
 parser.add_argument('--save-generated')
-parser.add_argument('--rotation',type=float,default=0,help='Frame rotation in degrees')
+parser.add_argument('--rotation',type=float,help='Override frame rotation in degrees')
 parser.add_argument('--preview',type=Path)
 args=parser.parse_args(sys.argv[sys.argv.index('--')+1:])
 if args.blend:
@@ -41,12 +41,15 @@ if not args.blend:
     assert bpy.ops.jarvizar.generate_model()=={'FINISHED'},s.last_status
     if args.save_generated:
         bpy.ops.wm.save_as_mainfile(filepath=str(Path(args.save_generated).resolve()))
-vertices,faces=_prism_geometry([
-    [(x,y,-2,2) for x,y in [(-100,-80),(100,-80),(100,80),(-100,80)]],
-    [(x,y,-2,2) for x,y in [(-85.25,-59.75),(-85.25,59.75),(85.25,59.75),(85.25,-59.75)]]])
-mesh=bpy.data.meshes.new('cutout');mesh.from_pydata(vertices,[],faces)
-cutout=bpy.data.objects.new('cutout',mesh);bpy.context.scene.collection.objects.link(cutout)
-cutout.rotation_euler.z=math.radians(args.rotation)
+cutout=bpy.context.scene.objects.get('cutout')
+if cutout is None:
+    vertices,faces=_prism_geometry([
+        [(x,y,-2,2) for x,y in [(-100,-80),(100,-80),(100,80),(-100,80)]],
+        [(x,y,-2,2) for x,y in [(-85.25,-59.75),(-85.25,59.75),(85.25,59.75),(85.25,-59.75)]]])
+    mesh=bpy.data.meshes.new('cutout');mesh.from_pydata(vertices,[],faces)
+    cutout=bpy.data.objects.new('cutout',mesh);bpy.context.scene.collection.objects.link(cutout)
+if args.rotation is not None:
+    cutout.rotation_euler.z=math.radians(args.rotation)
 bpy.context.view_layer.update()
 sources=generated_objects(bpy.context.scene)
 before=[(o.data.as_pointer(),len(o.data.vertices),len(o.data.polygons),o.matrix_world.copy()) for o in sources]

@@ -689,6 +689,10 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         default=False,
     )
     last_status: StringProperty(name="Status", default="Ready")
+    generation_running: BoolProperty(default=False, options={"SKIP_SAVE"})
+    generation_phase: StringProperty(name="Generation phase", default="", options={"SKIP_SAVE"})
+    generation_progress: FloatProperty(name="Progress", default=0.0, min=0.0, max=1.0,
+                                       subtype="FACTOR", options={"SKIP_SAVE"})
 
 
 CLASSES = (JARVIZAR_AP_preferences, JARVIZAR_PG_city_model_settings)

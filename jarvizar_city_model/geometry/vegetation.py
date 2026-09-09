@@ -186,6 +186,7 @@ def generate_trees(
     progress_callback=None,
     merge: bool = False,
     ground_objects: Iterable = (),
+    reuse_mesh: bool = True,
 ) -> Dict[str, Any]:
     """Place mapped trees and scattered forest trees.
 
@@ -310,6 +311,7 @@ def generate_trees(
             "JCM_Tree",
             canopy_radius,
             tree_height,
+            reuse=reuse_mesh,
             **shape_options,
         )
         if material is not None and not mesh.materials:

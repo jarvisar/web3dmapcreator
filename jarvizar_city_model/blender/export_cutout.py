@@ -93,6 +93,50 @@ def _section(bm, z, tolerance):
         section.free()
 
 
+def _frame_profile(source, normal):
+    """Validate a candidate thickness axis using the actual through opening.
+
+    Tall frame walls can have more area than the annular caps. Face area ranks
+    candidates but cannot identify the crop plane on its own.
+    """
+    bm = source.copy()
+    try:
+        u = Vector((1, 0, 0))
+        if abs(normal.dot(u)) > 0.9:
+            u = Vector((0, 1, 0))
+        u = (u - normal * u.dot(normal)).normalized()
+        v = normal.cross(u)
+        basis = Matrix((u, v, normal)).transposed().to_4x4()
+        basis.translation = sum((v.co for v in bm.verts), Vector()) / len(bm.verts)
+        bm.transform(basis.inverted())
+        lo = [min(v.co[i] for v in bm.verts) for i in range(3)]
+        hi = [max(v.co[i] for v in bm.verts) for i in range(3)]
+        tolerance = max(hi[i] - lo[i] for i in range(3)) * 1e-7
+        if tolerance <= 0 or hi[2] - lo[2] <= tolerance:
+            raise CutoutError("cutout must be a solid frame with nonzero thickness")
+        bmesh.ops.remove_doubles(bm, verts=list(bm.verts), dist=tolerance)
+        # Reject side-on sections cheaply before sampling the complete profile.
+        ring = _section(bm, (lo[2] + hi[2]) / 2, tolerance * 4)
+        levels = sorted({round(vertex.co.z / tolerance) * tolerance for vertex in bm.verts})
+        samples = []
+        for low, high in zip(levels, levels[1:]):
+            if high - low > tolerance * 4:
+                samples.extend((low + tolerance * 2, (low + high) / 2, high - tolerance * 2))
+        if not samples or len(samples) > 192:
+            raise CutoutError("cutout needs a planar frame with a consistent through opening")
+        for z in samples:
+            candidate = _section(bm, z, tolerance * 4)
+            a = Opening(ring, Matrix.Identity(4), tolerance * 8)
+            b = Opening(candidate, Matrix.Identity(4), tolerance * 8)
+            if all(a.contains(p) for p in candidate):
+                ring = candidate
+            elif not all(b.contains(p) for p in ring):
+                raise CutoutError("cutout's opening changes shape through its thickness")
+        return ring, basis, tolerance
+    finally:
+        bm.free()
+
+
 class Opening:
     def __init__(self, ring, matrix_world, tolerance):
         self.ring = ring
@@ -129,45 +173,17 @@ class Opening:
                 key = tuple(round(v, 5) for v in n)
                 directions[key] += face.calc_area()
                 normals[key] = n
-            normal = normals[max(directions, key=directions.get)]
-            u = Vector((1, 0, 0))
-            if abs(normal.dot(u)) > 0.9:
-                u = Vector((0, 1, 0))
-            u = (u - normal * u.dot(normal)).normalized()
-            v = normal.cross(u)
-            basis = Matrix((u, v, normal)).transposed().to_4x4()
-            # Centre before cutting to retain precision in imported meshes.
-            basis.translation = sum((v.co for v in bm.verts), Vector()) / len(bm.verts)
-            bm.transform(basis.inverted())
-            lo = [min(v.co[i] for v in bm.verts) for i in range(3)]
-            hi = [max(v.co[i] for v in bm.verts) for i in range(3)]
-            tolerance = max(hi[i] - lo[i] for i in range(3)) * 1e-7
-            if tolerance <= 0 or hi[2] - lo[2] <= tolerance:
-                raise CutoutError("cutout must be a solid frame with nonzero thickness")
-            bmesh.ops.remove_doubles(bm, verts=list(bm.verts), dist=tolerance)
-            # Sample either side of every profile change. This includes the
-            # narrow part of bevelled/tapered openings, not the flared mouth.
-            levels = sorted({round(vertex.co.z / tolerance) * tolerance for vertex in bm.verts})
-            samples = []
-            for low, high in zip(levels, levels[1:]):
-                if high - low > tolerance * 4:
-                    samples.extend((low + tolerance * 2, (low + high) / 2, high - tolerance * 2))
-            if not samples or len(samples) > 192:
-                raise CutoutError("cutout needs a planar frame with a consistent through opening")
-            ring = None
-            for z in samples:
-                candidate = _section(bm, z, tolerance * 4)
-                if ring is None:
-                    ring = candidate
+            errors = []
+            for key in sorted(directions, key=directions.get, reverse=True):
+                if directions[key] <= 0:
                     continue
-                # Nested profiles (e.g. bevels) have a single restrictive
-                # opening. Do not guess at incompatible/twisted profiles.
-                a = cls(ring, Matrix.Identity(4), tolerance * 8)
-                b = cls(candidate, Matrix.Identity(4), tolerance * 8)
-                if all(a.contains(p) for p in candidate):
-                    ring = candidate
-                elif not all(b.contains(p) for p in ring):
-                    raise CutoutError("cutout's opening changes shape through its thickness")
+                try:
+                    ring, basis, tolerance = _frame_profile(bm, normals[key])
+                    break
+                except CutoutError as exc:
+                    errors.append(exc)
+            else:
+                raise errors[0] if errors else CutoutError("cutout has no usable frame faces")
             world = evaluated.matrix_world @ basis
             if abs(world.to_3x3().determinant()) < 1e-15:
                 raise CutoutError("cutout has a zero scale")

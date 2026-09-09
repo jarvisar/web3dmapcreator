@@ -221,8 +221,17 @@ existing full-model export remains available. See [export crop details](docs/EXP
    buildings.
 6. Click **Generate Model**.
 
-The add-on replaces its previous tagged `CITY_MODEL` hierarchy when generating.
-It does not remove unrelated user objects. If enabled, **Set Scene Units to
+The add-on builds a replacement before removing its previous `CITY_MODEL`.
+If generation fails, the previous model and its manual edits, materials, scene
+units, and selection remain intact. Successful regeneration replaces those
+generated edits and applies the standard palette. Retaining both models during
+construction requires extra memory. Interactive generation shows the current
+phase and progress; press **Esc** or **Cancel Generation** to keep the previous
+model. The long build runs in a separate background Blender process, so the UI
+stays responsive during geometry work. Loading and validating the completed
+model can briefly pause the UI; cancellation queued during loading is handled
+before replacement. Scripted background generation remains synchronous.
+User helpers and reused mesh data survive cleanup. If enabled, **Set Scene Units to
 Millimetres** configures metric scale `0.001`, so one Blender unit displays as
 one millimetre.
 

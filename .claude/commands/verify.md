@@ -27,6 +27,42 @@ current machine. There is no fixed expected test count or mesh count.
    `$LASTEXITCODE` after every external command. Smoke uses its own fixtures and
    settings; it does not replace focused subsystem tests.
 
+   For generation ownership, publication, or cleanup changes, also run:
+
+   ```powershell
+   & $blenderExe --background --factory-startup --python-exit-code 1 --python .\tests\blender_generation_transaction.py
+   ```
+
+   Require `JARVIZAR_GENERATION_TRANSACTION_OK` and successful exit. This offline
+   fixture injects failures after generation phases and before destructive
+   publication, then checks exact rollback and successful retries. It also covers
+   material users, scene state, helpers, shared meshes, and name collisions.
+
+   For responsive generation, also run the offline real-worker checks:
+
+   ```powershell
+   & $blenderExe --background --factory-startup --python-exit-code 1 --python .\tests\blender_generation_modal.py
+   ```
+
+   Require `JARVIZAR_GENERATION_MODAL_OK`. This launches local background Blender
+   workers from the checkout, cancels them inside every generation phase, and
+   tests append/publication, settings changes, failed termination and retry.
+   `tests/generation_worker_fixture.py` deliberately pauses test workers; it is
+   not packaged or used by the add-on.
+
+   The real event-loop check needs a window and simulated events:
+
+   ```powershell
+   & $blenderExe --factory-startup --enable-event-simulate --python-exit-code 1 --python .\tests\blender_generation_gui.py
+   ```
+
+   Require `JARVIZAR_GENERATION_GUI_OK` and both `GUI_CANCEL_OK` markers (Esc and
+   button), with successful exit. It operates only on a disposable factory scene,
+   verifies timer heartbeats during a deliberately blocked worker, retries to
+   success, and closes its own test process without saving user preferences.
+   On Windows, launch background windowed test helpers with `Start-Process
+   -WindowStyle Hidden` and capture both output streams.
+
 3. Run the full cached model when its Overture/DEM bundle is available:
 
    ```powershell

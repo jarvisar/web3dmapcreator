@@ -101,17 +101,21 @@ are errors; missing/stale/invalid optional LiDAR falls back to source buildings.
 Overture and DEM downloads use blocking `subprocess.run`; the UI waits. LiDAR
 uses a modal timer and an external worker in interactive Blender, with progress
 and Esc cancellation. In background Blender, preparation waits synchronously.
+Interactive model generation also uses a modal timer and an offline background
+Blender process, launched from the same executable and exact add-on package.
+It runs all geometry on that process's main thread; no Blender API is accessed
+from a Python worker thread. Background/scripted generation remains synchronous.
 
 ### Generation order matters
 
-Follow `JARVIZAR_OT_generate_model.execute`, rather than constructing each layer
+Follow `JARVIZAR_OT_generate_model.execute_sync`, rather than constructing each layer
 independently:
 
 1. Validate essential caches and create the transform. Build one
    `ModelHeightField` from DEM or flat terrain; apply smoothing once there.
-2. Clear the previous generated hierarchy, create collections/materials, and
-   record source/transform metadata. Solve and validate water polygons and
-   their reusable prism topology before altering terrain.
+2. Retain the previous generated hierarchy and build owned staging collections
+   with copies of shared materials; record source/transform metadata. Solve and
+   validate water polygons and their reusable prism topology before altering terrain.
 3. Lower terrain under ordinary water to solved water levels; construct the
    through-cut mask. Restore mapped deck and building footprints where the
    grid can resolve them. Ponds/fountains use a separate finite-depth path.
@@ -123,7 +127,8 @@ independently:
    registration before pier placement; subtract ground-road footprints from slabs.
 6. Place trees using finished land/road caps. Generate source or prepared LiDAR
    buildings and their foundations. Emit accumulated `TERRAIN_SUPPORTS` last.
-   Store counts/status on the generated root and scene.
+   Store counts on the staged root, validate ownership/attachment and finite mesh
+   coordinates/placement, then publish the replacement and scene status/units.
 
 Every generator samples the shared height field, **not the DEM directly**.
 `is_void` conservatively marks whole shore cells; `in_cut_water` follows the
@@ -132,10 +137,47 @@ registered supports. Use exact queries for classification; `has_ground` is the
 conservative foundation query. `ground_height_mm` uses surviving bank heights
 over cuts so roads and deck anchors do not dip into a removed riverbed.
 
-Ownership uses `jarvizar_generated` tags and the root name `CITY_MODEL`.
-Regeneration replaces generated output, including manual edits. Failure after
-hierarchy creation clears partial output without restoring the previous model.
-Keep user helpers outside the generated hierarchy.
+Ownership uses `jarvizar_generated` tags and a `jarvizar_city_root` marker; legacy
+tagged roots named `CITY_MODEL` remain supported. Published roots normally use
+that name, with Blender suffixes when user data or other scenes already own it.
+Staging roots are excluded from export and normal cleanup.
+
+`blender/generation.py` retains previous meshes during synchronous generation.
+It reserves their names reversibly and copies materials before palette updates.
+On failure, allocation snapshots remove only this run's new IDs, including
+unlinked/untagged builder leftovers; original names, material users, units, LiDAR
+status, selection and active object/collection are restored. `last_status` reports
+the failure. On success, shared material users move to the updated copies, scene
+results publish, and one final batch removal discards previous generated output,
+including manual edits. User helpers inside removed collections are relinked to
+the scene, and meshes reused by surviving objects are retained. Keep helpers
+outside the generated hierarchy for clarity.
+
+`blender/generation_modal.py` owns interactive generation from launch through
+worker exit and publication. Inputs are snapshotted, including an absolute cache
+path; changed settings/scenes cancel the pending result. Esc or Cancel terminates
+the isolated worker even inside long native geometry calls. Poll until it exits
+before releasing ownership or deleting its private temporary directory. Failed
+termination keeps the job owned and retries. Scene load, undo/redo, window closure,
+and add-on unload stop/reap the worker; a parent monitor and OS-only exit cleanup
+also cover the owning application's exit. Downloads, LiDAR preparation, export,
+and clearing are guarded while generation owns the scene.
+
+`external/generate_model.py` uses the unchanged synchronous pipeline and writes
+one private `.blend` library plus a versioned result. Foreground publication
+appends that root, maps worker material roles to staged copies of the local
+palette (preserving custom shaders), and seals the imported ID set before yielding
+to the event loop. Cleanup after that yield uses only those captured IDs, so user
+objects created while generation runs are never swept up. The next timer tick
+validates and commits; cancellation queued during append is handled before this
+final boundary. Library append, final validation, and atomic publication are
+synchronous foreground operations; large file imports can briefly pause the UI.
+
+Peak memory includes the foreground model, a separate Blender worker during
+construction, and both meshes during import. Worker progress is best effort;
+private model/result publication is mandatory. Atomic JSON replacement retries
+brief Windows reader conflicts. Generation remains offline and retains existing
+FDM geometry/defaults. Download cancellation is a separate outstanding task.
 
 ## Geometry rules worth preserving
 
@@ -343,6 +385,8 @@ If the scene contains a mesh named exactly `cutout`,
 along the frame's local thickness axis. The frame is neither exported nor used
 as a subtraction solid; its scene Z is not a height limit. No frame means full
 export. Invalid frames or unclosable cuts fail rather than exporting uncropped.
+Frame-axis detection must verify a through opening in candidate cross-sections;
+the largest face-normal area alone can select a side wall on a tall frame.
 
 Classify object bounds and connected shells first. Isolate crossing shells
 before BMesh operations (their setup otherwise scans the entire merged mesh).
@@ -374,7 +418,7 @@ Select focused checks based on the change:
 
 | Area | Existing checks under `tests/` |
 | --- | --- |
-| Core pipeline | `test_*.py`, `blender_smoke.py`; smoke exercises merged/unmerged geometry, heights, roofs, and cleanup |
+| Core pipeline | `test_*.py`, `blender_smoke.py`; smoke exercises merged/unmerged geometry, heights, roofs, and cleanup. `blender_generation_transaction.py` checks rollback/ownership. `blender_generation_modal.py` exercises real worker cancellation at each phase, import, retries and cleanup; windowed `blender_generation_gui.py` checks real Esc/Cancel and event-loop responsiveness. |
 | Water / supports | `blender_water_cut.py`, `blender_ground_support.py`, `blender_pond_basins.py`; cached `blender_water_cut_live.py`, `blender_coastline_live.py`, `blender_pond_basins_live.py` |
 | Roads / surface ownership | `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
 | Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
