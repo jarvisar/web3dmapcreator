@@ -8,7 +8,7 @@ import math
 import re
 
 
-POLICY = 'source footprints and spatial height confidence; complete survey observations with capture-age preference; no mixed geometry'
+POLICY = 'format-neutral EPT/LAZ comparison; source footprints and spatial height confidence; complete survey observations with capture-age preference; classification availability breaks quality ties; no mixed geometry'
 CONTRADICTIONS = frozenset({'source_height_conflict', 'footprint_roof_mismatch',
     'roof_extends_outside_footprint', 'observed_ground_in_footprint',
     'predates_building', 'mixed_capture_epochs'})
@@ -90,7 +90,8 @@ def choose_measurement(candidates, observations=(), footprint=None, prefer_lidar
         # observations, prefer recent capture; unknown age earns no bonus.
         recency = .12 - age*.015 if year else 0
         return quality(record)+recency
-    ordered = sorted(candidates, key=lambda r:(-score(r), -quality(r), r.get('source',''), r.get('source_url','')))
+    ordered = sorted(candidates, key=lambda r:(-score(r), -quality(r),
+        -r.get('classified_roof_fraction', 0), r.get('source',''), r.get('source_url','')))
     selected = ordered[0]
     year = selected.get('capture_year')
     conflicts = []
@@ -116,10 +117,14 @@ def choose_measurement(candidates, observations=(), footprint=None, prefer_lidar
                 conflicts.append(conflict)
     return selected, {'reason':'best_usable_survey' if prefer_lidar else 'best_compatible_survey',
         'ignored_conflicts':conflicts, 'candidates':len(candidates),
-        'source':selected.get('source',''), 'capture_year':year,
+        'source':selected.get('source',''), 'source_url':selected.get('source_url',''),
+        'source_format':selected.get('source_format',''), 'capture_year':year,
+        'classified_roof_fraction':selected.get('classified_roof_fraction', 0),
         'date_basis':selected.get('date_basis','unknown'), 'quality':round(quality(selected),4),
         'score':round(score(selected),4), 'alternatives':[
-            {'source':r.get('source',''), 'capture_year':r.get('capture_year'),
+            {'source':r.get('source',''), 'source_url':r.get('source_url',''),
+             'source_format':r.get('source_format',''), 'capture_year':r.get('capture_year'),
+             'classified_roof_fraction':r.get('classified_roof_fraction', 0),
              'quality':round(quality(r),4), 'score':round(score(r),4)} for r in ordered[1:]]}
 
 

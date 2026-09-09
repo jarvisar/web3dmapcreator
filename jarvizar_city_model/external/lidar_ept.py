@@ -41,8 +41,9 @@ class Fetcher:
         self.requests = 0
         self.refresh = refresh
         self.seen = set()
+        self.progress = lambda _: None
 
-    def get(self, url, limit=32 * 1024 * 1024):
+    def get(self, url, limit=32 * 1024 * 1024, fresh=False):
         if urlparse(url).scheme != "https":
             raise ValueError("LiDAR downloads require HTTPS")
         path = self.cache / hashlib.sha256(url.encode()).hexdigest()
@@ -53,7 +54,7 @@ class Fetcher:
         if remaining <= 0:
             raise BudgetExceeded("LiDAR byte budget reached; select a smaller area")
         # Immutable tile cache can be explicitly refreshed with the scene option.
-        if path.is_file() and (not self.refresh or repeated):
+        if path.is_file() and (not (self.refresh or fresh) or repeated):
             if path.stat().st_size > remaining:
                 raise BudgetExceeded("LiDAR byte budget reached; select a smaller area")
             data = path.read_bytes()
@@ -78,8 +79,91 @@ class Fetcher:
         self.seen.add(url)
         return data
 
-    def json(self, url):
-        return json.loads(self.get(url))
+    def json(self, url, fresh=False):
+        return json.loads(self.get(url, fresh=fresh))
+
+    def download(self, url, limit=4 * 1024 ** 3, revision=''):
+        """Stream a staged tile to disk; never allocate its compressed contents."""
+        if urlparse(url).scheme != 'https':
+            raise ValueError('LiDAR downloads require HTTPS')
+        key = url + ('#revision='+str(revision) if revision else '')
+        path = self.cache / hashlib.sha256(key.encode()).hexdigest()
+        repeated = key in self.seen
+        remaining = min(limit, self.max_bytes-self.bytes) if self.max_bytes is not None and not repeated else limit
+        if path.is_file() and (not self.refresh or repeated):
+            size = path.stat().st_size
+            if size > remaining:
+                raise BudgetExceeded('LiDAR tile exceeds byte budget')
+        else:
+            temporary = path.with_suffix('.partial')
+            try:
+                for attempt in range(3):
+                    try:
+                        with urllib.request.urlopen(url, timeout=45) as response, temporary.open('wb') as output:
+                            expected = response.headers.get('Content-Length')
+                            if expected and int(expected) > remaining:
+                                raise BudgetExceeded('LiDAR tile exceeds byte budget')
+                            size = 0
+                            last_progress = time.monotonic()
+                            self.progress('Downloading LAZ tile'+(f' ({int(expected)/1024**2:.1f} MiB)' if expected else ''))
+                            while True:
+                                data = response.read(min(64 * 1024, max(1, remaining-size+1)))
+                                if not data:
+                                    break
+                                size += len(data)
+                                if size > remaining:
+                                    raise BudgetExceeded('LiDAR tile exceeds byte budget')
+                                output.write(data)
+                                if time.monotonic()-last_progress >= 5:
+                                    self.progress(f'Downloading LAZ tile: {size/1024**2:.1f} MiB received')
+                                    last_progress = time.monotonic()
+                            if expected and size != int(expected):
+                                raise OSError('Incomplete LiDAR tile download')
+                        break
+                    except OSError:
+                        if attempt == 2:
+                            raise
+                        time.sleep(attempt+1)
+                temporary.replace(path)
+                self.requests += 1
+            finally:
+                temporary.unlink(missing_ok=True)
+        if not repeated:
+            self.bytes += size
+        self.seen.add(key)
+        return path
+
+    def range(self, url, start, size):
+        """Read bounded header metadata only; a server must honor HTTP Range."""
+        if urlparse(url).scheme != 'https' or start < 0 or not 0 < size <= 4 * 1024 ** 2:
+            raise ValueError('Invalid LiDAR header range')
+        key = f'{url}#range={start}:{size}'
+        path = self.cache / hashlib.sha256(key.encode()).hexdigest()
+        repeated = key in self.seen
+        if self.max_bytes is not None and not repeated and self.bytes+size > self.max_bytes:
+            raise BudgetExceeded('LiDAR header exceeds byte budget')
+        if path.is_file() and (not self.refresh or repeated):
+            if path.stat().st_size != size:
+                raise ValueError('Invalid cached LiDAR header; use Refresh to retry')
+            data = path.read_bytes()
+        else:
+            request = urllib.request.Request(url, headers={
+                'Range': f'bytes={start}-{start+size-1}', 'Accept-Encoding': 'identity'})
+            with urllib.request.urlopen(request, timeout=45) as response:
+                content_range = response.headers.get('Content-Range', '')
+                if response.status != 206 or not content_range.startswith(f'bytes {start}-{start+size-1}/'):
+                    raise ValueError('Server does not support bounded LAS header requests')
+                data = response.read(size+1)
+                if len(data) != size:
+                    raise ValueError('Incomplete LAS header range')
+            temporary = path.with_suffix('.partial')
+            temporary.write_bytes(data)
+            temporary.replace(path)
+            self.requests += 1
+        if not repeated:
+            self.bytes += len(data)
+        self.seen.add(key)
+        return data
 
 
 def node_intersects(key, root_bounds, query):

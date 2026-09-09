@@ -109,6 +109,41 @@ before force-closing** (he has said yes once; that was not standing permission).
 
 ## Current state
 
+- **0.15.0 USGS LAZ acquisition (2026-09-09; installed):** installed and
+  enabled in Blender 3.6; archive contents, installed module/version, LiDAR
+  dependencies and saved downloader preference verified. Previous addon and
+  preferences backed up in `dist/install-backup-0150-20260909-163259/`.
+  Automatic
+  preparation discovers both EPT coverage and paginated TNMAccess LPC tiles.
+  `external/lidar_acquisition.py` handles discovery/acquisition, while
+  `lidar_laz.py` streams individual intersecting tiles, decodes chunks and
+  normalizes CRS/vertical units into the existing point contract. Measurement
+  algorithm **7**, footprint checks, print filters and geometry are unchanged.
+  Both formats compete on existing measured coverage, density and GPS age;
+  classification availability breaks otherwise equal quality ties. No survey
+  mixing or publication-date-as-flight-date inference. An advanced manifest
+  URL adds LAZ candidates using bounded LAS header/VLR/EVLR requests for tile
+  locations, never filename coordinates. Explicit EPT override still works.
+  Acquisition signature **1** requires Prepare again after upgrade; downloaded
+  EPT nodes remain reusable. LAZ tile revisions enter download/checkpoint keys.
+  455 Python tests and Blender smoke/LiDAR geometry, preference, minimum-height
+  and cancellation regressions pass. Both release ZIPs have 56 verified files.
+  Live TNM header and 13 MB staged-tile decode/crop verified: 18,113 retained
+  returns, correct survey-foot conversion and GPS year, then zero-network reuse.
+  A larger live tile stalled; a published manifest contained stale S3 links.
+  **Default Cincinnati follow-up:** full-bounds TNM discovery finds 124 LAZ
+  products and partial Kentucky EPT overlap. A quick workspace sample outside
+  both EPT footprints prepares **36/46 real buildings** from one Ohio tile:
+  23 tiered, nine plane roofs, capture year 2022 and declared survey-foot Z.
+  Legacy LAS 1.0 files lack CRS and are safely rejected. Actual Blender-default
+  request and Generate Model use all 36: 96 tier sections, 14 plane solids,
+  zero geometry fallbacks. All 41 scene meshes / 1,994,628 faces pass closure
+  and winding checks; 3MF export succeeds. Frozen-catalog/checkpoint replay
+  is identical with zero network requests. Failed TNM pages now retry smaller
+  pages at the same offset; UI source issues report missing CRS accurately.
+  Source/LAZ close-up and diagnostics: `scratchpad/lidar-laz/cincinnati/`.
+  See `docs/LIDAR_BUILDINGS.md` for design, validation and delivery limitations.
+
 - **0.14.2 LiDAR consistency accounting (2026-09-09; not installed):** algorithm
   **7** corrects clipped-cell area estimates in preparation. The latest Chicago
   cache (`bbox_fc293ec456a2`, 2,240 candidates, 0.01 mm width / 0.02 mm step)

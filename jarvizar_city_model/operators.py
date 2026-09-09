@@ -314,7 +314,7 @@ def _lidar_signature(settings, bundle, transform=None):
     return request_signature(bundle, min(transform.scale_x_mm_per_m, transform.scale_y_mm_per_m),
         transform.scale_z_mm_per_m * settings.building_height_scale,
         settings.lidar_minimum_width_mm, settings.lidar_minimum_step_mm, settings.lidar_source_url,
-        settings.generate_roof_shapes, settings.lidar_prefer_measured)
+        settings.generate_roof_shapes, settings.lidar_prefer_measured, settings.lidar_manifest_url)
 
 
 class JARVIZAR_OT_prepare_lidar(Operator):
@@ -346,7 +346,7 @@ class JARVIZAR_OT_prepare_lidar(Operator):
                 details.append(f"{other} source/survey conflicts")
             message += f"; {result['conflict_buildings']} consistency skips ({', '.join(details)})"
         if result.get('failures'):
-            message += '; incomplete downloads: Prepare again to resume'
+            message += f"; {len(result['failures'])} source issues: {result['failures'][0]['reason']}"
         elif not result['buildings']:
             message += '; no reliable measurements for this selection'
         settings.lidar_preparation_status = settings.last_status = message

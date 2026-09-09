@@ -254,7 +254,11 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     )
     lidar_source_url: StringProperty(
         name="USGS EPT URL (optional)", default="",
-        description="Leave empty to discover USGS coverage; set an ept.json HTTPS URL to select a particular survey",
+        description="Leave empty to compare available EPT and USGS LAZ surveys; set an ept.json HTTPS URL to override automatic discovery",
+    )
+    lidar_manifest_url: StringProperty(
+        name="LAZ Manifest URL (advanced)", default="",
+        description="Optional USGS 0_file_download_links.txt HTTPS URL; compare its intersecting LAZ tiles too. Locating tiles requires reading every tile header",
     )
     minimum_building_width_mm: FloatProperty(
         name="Minimum Building Width (mm)",

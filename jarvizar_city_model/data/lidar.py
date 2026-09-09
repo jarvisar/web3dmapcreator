@@ -14,20 +14,22 @@ from ..external.lidar_records import validate_records
 
 FORMAT_VERSION = 1
 ALGORITHM_VERSION = 7
+ACQUISITION_VERSION = 1
 
 
-def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True):
+def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url=""):
     files = {}
     for name in ("building", "building_part"):
         path = bundle.data_path(name)
         if not path.is_file():
             raise ValueError("Cache buildings and building parts before preparing LiDAR")
         files[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-    return {"algorithm": ALGORITHM_VERSION, "bbox": list(bundle.bounds.as_tuple()),
+    return {"algorithm": ALGORITHM_VERSION, "acquisition": ACQUISITION_VERSION, "bbox": list(bundle.bounds.as_tuple()),
             "footprint_sha256": files, "xy_scale": round(float(xy_scale), 10),
             "z_scale": round(float(z_scale), 10), "min_width_mm": round(float(min_width_mm), 6),
             "min_step_mm": round(float(min_step_mm), 6), "source_url": source_url.strip(),
-            'roof_planes': bool(roof_planes), 'prefer_lidar': bool(prefer_lidar)}
+            'roof_planes': bool(roof_planes), 'prefer_lidar': bool(prefer_lidar),
+            'manifest_url': manifest_url.strip()}
 
 
 def load_measurements(bundle, signature):

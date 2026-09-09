@@ -56,6 +56,13 @@ with patch.object(module,'bpy',fake_bpy),patch.object(module,'_cache_bundle',ret
         assert 'previous selection' in settings.lidar_preparation_status
 print('LIDAR_MODAL_LIFECYCLE_OK')
 
+# A successfully downloaded legacy tile can still lack CRS metadata. Report
+# the actual source problem instead of calling every rejection a download failure.
+issue_summary = {**summary, 'failures': [{'source': 'legacy', 'reason': 'LAS header lacks a supported horizontal CRS'}]}
+assert operator.finish(Driver(), context, issue_summary) == {'FINISHED'}
+assert 'source issues: LAS header lacks a supported horizontal CRS' in settings.lidar_preparation_status
+assert 'incomplete downloads' not in settings.lidar_preparation_status
+
 # A failed termination keeps the worker owned and polled until it exits.
 with patch.object(module,'bpy',fake_bpy),patch.object(module,'_cache_bundle',return_value=Mock()), \
      patch.object(module,'_lidar_signature',return_value={'algorithm':3}), \

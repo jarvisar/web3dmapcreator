@@ -40,6 +40,7 @@ class BatchTests(unittest.TestCase):
         with patch.object(sys, 'path', [external]+sys.path):
             worker = importlib.import_module('download_lidar')
             ept = importlib.import_module('lidar_ept')
+            importlib.import_module('lidar_acquisition')
             measurements = importlib.import_module('lidar_measurements')
             importlib.import_module('lidar_batches')
         with tempfile.TemporaryDirectory() as temp:
@@ -85,6 +86,7 @@ class BatchTests(unittest.TestCase):
         with patch.object(sys,'path',[external]+sys.path):
             worker=importlib.import_module('download_lidar')
             ept=importlib.import_module('lidar_ept')
+            importlib.import_module('lidar_acquisition')
             measurements=importlib.import_module('lidar_measurements')
             importlib.import_module('lidar_batches')
         with tempfile.TemporaryDirectory() as temp:
@@ -105,7 +107,7 @@ class BatchTests(unittest.TestCase):
                     return {}, {'footprint_roof_mismatch':1}, {'one':'footprint_roof_mismatch'}
                 return {'one':{'height_m':30,'tiers':[],'capture_year':2010+i,'coverage':1,
                                'roof_support_density_m2':2,'explained_fraction':1}}, {'height_only':1}, {}
-            with patch.object(ept.Fetcher,'json',return_value=catalog),patch.object(ept,'read_ept',side_effect=read),\
+            with patch.object(ept.Fetcher,'json',side_effect=lambda url, **kw: catalog if url == ept.CATALOG_URL else {'items':[], 'total':0}),patch.object(ept,'read_ept',side_effect=read),\
                  patch.object(measurements,'measure_features',side_effect=measure):
                 worker.prepare(bundle.path,request)
                 first=json.loads((bundle.path/'lidar_buildings.json').read_text())
@@ -128,6 +130,7 @@ class BatchTests(unittest.TestCase):
         with patch.object(sys,'path',[external]+sys.path):
             worker=importlib.import_module('download_lidar')
             ept=importlib.import_module('lidar_ept')
+            importlib.import_module('lidar_acquisition')
             measurements=importlib.import_module('lidar_measurements')
             importlib.import_module('lidar_batches')
         with tempfile.TemporaryDirectory() as temp:
@@ -140,7 +143,7 @@ class BatchTests(unittest.TestCase):
             def read(fetch,url,bbox):
                 if 'broken' in url:raise KeyError('bounds')
                 return np.empty((0,5)),{'url':url,'points':0}
-            with patch.object(ept.Fetcher,'json',return_value=catalog),patch.object(ept,'read_ept',side_effect=read),\
+            with patch.object(ept.Fetcher,'json',side_effect=lambda url, **kw: catalog if url == ept.CATALOG_URL else {'items':[], 'total':0}),patch.object(ept,'read_ept',side_effect=read),\
                  patch.object(measurements,'measure_features',return_value=({'one':{'height_m':30,'tiers':[]}}, {'height_only':1}, {})):
                 result=worker.prepare(bundle.path,request_signature(bundle,.07,.077))
             self.assertEqual(result['buildings'],1)

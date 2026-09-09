@@ -94,8 +94,11 @@ def validate_records(buildings):
             if key in record and (not finite_number(record[key]) or record[key] < 0):
                 raise ValueError('Invalid LiDAR quality statistic')
         year = record.get('capture_year')
+        if 'classified_roof_fraction' in record and (not finite_number(record['classified_roof_fraction'])
+                or not 0 <= record['classified_roof_fraction'] <= 1):
+            raise ValueError('Invalid LiDAR classification statistic')
         if year is not None and (not finite_number(year) or int(year) != year):
             raise ValueError('Invalid LiDAR capture year')
-        for key in ('source', 'source_url', 'method', 'date_basis'):
+        for key in ('source', 'source_url', 'source_format', 'method', 'date_basis'):
             if key in record and not isinstance(record[key], str):
                 raise ValueError('Invalid LiDAR source metadata')

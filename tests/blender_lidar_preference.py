@@ -12,6 +12,9 @@ from jarvizar_city_model.data.projection import create_fixed_scale_transform
 addon.register()
 settings = bpy.context.scene.jarvizar_city_model
 assert settings.lidar_prefer_measured is True
+assert settings.lidar_manifest_url == ''
+settings.lidar_manifest_url = 'https://example.com/0_file_download_links.txt'
+assert settings.lidar_manifest_url.endswith('0_file_download_links.txt')
 settings.lidar_minimum_width_mm = .01
 assert abs(settings.lidar_minimum_width_mm-.01) < 1e-6
 assert abs(settings.lidar_minimum_step_mm-.05) < 1e-6

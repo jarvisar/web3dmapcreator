@@ -311,7 +311,7 @@ height. Explicit totals include roofs, for buildings and parts. Inverted
 intervals are reported and skipped instead of inventing a taller top.
 Missing heights are never randomized.
 
-**Optional USGS LiDAR buildings (0.14.2).** Install `requirements-lidar.txt`
+**Optional USGS LiDAR buildings (0.15.0).** Install `requirements-lidar.txt`
 in the existing external downloader environment, cache buildings normally,
 then use **Buildings > USGS LiDAR Buildings > Prepare LiDAR Buildings** and
 **Generate Model**. This measures heights, printable roof tiers, and supported
@@ -336,10 +336,26 @@ batches replace the old whole-map point, area, download and time caps. Larger
 selections require more time and disk space. Preparation and generation counts
 appear in Buildings. Overlapping surveys are compared using supported roof detail,
 coverage and capture age.
+Automatic discovery compares the EPT coverage index and USGS TNMAccess
+**Lidar Point Cloud (LPC)** LAZ products for the selected bounds. Either format
+can win on usable roof coverage, point support or capture age; classification
+availability breaks quality ties. Publication dates are not flight dates.
+Only intersecting EPT nodes or individual LAZ tiles are downloaded, with the
+existing small ground/boundary halo. Staged LAZ tiles are downloaded whole,
+then decoded in chunks and cropped; large tiles can take time even for a small map.
+Both sources use the same building preparation and generation pipeline.
+
+Leave **USGS EPT URL** empty for automatic comparison. An explicit EPT URL
+retains the manual survey override. **LAZ Manifest URL (advanced)** optionally
+adds a USGS `0_file_download_links.txt` list to either mode. Tile locations
+come from LAS headers and CRS information, never filenames. Every listed
+header must be inspected, so large manifests are slower than TNMAccess.
+Stale links, servers without HTTP Range support and missing coordinate units
+are reported; they do not trigger a whole-project download.
 Consistency skips now report roof coverage, ground inside footprints and outside
 roofs separately. Boundary cells count only their tested area, reducing false
 rejections without lowering the coverage or point-support requirements.
-After upgrading from 0.14.1 or earlier, or changing the conflict preference or
+After upgrading from 0.14.2 or earlier, or changing the source, conflict preference or
 detail settings, **Prepare LiDAR Buildings again**; downloaded tiles are reused.
 Existing scenes retain explicitly saved detail values; set width/step to
 0.1/0.05 mm to use the new defaults.

@@ -55,6 +55,17 @@ class LidarCacheTests(unittest.TestCase):
             min_width_mm=.10000000149011612, min_step_mm=.05000000074505806)
         self.assertEqual(blender_floats, self.signature)
 
+    def test_acquisition_and_manifest_change_invalidate_preparation(self):
+        self.write({'one': {'height_m': 30, 'tiers': []}})
+        custom = request_signature(self.bundle, .07, .077, manifest_url=' https://example.com/links.txt ')
+        self.assertEqual(custom['manifest_url'], 'https://example.com/links.txt')
+        self.assertIn('stale', load_measurements(self.bundle, custom)[1])
+        path = self.bundle.path/'lidar_buildings.json'
+        payload = json.loads(path.read_text())
+        del payload['request']['acquisition']
+        path.write_text(json.dumps(payload))
+        self.assertIn('stale', load_measurements(self.bundle, self.signature)[1])
+
     def test_source_assembly_rejects_corrupt_part_heights_and_infill(self):
         for changes in ({'part_heights':{'part':float('nan')}}, {'part_heights':[]},
                         {'infill_geometry':{'type':'Polygon','coordinates':[]}}, {}):

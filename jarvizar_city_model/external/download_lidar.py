@@ -25,6 +25,9 @@ def valid_checkpoint(cached, identifiers, source_url):
         return False
     if cached['info'].get('url') != source_url:
         return False
+    classified = cached['info'].get('classified_roof_fraction', 0)
+    if not finite_number(classified) or not 0 <= classified <= 1:
+        return False
     if any(not set(cached[key]).issubset(identifiers) for key in ('records', 'rejected', 'observations')):
         return False
     try:
@@ -49,7 +52,8 @@ def prepare(bundle, request, refresh=False, progress_path=None):
     from pyproj import CRS, Transformer
     from shapely.geometry import box, shape
     from shapely.ops import transform as map_geometry
-    from lidar_ept import Fetcher, CATALOG_URL, read_ept, BudgetExceeded
+    from lidar_ept import Fetcher, CATALOG_URL, BudgetExceeded
+    from lidar_acquisition import discover_sources, read_source, source_audit, TNM_URL
     from lidar_batches import building_batches, batch_bounds, split_batch
     from lidar_measurements import measure_features
     from lidar_selection import choose_measurement, project_year, POLICY, CONTRADICTIONS
@@ -75,19 +79,6 @@ def prepare(bundle, request, refresh=False, progress_path=None):
     halo = selected.buffer(75)
     query = map_geometry(to_geographic, halo).bounds
     fetch = Fetcher(bundle.parent / "lidar_tiles", refresh=refresh)
-    if request["source_url"]:
-        sources = [{"url": request["source_url"], "name": request["source_url"].split("/")[-2], "coverage": box(*query)}]
-    else:
-        catalog = fetch.json(CATALOG_URL)
-        sources = []
-        for feature in catalog["features"]:
-            coverage = shape(feature["geometry"])
-            if coverage.intersects(box(*bbox)):
-                sources.append({**feature["properties"], "coverage": coverage})
-        # Scheduling hint only. Every overlapping survey is compared; project
-        # publication years never become measured acquisition dates.
-        sources.sort(key=lambda s:(project_year(s['name']) or 0,s['name']), reverse=True)
-        sources = list({s['url']:s for s in sources}.values())
     features = json.loads((bundle / "building.geojson").read_text(encoding="utf-8"))["features"]
     for feature in features:
         feature['id'] = str(feature.get('id') or feature.get('properties', {}).get('id') or '')
@@ -106,9 +97,11 @@ def prepare(bundle, request, refresh=False, progress_path=None):
             source_parts_by_parent.setdefault(parent, []).append((part, geometry))
     measured, provenance, failures, counts, rejected = {}, [], [], Counter(), {}
     alternatives, observations = {}, {}
-    def collect(records, evidence, source):
+    def collect(records, evidence, source, info):
         for identifier, record in records.items():
             record.update(source=source['name'], source_url=source['url'],
+                          source_format=source['format'],
+                          classified_roof_fraction=info.get('classified_roof_fraction', 0),
                           project_year_hint=project_year(source['name']))
             alternatives.setdefault(identifier, []).append(record)
         for identifier, observation in evidence.items():
@@ -123,6 +116,10 @@ def prepare(bundle, request, refresh=False, progress_path=None):
             temporary.write_text(json.dumps({'message': message, 'accepted': len(alternatives),
                                             'candidates': total_candidates}), encoding='utf-8')
             temporary.replace(progress_path)
+    fetch.progress = progress
+    sources, discovery_failures = discover_sources(fetch, query, request['source_url'],
+        request.get('manifest_url', ''), progress)
+    failures.extend(discovery_failures)
     for source in sources:
         candidates = [f for f in features if shape(f["geometry"]).intersects(box(*bbox))
                       and source["coverage"].covers(shape(f["geometry"]))]
@@ -135,7 +132,8 @@ def prepare(bundle, request, refresh=False, progress_path=None):
             progress(f"Comparing {len(alternatives)} measured buildings; {len(batches)+1} groups left in {source['name']}")
             batch_query = map_geometry(to_geographic, box(*batch_bounds(batch, geometries, selected))).bounds
             batch_roi = map_geometry(to_metric, box(*batch_query))
-            job_key = hashlib.sha256(json.dumps([request, source['url'], sorted(f['id'] for f in batch)], sort_keys=True).encode()).hexdigest()
+            job_key = hashlib.sha256(json.dumps([request, source['url'], source.get('fingerprint', ''),
+                sorted(f['id'] for f in batch)], sort_keys=True).encode()).hexdigest()
             checkpoint = checkpoints / (job_key+'.json')
             cached = None
             if checkpoint.is_file() and not refresh:
@@ -146,13 +144,13 @@ def prepare(bundle, request, refresh=False, progress_path=None):
                 except (OSError, ValueError, TypeError):
                     cached = None
             if cached is not None:
-                collect(cached['records'], cached['observations'], source)
+                collect(cached['records'], cached['observations'], source, cached['info'])
                 counts.update(cached['reasons'])
                 rejected.update(cached['rejected'])
                 provenance.append(cached['info'])
                 continue
             try:
-                points, info = read_ept(fetch, source["url"], batch_query)
+                points, info = read_source(fetch, source, batch_query)
             except BudgetExceeded as exc:
                 split = split_batch(batch, geometries)
                 # Spatial subdivision can resolve point/node limits, but
@@ -177,7 +175,7 @@ def prepare(bundle, request, refresh=False, progress_path=None):
                 source_parts_by_parent=source_parts_by_parent,
                 observations_out=evidence, neighbors_by_id=neighbors_by_id,
                 prefer_lidar=request.get('prefer_lidar', True))
-            collect(records, evidence, source)
+            collect(records, evidence, source, info)
             counts.update(reasons)
             rejected.update(rejected_features)
             info = {**info, "name": source["name"], "accepted": len(records), 'bbox': list(batch_query)}
@@ -213,7 +211,8 @@ def prepare(bundle, request, refresh=False, progress_path=None):
                "sources": provenance, "failures": failures, "counts": dict(counts),
                "rejected": rejected, 'rejection_counts': rejection_counts,
                "prepared_at_utc": datetime.now(timezone.utc).isoformat(),
-               "catalog": CATALOG_URL, "source_selection": POLICY,
+               "catalog": CATALOG_URL, "catalogs": [CATALOG_URL, TNM_URL],
+               'discovered_sources': source_audit(sources), "source_selection": POLICY,
                'selection':selection, 'observations':observations,
                'compared_sources':len({item['url'] for item in provenance}),
                'conflict_buildings':conflict_buildings,

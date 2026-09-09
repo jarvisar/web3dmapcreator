@@ -1,4 +1,188 @@
-# Building heights and USGS LiDAR — 0.14.2
+# Building heights and USGS LiDAR — 0.15.0
+
+## EPT and staged USGS LAZ acquisition (0.15.0)
+
+The architectural gap was acquisition, not LAZ decoding or building generation:
+`read_ept` already decoded compressed LAS nodes into seven columns, while
+`download_lidar.prepare` hard-wired both the EPT catalog and reader. The
+existing `lidar_selection` already compared whole-building survey observations
+using usable coverage, supported density and measured capture age. That policy,
+the measurement algorithm **7**, roof fitting, print filters and mesh builders
+remain in place.
+
+The worker now calls `external/lidar_acquisition.py` for discovery and bounded
+reads. `external/lidar_laz.py` adapts delivered LAZ tiles to the existing point
+contract: longitude, latitude, metre elevation, LAS class, single-return flag,
+capture year and confidence. `lidar_selection.py` selects the final complete
+measurement; no format-specific building pipeline exists.
+
+```text
+map bounds + existing 75 m halo
+  -> EPT coverage index + TNMAccess LPC bbox query (+ optional manifest)
+  -> independent survey candidates, scheduled by coverage / labelled age hints
+  -> whole-building groups -> intersecting EPT nodes or staged LAZ tiles
+  -> crop / XY reprojection / explicit vertical-unit conversion
+  -> existing measure_features -> existing survey comparison
+  -> existing measurement cache -> existing Blender geometry
+```
+
+### Discovery and selection
+
+TNMAccess requests `/api/v1/products` with `datasets=Lidar Point Cloud (LPC)`,
+`prodFormats=LAZ`, WGS84 `bbox`, `max=100` and a paginated `offset`. It consumes
+`urls.LAZ`, `downloadLazURL` or `downloadURL`, `boundingBox`, source IDs, size,
+publication/update dates and metadata URLs. Every page is read and exact links
+are deduplicated. API error payloads, repeated/nonadvancing pages, incomplete
+listings and invalid products are reported. After transport retries, HTTP
+500/502/503/504 responses reduce the page size down to ten, preserving the
+same offset; a failed page cannot silently skip later products. Persistent
+errors preserve already retrieved candidates and report incomplete discovery.
+Failure of one catalog leaves the
+other available. Catalog boxes are acquisition estimates; actual roof/ground
+support must still pass preparation.
+[USGS TNMAccess description](https://www.usgs.gov/faqs/there-api-accessing-national-map-data),
+[TNMAccess API interface](https://apps.nationalmap.gov/tnmaccess/).
+
+TNM does not consistently expose capture dates, density or classification
+quality. Therefore catalog hints schedule reads but do not discard unknown
+surveys or select a format in advance. **All overlapping usable candidates
+remain eligible**, even when EPT succeeds. After bounded acquisition, the
+existing weighted coverage, explained-roof fraction, saturating supported
+density and GPS capture-age score selects one survey per building. The crop's
+class-6 share among class-1/6 returns breaks otherwise equal quality/age ties;
+this is a classification-availability hint, not a classification accuracy claim.
+Raw point counts and number of fitted tiers do not win by themselves.
+An EPT and LAZ copy of the same acquisition may both be evaluated when the
+catalogs provide no reliable shared identifier; names are not fuzzy-matched.
+
+Publication/update dates never become flight dates or veto observations.
+Mixed epochs, missing ground, insufficient support and the existing conflict
+preference retain their behavior. Source format, URL, selected quality/age
+score, alternatives and catalog candidates are recorded in the audit.
+
+### Tile acquisition and manual manifests
+
+LAZ tiles are grouped by their delivered survey/subproject directory, using
+the union of authoritative tile bounds for coverage. Directories identify
+collections only; names are never decoded into coordinates. Only tiles
+intersecting the current building group and its established halo are fetched.
+Ordinary LAZ is not a spatial query service: each intersecting compressed file
+must download in full. The existing HTTPS cache now streams those files to an
+atomic disk replacement (4 GiB per-file guard) and laspy reads 250,000 points
+at a time. Eight million retained crop points still trigger group subdivision.
+Identical returns on neighboring tile boundaries are deduplicated; different
+survey collections are never merged. Completed tiles are reused across groups.
+[laspy chunked reading](https://laspy.readthedocs.io/en/latest/basic.html).
+
+LAS WKT/GeoTIFF CRS metadata defines XY, and a vertical CRS, 3D axis or explicit
+GeoTIFF vertical-unit key defines Z. Metres, international feet and US survey
+feet are handled independently of horizontal units. Unknown units are rejected
+instead of assuming the EPT mirror's metre convention applies to delivered
+LAZ. Both readers remove withheld/overlap, vegetation and noise returns, retain
+classes 1/2/6, and use the existing same-survey ground subtraction. Adjusted GPS
+dates from delivered LAS require the declared encoding; EPT's existing mirror
+inference remains scoped to EPT.
+[USGS CRS, units and GPS requirements](https://www.usgs.gov/ngp-standards-and-specifications/lidar-base-specification-data-processing-and-handling-requirements).
+
+The advanced manifest field accepts an HTTPS `0_file_download_links.txt` URL
+containing direct HTTPS LAZ links. It augments automatic discovery, or the
+existing explicit EPT override. Blank lines, UTF-8 BOM, comments and duplicates
+are handled. Every listed tile's LAS header/VLRs (and EVLRs if present) is read
+through bounded HTTP Range requests to recover its actual CRS and extent.
+Only intersecting tiles proceed to full download. Metadata is limited to
+4 MiB per tile, and a server ignoring Range is rejected before reading its
+response body. No filename-grid inference or whole-project fallback exists.
+Large manifests can require many header requests; stale links and unknown CRS
+are reported individually while valid candidates continue.
+
+Acquisition signature **1** invalidates old prepared results/checkpoints without
+changing measurement algorithm 7. **Prepare LiDAR Buildings again** after
+upgrading. The EPT node cache is retained. LAZ checkpoint identities include
+tile metadata, and staged downloads use TNM update revisions when present.
+The worker refreshes catalog listings once per run; the UI still reuses a
+complete matching prepared result. Use **Refresh Existing Cache** to explicitly
+rediscover/re-download a completed selection. Esc preserves completed work and
+the previous public measurement cache.
+
+### Validation
+
+Tests cover API paging/errors, independent catalog outages, format-neutral
+age/density/coverage/classification choices, real compressed LAZ decoding,
+chunking, crop masks, withheld/overlap flags, foot conversion, unknown units,
+VLR/EVLR range reads, arbitrary manifest filenames, tile seams, revision
+identity, atomic failed downloads, and preparation checkpoint resumption.
+A dense analytic stepped building survives LAZ serialization, reprojection
+and the unchanged measurement pipeline with its expected 30 m base and 60 m
+upper tier at the default print scale.
+All **455 Python tests** pass in the downloader environment. Blender 3.6
+smoke, LiDAR preference/geometry, six minimum-height cases and modal/cancel
+regressions pass. Both 0.15.0 archives contain 56 files matching the workspace
+source, including the two new acquisition modules. The add-on is not installed.
+
+Live TNMAccess testing on 2026-09-09 returned one 150,950,127-byte Chicago tile
+for a small test bbox. Header-only requests read EPSG:6455 and the correct
+0.30480060960121924 US-survey-foot Z conversion; the full map selection and
+user caches were untouched. The bulk download from RockyWeb stalled and was
+stopped; a 1 MiB range completed. A published USGS manifest was also inspected:
+its text was available but its first linked S3 tile returned 404. These live
+checks confirm why delivery failures and stale manifest links must be reported.
+
+A second TNM tile (13,114,844 bytes, Goshen County) completed its live download
+and chunked decode in 105 seconds. Its catalog rectangle's center had no
+returns; a crop around actual returns retained **18,113 points** (2,948 class 1
+and 15,165 ground), correctly transformed from EPSG:6612 with survey-foot Z.
+GPS dates identify **2016** capture despite the project's 2017 name and 2022
+catalog update. The second crop reused the downloaded tile with **zero network
+requests**. Live acquisition/cropping is verified; building reconstruction
+was verified with the analytic LAZ fixture and existing Blender regressions,
+not a new live LAZ city build at that stage. Diagnostics: `scratchpad/lidar-laz/`.
+
+### Default Cincinnati follow-up
+
+The live query used the exact defaults from `config.py`:
+`-84.53370,39.08554,-84.47422,39.11094`. TNM returned **124 LAZ products**:
+77 from Ohio Statewide Phase 3, eight from Kentucky Western, and 39 from two
+legacy surveys. The EPT catalog also lists two Kentucky surveys overlapping
+part of this map; Cincinnati is not wholly outside EPT catalog coverage.
+
+To keep this a quick acquisition/build test, preparation used a workspace copy
+of **46 real buildings and 33 associated parts** in the portion outside both
+EPT coverage geometries. Map bounds, actual fresh Blender scale/detail
+settings, automatic discovery and the normal worker were retained. This is
+a bounded building sample, not a claim to have prepared every Cincinnati
+building. No explicit source URL, source-format override, synthetic points or
+city-specific acquisition rule was used.
+
+The worker downloaded one intersecting **24,397,445-byte modern Ohio LAZ tile**
+and two small legacy tiles. Modern points declare EPSG:6551 horizontal CRS,
+US-survey-foot Z and GPS capture year **2022**, despite the project's 2021
+name and 2025 publication date. The legacy LAS 1.0 files contain no CRS VLR;
+they are rejected without guessing coordinates or units. The preparation UI
+now reports the actual source issue, rather than mislabelling missing CRS as
+an incomplete download that another retry would fix.
+
+Results: **36/46 prepared buildings**, **23 tiered**, **nine plane roofs**,
+four height-only. Ten unresolved/complex roofs retain source fallback under
+the existing rules. All accepted measurements use the modern LAZ source.
+The normal Generate Model operator loads the matching preparation signature
+and uses all **36 buildings**, with **96 tier sections**, **14 plane solids**
+and **zero geometry fallbacks**. The model also contains the existing cached
+terrain, roads and other layers: **41 meshes / 1,994,628 faces**, all passing
+manifold and winding checks; 3MF export succeeds. The focused building audit
+also checks positive volume. A default-scale source/LAZ close-up was rendered
+and inspected.
+
+Replaying the saved catalog responses and three completed modern checkpoints
+reproduces all 36 records, final rejections and counts with **zero network
+requests**. The legacy tiles are rechecked from disk and remain unsupported.
+The EPT reader, hierarchy traversal and node intersection functions are
+unchanged from the pre-LAZ implementation; EPT and mixed-source selection
+regressions pass. The transient TNM page failure and truthful source-status
+reporting have dedicated regression tests. Python suite: 455 passing tests;
+Blender modal/cancel, minimum-height, roof/geometry and live-generation checks
+pass. Diagnostic fixture, source inventories, request, render, 3MF and audits
+are under `scratchpad/lidar-laz/cincinnati/`. User caches and the installed
+add-on remain untouched.
 
 ## Preparation consistency checks (0.14.2)
 
@@ -561,13 +745,14 @@ to all 3DEP coverage.
 [USGS LidarExplorer](https://www.usgs.gov/tools/lidarexplorer),
 [AWS dataset registry](https://registry.opendata.aws/usgs-lidar/).
 
-The implemented path uses the mirror's GeoJSON coverage index, intersects the
-selected bbox, and compares every overlapping project as described above.
-An optional EPT URL selects a particular survey. Each building is measured
+The implemented path uses the mirror's GeoJSON coverage index and TNMAccess
+LPC tiles as described above, intersects the selected bbox, and compares every
+overlapping survey. An optional EPT URL overrides automatic discovery; a
+manifest can add manual LAZ candidates. Each building is measured
 within one survey; overlapping acquisitions are never mixed.
 [Mirror coverage index](https://github.com/hobuinc/usgs-lidar/blob/master/boundaries/resources.geojson).
 
-Only intersecting EPT hierarchy pages and LAZ nodes are fetched. EPT is
+For EPT, only intersecting hierarchy pages and LAZ nodes are fetched. EPT is
 additive, so ancestors must be included with descendants. The reader targets
 0.75 m sampling, adjusts Web Mercator horizontal resolution for latitude, and
 crops decoded points to the requested area plus a 75 m ground/boundary halo.
@@ -584,9 +769,9 @@ ground in the same survey, so a constant vertical-datum offset cancels.
 PDAL's `readers.ept` is a capable alternative and supports bounds and resolution
 queries. This Windows installation had no PDAL. The first pass uses laspy/
 lazrs wheels and a small bounded EPT reader in the existing external Python,
-avoiding a new native PDAL distribution requirement. General local LAS/LAZ,
-COPC, and direct TNM tile acquisition are future adapters, not implemented
-fallbacks advertised by this version.
+avoiding a new native PDAL distribution requirement. Direct TNM LAZ acquisition
+now uses those same dependencies. General local LAS/LAZ import and COPC spatial
+queries remain future adapters.
 [PDAL EPT reader](https://pdal.io/en/stable/stages/readers.ept.html),
 [laspy installation](https://laspy.readthedocs.io/en/latest/installation.html).
 
