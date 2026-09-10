@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 
 import bpy
@@ -1063,8 +1064,7 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
         # printable object: it re-centres each one on its own bounding box,
         # drops it to the bed and may rotate it onto another plate.  Parenting
         # the lot to one empty makes the exporter write them as components of a
-        # single object instead, which arrives as one object with one part per
-        # collection and every relative height intact.
+        # single object instead, with every relative height intact.
         from .blender.export_cutout import export_geometry
 
         holder = None
@@ -1091,13 +1091,22 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
                 holder.select_set(True)
                 context.view_layer.objects.active = holder
                 context.view_layer.update()
-                result = bpy.ops.export_mesh.threemf(
-                    filepath=self.filepath,
-                    use_selection=True,
-                    global_scale=scale,
-                )
-                if 'FINISHED' not in result:
-                    raise RuntimeError("The 3MF writer cancelled the export")
+                # Publish only after the writer and Bambu naming both succeed.
+                # Staging alongside the destination keeps replacement atomic.
+                destination = Path(self.filepath)
+                with tempfile.TemporaryDirectory(prefix=".jcm-3mf-", dir=destination.parent) as folder:
+                    raw = Path(folder) / "raw.3mf"
+                    named = Path(folder) / "named.3mf"
+                    result = bpy.ops.export_mesh.threemf(
+                        filepath=str(raw),
+                        use_selection=True,
+                        global_scale=scale,
+                    )
+                    if 'FINISHED' not in result:
+                        raise RuntimeError("The 3MF writer cancelled the export")
+                    from .data.export_3mf import name_3mf, part_name_map
+                    name_3mf(raw, named, part_name_map(parts))
+                    named.replace(destination)
                 part_count = len(parts)
                 crop_status = ""
                 if opening:

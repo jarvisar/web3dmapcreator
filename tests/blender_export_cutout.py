@@ -4,6 +4,7 @@ Uses the installed io_mesh_3mf writer for the archive round trip.
 """
 import hashlib
 import math
+import shutil
 from pathlib import Path
 import sys
 import unittest
@@ -20,6 +21,7 @@ import jarvizar_city_model as addon
 from jarvizar_city_model.blender.collections import create_city_hierarchy, GENERATED_KEY
 from jarvizar_city_model.blender.mesh_utils import _prism_geometry
 from jarvizar_city_model.blender.export_cutout import Opening, export_geometry, CutoutError
+from jarvizar_city_model.data.export_3mf import name_3mf, MODEL, SETTINGS, NS, MATERIALS
 
 
 def rectangle(w, h, x=0, y=0):
@@ -288,6 +290,8 @@ class CutoutTests(unittest.TestCase):
         frame(rectangle(17,11))
         obj=self.source('terrain',rectangle(25,25))
         extra=self.source('inside',rectangle(2,2),2,4)
+        obj['feature_type']='terrain'
+        extra['feature_type']='buildings'
         for o,color in [(obj,(0.3,0.4,0.5,1)),(extra,(1,1,1,1))]:
             mat=bpy.data.materials.new(o.name+' material');mat.diffuse_color=color
             o.data.materials.append(mat)
@@ -310,6 +314,10 @@ class CutoutTests(unittest.TestCase):
             self.assertIs(bpy.context.view_layer.objects.active,obj)
             with zipfile.ZipFile(output) as archive:
                 root=ET.fromstring(archive.read('3D/3dmodel.model'))
+                config=ET.fromstring(archive.read(SETTINGS))
+            self.assertEqual(config.find('object/metadata').get('value'),'Map')
+            self.assertEqual({p.find('metadata').get('value') for p in config.findall('object/part')},
+                             {'Terrain','Buildings'})
             ns={'m':root.tag.split('}')[0][1:]}
             self.assertEqual(len(root.findall('m:build/m:item',ns)),1)
             self.assertEqual(len(root.findall('.//m:component',ns)),2)
@@ -318,7 +326,7 @@ class CutoutTests(unittest.TestCase):
             self.assertAlmostEqual(max(p[0] for p in points)-min(p[0] for p in points),17)
             self.assertAlmostEqual(max(p[1] for p in points)-min(p[1] for p in points),11)
 
-    def test_writer_cancellation_restores_scene(self):
+    def test_invalid_destination_restores_scene(self):
         frame(rectangle(10,10))
         obj=self.source('terrain',rectangle(20,20))
         obj.select_set(True);bpy.context.view_layer.objects.active=obj
@@ -328,12 +336,81 @@ class CutoutTests(unittest.TestCase):
         bpy.ops.preferences.addon_enable(module='io_mesh_3mf')
         path=Path(__file__).resolve().parents[1]/'scratchpad'/'export-cutout'/'missing-directory'/'failed.3mf'
         self.assertFalse(path.parent.exists())
-        with self.assertRaisesRegex(RuntimeError,'cancelled'):
+        with self.assertRaises(RuntimeError):
             bpy.ops.jarvizar.export_3mf(filepath=str(path))
         self.assertEqual(before,fingerprint(obj))
         self.assertEqual(counts,(len(bpy.data.objects),len(bpy.data.meshes)))
         self.assertIs(bpy.context.view_layer.objects.active,obj)
         self.assertFalse(path.exists())
+
+    def test_semantic_parts_and_atomic_failure(self):
+        folder=Path(__file__).resolve().parents[1]/'scratchpad'/'3mf-names'
+        folder.mkdir(parents=True,exist_ok=True)
+        output=folder/'semantic.3mf'
+        existing_staging=set(folder.glob('.jcm-3mf-*'))
+        tags=[('terrain',{}),('buildings',{}),('building_part',{}),
+              ('surface_road',{'road_class':'residential'}),
+              ('surface_road',{'road_class':'footway'}),
+              ('surface_road',{'road_class':'rail'}),
+              ('bridge_deck',{'road_class':'primary'}),
+              ('water_surface',{}),('trees',{}),('labels',{})]
+        tags += [('land_surface',{'surface_category':s}) for s in ('green','forest','paved','sand','rock')]
+        tags += [('buildings',{})]
+        materials=[]
+        for i,color in enumerate(((0.2,0.3,0.4,1),(1,1,1,1))):
+            mat=bpy.data.materials.new(f'semantic material {i}')
+            mat.use_nodes=True
+            mat.node_tree.nodes['Principled BSDF'].inputs['Base Color'].default_value=color
+            materials.append(mat)
+        sources=[]
+        for i,(kind,extra) in enumerate(tags):
+            obj=self.source(f'arbitrary {len(tags)-i:03}',rectangle(2,2),0,2)
+            obj['feature_type']=kind
+            for key,value in extra.items():obj[key]=value
+            obj.location=(i%4*4,i//4*4,i*0.1)
+            obj.rotation_euler.z=i*0.02
+            for mat in materials:obj.data.materials.append(mat)
+            for p in obj.data.polygons:p.material_index=(p.index+i)%2
+            sources.append(obj)
+        bpy.context.view_layer.update()
+        before=[fingerprint(o) for o in sources]
+        counts=(len(bpy.data.objects),len(bpy.data.meshes))
+        bpy.ops.preferences.addon_enable(module='io_mesh_3mf')
+        def inspect(raw,named,names):
+            shutil.copyfile(raw,folder/'baseline.3mf')
+            name_3mf(raw,named,names)
+            with zipfile.ZipFile(raw) as a,zipfile.ZipFile(named) as b:
+                old,new=(ET.fromstring(z.read(MODEL)) for z in (a,b))
+            old_palette=[c.get('displaycolor') for c in old.findall('m:resources/m:basematerials/m:base',NS)]
+            color_groups=new.find('m:resources',NS).findall(f'{{{MATERIALS}}}colorgroup')
+            self.assertEqual(len(color_groups),1)
+            self.assertEqual([c.get('color') for c in color_groups[0]],old_palette)
+            for old_obj,new_obj in zip(old.findall('m:resources/m:object',NS),new.findall('m:resources/m:object',NS)):
+                if old_obj.get('pid'):
+                    self.assertEqual(new_obj.get('pid'),color_groups[0].get('id'))
+                    self.assertEqual(new_obj.get('pindex'),old_obj.get('pindex'))
+            # All vertices, topology, per-face colors and assembly transforms survive.
+            for path in ('m:resources/m:basematerials','m:build','.//m:mesh','.//m:components'):
+                self.assertEqual([ET.tostring(e) for e in old.findall(path,NS)],
+                                 [ET.tostring(e) for e in new.findall(path,NS)])
+        with patch('jarvizar_city_model.data.export_3mf.name_3mf',side_effect=inspect):
+            self.assertEqual(bpy.ops.jarvizar.export_3mf(filepath=str(output)),{'FINISHED'})
+        with zipfile.ZipFile(output) as archive:
+            config=ET.fromstring(archive.read(SETTINGS))
+            root=ET.fromstring(archive.read(MODEL))
+        expected={'Terrain','Buildings 1','Buildings 2','Building Parts','Roads (Residential)',
+                  'Paths (Footway)','Railways','Bridges (Primary)','Water','Trees','Labels',
+                  'Greenery','Forest','Paved','Sand','Rock'}
+        self.assertEqual({p.find('metadata').get('value') for p in config.findall('object/part')},expected)
+        self.assertEqual({o.get('name') for o in root.findall('m:resources/m:object',NS)},expected|{'Map'})
+        saved=output.read_bytes()
+        with patch('jarvizar_city_model.data.export_3mf.name_3mf',side_effect=ValueError('injected naming failure')):
+            with self.assertRaisesRegex(RuntimeError,'injected naming failure'):
+                bpy.ops.jarvizar.export_3mf(filepath=str(output))
+        self.assertEqual(output.read_bytes(),saved)
+        self.assertFalse(set(folder.glob('.jcm-3mf-*'))-existing_staging)
+        self.assertEqual([fingerprint(o) for o in sources],before)
+        self.assertEqual((len(bpy.data.objects),len(bpy.data.meshes)),counts)
 
 
 addon.register()

@@ -480,6 +480,18 @@ parts**, world placement, selection, and active object; Bambu can rearrange
 independent build items. For STL, export with **Scene Unit unchecked** and
 import at 100% to retain model millimetres.
 
+Export annotation maps each writer mesh's exact `Title` to the source's semantic
+tags, then writes core object names and Bambu `Metadata/model_settings.config`
+names keyed by assembly/component resource IDs. The result is `Map` with named
+normal Parts, preserving existing batches, transforms and standard material
+conversion. Base-material colors are also mirrored into Materials-extension
+`m:colorgroup` resources, with property references retargeted and face indices
+preserved, because Bambu reads color groups rather than base-material colors.
+Do not spoof a Bambu application identity or assign extruders merely
+to label parts. Publication is atomic after annotation succeeds. See
+[3MF naming and verification](docs/EXPORT_3MF.md); `tests/bambu_export_names.py`
+optionally verifies import/save/reopen through installed Bambu Studio.
+
 If the scene contains a mesh named exactly `cutout`,
 `blender/export_cutout.py` derives its evaluated inner through-opening and crops
 along the frame's local thickness axis. The frame is neither exported nor used

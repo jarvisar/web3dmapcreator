@@ -311,6 +311,7 @@ def generate_trees(
             obj = bpy.data.objects.new(f"TREE_{index:06d}", mesh)
             collection.objects.link(obj)
             obj["jarvizar_generated"] = True
+            obj["feature_type"] = "trees"
             obj.location = (x, y, ground_height(x, y))
             factor = _tree_scale(size, canopy_radius, tree_height, settings)
             obj.scale = (factor, factor, factor)
