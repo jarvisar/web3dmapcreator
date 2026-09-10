@@ -46,7 +46,7 @@ class TileDownloads:
         future = self.futures.get((url, revision))
         if future is not None:
             return future.result()
-        return self.fetch.download(url, revision=revision)
+        raise ValueError(f'LAZ tile is outside the acquisition plan: {url}')
 
     def __exit__(self, *exc):
         self.cancel.set()

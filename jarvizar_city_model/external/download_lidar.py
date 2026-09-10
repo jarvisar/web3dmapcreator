@@ -12,15 +12,16 @@ import hashlib
 import json
 from pathlib import Path
 import sys
-from threading import Lock
 try:
     from .lidar_records import validate_records, finite_number
     from .lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
     from .lidar_worker import cache_owner, watch_parent
+    from .lidar_progress import ProgressReporter
 except ImportError:
     from lidar_records import validate_records, finite_number
     from lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
     from lidar_worker import cache_owner, watch_parent
+    from lidar_progress import ProgressReporter
 
 
 def valid_checkpoint(cached, identifiers, source_url):
@@ -64,7 +65,9 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
     from shapely.geometry import box, shape
     from shapely.ops import transform as map_geometry
     from lidar_ept import Fetcher, CATALOG_URL, BudgetExceeded
-    from lidar_acquisition import discover_sources, read_source, source_audit, TNM_URL
+    from lidar_acquisition import (discover_sources, read_source, source_audit, TNM_URL,
+                                   building_tile_plan, batch_source, tile_audit)
+    from lidar_ranking import AcquisitionPlan, ACQUISITION_VERSION, FALLBACK_POLICY_VERSION, selection_thresholds
     from lidar_batches import building_batches, batch_bounds, split_batch
     from lidar_measurements import measure_features
     from lidar_selection import choose_measurement, project_year, POLICY, CONTRADICTIONS
@@ -72,6 +75,14 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
 
     if request["algorithm"] != 7:
         raise ValueError("Unsupported LiDAR algorithm version")
+    if request.get('acquisition') != ACQUISITION_VERSION:
+        raise ValueError('Unsupported LiDAR acquisition version; prepare with the updated add-on')
+    if request.get('fallback_policy') != FALLBACK_POLICY_VERSION:
+        raise ValueError('Unsupported LiDAR fallback policy; prepare with the updated add-on')
+    # Fallback admission changes public result identity, not independent survey
+    # measurements. Preserve matching pre-policy checkpoints without new reads.
+    checkpoint_request = {key: value for key, value in request.items() if key != 'fallback_policy'}
+    thresholds = selection_thresholds(request.get('acquisition_thresholds'))
     for name, expected in request["footprint_sha256"].items():
         if name not in ("building", "building_part"):
             raise ValueError("Invalid footprint file")
@@ -107,7 +118,8 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
             parts_by_parent.setdefault(parent, []).append(geometry)
             source_parts_by_parent.setdefault(parent, []).append((part, geometry))
     measured, provenance, failures, counts, rejected = {}, [], [], Counter(), {}
-    alternatives, observations = {}, {}
+    alternatives, observations, resolved = {}, {}, set()
+    geographic_geometries = {f['id']: shape(f['geometry']) for f in features}
     def collect(records, evidence, source, info):
         for identifier, record in records.items():
             record.update(source=source['name'], source_url=source['url'],
@@ -117,31 +129,41 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
             alternatives.setdefault(identifier, []).append(record)
         for identifier, observation in evidence.items():
             observations.setdefault(identifier, []).append({**observation, 'source':source['name']})
+        for identifier in records:
+            record, _ = choose_measurement(alternatives[identifier], observations.get(identifier, ()),
+                geographic_geometries[identifier], prefer_lidar=request.get('prefer_lidar', True))
+            if record:
+                resolved.add(identifier)
     checkpoints = bundle / 'lidar_jobs'
     checkpoints.mkdir(exist_ok=True)
     total_candidates = sum(shape(f['geometry']).intersects(box(*bbox)) for f in features)
-    progress_lock = Lock()
+    reporter = ProgressReporter(progress_path)
     def progress(message):
-        with progress_lock:
-            print(message, file=sys.stderr, flush=True)
-            if progress_path:
-                temporary = progress_path.with_suffix('.partial')
-                temporary.write_text(json.dumps({'message': message, 'accepted': len(alternatives),
-                                                'candidates': total_candidates}), encoding='utf-8')
-                temporary.replace(progress_path)
+        reporter(message, accepted=len(alternatives), candidates=total_candidates)
     fetch.progress = progress
     sources, discovery_failures = discover_sources(fetch, query, request['source_url'],
-        request.get('manifest_url', ''), progress)
+        request.get('manifest_url', ''), progress, thresholds=thresholds)
     failures.extend(discovery_failures)
-    for source in sources:
-        candidates = [f for f in features if shape(f["geometry"]).intersects(box(*bbox))
-                      and source["coverage"].covers(shape(f["geometry"]))]
-        if not candidates:
-            continue
-        progress(f"Measuring {source['name']}: {len(candidates)} candidate buildings")
+    plan = AcquisitionPlan(sources, [f for f in features if geographic_geometries[f['id']].intersects(box(*bbox))],
+                           geographic_geometries, thresholds)
+    while True:
+        work = plan.next(resolved)
+        for candidate in sources:
+            skipped = dict(Counter(plan.skipped.get(candidate['url'], {}).values()))
+            if skipped and skipped != candidate.get('skipped_fallback_reasons'):
+                candidate['skipped_fallback_reasons'] = skipped
+                progress(f"Avoided {candidate['format']} fallback for {sum(skipped.values())} buildings in "
+                         f"{candidate['name']}: " + '; '.join(f'{count} {reason}' for reason, count in sorted(skipped.items())))
+        if work is None:
+            break
+        source, candidates, reason = work
+        source['acquired_buildings'] = source.get('acquired_buildings', 0) + len(candidates)
+        source.setdefault('acquisition_reasons', []).append(reason)
+        progress(f"Selected {source['format']} {source['name']}: {len(candidates)} unresolved buildings; {reason}")
         def batch_job(batch):
             batch_query = map_geometry(to_geographic, box(*batch_bounds(batch, geometries, selected))).bounds
-            job_key = hashlib.sha256(json.dumps([request, source['url'], source.get('fingerprint', ''),
+            job_key = hashlib.sha256(json.dumps([checkpoint_request, source['url'], source.get('fingerprint', ''),
+                source.get('metadata_fingerprint', ''), source.get('survey_metadata', {}),
                 sorted(f['id'] for f in batch)], sort_keys=True).encode()).hexdigest()
             checkpoint = checkpoints / (job_key+'.json')
             cached = None
@@ -155,19 +177,30 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
             return batch, batch_query, checkpoint, cached
 
         jobs = [batch_job(batch) for batch in building_batches(candidates, geometries)]
-        with prefetch_source(fetch, source, [job[1] for job in jobs if job[3] is None], workers=download_workers) as source_fetch:
+        tiles = building_tile_plan(source, candidates, geometries, to_geographic, selected) if source['format'] == 'LAZ' else {}
+        pending = [f for job in jobs if job[3] is None for f in job[0]]
+        pending_source = batch_source(source, pending, tiles)
+        if source['format'] == 'LAZ':
+            audit = tile_audit(tiles, pending, {f['id']: plan.selection_reasons[f['id'], source['url']] for f in pending})
+            source.setdefault('selected_tiles', []).extend(audit)
+            progress(f"LAZ footprint selection: {len(audit)}/{len(source['tiles'])} tiles for {len(pending)} buildings without checkpoints")
+            for entry in audit:
+                progress(f"Selected LAZ tile {entry['url']}: {len(entry['footprints'])} footprints, "
+                         f"{len(entry['ground_halos'])} ground halos; " + '; '.join(entry['reasons']))
+        with prefetch_source(fetch, pending_source, [job[1] for job in jobs if job[3] is None], workers=download_workers) as source_fetch:
             while jobs:
                 batch, batch_query, checkpoint, cached = jobs.pop(0)
                 progress(f"Comparing {len(alternatives)} measured buildings; {len(jobs)+1} groups left in {source['name']}")
                 batch_roi = map_geometry(to_metric, box(*batch_query))
                 if cached is not None:
+                    plan.observe(source, batch, cached['records'], cached['rejected'], cached['info'])
                     collect(cached['records'], cached['observations'], source, cached['info'])
                     counts.update(cached['reasons'])
                     rejected.update(cached['rejected'])
                     provenance.append(cached['info'])
                     continue
                 try:
-                    points, info = read_source(source_fetch, source, batch_query)
+                    points, info = read_source(source_fetch, batch_source(source, batch, tiles), batch_query)
                 except BudgetExceeded as exc:
                     split = split_batch(batch, geometries)
                     # Spatial subdivision can resolve point/node limits, but
@@ -192,6 +225,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
                     source_parts_by_parent=source_parts_by_parent,
                     observations_out=evidence, neighbors_by_id=neighbors_by_id,
                     prefer_lidar=request.get('prefer_lidar', True))
+                plan.observe(source, batch, records, rejected_features, info)
                 collect(records, evidence, source, info)
                 counts.update(reasons)
                 rejected.update(rejected_features)
@@ -202,10 +236,12 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
                     'rejected': rejected_features, 'info': info, 'observations':evidence}, allow_nan=False), encoding='utf-8')
                 temporary.replace(checkpoint)
                 del points
+    for source in sources:
+        if not source.get('acquired_buildings'):
+            progress(f"Skipped {source['format']} {source['name']}: no unresolved buildings requiring this source")
     if failures and not provenance:
         raise ValueError("; ".join(item["reason"] for item in failures))
     selection = {}
-    geographic_geometries = {f['id']:shape(f['geometry']) for f in features}
     for identifier, candidates in alternatives.items():
         record, audit = choose_measurement(candidates, observations.get(identifier, ()), geographic_geometries[identifier],
                                           prefer_lidar=request.get('prefer_lidar', True))
@@ -230,6 +266,9 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
                "prepared_at_utc": datetime.now(timezone.utc).isoformat(),
                "catalog": CATALOG_URL, "catalogs": [CATALOG_URL, TNM_URL],
                'discovered_sources': source_audit(sources), "source_selection": POLICY,
+               'acquisition_selection': {'version': ACQUISITION_VERSION, 'thresholds': thresholds,
+                   'fallback_policy': FALLBACK_POLICY_VERSION,
+                   'policy': 'practical EPT; footprint/ground-halo LAZ tiles for material advantages or data gaps; same-survey LAZ only for EPT delivery gaps'},
                'selection':selection, 'observations':observations,
                'compared_sources':len({item['url'] for item in provenance}),
                'conflict_buildings':conflict_buildings,

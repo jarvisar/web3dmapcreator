@@ -319,6 +319,32 @@ through the existing prism builder; raw point clouds never become Blender meshes
   LAZ products. An explicit EPT URL replaces automatic discovery; an optional
   manifest URL adds LAZ candidates. Manifest tile locations come from bounded
   LAS header/VLR/EVLR reads, never guessed filename coordinates.
+- `lidar_metadata.py` reads bounded EPT JSON and linked JSON/FGDC survey reports
+  before point acquisition. `lidar_ranking.py` prefers practical EPT unless
+  known acquisition age, resolution, comparable accuracy or classification
+  metadata establishes a material LAZ advantage. Threshold defaults and optional
+  request overrides enter the acquisition signature. Unknown metadata retains
+  EPT preference; project names/publication dates never become flight dates.
+  Whole-building coverage determines local eligibility, then only unresolved
+  buildings advance to fallback surveys. Successful buildings are not acquired
+  again; `lidar_tiles.py` uses individual candidate footprints plus 30 m ground
+  halos (25 m measurement neighborhood + 5 m guard) for both LAZ prefetch and
+  reads, excluding empty space inside batch rectangles. Split batches retain
+  this allowlist; the download wrapper rejects unplanned tiles.
+  A rejected reconstruction is not itself a data gap: LAZ fallback requires
+  failed EPT acquisition, missing ground/roof support, absent coverage, or a
+  material metadata advantage. Use the preferred attempted EPT's evidence;
+  a poorer secondary survey cannot reopen LAZ for a roof/footprint rejection.
+  The fallback-policy signature invalidates public results independently of
+  otherwise identical per-survey measurement checkpoints.
+- `lidar_identity.py` compares scoped dataset/project metadata and known USGS
+  project delivery/metadata directories, retaining subprojects and epochs.
+  Never infer identity from tile names, generic titles or overlap. Conflicting
+  acquisition periods/explicit editions prevent equivalence; missing identity
+  remains unknown. LAZ copies of successfully read EPT surveys are redundant
+  even after insufficient roof/ground support. Per-building coverage gaps,
+  failed reads and empty EPT queries still permit same-survey delivery fallback.
+  Identity and per-tile footprint/halo ownership/reasons are logged and audited.
 - `lidar_ept.py` includes additive ancestor nodes as well as leaves.
   `lidar_laz.py` downloads intersecting staged tiles to disk and decodes chunks.
   Both normalize to WGS84 XY, metre Z, classifications/returns, and capture-age
@@ -366,6 +392,12 @@ through the existing prism builder; raw point clouds never become Blender meshes
   overlapping jobs fail before discovery or cache writes. Workers monitor their
   owning Blender PID. Windows cancellation stops the whole process tree because
   a virtual-environment python.exe can launch a separate real Python child.
+- `lidar_progress.py` serializes progress from acquisition/download threads,
+  retaining stderr messages while limiting sidebar writes to five per second.
+  Progress publication retries brief permission conflicts and remains advisory
+  if either temporary-file writing or atomic replacement fails. Checkpoints and
+  final measurement publication remain mandatory; progress failures must never
+  be reported as broken surveys or interrupt otherwise valid preparation.
 - `lidar_transfer.py` retains partial LAZ files only with a strong ETag and
   known total length. Resumption uses Range/If-Range and validates the returned
   ETag, offset and total before appending; changed resources restart. Streamed

@@ -1,0 +1,102 @@
+"""Conservative survey identity across delivery formats (stdlib only).
+
+Use scoped dataset/project identifiers and provider project directories, never
+tile filenames, overlapping bounds, generic titles, or publication dates. Keep
+years and subprojects in identifiers; a parent programme is not a survey.
+"""
+import re
+from urllib.parse import parse_qs, unquote, urlparse
+
+
+def project_key(value):
+    return re.sub(r'[\s-]+', '_', str(value).strip().casefold())
+
+
+def usgs_project(url):
+    """Read the survey key from known USGS delivery/metadata namespaces."""
+    parsed = urlparse(url)
+    if parsed.scheme != 'https':
+        return None
+    host = parsed.hostname or ''
+    parts = unquote(parsed.path).strip('/').split('/')
+    if host in ('s3-us-west-2.amazonaws.com', 's3.us-west-2.amazonaws.com', 's3.amazonaws.com'):
+        if len(parts) == 3 and parts[0] == 'usgs-lidar-public' and parts[-1] == 'ept.json':
+            return project_key(parts[1])
+    if host in ('usgs-lidar-public.s3.amazonaws.com', 'usgs-lidar-public.s3.us-west-2.amazonaws.com'):
+        if len(parts) == 2 and parts[-1] == 'ept.json':
+            return project_key(parts[0])
+    if host == 'prd-tnm.s3.amazonaws.com' and parsed.path == '/index.html':
+        prefix = parse_qs(parsed.query).get('prefix', [''])[0].rstrip('/')
+        if prefix.startswith('StagedProducts/Elevation/metadata/'):
+            return project_key(prefix.rsplit('/', 1)[-1])
+    if host.endswith('.usgs.gov') or host == 'prd-tnm.s3.amazonaws.com':
+        lower = [p.casefold() for p in parts]
+        for i, part in enumerate(lower):
+            if part in ('laz', 'las') and i >= 2 and 'projects' in lower[:i-1]:
+                return project_key(parts[i-1])
+    return None
+
+
+def merge_identities(*identities):
+    return {key: sorted({value for identity in identities if isinstance(identity, dict)
+                        for value in (identity.get(key) if isinstance(identity.get(key), list) else [])
+                        if isinstance(value, str) and value})
+            for key in ('projects', 'datasets', 'evidence')}
+
+
+def metadata_identity(data):
+    """Explicit JSON identifiers require an authority; tile sourceId is excluded."""
+    if not isinstance(data, dict):
+        return {}
+    result = merge_identities(data.get('survey_identity') or {})
+    for key in ('survey_metadata', 'metadata'):
+        result = merge_identities(result, metadata_identity(data.get(key)))
+    authority = data.get('identity_authority') or data.get('provider')
+    if isinstance(authority, str) and authority.strip():
+        authority = project_key(authority)
+        for category, aliases in (
+                ('projects', ('project_id', 'projectId', 'project_identifier')),
+                ('datasets', ('dataset_id', 'datasetId', 'survey_id', 'surveyId'))):
+            for alias in aliases:
+                value = data.get(alias)
+                if isinstance(value, str) and value.strip():
+                    result[category].append(f'{authority}:{project_key(value)}')
+                    result['evidence'].append(f'{authority} {alias}={value}')
+    for key in ('url', 'downloadURL', 'metadata_url', 'vendorMetaUrl'):
+        url = data.get(key)
+        if isinstance(url, str):
+            project = usgs_project(url)
+            if project:
+                result['projects'].append('usgs:' + project)
+                # Project-level locations are evidence; discard tile filenames.
+                evidence = url.rsplit('/', 1)[0] + '/' if urlparse(url).path.lower().endswith(('.laz', '.las')) else url
+                result['evidence'].append(evidence)
+    return merge_identities(result)
+
+
+def common_identity(members):
+    """Do not promote one identified tile to an unidentified/mixed survey."""
+    if not members:
+        return {}
+    result = merge_identities(*members)
+    for key in ('projects', 'datasets'):
+        result[key] = sorted(set.intersection(*(set(m.get(key, [])) for m in members)))
+    return result
+
+
+def same_survey(a, b):
+    """Return matching identity evidence, or None when identity is uncertain.
+
+    Known disjoint acquisition periods or different explicit dataset editions
+    defeat a project match. Missing quality/date fields cannot establish identity.
+    """
+    left, right = merge_identities(a.get('survey_identity')), merge_identities(b.get('survey_identity'))
+    am, bm = a.get('survey_metadata', {}), b.get('survey_metadata', {})
+    for first, second in ((am, bm), (bm, am)):
+        if first.get('acquisition_end') and second.get('acquisition_start'):
+            if first['acquisition_end'] < second['acquisition_start']:
+                return None
+    ld, rd = set(left.get('datasets', [])), set(right.get('datasets', []))
+    if ld and rd:
+        return next(iter(sorted(ld & rd)), None)
+    return next(iter(sorted(set(left.get('projects', [])) & set(right.get('projects', [])))), None)

@@ -150,6 +150,14 @@ class DownloadTests(unittest.TestCase):
             self.assertIs(ept, fetch)
         fetch.download.assert_not_called()
 
+    def test_reader_cannot_download_an_unplanned_tile_or_revision(self):
+        fetch = Mock(download=Mock(return_value=Path('tile')))
+        with TileDownloads(fetch, self.tiles(1)) as downloads:
+            for url, revision in ((self.tiles(2)[1]['url'], 'v1'), (self.tiles(1)[0]['url'], 'v2')):
+                with self.assertRaisesRegex(ValueError, 'outside the acquisition plan'):
+                    downloads.download(url, revision=revision)
+        self.assertEqual(fetch.download.call_count, 1)
+
     def test_worker_prefetches_across_groups_and_skips_healthy_checkpoints(self):
         from jarvizar_city_model.data.cache import Bounds, CacheBundle
         from jarvizar_city_model.data.lidar import request_signature

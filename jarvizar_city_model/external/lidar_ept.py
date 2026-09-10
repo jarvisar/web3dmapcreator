@@ -82,8 +82,8 @@ class Fetcher:
         self.seen.add(url)
         return data
 
-    def json(self, url, fresh=False):
-        return json.loads(self.get(url, fresh=fresh))
+    def json(self, url, fresh=False, limit=32 * 1024 * 1024):
+        return json.loads(self.get(url, fresh=fresh, limit=limit))
 
     def download(self, url, limit=4 * 1024 ** 3, revision='', cancel=None, validate_prefix=None):
         """Allow independent tiles in parallel; coalesce shared cache writes.
@@ -200,23 +200,19 @@ def collect_nodes(fetch, base, metadata, query, max_nodes=4096, max_points=40_00
     return sorted(nodes, key=lambda key: tuple(map(int, key.split("-"))))
 
 
-def read_ept(fetch, url, bbox, max_points=8_000_000, resolution_m=0.75):
-    """Return cropped lon/lat/Z/class/single-return arrays and source metadata.
+def ept_coordinate_system(meta, url):
+    """Validate delivery and units identically for discovery and point reads.
 
     The AWS USGS mirror normalizes XY to EPSG:3857 and Z to metres. For a
     declared vertical CRS use its axis conversion; absent vertical CRS is
     accepted ONLY on that known mirror. Heights are roof-minus-ground within
     one survey, never LiDAR elevation minus the unrelated terrain DEM.
     """
-    meta = fetch.json(url)
     if meta.get("dataType") != "laszip" or meta.get("hierarchyType") != "json":
         raise ValueError("This first LiDAR reader supports laszip/JSON EPT only")
     srs = meta.get("srs", {})
     horizontal = CRS.from_user_input(srs.get("wkt") or f"{srs['authority']}:{srs['horizontal']}")
     xy_crs = horizontal.to_2d()
-    to_cloud = Transformer.from_crs(4326, xy_crs, always_xy=True)
-    to_lonlat = Transformer.from_crs(xy_crs, 4326, always_xy=True)
-    query = to_cloud.transform_bounds(*bbox, densify_pts=21)
     vertical_factor = None
     if srs.get("vertical"):
         vertical_factor = CRS.from_user_input(f"{srs['authority']}:{srs['vertical']}").axis_info[0].unit_conversion_factor
@@ -231,6 +227,16 @@ def read_ept(fetch, url, bbox, max_points=8_000_000, resolution_m=0.75):
         if not known_mirror or xy_crs.to_epsg() != 3857:
             raise ValueError("Unknown LiDAR vertical units; use a USGS EPT source with known units")
         vertical_factor = 1.0
+    return xy_crs, vertical_factor, known_mirror
+
+
+def read_ept(fetch, url, bbox, max_points=8_000_000, resolution_m=0.75):
+    """Return cropped lon/lat/Z/class/single-return arrays and source metadata."""
+    meta = fetch.json(url)
+    xy_crs, vertical_factor, known_mirror = ept_coordinate_system(meta, url)
+    to_cloud = Transformer.from_crs(4326, xy_crs, always_xy=True)
+    to_lonlat = Transformer.from_crs(xy_crs, 4326, always_xy=True)
+    query = to_cloud.transform_bounds(*bbox, densify_pts=21)
     base = url.rsplit("/", 1)[0] + "/"
     # This initial miniature pass needs sub-metre sampling, not every return.
     # Web Mercator distances differ from local ground distances by sec(lat).

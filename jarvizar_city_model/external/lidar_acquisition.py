@@ -1,7 +1,7 @@
 """Discover, schedule and acquire independent EPT and USGS LPC surveys.
 
-Catalog metadata schedules work; measured building support and capture age in
-lidar_selection decide the winner. No format receives a preference or cutoff.
+Metadata ranks practical EPT first unless LAZ has a material advantage.
+Lower-ranked sources are retained for unresolved coverage and measurement gaps.
 """
 from __future__ import annotations
 
@@ -18,9 +18,17 @@ from shapely.errors import ShapelyError
 try:
     from . import lidar_ept, lidar_laz
     from .lidar_selection import project_year
+    from .lidar_metadata import normalized_metadata, enrich_sources
+    from .lidar_ranking import rank_sources
+    from .lidar_identity import metadata_identity
+    from .lidar_tiles import building_tile_plan, batch_source, tile_audit
 except ImportError:
     import lidar_ept, lidar_laz
     from lidar_selection import project_year
+    from lidar_metadata import normalized_metadata, enrich_sources
+    from lidar_ranking import rank_sources
+    from lidar_identity import metadata_identity
+    from lidar_tiles import building_tile_plan, batch_source, tile_audit
 
 TNM_URL = 'https://tnmaccess.nationalmap.gov/api/v1/products'
 DISCOVERY_ERRORS = (ValueError, OSError, RuntimeError, KeyError, TypeError, IndexError, AttributeError, ShapelyError)
@@ -89,6 +97,8 @@ def tnm_tiles(fetch, bbox, failures, page_size=100):
                     yield {'url': tile_url, 'bbox': bounds, 'id': item.get('sourceId'),
                            'publication_date': item.get('publicationDate'),
                            'updated': item.get('lastUpdated'), 'size_bytes': item.get('sizeInBytes'),
+                           'survey_metadata': normalized_metadata(item),
+                           'survey_identity': metadata_identity(item),
                            'metadata_url': item.get('vendorMetaUrl') or item.get('metaUrl')}
             except DISCOVERY_ERRORS as exc:
                 failures.append({'source': 'TNMAccess product', 'reason': str(exc), 'buildings': 0})
@@ -130,13 +140,15 @@ def grouped_laz(tiles):
     for url, by_url in sorted(groups.items()):
         tiles = sorted(by_url.values(), key=lambda t: t['url'])
         name = unquote(urlparse(url).path.rstrip('/'))
-        fingerprint = hashlib.sha256(json.dumps(tiles, sort_keys=True).encode()).hexdigest()
+        # Identity only changes admission, not these independently measured points.
+        fingerprint = hashlib.sha256(json.dumps([
+            {k: v for k, v in t.items() if k != 'survey_identity'} for t in tiles], sort_keys=True).encode()).hexdigest()
         sources.append({'url': url, 'name': name, 'format': 'LAZ', 'tiles': tiles,
             'coverage': unary_union([box(*t['bbox']) for t in tiles]), 'fingerprint': fingerprint})
     return sources
 
 
-def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambda _: None):
+def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambda _: None, thresholds=None):
     sources, tiles, failures = [], [], []
     if source_url:
         # Preserve the existing explicit EPT override; an optional manifest
@@ -171,13 +183,28 @@ def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambd
             failures.append({'source': manifest_url, 'reason': str(exc), 'buildings': 0})
     sources.extend(grouped_laz(tiles))
     sources = list({s['url']: s for s in sources}.values())
+    enrich_sources(fetch, sources, failures, progress)
     roi = box(*bbox)
     for source in sources:
         source['catalog_coverage'] = source['coverage'].intersection(roi).area/roi.area
         source['project_year_hint'] = project_year(source['name'])
-    # Coverage and labelled project-year hints schedule bounded reads only.
-    # Unknown dates/density/classes cannot eliminate a potentially better survey.
-    sources.sort(key=lambda s: (-s['catalog_coverage'], -(s['project_year_hint'] or 0), s['url']))
+    ranked = rank_sources(sources, thresholds)
+    sources = [s for s, _ in ranked]
+    for rank, (source, reason) in enumerate(ranked, 1):
+        source.update(rank=rank, ranking_reason=reason)
+        meta = source.get('survey_metadata', {})
+        def value(key):
+            return meta.get(key, 'unknown')
+        accuracy = ', '.join(f"{key}={value(key)}" +
+            (f" ({value(key.replace('_m', '_basis'))})" if 'accuracy' in key else '') for key in
+            ('horizontal_rmse_m', 'vertical_rmse_m', 'horizontal_accuracy_m', 'vertical_accuracy_m'))
+        progress(f"LiDAR rank {rank}: {source['format']} {source['name']}; acquisition="
+                 f"{value('acquisition_start')}..{value('acquisition_end')}; "
+                 f"spacing={value('point_spacing_m')} m; density={value('point_density_m2')} pts/m2; "
+                 f"{accuracy}; ground={value('ground_class')}, buildings={value('building_class')}; "
+                 f"classification quality={value('classification_quality')} ({value('classification_basis')}); "
+                 f"coverage={source['catalog_coverage']:.1%}; "
+                 f"survey={','.join(source.get('survey_identity', {}).get('datasets', []) or source.get('survey_identity', {}).get('projects', [])) or 'unknown'}; {reason}")
     return sources, failures
 
 
@@ -192,5 +219,8 @@ def read_source(fetch, source, bbox):
 
 
 def source_audit(sources):
-    return [{k: s[k] for k in ('url', 'name', 'format', 'catalog_coverage', 'project_year_hint')}
+    return [{k: s[k] for k in ('url', 'name', 'format', 'catalog_coverage', 'project_year_hint',
+                              'survey_metadata', 'rank', 'ranking_reason', 'metadata_note',
+                              'unusable_reason', 'acquired_buildings', 'acquisition_reasons',
+                              'skipped_fallback_reasons', 'survey_identity', 'selected_tiles') if k in s}
             | {'tile_count': len(s.get('tiles', []))} for s in sources]

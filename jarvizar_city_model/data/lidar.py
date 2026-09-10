@@ -13,13 +13,13 @@ from collections import Counter
 from pathlib import Path
 from ..external.lidar_records import validate_records
 from ..external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, validate_download_workers
+from ..external.lidar_ranking import ACQUISITION_VERSION, FALLBACK_POLICY_VERSION, selection_thresholds
 
 FORMAT_VERSION = 1
 ALGORITHM_VERSION = 7
-ACQUISITION_VERSION = 1
 
 
-def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url=""):
+def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None):
     files = {}
     for name in ("building", "building_part"):
         path = bundle.data_path(name)
@@ -31,7 +31,8 @@ def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0
             "z_scale": round(float(z_scale), 10), "min_width_mm": round(float(min_width_mm), 6),
             "min_step_mm": round(float(min_step_mm), 6), "source_url": source_url.strip(),
             'roof_planes': bool(roof_planes), 'prefer_lidar': bool(prefer_lidar),
-            'manifest_url': manifest_url.strip()}
+            'manifest_url': manifest_url.strip(), 'acquisition_thresholds': selection_thresholds(acquisition_thresholds),
+            'fallback_policy': FALLBACK_POLICY_VERSION}
 
 
 def load_measurements(bundle, signature):

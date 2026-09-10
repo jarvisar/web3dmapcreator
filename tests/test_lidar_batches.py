@@ -58,7 +58,7 @@ class BatchTests(unittest.TestCase):
                 return np.empty((0,5)), {'url':url,'points':0}
             def measure(features,*args,**kwargs):
                 return {f['id']:{'height_m':30,'tiers':[]} for f in features}, {'height_only':len(features)}, {}
-            with patch.object(ept,'read_ept',side_effect=read), patch.object(measurements,'measure_features',side_effect=measure):
+            with patch.object(ept.Fetcher, 'json', return_value={}), patch.object(ept,'read_ept',side_effect=read), patch.object(measurements,'measure_features',side_effect=measure):
                 first = worker.prepare(bundle.path,request)
                 second = worker.prepare(bundle.path,request)
                 checkpoint = next((bundle.path/'lidar_jobs').glob('*.json'))
@@ -82,7 +82,7 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(request.call_count,1)
             self.assertEqual(fetch.bytes,4)
 
-    def test_all_overlapping_surveys_compared_and_best_survives_resume(self):
+    def test_ranked_fallback_stops_after_success_and_survives_resume(self):
         external=str(Path(__file__).resolve().parents[1]/'jarvizar_city_model/external')
         with patch.object(sys,'path',[external]+sys.path):
             worker=importlib.import_module('download_lidar')
@@ -114,9 +114,9 @@ class BatchTests(unittest.TestCase):
                 first=json.loads((bundle.path/'lidar_buildings.json').read_text())
                 worker.prepare(bundle.path,request)
                 second=json.loads((bundle.path/'lidar_buildings.json').read_text())
-            self.assertEqual(sorted(current),list(range(5)))
-            self.assertEqual(first['compared_sources'],5)
-            self.assertEqual(first['buildings']['one']['source'],'Project_4')
+            self.assertEqual(current, [0, 1])
+            self.assertEqual(first['compared_sources'],2)
+            self.assertEqual(first['buildings']['one']['source'],'Project_1')
             self.assertEqual(first['buildings'],second['buildings'])
             # One survey's rejection is not a skipped building once a usable
             # survey is selected; the resumed result must report the same.
@@ -139,7 +139,8 @@ class BatchTests(unittest.TestCase):
             feature={'id':'one','properties':{},'geometry':mapping(box(-73.999,40.002,-73.998,40.003))}
             bundle.data_path('building').write_text(json.dumps({'features':[feature]}))
             bundle.data_path('building_part').write_text('{"features":[]}')
-            catalog={'features':[{'properties':{'name':name,'url':f'https://example.com/{name}/ept.json'},
+            catalog={'features':[{'properties':{'name':name,'url':f'https://example.com/{name}/ept.json',
+                      'acquisition_year': int(name[:4])},
                       'geometry':mapping(box(-75,39,-73,41))} for name in ('2022_broken','2014_good')]}
             def read(fetch,url,bbox):
                 if 'broken' in url:raise KeyError('bounds')

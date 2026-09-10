@@ -1,6 +1,182 @@
-# Building heights and USGS LiDAR — 0.15.0
+# Building heights and USGS LiDAR
+
+## Footprint tile selection and survey identity (0.15.11)
+
+LAZ admission now uses **each candidate footprint buffered by 30 m**, clipped
+to the map's existing 75 m limit. The measurement pipeline still uses its 25 m
+ground neighborhood; the remaining 5 m is the existing acquisition guard.
+Tiles between buildings inside a batch rectangle are excluded. `lidar_tiles.py`
+supplies the same tile allowlist to concurrent prefetch and sequential reads,
+including subdivided batches. Healthy checkpoints require no tile transfers.
+The download wrapper rejects unplanned tiles instead of silently fetching them.
+
+`lidar_identity.py` compares scoped project/dataset identifiers from catalog,
+EPT root and linked report metadata. It also recognizes project directories in
+the USGS EPT delivery namespace, staged LPC links and TNM metadata links. Case
+and separator normalization retains years and subprojects; parent programmes,
+tile filenames, tile source IDs, generic titles and spatial overlap do not
+establish equivalence. Different explicit dataset editions or disjoint reported
+acquisition intervals defeat a project match. Unknown/mixed member identity
+remains unknown. No extra point downloads are made to establish identity, and
+the existing bounded metadata budget is unchanged.
+
+A LAZ delivery of a usable EPT survey cannot outrank it because of discrepant
+format metadata. After that survey has been read successfully for a building,
+insufficient ground/roof support does not justify reading those same returns
+as LAZ. This check includes every attempted EPT survey, not only the preferred
+one. Same-survey LAZ remains eligible outside EPT coverage, after failed EPT
+reads, for an empty EPT query, or for explicitly established coverage gaps.
+Missing ground/roof classifications in otherwise returned survey data are not
+evidence of a delivery gap. Different or unidentified surveys retain the
+existing material-improvement thresholds and support-gap fallback policy.
+
+Logs report survey identity and redundancy decisions. Each selected LAZ tile
+also lists the number of intersecting footprints/ground halos and admission
+reasons. `discovered_sources[].selected_tiles` preserves exact tile URLs,
+building IDs, footprint versus halo ownership, sizes and reasons. Identity
+evidence is retained in `survey_identity`. Public `fallback_policy=2` requires
+Prepare again; identity-only changes preserve matching survey checkpoints.
+Measurement, building enhancement and geometry algorithms are unchanged.
+
+The cached `bbox_5270167d9b54` replay used 84 existing EPT checkpoints, with no
+network requests or LAZ reads. All 965 accepted measurements remain available.
+Footprint filtering alone still intersects seven tiles in each fallback survey:
+the 60 support-gap candidates really are scattered across those tiles. The
+identity check excludes both LAZ surveys because their matching EPT deliveries
+were already read. **The final staged LAZ selection is empty.** This is an
+acquisition-policy replay of cached measurement evidence, not a new preparation
+or geometry run. Targeted tests additionally cover empty space between buildings,
+ground-halo-only tiles, subdivision, checkpoint replay, different datasets,
+unknown identity, conflicting acquisition dates, ties and EPT delivery gaps.
+
+## Avoiding speculative LAZ fallback (0.15.10)
+
+Previously every rejected EPT building remained eligible for LAZ, even when
+EPT returned enough data to identify an unsupported roof shape, a footprint
+conflict, or an unprintable component. Scattered rejections could consequently
+request staged LAZ tiles throughout the selection despite complete EPT coverage.
+
+Fallback now distinguishes data acquisition/support gaps from reconstruction
+rejections. Without a material metadata advantage, LAZ is eligible after failed
+EPT reads, insufficient ground points, insufficient roof points, or explicit
+insufficient coverage; it also remains eligible where suitable EPT coverage is
+absent. Roof fitting, noise, footprint/height/epoch conflicts, unprintable detail,
+and unknown rejection reasons do not independently justify LAZ. A material
+metadata advantage can still justify trying another survey. Source-independent
+rejections (invalid/small footprints, elevated/underground buildings, or a
+footprint/ground halo outside the fixed query limit) do not retry other sources.
+
+The preferred attempted EPT's result governs this decision. Sparse returns from
+a poorer secondary EPT cannot reclassify an earlier roof-fit rejection as a data
+gap. Live and checkpoint results supply the same evidence. Logs and
+`discovered_sources[].skipped_fallback_reasons` explain omitted acquisitions.
+Remaining genuine support gaps can still require complete compressed LAZ tiles;
+fewer candidate buildings do not necessarily reduce bytes in proportion.
+
+That release introduced `fallback_policy=1` (superseded by 2 above), so Prepare is required to update
+an older prepared result. That scheduling-only field is excluded from independent
+survey checkpoint keys; matching existing batches remain reusable. Measurement,
+geometry, source fallback and printability rules are unchanged.
+
+## Windows progress-file contention (0.15.9)
+
+The sidebar polls a private `progress.json` while the LiDAR worker replaces it.
+On Windows an open reader can temporarily prevent replacement, producing an
+access-denied error for `progress.partial -> progress.json`. Previously this
+advisory update could abort preparation or be mistaken for a source failure.
+
+Progress updates now retain atomic replacement, serialize download-thread
+writers, limit sidebar writes to five per second, and retry permission conflicts
+three times with 5 ms between attempts. If the temporary file or destination
+remains unavailable, preparation continues and retries on a later status update;
+stderr retains every progress message and emits one diagnostic per job. The last
+complete sidebar status remains readable. Checkpoint and final measurement writes
+still propagate errors. No acquisition/measurement signature change is needed;
+existing completed work and cached point-cloud tiles remain reusable.
+
+## Ranked acquisition (0.15.8)
+
+Discovery now ranks metadata **before point acquisition**. Suitable EPT is the
+default because its spatial queries are cheaper than staged LAZ transfer and
+decoding. A small improvement or missing metadata does not justify downloading
+LAZ. The existing measurement algorithm 7, preparation, roof fitting, source
+conflict preference and building geometry remain unchanged.
+
+Each building is assigned to a survey covering its entire footprint. Among
+eligible sources, prefer EPT unless LAZ has a material advantage below. Within
+each practicality tier, rank usable sources with adequate map coverage first,
+then acquisition date, resolution, comparable reported accuracy, classification availability, coverage
+fraction and finally URL. The URL tie-break is independent of catalog order.
+A partial superior LAZ survey can win buildings in its own coverage while EPT
+serves the rest. Coverage is a catalog estimate, clipped to EPT metadata bounds;
+holes and incomplete footprints remain ineligible even at 98% map coverage.
+
+| Comparison threshold | Default | Requirement to choose LAZ over suitable EPT |
+| --- | --- | --- |
+| `adequate_coverage` | 0.98 | Map-coverage ordering within a tier; never permits a partially covered building |
+| `age_difference_years` | 5 | LAZ acquisition start at least 5 × 365.25 days after EPT acquisition end |
+| `spacing_ratio`, `spacing_difference_m` | 1.5, 0.25 m | EPT nominal spacing at least 1.5× LAZ **and** at least 0.25 m coarser |
+| `density_ratio`, `density_difference_m2` | 2, 2 points/m² | LAZ density at least 2× EPT **and** at least 2 points/m² higher |
+| `accuracy_ratio`, `accuracy_difference_m` | 2, 0.10 m | EPT error at least 2× LAZ **and** at least 0.10 m higher, for the same axis and statistic |
+| `classification_difference` | 0.25 | Reported classification quality at least 0.25 higher on the same explicitly named scale |
+
+LAZ also takes precedence when it explicitly provides ground and building
+classes that EPT reports missing. Unknown class availability is not absence.
+Known missing ground or unsupported EPT delivery/units is unusable. RMSE is
+compared separately from accuracy at a confidence level; accuracy requires
+matching known confidence/basis. Point spacing measures **resolution**, never
+positional accuracy. EPT octree span, XYZ quantization, total return counts,
+quality-level labels and publication/upload/file-creation/project-name years
+are not substitutes for these measurements.
+
+Defaults live in `external/lidar_ranking.py`. Advanced callers can pass partial
+`acquisition_thresholds` overrides to `data.lidar.request_signature(...)` or put
+them in the worker request JSON; no additional sidebar controls are needed.
+The full effective defaults are included by the signature builder. Unknown,
+nonfinite or nonpositive thresholds are rejected; ratios must exceed 1 and
+fractions must not exceed 1. Threshold changes invalidate prepared caches.
+Acquisition version **2** requires **Prepare LiDAR Buildings** again after this
+upgrade; downloaded tiles remain reusable.
+
+Metadata reads use EPT `ept.json`, explicit catalog acquisition/metric fields,
+and linked JSON or FGDC XML reports (4 MiB per document, at most eight distinct
+reports per survey). TNM's S3 metadata landing pages are resolved by listing
+their designated `best_use_xml/` directory. Other landing pages, absent reports,
+ambiguous units/prose and unsupported metadata formats remain unknown; there
+is no arbitrary web crawl or point-body download to fill metadata fields.
+FGDC dataset dates are accepted only when their stated basis is ground
+condition/acquisition/collection. Year/month precision becomes a full interval,
+and the complete interval must establish the age advantage. Survey aggregates
+use the full date range and worst quality; a missing tile/report field cannot
+be replaced by another tile's better claim. Some EPT catalogs omit all flight
+dates and quality metrics: EPT remains preferred until usable coverage is
+tested. No date is inferred from its name.
+[EPT metadata specification](https://entwine.io/en/latest/entwine-point-tile.html),
+[USGS TNMAccess description](https://www.usgs.gov/faqs/there-api-accessing-national-map-data).
+
+Only unresolved buildings advance to another survey. As of 0.15.10, LAZ fallback
+requires a read/coverage/support gap or a material metadata advantage; an arbitrary
+measurement/selection rejection is not enough.
+Successful buildings are excluded from later batches. LAZ prefetch therefore
+downloads only tiles intersecting individual unresolved footprints and their
+existing ground halos; a selected compressed tile still transfers in full.
+No ground, roof points or geometry from different surveys are mixed within a
+building. Fallback can try several surveys if genuine data gaps persist; it stops
+as soon as a compatible result exists. Checkpoint replay follows the same plan.
+
+One log line per candidate records format, acquisition interval, spacing,
+density, horizontal/vertical RMSE or reported accuracy, classification, coverage,
+rank and reason. Selection/skip lines explain actual acquisition, including gap
+fallback. `discovered_sources` retains metadata and acquisition reasons, and
+`acquisition_selection` records the effective thresholds in the result audit.
+`tests/test_lidar_ranking.py` covers preference, substantial improvements, dates,
+missing metadata, ties, incomplete coverage, holes, parser limits, source
+failure, actual LAZ tile admission, cache replay and threshold invalidation.
 
 ## EPT and staged USGS LAZ acquisition (0.15.0)
+
+The following describes the initial dual-format implementation. Ranked
+acquisition above supersedes its exhaustive survey scheduling.
 
 The architectural gap was acquisition, not LAZ decoding or building generation:
 `read_ept` already decoded compressed LAS nodes into seven columns, while
@@ -19,7 +195,8 @@ measurement; no format-specific building pipeline exists.
 ```text
 map bounds + existing 75 m halo
   -> EPT coverage index + TNMAccess LPC bbox query (+ optional manifest)
-  -> independent survey candidates, scheduled by coverage / labelled age hints
+  -> independent survey candidates, ranked from acquisition metadata
+  -> preferred surveys, then fallback only for unresolved buildings
   -> whole-building groups -> intersecting EPT nodes or staged LAZ tiles
   -> crop / XY reprojection / explicit vertical-unit conversion
   -> existing measure_features -> existing survey comparison
@@ -44,16 +221,16 @@ support must still pass preparation.
 [TNMAccess API interface](https://apps.nationalmap.gov/tnmaccess/).
 
 TNM does not consistently expose capture dates, density or classification
-quality. Therefore catalog hints schedule reads but do not discard unknown
-surveys or select a format in advance. **All overlapping usable candidates
-remain eligible**, even when EPT succeeds. After bounded acquisition, the
-existing weighted coverage, explained-roof fraction, saturating supported
-density and GPS capture-age score selects one survey per building. The crop's
+quality. Ranked acquisition now retains unknown sources as fallbacks and
+prefers suitable EPT. After bounded acquisition, the existing weighted coverage,
+explained-roof fraction, saturating supported density and GPS capture-age score
+validates available complete measurements per building. The crop's
 class-6 share among class-1/6 returns breaks otherwise equal quality/age ties;
 this is a classification-availability hint, not a classification accuracy claim.
 Raw point counts and number of fitted tiers do not win by themselves.
-An EPT and LAZ copy of the same acquisition may both be evaluated when the
-catalogs provide no reliable shared identifier; names are not fuzzy-matched.
+Names are not fuzzy-matched to deduplicate acquisitions. The survey identity
+checks above apply before LAZ admission; successful buildings are excluded
+from later EPT or LAZ reads by the acquisition planner.
 
 Publication/update dates never become flight dates or veto observations.
 Mixed epochs, missing ground, insufficient support and the existing conflict
@@ -65,7 +242,7 @@ score, alternatives and catalog candidates are recorded in the audit.
 LAZ tiles are grouped by their delivered survey/subproject directory, using
 the union of authoritative tile bounds for coverage. Directories identify
 collections only; names are never decoded into coordinates. Only tiles
-intersecting the current building group and its established halo are fetched.
+intersecting candidate footprints and their established halos are fetched.
 Ordinary LAZ is not a spatial query service: each intersecting compressed file
 must download in full. The existing HTTPS cache now streams those files to an
 atomic disk replacement (4 GiB per-file guard) and laspy reads 250,000 points
@@ -95,7 +272,7 @@ response body. No filename-grid inference or whole-project fallback exists.
 Large manifests can require many header requests; stale links and unknown CRS
 are reported individually while valid candidates continue.
 
-Acquisition signature **1** invalidates old prepared results/checkpoints without
+Acquisition signature **2** invalidates old prepared results/checkpoints without
 changing measurement algorithm 7. **Prepare LiDAR Buildings again** after
 upgrading. The EPT node cache is retained. LAZ checkpoint identities include
 tile metadata, and staged downloads use TNM update revisions when present.
@@ -745,9 +922,23 @@ to all 3DEP coverage.
 [USGS LidarExplorer](https://www.usgs.gov/tools/lidarexplorer),
 [AWS dataset registry](https://registry.opendata.aws/usgs-lidar/).
 
+LAZ delivery is not hardcoded to RockyWeb: acquisition uses the HTTPS LAZ URL
+published by TNM (`urls.LAZ`, `downloadLazURL`, then `downloadURL`), or supplied
+by the optional manifest. Public S3 URLs work through the same transport when
+actually available. Do not manufacture a free mirror by replacing RockyWeb's
+hostname/path with `prd-tnm/StagedProducts`: the presence of browse images or
+download manifests there does not establish that the point-cloud objects exist.
+The separate `usgs-lidar` raw-LAZ bucket requires authenticated Requester Pays
+access and is not a complete 3DEP mirror. Supporting it requires an explicit
+paid-access option, verified object mapping and AWS authentication; neither
+anonymous requests nor a simple URL rewrite provides that access.
+[AWS delivery resources](https://registry.opendata.aws/usgs-lidar/),
+[Requester Pays authentication and charges](https://docs.aws.amazon.com/AmazonS3/latest/userguide/RequesterPaysBuckets.html).
+
 The implemented path uses the mirror's GeoJSON coverage index and TNMAccess
-LPC tiles as described above, intersects the selected bbox, and compares every
-overlapping survey. An optional EPT URL overrides automatic discovery; a
+LPC tiles as described above, intersects the selected bbox, and ranks overlapping
+surveys before acquisition, with EPT preference and unresolved-only fallback.
+An optional EPT URL overrides automatic discovery; a
 manifest can add manual LAZ candidates. Each building is measured
 within one survey; overlapping acquisitions are never mixed.
 [Mirror coverage index](https://github.com/hobuinc/usgs-lidar/blob/master/boundaries/resources.geojson).
