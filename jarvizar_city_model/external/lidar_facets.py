@@ -11,7 +11,7 @@ import numpy as np
 from shapely import STRtree, constrained_delaunay_triangles, points as make_points
 from shapely.geometry import MultiPoint, shape
 from shapely.errors import GEOSException
-from shapely.ops import triangulate
+from shapely.ops import triangulate, unary_union
 
 try:
     from .lidar_records import MAX_ROOF_FACETS
@@ -56,7 +56,61 @@ def roof_triangles(polygon):
         return result
 
 
-def patch_facets(region, samples, cell, tolerance, facet_budget):
+def continuous_boundary(boundary, footprint, samples, cell, tolerance):
+    """Only dissolve a terrace boundary with measured continuity on both sides.
+
+    A difference between plateau heights is not evidence of a vertical wall:
+    steep continuous roofs also produce separated elevation bands. Extrapolate
+    nearby, supported planes from each side to the same boundary locations.
+    Missing support or an ambiguous fit cannot justify dissolving a major step.
+    Any supported discontinuity preserves the whole boundary, including mixed
+    perimeters that are partly a continuous slope and partly a real wall.
+    """
+    from shapely import contains_xy
+    # Clipping polygons can also retain isolated line/point contacts. A GEOS
+    # GeometryCollection has no boundary, even when it contains valid roofs.
+    # Only its areal components provide evidence on both sides of a roof edge.
+    if boundary.geom_type not in ('Polygon', 'MultiPolygon'):
+        regions = pieces(boundary)
+        if not regions:
+            return None
+        boundary = unary_union(regions)
+    if boundary.is_empty:
+        return None
+    interior = boundary.boundary.intersection(footprint.buffer(-cell))
+    if interior.is_empty or interior.length < cell * 2:
+        return None
+    inside = contains_xy(boundary, samples[:, 0], samples[:, 1])
+    sides = (samples[inside], samples[~inside])
+    if any(len(side) < 6 for side in sides):
+        return None
+    count = min(64, max(4, int(math.ceil(interior.length / cell))))
+    gaps = []
+    for i in range(count):
+        xy = np.array(interior.interpolate((i + .5) / count, normalized=True).coords[0])
+        heights = []
+        for side in sides:
+            distance = np.sum((side[:, :2] - xy) ** 2, axis=1)
+            order = np.argsort(distance, kind='stable')[:12]
+            local = side[order[distance[order] <= (cell * 3) ** 2]]
+            if len(local) < 6 or distance[order[0]] > (cell * 2) ** 2:
+                break
+            design = np.column_stack((local[:, :2] - xy, np.ones(len(local))))
+            coef, _, rank, _ = np.linalg.lstsq(design, local[:, 2], rcond=None)
+            if (rank < 3 or np.linalg.norm(coef[:2]) > 3
+                    or np.quantile(np.abs(design @ coef - local[:, 2]), .9) > tolerance):
+                break
+            heights.append(float(coef[2]))
+        if len(heights) == 2:
+            gaps.append(abs(heights[0] - heights[1]))
+    if gaps and max(gaps) > tolerance * 2:
+        return False
+    if len(gaps) == count and max(gaps) <= tolerance:
+        return True
+    return None
+
+
+def patch_facets(region, samples, cell, tolerance, facet_budget, planar_fit=True):
     """Triangulate with measured boundary heights and bounded interior error."""
     from shapely import contains_xy
     samples = samples[contains_xy(region.buffer(1e-7), samples[:, 0], samples[:, 1])]
@@ -65,11 +119,22 @@ def patch_facets(region, samples, cell, tolerance, facet_budget):
     samples = samples[np.lexsort((samples[:, 1], samples[:, 0]))]
     center = np.mean(samples[:, :2], axis=0)
 
+    # A supported planar patch needs no extrema pinned to survey noise. Keep
+    # its exact outline and holes, with a bounded residual in printed units.
+    design = np.column_stack((samples[:, :2] - center, np.ones(len(samples))))
+    plane, _, rank, _ = np.linalg.lstsq(design, samples[:, 2], rcond=None)
+    residual = np.abs(design @ plane - samples[:, 2])
+    planar = (planar_fit and rank == 3 and np.linalg.norm(plane[:2]) <= 3
+              and np.quantile(residual, .95) <= tolerance
+              and residual.max() <= max(1.25, tolerance * 3))
+
     def elevation(xy):
         distances = np.sum((samples[:, :2] - xy)**2, axis=1)
         order = np.argsort(distances, kind='stable')[:12]
         if distances[order[0]] > (cell*2)**2:
             raise UnsupportedFit('unobserved roof boundary')
+        if planar:
+            return float(np.dot(xy-center, plane[:2])+plane[2])
         local = samples[order[distances[order] <= (cell*3)**2]]
         if len(local) < 3:
             raise UnsupportedFit('insufficient boundary support')
@@ -114,8 +179,9 @@ def patch_facets(region, samples, cell, tolerance, facet_budget):
         for a,b in zip(xy, xy[1:]):
             boundary(a[:2], b[:2])
     # Pin real extrema before refinement, including small supported roof crowns.
-    for index in (int(np.argmin(samples[:, 2])), int(np.argmax(samples[:, 2]))):
-        add(samples[index, :2], samples[index, 2])
+    if not planar:
+        for index in (int(np.argmin(samples[:, 2])), int(np.argmax(samples[:, 2]))):
+            add(samples[index, :2], samples[index, 2])
 
     sample_points = make_points(samples[:, :2])
     for _ in range(24):
@@ -152,6 +218,11 @@ def patch_facets(region, samples, cell, tolerance, facet_budget):
         for polygon in pieces(triangle.intersection(region)):
             if polygon.area <= 1e-8:
                 continue
+            # Adaptive vertices must respect the same supported-slope limit as
+            # boundary/plane fits. Otherwise mixed facade returns can create
+            # near-vertical triangular notches between otherwise flat tiers.
+            if planar_fit and np.linalg.norm(coef[:2]) > 3:
+                raise UnsupportedFit('unsupported roof slope')
             # Clipped concave pieces/holes use constrained triangles; no roof
             # can bridge a courtyard or extend outside its supporting region.
             for facet in roof_triangles(polygon):
@@ -168,7 +239,8 @@ def patch_facets(region, samples, cell, tolerance, facet_budget):
     return surfaces, fit_error
 
 
-def fit_faceted_roof(footprint, samples, cell, min_width, min_step, original):
+def fit_faceted_roof(footprint, samples, cell, min_width, min_step, original,
+                     sample_boundaries=None, refine=True):
     """Return a complete faceted replacement or a concise fallback reason."""
     if original.get('roof_surfaces'):
         return None, 'existing measured planes'
@@ -176,15 +248,27 @@ def fit_faceted_roof(footprint, samples, cell, min_width, min_step, original):
         return None, 'flat roof'
     # Keep mapped whole-building outlines and significant measured setbacks.
     # Minor terrace bands can become continuous slopes within each partition.
-    step = max(2.0, min_step*4)
-    boundaries = [shape(t['geometry']).intersection(footprint) for t in original['tiers']
-                  if t['top_m']-t['bottom_m'] >= step]
-    remaining, patches = footprint, []
-    for boundary in reversed(boundaries):
-        patches.extend(pieces(remaining.intersection(boundary)))
-        remaining = remaining.difference(boundary)
-    patches.extend(pieces(remaining))
     tolerance = max(.35, min_step*.5)
+    boundaries = []
+    dissolved = 0
+    for index, tier in enumerate(original['tiers']):
+        boundary = shape(tier['geometry']).intersection(footprint)
+        sample_boundary = (sample_boundaries[index].intersection(footprint)
+                           if sample_boundaries is not None else boundary)
+        continuous = (continuous_boundary(sample_boundary, footprint, samples, cell, tolerance)
+                      if refine else None)
+        major = tier['top_m'] - tier['bottom_m'] >= max(2.0, min_step * 4)
+        if continuous is True or (continuous is None and not major):
+            dissolved += 1
+        else:
+            boundaries.append((boundary, sample_boundary))
+    remaining, sample_remaining, patches = footprint, footprint, []
+    for boundary, sample_boundary in reversed(boundaries):
+        sample_patch = sample_remaining.intersection(sample_boundary)
+        patches.extend((p, sample_patch) for p in pieces(remaining.intersection(boundary)))
+        remaining = remaining.difference(boundary)
+        sample_remaining = sample_remaining.difference(sample_boundary)
+    patches.extend((p, sample_remaining) for p in pieces(remaining))
     def retained_surfaces(patch):
         result, remainder = [], patch
         levels = [(shape(t['geometry']), t['top_m']) for t in reversed(original['tiers'])]
@@ -206,12 +290,18 @@ def fit_faceted_roof(footprint, samples, cell, min_width, min_step, original):
 
     surfaces, errors, retained = [], [], []
     try:
-        for patch in sorted(patches, key=lambda p: (-p.area, p.bounds)):
+        from shapely import contains_xy
+        for patch, sample_patch in sorted(patches, key=lambda p: (-p[0].area, p[0].bounds)):
             fallback = retained_surfaces(patch)
             try:
                 if patch.area < max(min_width**2, cell**2*2):
                     raise UnsupportedFit('small isolated roof patch')
-                fitted, error = patch_facets(patch, samples, cell, tolerance, MAX_FACETS-len(surfaces))
+                # Outline cleanup can move across a cell centroid. Keep the
+                # original measured patch ownership, or a tower return could
+                # become a false ramp on the adjoining podium.
+                patch_samples = samples[contains_xy(sample_patch.buffer(1e-7), samples[:, 0], samples[:, 1])]
+                fitted, error = patch_facets(patch, patch_samples, cell, tolerance,
+                                             MAX_FACETS-len(surfaces), planar_fit=refine)
                 surfaces.extend(fitted); errors.append(error)
             except (UnsupportedFit, np.linalg.LinAlgError, GEOSException) as exc:
                 surfaces.extend(fallback)
@@ -235,4 +325,5 @@ def fit_faceted_roof(footprint, samples, cell, min_width, min_step, original):
     return {'height_m':float(bottom), 'tiers':[], 'roof_surfaces':surfaces,
             'method':'faceted_roof', 'roof_fit_p95_m':max(errors),
             'roof_patch_count':len(patches), 'faceted_patch_count':len(errors),
+            'continuous_terrace_boundaries':dissolved,
             'retained_roof_patches':retained}, None

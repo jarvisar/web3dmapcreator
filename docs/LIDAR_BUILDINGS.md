@@ -1,5 +1,128 @@
 # Building heights and USGS LiDAR
 
+## Preparation with mixed clipped geometry (0.15.19)
+
+Intersecting valid tier and footprint polygons can produce a GeometryCollection
+containing roof polygons plus isolated line or point contacts. Such a collection
+has no boundary object in GEOS. The roof-continuity check now extracts its
+polygonal components before querying the boundary; line/point-only results have
+no continuity evidence and cannot justify removing a major step. This fixes the
+`'NoneType' object has no attribute 'intersection'` preparation failure without
+discarding the supported roof or disabling detailed reconstruction. Ordinary
+polygonal inputs keep their existing path. Algorithm 11 remains unchanged so
+successful reconstruction checkpoints can be reused.
+
+## Measured boundaries between roof cells (0.15.18)
+
+The preceding contour cleanup still started from unions of whole square cells.
+It recognized alternating short stairs but pinned long grid edges and repeated
+turns, leaving ribs around broad curves and irregular setbacks. The grid retained
+which cell contained an upper roof but lost where the edge crossed that cell.
+This was a reconstruction bottleneck: the acquired returns already contained
+useful XY observations between the 1.5 m support-grid boundaries. Increasing
+download resolution or changing Blender normals would not recover that discarded
+boundary placement.
+
+Detailed Surfaces now retains returns near each supported cell's accepted upper
+height band for a separate, bounded boundary fit. Major tier boundaries (the
+existing `max(2 m, 4 × minimum step)` criterion) use a strip extending 1.5 cells
+on each side. Within this strip, equal-weight XY bins retain actual return
+centroids. Conflicting high/low bins are omitted; Delaunay triangles with edges
+no longer than 1.5 cells locate crossings between observed roof levels. The
+triangles are temporary 2D reconstruction data, not the final roof mesh.
+
+Equal-distance contour samples feed a local quadratic fit, preserving straight
+segments and broad curvature without the shrinking bias of simple averaging.
+Resolved sharp corners are protected. The final contour is simplified to remove
+sub-cell survey jitter; it retains a bounded number of useful vertices instead
+of extruding every intermediate cell or sample.
+
+This changes geometry, with these limits:
+
+- At most 4,096 boundary observations per tier; excessively dense raw strips or
+  over-budget fits retain the existing contour. There is no new point download,
+  globally finer roof grid, or increased roof-facet budget.
+- Unobserved sections and sections exceeding the displacement allowance retain
+  their previous outline locally. The final boundary moves at most 0.8 cells
+  (1.2 m, or 0.084 printed mm, at default settings).
+- Each mass preserves its topology and area within 5%; known holes are protected.
+  Only new islands/holes smaller than the existing detail-width area are filtered.
+  Rectangular masses stay unchanged. Mapped parts, minimum width, and intersection
+  with the lower supporting tier still apply afterward.
+- Roof heights, sample ownership across terraces, plane/slope guards, coverage
+  checks and closed-solid construction remain in force. A failed refined envelope
+  retries the previous Detailed Surfaces geometry before the older fallback, so
+  a previously usable detailed roof is not discarded just to fit a new outline.
+
+`tests/test_lidar_boundaries.py` checks circular/oblique and irregular contours,
+sharp recesses, courtyards, missing support, conflicting returns, deterministic
+point order, budgets, preserved roof levels and complete-envelope fallback.
+The synthetic Blender fixture generator also includes an irregular curved tier
+with a sharp recess. Existing roof shapes, Terraces mode and LiDAR-disabled
+generation keep their prior paths.
+
+Select **Detailed Surfaces** with **Generate Roof Shapes** enabled, run **Prepare
+LiDAR Buildings** again, then **Generate Model**. Leave Refresh off to reuse
+cached points. Measurement algorithm **11** invalidates old reconstruction
+checkpoints. Source footprint resolution, sparse surveys, unsupported boundaries
+and conservative fallbacks still limit the result; this does not reconstruct
+missing facade detail or establish physical print quality.
+
+## Smoother measured building geometry (0.15.17)
+
+The block-like appearance has several causes before Blender receives a mesh.
+EPT reads target roughly 0.75 m spacing; LAZ uses valid cropped returns without
+that hierarchy cutoff. Roof processing then compresses each supported cell
+(at least 1.5 m across) to one upper-band height/sample. Terrace reconstruction
+unions square cells, closes gaps, filters narrow detail and simplifies outlines.
+Those cell boundaries can remain stair-stepped on diagonal or curved setbacks.
+Detailed Surfaces previously retained every sufficiently large elevation-band
+boundary even when the underlying roof was a continuous slope. Pinning noisy
+extrema also produced unnecessary facets on otherwise planar patches.
+
+At the default 0.07 mm/m scale, the EPT target is about 0.053 printed mm and
+the roof-cell floor is 0.105 mm. Globally increasing point density would not
+remove the later contour and partition artifacts. Blender projects and extrudes
+the prepared outlines/surfaces without a voxel remesher or decimator. Its flat
+shading exposes polygon changes, including the segments already present in
+mapped curved facades; shading alone cannot improve an FDM silhouette. Roof
+reconstruction does not invent finer facade outlines absent from source data.
+
+Detailed Surfaces now performs three bounded improvements:
+
+- Fit alternating short raster stairs through their edge midpoints, anchoring
+  long edges and architectural corners. Reject invalid topology, excessive area
+  change or boundary movement over 0.8 cells. Mapped parts, physical width
+  filtering, courtyards and intersection with the supporting tier still apply.
+- Test both sides of a terrace boundary at common positions. A major boundary
+  is dissolved only when every probe has a supported continuous fit. A measured
+  discontinuity retains the wall, including smaller supported steps. Keep the
+  original cell-region sample ownership after outline cleanup, so a tower return
+  cannot enter a podium fit merely because the outline moved across its XY.
+- Fit clean planar patches within the existing height residual bounds before
+  adaptive triangulation, avoiding extrema pinned to sub-tolerance survey noise.
+
+The existing 120-vertex patch and 1,024-facet building limits, height agreement,
+coverage and solid-closure checks remain. Unsupported patches retain terraces.
+If the refined envelope fails, a single retry can retain its prior supported
+detailed reconstruction rather than losing that detail to a height-only result.
+No new points are downloaded for these refinements or retries. Roof solids stay
+fully supported to their base; no subdivision modifier or facade bevel is added.
+
+**Prepare LiDAR Buildings** again, with **Detailed Surfaces** selected and
+**Generate Roof Shapes** enabled, then **Generate Model**. Leave **Refresh
+Existing Cache** off to reuse cached point files. Algorithm **10** invalidates
+older measurement checkpoints; it does not refresh source point downloads.
+**Terraces** and LiDAR-disabled geometry retain their existing behavior.
+
+Pure regression cases cover diagonal/circular setbacks, nested tower tiers,
+small real steps, steep continuous slopes, courtyard holes, support gaps and
+bounded noisy planes. `tests/lidar_surface_fixtures.py` prepares synthetic
+measurement fixtures for `tests/blender_lidar_surfaces.py`, which checks actual
+merged/unmerged solids, winding, roof heights and courtyard voids and can render
+identical flat-shaded comparisons. A closed-mesh audit is not a slicer or physical
+print test.
+
 ## Optional LAZ gap downloads (0.15.16)
 
 **Prepare LiDAR Buildings** automatically acquires EPT and publishes its usable

@@ -138,7 +138,7 @@ class LidarCacheTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             request_signature(self.bundle, .07, .077, roof_mode='unknown')
         payload = json.loads((self.bundle.path/'lidar_buildings.json').read_text())
-        payload['request']['algorithm'] = 8
+        payload['request']['algorithm'] = 10
         (self.bundle.path/'lidar_buildings.json').write_text(json.dumps(payload))
         self.assertIn('stale', load_measurements(self.bundle, self.signature)[1])
 

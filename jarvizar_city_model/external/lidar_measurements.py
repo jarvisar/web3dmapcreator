@@ -131,18 +131,51 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
     if ground_m is None:
         return None, 'insufficient_ground'
     options = dict(ground_m=ground_m, roof_planes=roof_planes, part_footprints=part_footprints,
-                   neighboring_footprints=neighboring_footprints, allow_complex_height=allow_complex_height)
-    def finish(record, reason, details):
-        if record and roof_planes and roof_mode == 'FACETED' and 'samples' in details:
+                   neighboring_footprints=neighboring_footprints, allow_complex_height=allow_complex_height,
+                   detailed_surfaces=roof_planes and roof_mode == 'FACETED')
+    def finish(record, reason, details, offset=(0, 0)):
+        if roof_planes and roof_mode == 'FACETED' and 'samples' in details:
             try:
                 from .lidar_facets import fit_faceted_roof
             except ImportError:
                 from lidar_facets import fit_faceted_roof
-            fitted, note = fit_faceted_roof(footprint, details['samples'], record['cell_m'],
-                                           min_width_m, min_step_m, record)
+            fitted, note = (fit_faceted_roof(footprint, details['samples'], record['cell_m'],
+                                            min_width_m, min_step_m, record,
+                                            sample_boundaries=details.get('tier_sample_regions'))
+                            if record else (None, reason))
             if fitted:
                 return {**record, **fitted}, 'faceted_roof'
-            record['faceted_fallback'] = note
+            if details.get('boundary_refined'):
+                # A sub-cell outline is adopted together with its complete roof.
+                # If it cannot be meshed within the existing guards, preserve
+                # the previous detailed reconstruction before the older retry.
+                coarse_details = {}
+                coarse, coarse_reason = _measure_building(
+                    footprint, index, min_width_m, min_step_m, grid_offset=offset,
+                    coverage_out=coarse_details, **options, boundary_refinement=False)
+                if coarse and offset != (0, 0):
+                    coarse['coverage_grid_offset'] = list(offset)
+                return finish(coarse, coarse_reason, coarse_details, offset)
+            # Refinement must not turn an already supported detailed roof into
+            # a box when cleaner boundaries or extra real steps exceed a budget.
+            # One bounded retry uses the established contours/partition fit,
+            # with the same points, ground, grid and all acceptance checks.
+            if (record and note not in ('flat roof', 'existing measured planes')) or reason == 'unprintable_major_tier':
+                previous_details = {}
+                previous, previous_reason = _measure_building(
+                    footprint, index, min_width_m, min_step_m, grid_offset=offset,
+                    coverage_out=previous_details, **{**options, 'detailed_surfaces': False})
+                if previous and 'samples' in previous_details:
+                    if offset != (0, 0):
+                        previous['coverage_grid_offset'] = list(offset)
+                    old_fit, _ = fit_faceted_roof(footprint, previous_details['samples'],
+                        previous['cell_m'], min_width_m, min_step_m, previous, refine=False)
+                    if old_fit:
+                        return {**previous, **old_fit, 'faceted_refinement_fallback': note}, 'faceted_roof'
+                    if not record:
+                        return previous, previous_reason
+            if record:
+                record['faceted_fallback'] = note
         return record, reason
     coverage = {}
     result, reason = _measure_building(footprint, index, min_width_m, min_step_m, coverage_out=coverage, **options)
@@ -154,11 +187,11 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
                                                        grid_offset=offset, coverage_out=details, **options)
         if recovered:
             recovered['coverage_grid_offset'] = list(offset)
-            return finish(recovered, recovered_reason, details)
+            return finish(recovered, recovered_reason, details, offset)
     return result, reason
 
 
-def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, grid_offset=(0, 0), coverage_out=None):
+def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, grid_offset=(0, 0), coverage_out=None, detailed_surfaces=False, boundary_refinement=True):
     """Measure the whole roof envelope; hidden undersides stay source-derived.
 
     Flat regions require dense spatial coverage and small vertical residuals.
@@ -205,6 +238,7 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
         key = (math.floor((pos[0] - x0) / cell), math.floor((pos[1] - y0) / cell))
         groups.setdefault(key, []).append(row)
     cells, samples, facet_samples, expected, supported_points = {}, {}, {}, 0, 0
+    boundary_samples = []
     expected_by_piece, supported_by_piece = Counter(), Counter()
     supported_area_by_piece = Counter()
     pieces = polygons(rotated)
@@ -234,6 +268,13 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
                 continue
             start = starts[-1]
             cells[(ix, iy)] = float(np.median(z[start:ends[start]]))
+            if detailed_surfaces and boundary_refinement:
+                # Keep spatial observations around the accepted upper band for
+                # boundary reconstruction. The scalar/cell fit and its support
+                # checks remain unchanged; no new returns enter that fit.
+                selected = rows[np.abs(rows[:, 2]-ground-cells[(ix, iy)]) <= max(.8, cell*.4), :3].copy()
+                selected[:, 2] -= ground
+                boundary_samples.append(selected)
             supported_by_piece[component] += 1
             supported_area_by_piece[component] += (area if len(pieces)==1
                 else tile.intersection(pieces[component]).area)
@@ -393,7 +434,9 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
         return {**stats, "height_m": float(np.quantile(list(cells.values()), 0.9)),
                 "tiers": [], "method": "roof_p90"}, "height_only"
     base_height = levels[0][0]
+    boundary_samples = np.concatenate(boundary_samples) if boundary_samples else np.empty((0, 3))
     tiers = []
+    tier_sample_regions = []
     support = footprint
     lower = base_height
     for level_index in range(1, len(levels)):
@@ -405,7 +448,32 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
         region = unary_union([box(x0+x*cell,y0+y*cell,x0+(x+1)*cell,y0+(y+1)*cell) for x,y in supported])
         region = region.buffer(cell*.55, join_style=2).buffer(-cell*.55, join_style=2)
         region = unary_union([Polygon(p.exterior) for p in polygons(region)])
+        sample_region = rotate(region, angle, origin=origin, use_radians=True)
+        contour_regularized = False
+        measured_boundary = False
+        if detailed_surfaces:
+            try:
+                from .lidar_contours import regularize_grid_contours
+            except ImportError:
+                from lidar_contours import regularize_grid_contours
+            candidate = regularize_grid_contours(region, cell)
+            contour_regularized = not candidate.equals(region)
+            region = candidate
         region = rotate(region, angle, origin=origin, use_radians=True)
+        if (detailed_surfaces and boundary_refinement
+                and height-lower >= max(2.0, min_step_m * 4)):
+            try:
+                from .lidar_boundaries import measured_tier_boundary
+            except ImportError:
+                from lidar_boundaries import measured_tier_boundary
+            candidate = measured_tier_boundary(sample_region, boundary_samples,
+                (lower + height) * .5, cell, min_width_m)
+            if not candidate.equals(sample_region):
+                region = candidate
+                contour_regularized = True
+                measured_boundary = True
+                if coverage_out is not None:
+                    coverage_out['boundary_refined'] = True
         measured_area = region.intersection(footprint).area
         # Prefer an existing part boundary only when its measured footprint
         # agrees with this plateau. Part heights never replace LiDAR heights.
@@ -416,12 +484,18 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             candidate = max(matches, key=lambda p: p.intersection(region).area / p.union(region).area)
             if candidate.symmetric_difference(region).area <= region.area*0.2:
                 region = candidate
+                contour_regularized = False
+                measured_boundary = False
                 stats['part_boundaries_used'] = stats.get('part_boundaries_used', 0)+1
         # Morphological opening removes sub-nozzle strips. Its extent remains
         # bounded by measured cells and the authoritative footprint.
         radius = min_width_m / 2
         region = region.buffer(-radius, join_style=2).buffer(radius, join_style=2)
-        region = region.simplify(cell * 0.45, preserve_topology=True).intersection(support)
+        # Reconstructed stair midpoints already use a bounded contour fit.
+        # A second coarse simplification would move them back toward stair
+        # corners. Source/unchanged outlines retain the established tolerance.
+        region = region.simplify(cell * (0.1 if contour_regularized else 0.45),
+                                 preserve_topology=True).intersection(support)
         keep = [p for p in polygons(region) if p.is_valid and p.area >= min_width_m ** 2
                 and not p.buffer(-radius * 0.9).is_empty]
         if not keep:
@@ -437,13 +511,18 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             tiers[-1]['top_m'] = height
             lower = height
             continue
+        if measured_boundary:
+            stats['measured_tier_boundaries'] = stats.get('measured_tier_boundaries', 0) + 1
         tiers.append({"bottom_m": lower, "top_m": height, "geometry": mapping(region)})
+        tier_sample_regions.append(sample_region)
         support, lower = region, height
     # A supported high roof that was too complex to reconstruct must not be
     # swallowed by a lower accepted plateau. Preserve source geometry here.
     higher = [key for key in cells if cells[key] > lower + min_step_m]
     if len(higher) >= max(4, len(cells)*.1) and len(higher)*cell*cell >= min_width_m**2:
         return None, 'unresolved_upper_roof'
+    if coverage_out is not None:
+        coverage_out['tier_sample_regions'] = tier_sample_regions
     return {**stats, "height_m": base_height, "tiers": tiers,
             "method": "flat_regions"}, "tiers" if tiers else "height_only"
 

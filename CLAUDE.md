@@ -395,14 +395,36 @@ through the existing prism builder; raw point clouds never become Blender meshes
 - `lidar_facets.py` optionally refines accepted envelopes into measured triangular
   surfaces, reusing supported cell samples. Detailed Surfaces is the UI default;
   Terraces preserves the classic reconstruction. Major terrace jumps partition
-  fits before refinement, and clipping retains outlines/courtyards. Uncertain
+    fits before refinement, and clipping retains outlines/courtyards. Extract
+    polygonal components before continuity checks: valid clipping can also leave
+    line/point contacts in a GeometryCollection, whose boundary is undefined. Uncertain
   patches retain their original terraces; incomplete or over-budget envelopes
   fall back as a whole. Bounds are 120 vertices per patch, 1,024 roof facets per
   building and documented residual/height tolerances. The existing ground-draped
   solid builder remains responsible for closed geometry and atomic adoption.
   Record validation permits the larger surface budget only for `faceted_roof`.
-  Algorithm 9 includes roof mode in cache identity; the measurement reader permits
+  Algorithm 11 includes roof mode in cache identity; the measurement reader permits
   128 MiB. Native triangulation remains outside Blender, with no extra point reads.
+- Detailed-mode tier contours remove only alternating short grid stairs, with
+  subcell displacement/area guards; long edges and architectural corners stay
+  anchored. Source-part snapping, width opening and nested support clipping still
+  follow. Keep original cell-region sample ownership across contour movement so
+  tower returns cannot form ramps on podiums. Two-sided local fits may dissolve
+  a major terrace boundary only with supported continuity along the whole tested
+  boundary; a measured wall keeps it. Planar patches filter sub-tolerance noise.
+  If refinement fails, one bounded retry retains the prior detailed fit when
+  available; it reuses the same ground, grid, points and checks. Terraces mode
+  and disabled roof generation retain their established reconstruction.
+- `lidar_boundaries.py` refines major tier outlines from the existing supported
+  upper-band returns within 1.5 cells of the boundary. XY bins retain measured
+  centroids, not grid corners; short high/low triangles locate sub-cell crossings.
+  Local quadratic fits suppress contour jitter while protecting resolved sharp
+  corners. Missing or excessive-displacement sections keep the original outline.
+  Width, per-component area, holes, topology and 0.8-cell displacement guards
+  follow; mapped part boundaries still take priority. This is bounded to 4,096
+  boundary samples, without changing acquisition or the 1.5 m support grid.
+  If a refined envelope fails, retry the previous Detailed Surfaces reconstruction
+  before its established older fallback, using identical points/ground/grid.
 - Width/step controls filter measured detail; they cannot create survey resolution
   (roof sampling has a 1.5 m cell floor). Higher supported returns contribute to
   the mass beneath them. Reject materially incomplete envelopes rather than

@@ -16,7 +16,7 @@ from ..external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, validate_downlo
 from ..external.lidar_ranking import ACQUISITION_VERSION, FALLBACK_POLICY_VERSION, selection_thresholds
 
 FORMAT_VERSION = 1
-ALGORITHM_VERSION = 9
+ALGORITHM_VERSION = 11
 
 
 def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None, roof_mode='FACETED'):

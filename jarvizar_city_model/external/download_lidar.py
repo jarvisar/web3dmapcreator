@@ -75,7 +75,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     from lidar_selection import choose_measurement, project_year, POLICY, CONTRADICTIONS
     from shapely import STRtree
 
-    if request["algorithm"] != 9:
+    if request["algorithm"] != 11:
         raise ValueError("Unsupported LiDAR algorithm version")
     if request.get('roof_mode', 'TERRACES') not in ('TERRACES', 'FACETED'):
         raise ValueError('Unknown LiDAR roof reconstruction mode')
