@@ -15,6 +15,11 @@ def project_key(value):
 def usgs_project(url):
     """Read the survey key from known USGS delivery/metadata namespaces."""
     parsed = urlparse(url)
+    if parsed.scheme == 's3' and parsed.netloc == 'usgs-lidar':
+        # An EPT provenance location, not a URL to manufacture or download.
+        parts = unquote(parsed.path).strip('/').split('/')
+        if len(parts) >= 4 and parts[0] == 'Projects' and parts[-2].lower() in ('laz', 'las'):
+            return project_key(parts[-3])
     if parsed.scheme != 'https':
         return None
     host = parsed.hostname or ''
@@ -62,7 +67,7 @@ def metadata_identity(data):
                 if isinstance(value, str) and value.strip():
                     result[category].append(f'{authority}:{project_key(value)}')
                     result['evidence'].append(f'{authority} {alias}={value}')
-    for key in ('url', 'downloadURL', 'metadata_url', 'vendorMetaUrl'):
+    for key in ('url', 'downloadURL', 'metadata_url', 'vendorMetaUrl', 'path'):
         url = data.get(key)
         if isinstance(url, str):
             project = usgs_project(url)
@@ -84,7 +89,15 @@ def common_identity(members):
     return result
 
 
-def same_survey(a, b):
+def possible_duplicate(a, b):
+    """Naming hint only. Never supplies confirmed identity or acquisition dates."""
+    def tokens(source):
+        keys = (source.get('survey_identity') or {}).get('projects', [])
+        return [set(re.findall(r'[a-z0-9]+', key.casefold())) - {'usgs', 'lpc', 'las', 'laz', 'ept'} for key in keys]
+    return any(len(x & y) >= 3 and (x <= y or y <= x) for x in tokens(a) for y in tokens(b))
+
+
+def same_survey(a, b, geometry=None):
     """Return matching identity evidence, or None when identity is uncertain.
 
     Known disjoint acquisition periods or different explicit dataset editions
@@ -99,4 +112,12 @@ def same_survey(a, b):
     ld, rd = set(left.get('datasets', [])), set(right.get('datasets', []))
     if ld and rd:
         return next(iter(sorted(ld & rd)), None)
-    return next(iter(sorted(set(left.get('projects', [])) & set(right.get('projects', [])))), None)
+    match = next(iter(sorted(set(left.get('projects', [])) & set(right.get('projects', [])))), None)
+    if match:
+        return match
+    if geometry is not None:
+        for source, other in ((a, b), (b, a)):
+            coverage = source.get('provenance_coverage', {}).get(other['url'])
+            if coverage is not None and coverage.covers(geometry):
+                return 'verified original EPT input metadata'
+    return None

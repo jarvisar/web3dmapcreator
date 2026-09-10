@@ -333,7 +333,7 @@ class AcquisitionAdmissionTests(unittest.TestCase):
         self.assertFalse(failures)
         self.assertEqual(sources[0]['format'], 'LAZ')
         self.assertAlmostEqual(sources[1]['catalog_coverage'], .5)
-        self.assertEqual(fetch.get.call_count, 1)
+        self.assertEqual(sum(call.args[0] == report for call in fetch.get.call_args_list), 1)
         fetch.download.assert_not_called()
         self.assertTrue(any('acquisition=2016' in m and 'spacing=1.5' in m and 'coverage=50.0%' in m for m in messages))
         sources, _ = acquisition.discover_sources(fetch, bbox, source_url=ept_url)

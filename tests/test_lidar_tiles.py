@@ -92,7 +92,8 @@ class FootprintTileTests(unittest.TestCase):
 
     def test_split_batches_keep_the_same_precise_tile_allowlist(self):
         downloads, reads, _ = self.run_worker(split=True)
-        self.assertCountEqual(downloads, ['west.laz', 'ground.laz', 'east.laz'])
+        # Each child has its own prefetch scope; Fetcher reuses completed files.
+        self.assertEqual(set(downloads), {'west.laz', 'ground.laz', 'east.laz'})
         self.assertCountEqual(reads[1], ['west.laz', 'ground.laz'])
         self.assertEqual(reads[2], ['east.laz'])
 

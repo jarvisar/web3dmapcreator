@@ -22,6 +22,7 @@ try:
     from .lidar_ranking import rank_sources
     from .lidar_identity import metadata_identity
     from .lidar_tiles import building_tile_plan, batch_source, tile_audit
+    from .lidar_provenance import enrich_provenance
 except ImportError:
     import lidar_ept, lidar_laz
     from lidar_selection import project_year
@@ -29,6 +30,7 @@ except ImportError:
     from lidar_ranking import rank_sources
     from lidar_identity import metadata_identity
     from lidar_tiles import building_tile_plan, batch_source, tile_audit
+    from lidar_provenance import enrich_provenance
 
 TNM_URL = 'https://tnmaccess.nationalmap.gov/api/v1/products'
 DISCOVERY_ERRORS = (ValueError, OSError, RuntimeError, KeyError, TypeError, IndexError, AttributeError, ShapelyError)
@@ -184,6 +186,7 @@ def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambd
     sources.extend(grouped_laz(tiles))
     sources = list({s['url']: s for s in sources}.values())
     enrich_sources(fetch, sources, failures, progress)
+    enrich_provenance(fetch, sources, bbox, progress)
     roi = box(*bbox)
     for source in sources:
         source['catalog_coverage'] = source['coverage'].intersection(roi).area/roi.area
@@ -222,5 +225,7 @@ def source_audit(sources):
     return [{k: s[k] for k in ('url', 'name', 'format', 'catalog_coverage', 'project_year_hint',
                               'survey_metadata', 'rank', 'ranking_reason', 'metadata_note',
                               'unusable_reason', 'acquired_buildings', 'acquisition_reasons',
-                              'skipped_fallback_reasons', 'survey_identity', 'selected_tiles') if k in s}
+                              'skipped_fallback_reasons', 'survey_identity', 'selected_tiles',
+                              'possible_duplicates', 'provenance_matches', 'provenance_note',
+                              'incremental_acquisition') if k in s}
             | {'tile_count': len(s.get('tiles', []))} for s in sources]

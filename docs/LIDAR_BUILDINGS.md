@@ -1,5 +1,61 @@
 # Building heights and USGS LiDAR
 
+## Verified input provenance and incremental fallback (0.15.13)
+
+Differently named EPT/LAZ deliveries are now compared using the EPT input
+manifest and original input metadata before staged point acquisition.
+`lidar_provenance.py` reads `ept-sources/manifest.json`, with the legacy
+`list.json` and numbered input metadata as a fallback. Similar project names
+only produce a **possible duplicate** log entry; stripping packaging suffixes
+does not establish identity or an acquisition date.
+
+Explicit original project/dataset identities can establish equivalence. When
+those are unavailable, a nonzero original LAS project GUID must agree with the
+staged file's point count, native XYZ extrema, XYZ scale, point format and
+global encoding. Legacy GUID byte ordering is accepted only with those other
+matching facts. LAZ inspection reads the fixed public header only (at most
+375 bytes), using an existing cached file or exact HTTP Range requests. It
+does not fetch point records. Creation years and upload dates do not become
+acquisition dates.
+
+Verification applies only to the intersection of matched input/tile coverage.
+Several verified regions can cover a whole footprint; one sample cannot stand
+in for unmatched tiles, missing input metadata or a mixed survey. Known
+conflicting acquisition intervals or explicit dataset editions retain the
+existing conservative behavior. Limits are documented constants in
+`lidar_provenance.py`: 4 MiB per manifest, 256 KiB per input report, 8 MiB total
+provenance JSON per discovery, 32 local inputs per EPT source, and 32 LAZ header
+attempts per discovery. Limit failures leave identity unknown.
+[EPT source provenance format](https://entwine.io/en/latest/entwine-point-tile.html#ept-sources).
+
+Confirmed same-survey LAZ remains eligible outside EPT coverage, after actual
+EPT read failures, or for an explicit delivery coverage gap. An empty hierarchy
+query (zero nodes and zero retained points) is a delivery coverage gap. Zero
+filtered roof/ground returns alone, generic roof coverage rejections and sparse
+support are not. This strengthens the duplicate-survey rule without changing
+the preparation, classification or building-enhancement pipeline.
+
+LAZ acquisition is now **one building batch at a time**. Only that batch's
+footprint/ground-halo tiles enter the download pool; configured parallelism
+still applies within the batch. No later batch's tiles start until the current
+batch is decoded and its measurements evaluated. Completed files are reused
+across batches and subdivision. Healthy measurement checkpoints are evaluated
+before new transfers.
+
+For speculative support-gap fallback, one batch with **zero adopted building
+measurements** defers remaining speculative acquisitions from that source.
+A productive batch resets the counter. The explicit policy constant is
+`MAX_UNPRODUCTIVE_LAZ_BATCHES = 1` in `lidar_ranking.py`; this is a cost policy,
+not proof that untested areas lack useful data. Independently justified coverage
+or delivery gaps and material metadata upgrades remain eligible. Checkpoint
+replay applies the same counter and stop rule. Logs and
+`discovered_sources[].incremental_acquisition` record evaluated batches,
+recovered buildings, the threshold and deferred candidates; provenance matches
+and possible duplicates are also retained in the source audit.
+
+Public `fallback_policy=3` requires Prepare again. The measurement signature is
+unchanged, and matching survey checkpoints remain reusable.
+
 ## Footprint tile selection and survey identity (0.15.11)
 
 LAZ admission now uses **each candidate footprint buffered by 30 m**, clipped

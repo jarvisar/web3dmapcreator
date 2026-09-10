@@ -54,7 +54,7 @@ class TileDownloads:
 
 
 def prefetch_source(fetch, source, queries, workers=DEFAULT_DOWNLOAD_WORKERS):
-    """Prefetch only tiles intersecting groups without reusable checkpoints."""
+    """Prefetch an admitted batch; the caller evaluates it before the next."""
     from contextlib import nullcontext
     if source['format'] != 'LAZ':
         return nullcontext(fetch)

@@ -34,7 +34,7 @@ retain explicitly stored values when defaults change.
 | Source building detail | Minimum effective width 0.08 mm; slenderness limit 30 below 0.45 mm width |
 | LiDAR | Opt-in; Prefer LiDAR on Conflicts enabled; detail width 0.1 mm / step 0.05 mm |
 | Ponds / fountains | Recess enabled, depth 1.0 mm, water thickness 0.8 mm (0.2 mm below the lowest sampled bank) |
-| Trees | Solid cones, minimum width 1.2 mm / height 2.0 mm after variation |
+| Trees | Trunkless three-tier solids, minimum width 1.1 mm / height 1.6 mm; 26 m forest spacing, 18% variation, 0.2 mm crown clearance |
 
 All main feature toggles, including Water, default on; the border rim defaults
 off. Disable **Water** for the open-river appearance: terrain cuts and pond
@@ -125,7 +125,7 @@ independently:
 5. Build draped land slabs, resolve category priority, and remove basin
    footprints. Build optional water fills. Generate roads/bridges with causeway
    registration before pier placement; subtract ground-road footprints from slabs.
-6. Place trees using finished land/road caps. Generate source or prepared LiDAR
+6. Place trees directly on terrain. Generate source or prepared LiDAR
    buildings and their foundations. Emit accumulated `TERRAIN_SUPPORTS` last.
    Store counts on the staged root, validate ownership/attachment and finite mesh
    coordinates/placement, then publish the replacement and scene status/units.
@@ -277,9 +277,11 @@ colors, overwriting manual palette edits.
   Ground-road cuts use 0.005 mm XY clearance and built road outlines to avoid
   huge cutter sets from refined caps. Elevated bridges retain land beneath them.
 - Trees combine mapped `land` points and deterministic forest scatter, including
-  satellite forest by default. They avoid open water and sit on actual built
-  land/road caps. Keep solid cone bases; thin trunks with unsupported canopies
-  defeat the printability purpose.
+  satellite forest by default. They avoid open water and embed their broad bases
+  directly in the terrain, not raised land/road caps. Trunkless three-tier crowns
+  are single closed solids with sloped undersides. Size floors apply independently
+  to height and width. A shared spatial clearance check uses varied crown radii
+  across mapped points and all forest sources, giving mapped points priority.
 
 ### Roads and bridges
 
@@ -343,8 +345,15 @@ through the existing prism builder; raw point clouds never become Blender meshes
   acquisition periods/explicit editions prevent equivalence; missing identity
   remains unknown. LAZ copies of successfully read EPT surveys are redundant
   even after insufficient roof/ground support. Per-building coverage gaps,
-  failed reads and empty EPT queries still permit same-survey delivery fallback.
+  failed reads and empty EPT hierarchy queries still permit same-survey delivery
+  fallback; zero filtered points or generic roof-coverage rejection do not.
   Identity and per-tile footprint/halo ownership/reasons are logged and audited.
+- `lidar_provenance.py` verifies differently named deliveries through bounded
+  EPT manifests/input metadata and fixed LAS headers (no point records).
+  Names only flag possible duplicates. Original project identity or a nonzero
+  LAS GUID corroborated by count, XYZ extents/scales, format and encoding can
+  confirm equivalence, restricted to verified input/tile coverage. Partial
+  metadata must never establish whole-survey equivalence.
 - `lidar_ept.py` includes additive ancestor nodes as well as leaves.
   `lidar_laz.py` downloads intersecting staged tiles to disk and decodes chunks.
   Both normalize to WGS84 XY, metre Z, classifications/returns, and capture-age
@@ -354,7 +363,11 @@ through the existing prism builder; raw point clouds never become Blender meshes
   roofs and a ground halo. Per-group limits can subdivide work; normal preparation
   has no whole-map byte/point/time cap, though per-request/file/group guards remain.
   LAZ transfers use `lidar_downloads.py` (default 4, allowed 1–16) while decoding
-  and measurement stay sequential. EPT remains serial. Changing concurrency must
+  and measurement stay sequential. Prefetch is limited to the current batch;
+  evaluate it before admitting the next. One unproductive speculative support-gap
+  batch defers further speculative downloads; independently justified coverage,
+  delivery gaps and material upgrades remain eligible. Checkpoints supply the
+  same trial evidence before new transfers. EPT remains serial. Changing concurrency must
   not change measurement signatures or results. The UI passes the setting to
   interactive and background jobs.
 - `lidar_measurements.py` fits ground-relative scalar heights, supported terraces,

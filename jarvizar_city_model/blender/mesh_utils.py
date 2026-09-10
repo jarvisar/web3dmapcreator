@@ -28,6 +28,7 @@ from ..geometry.planar import (
     signed_area,
 )
 from ..geometry.roofs import apex_solid_geometry
+from ..geometry.tree_geometry import tree_solid_geometry
 
 
 # Re-exported for callers that historically imported these from this module.
@@ -522,36 +523,6 @@ def create_box_object(
     return obj
 
 
-def tree_solid_geometry(
-    canopy_radius_mm: float,
-    height_mm: float,
-    sides: int = 6,
-    embed_mm: float = 0.0,
-) -> Tuple[List[Tuple[float, float, float]], List[Tuple[int, ...]]]:
-    """A closed, flat-bottomed cone with a short embedded base.
-
-    The full base width is retained at ground level. There is no thin trunk
-    or unsupported canopy underside for the slicer to discard.
-    """
-    sides = max(3, int(sides))
-    vertices = [(math.cos(math.tau*i/sides)*canopy_radius_mm,
-                 math.sin(math.tau*i/sides)*canopy_radius_mm,
-                 -max(0.0, embed_mm)) for i in range(sides)]
-    faces = [tuple(reversed(range(sides)))]
-    base = list(range(sides))
-    if embed_mm > 0.0:
-        vertices.extend((x, y, 0.0) for x, y, _z in list(vertices))
-        base = list(range(sides, sides*2))
-        for i in range(sides):
-            j = (i+1) % sides
-            faces.append((i, j, base[j], base[i]))
-    apex = len(vertices)
-    vertices.append((0.0, 0.0, height_mm))
-    for i in range(sides):
-        faces.append((base[i], base[(i+1) % sides], apex))
-    return vertices, faces
-
-
 def tree_mesh_datablock(
     name: str,
     canopy_radius_mm: float,
@@ -561,8 +532,8 @@ def tree_mesh_datablock(
     *,
     reuse: bool = True,
 ) -> bpy.types.Mesh:
-    """Reuse one cone mesh for all linked tree objects of the same shape."""
-    shape = (canopy_radius_mm, height_mm, sides, embed_mm)
+    """Reuse one layered tree mesh for linked objects of the same shape."""
+    shape = (2, canopy_radius_mm, height_mm, sides, embed_mm)
     existing = bpy.data.meshes.get(name)
     if reuse and existing is not None and tuple(existing.get('tree_shape', ())) == shape:
         return existing

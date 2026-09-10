@@ -593,8 +593,8 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     # ------------------------------------------------------------- vegetation
     tree_spacing_m: FloatProperty(
         name="Tree Spacing (m)",
-        description="Real-world spacing of trees scattered inside forest polygons",
-        default=22.0,
+        description="Forest scatter spacing; finished crowns also keep a small print-space gap",
+        default=26.0,
         min=2.0,
         soft_max=200.0,
         precision=1,
@@ -602,23 +602,22 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     tree_minimum_height_mm: FloatProperty(
         name="Minimum Tree Height (mm)",
         description=(
-            "Trees are enlarged to at least this height so they stay printable "
-            "and legible. The applied exaggeration is recorded on the objects"
+            "Minimum finished tree height after variation, independent of crown width"
         ),
-        default=2.0,
+        default=1.6,
         min=0.05,
         soft_max=10.0,
         precision=2,
     )
     tree_minimum_width_mm: FloatProperty(
         name="Minimum Tree Width (mm)",
-        description="Minimum cone base width across flats, after size variation; default for a 0.4 mm nozzle",
-        default=1.2, min=0.1, soft_max=5.0, precision=2,
+        description="Minimum foliage base width across flats after variation",
+        default=1.1, min=0.1, soft_max=5.0, precision=2,
     )
     tree_size_variation: FloatProperty(
         name="Size Variation",
         description="Random tree scaling, always clamped to the minimum printable dimensions",
-        default=0.28, min=0.0, max=0.8, subtype="FACTOR",
+        default=0.18, min=0.0, max=0.8, subtype="FACTOR",
     )
     maximum_trees: IntProperty(
         name="Maximum Trees",

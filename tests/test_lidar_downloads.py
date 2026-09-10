@@ -158,7 +158,7 @@ class DownloadTests(unittest.TestCase):
                     downloads.download(url, revision=revision)
         self.assertEqual(fetch.download.call_count, 1)
 
-    def test_worker_prefetches_across_groups_and_skips_healthy_checkpoints(self):
+    def test_worker_waits_for_batch_evaluation_and_skips_healthy_checkpoints(self):
         from jarvizar_city_model.data.cache import Bounds, CacheBundle
         from jarvizar_city_model.data.lidar import request_signature
         from shapely.geometry import box, mapping
@@ -169,11 +169,13 @@ class DownloadTests(unittest.TestCase):
             acquisition = importlib.import_module('lidar_acquisition')
             measurements = importlib.import_module('lidar_measurements')
             importlib.import_module('lidar_batches')
-        all_started = threading.Barrier(4, timeout=5)
         main_thread = threading.get_ident()
+        downloaded, evaluated = [], []
 
         def download(url, **kwargs):
-            all_started.wait()  # Deadlocks/fails if acquisition is per-group serial.
+            # No transfer for the next group until this group's measurements exist.
+            self.assertEqual(len(downloaded), len(evaluated))
+            downloaded.append(url)
             return Path(url.rsplit('/', 1)[-1])
 
         def read(fetch, source, bbox):
@@ -197,6 +199,7 @@ class DownloadTests(unittest.TestCase):
             bundle.data_path('building_part').write_text('{"features": []}')
             request = request_signature(bundle, .07, .077)
             def measure(features, *args, **kwargs):
+                evaluated.append(features[0]['id'])
                 return {f['id']: {'height_m': 30, 'tiers': []} for f in features}, {}, {}
             with patch.object(acquisition, 'discover_sources', return_value=([source], [])), \
                  patch.object(acquisition, 'read_source', side_effect=read), \

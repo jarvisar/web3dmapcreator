@@ -67,7 +67,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
     from lidar_ept import Fetcher, CATALOG_URL, BudgetExceeded
     from lidar_acquisition import (discover_sources, read_source, source_audit, TNM_URL,
                                    building_tile_plan, batch_source, tile_audit)
-    from lidar_ranking import AcquisitionPlan, ACQUISITION_VERSION, FALLBACK_POLICY_VERSION, selection_thresholds
+    from lidar_ranking import AcquisitionPlan, ACQUISITION_VERSION, FALLBACK_POLICY_VERSION, MAX_UNPRODUCTIVE_LAZ_BATCHES, selection_thresholds
     from lidar_batches import building_batches, batch_bounds, split_batch
     from lidar_measurements import measure_features
     from lidar_selection import choose_measurement, project_year, POLICY, CONTRADICTIONS
@@ -157,7 +157,6 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
         if work is None:
             break
         source, candidates, reason = work
-        source['acquired_buildings'] = source.get('acquired_buildings', 0) + len(candidates)
         source.setdefault('acquisition_reasons', []).append(reason)
         progress(f"Selected {source['format']} {source['name']}: {len(candidates)} unresolved buildings; {reason}")
         def batch_job(batch):
@@ -178,64 +177,98 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
 
         jobs = [batch_job(batch) for batch in building_batches(candidates, geometries)]
         tiles = building_tile_plan(source, candidates, geometries, to_geographic, selected) if source['format'] == 'LAZ' else {}
-        pending = [f for job in jobs if job[3] is None for f in job[0]]
-        pending_source = batch_source(source, pending, tiles)
+        # Reuse checkpoint evidence before authorizing any new point downloads.
+        jobs.sort(key=lambda job: job[3] is None)
+        attempted = set()
+        trial = {'batches_evaluated': 0, 'recovered_buildings': 0,
+                 'unproductive_batches': 0, 'deferred_buildings': 0,
+                 'max_unproductive_batches': MAX_UNPRODUCTIVE_LAZ_BATCHES}
         if source['format'] == 'LAZ':
-            audit = tile_audit(tiles, pending, {f['id']: plan.selection_reasons[f['id'], source['url']] for f in pending})
-            source.setdefault('selected_tiles', []).extend(audit)
-            progress(f"LAZ footprint selection: {len(audit)}/{len(source['tiles'])} tiles for {len(pending)} buildings without checkpoints")
-            for entry in audit:
-                progress(f"Selected LAZ tile {entry['url']}: {len(entry['footprints'])} footprints, "
-                         f"{len(entry['ground_halos'])} ground halos; " + '; '.join(entry['reasons']))
-        with prefetch_source(fetch, pending_source, [job[1] for job in jobs if job[3] is None], workers=download_workers) as source_fetch:
-            while jobs:
-                batch, batch_query, checkpoint, cached = jobs.pop(0)
-                progress(f"Comparing {len(alternatives)} measured buildings; {len(jobs)+1} groups left in {source['name']}")
-                batch_roi = map_geometry(to_metric, box(*batch_query))
-                if cached is not None:
-                    plan.observe(source, batch, cached['records'], cached['rejected'], cached['info'])
-                    collect(cached['records'], cached['observations'], source, cached['info'])
-                    counts.update(cached['reasons'])
-                    rejected.update(cached['rejected'])
-                    provenance.append(cached['info'])
-                    continue
-                try:
-                    points, info = read_source(source_fetch, batch_source(source, batch, tiles), batch_query)
-                except BudgetExceeded as exc:
-                    split = split_batch(batch, geometries)
-                    # Spatial subdivision can resolve point/node limits, but
-                    # cannot manufacture more total download budget.
-                    if split and 'byte' not in str(exc).lower() and 'response' not in str(exc).lower():
-                        jobs[0:0] = [batch_job(child) for child in split]
+            source['incremental_acquisition'] = trial
+        def evaluate_batch(batch, before):
+            if source['format'] != 'LAZ':
+                return
+            trial['batches_evaluated'] += 1
+            gained = {f['id'] for f in batch} & (resolved - before)
+            trial['recovered_buildings'] += len(gained)
+            speculative = {f['id'] for f in batch if plan.speculative(f['id'], source)}
+            if speculative:
+                trial['unproductive_batches'] = 0 if gained & speculative else trial['unproductive_batches'] + 1
+            progress(f"LAZ batch evaluated: {len(gained)}/{len(batch)} adopted measurements; "
+                     f"{trial['unproductive_batches']} consecutive unproductive speculative batches")
+        while jobs:
+            batch, batch_query, checkpoint, cached = jobs.pop(0)
+            if cached is None and trial['unproductive_batches'] >= MAX_UNPRODUCTIVE_LAZ_BATCHES:
+                deferred = [f for f in batch if plan.speculative(f['id'], source)]
+                if deferred:
+                    plan.defer(source, deferred)
+                    trial['deferred_buildings'] += len(deferred)
+                    batch = [f for f in batch if f not in deferred]
+                    if not batch:
                         continue
-                    failures.append({'source': source['name'], 'reason': str(exc), 'buildings': len(batch)})
-                    if 'byte' in str(exc).lower():
-                        break
+                    batch, batch_query, checkpoint, cached = batch_job(batch)
+            attempted.update(f['id'] for f in batch)
+            before = set(resolved)
+            progress(f"Comparing {len(alternatives)} measured buildings; {len(jobs)+1} groups left in {source['name']}")
+            batch_roi = map_geometry(to_metric, box(*batch_query))
+            if cached is not None:
+                plan.observe(source, batch, cached['records'], cached['rejected'], cached['info'])
+                collect(cached['records'], cached['observations'], source, cached['info'])
+                counts.update(cached['reasons'])
+                rejected.update(cached['rejected'])
+                provenance.append(cached['info'])
+                evaluate_batch(batch, before)
+                continue
+            selected_source = batch_source(source, batch, tiles)
+            if source['format'] == 'LAZ':
+                audit = tile_audit(tiles, batch, {f['id']: plan.selection_reasons[f['id'], source['url']] for f in batch})
+                source.setdefault('selected_tiles', []).extend(audit)
+                progress(f"LAZ incremental batch: {len(audit)}/{len(source['tiles'])} tiles for {len(batch)} buildings")
+                for entry in audit:
+                    progress(f"Selected LAZ tile {entry['url']}: {len(entry['footprints'])} footprints, "
+                             f"{len(entry['ground_halos'])} ground halos; " + '; '.join(entry['reasons']))
+            try:
+                with prefetch_source(fetch, selected_source, [batch_query], workers=download_workers) as source_fetch:
+                    points, info = read_source(source_fetch, selected_source, batch_query)
+            except BudgetExceeded as exc:
+                split = split_batch(batch, geometries)
+                # Spatial subdivision can resolve point/node limits, but
+                # cannot manufacture more total download budget.
+                if split and 'byte' not in str(exc).lower() and 'response' not in str(exc).lower():
+                    jobs[0:0] = [batch_job(child) for child in split]
                     continue
-                except (ValueError, OSError, RuntimeError, KeyError, TypeError, IndexError, AttributeError) as exc:
-                    failures.append({'source': source['name'], 'reason': str(exc), 'buildings': len(batch)})
-                    continue
-                if len(points):
-                    points[:, 0], points[:, 1] = to_metric(points[:, 0].copy(), points[:, 1].copy())
-                evidence = {}
-                records, reasons, rejected_features = measure_features(batch, points, to_metric, to_geographic,
-                    request["min_width_mm"] / request["xy_scale"],
-                    max(0.25, request["min_step_mm"] / request["z_scale"]), batch_roi,
-                    roof_planes=request.get('roof_planes', True), parts_by_parent=parts_by_parent,
-                    source_parts_by_parent=source_parts_by_parent,
-                    observations_out=evidence, neighbors_by_id=neighbors_by_id,
-                    prefer_lidar=request.get('prefer_lidar', True))
-                plan.observe(source, batch, records, rejected_features, info)
-                collect(records, evidence, source, info)
-                counts.update(reasons)
-                rejected.update(rejected_features)
-                info = {**info, "name": source["name"], "accepted": len(records), 'bbox': list(batch_query)}
-                provenance.append(info)
-                temporary = checkpoint.with_suffix('.partial')
-                temporary.write_text(json.dumps({'records': records, 'reasons': reasons,
-                    'rejected': rejected_features, 'info': info, 'observations':evidence}, allow_nan=False), encoding='utf-8')
-                temporary.replace(checkpoint)
-                del points
+                evaluate_batch(batch, before)
+                failures.append({'source': source['name'], 'reason': str(exc), 'buildings': len(batch)})
+                if 'byte' in str(exc).lower():
+                    break
+                continue
+            except (ValueError, OSError, RuntimeError, KeyError, TypeError, IndexError, AttributeError) as exc:
+                evaluate_batch(batch, before)
+                failures.append({'source': source['name'], 'reason': str(exc), 'buildings': len(batch)})
+                continue
+            if len(points):
+                points[:, 0], points[:, 1] = to_metric(points[:, 0].copy(), points[:, 1].copy())
+            evidence = {}
+            records, reasons, rejected_features = measure_features(batch, points, to_metric, to_geographic,
+                request["min_width_mm"] / request["xy_scale"],
+                max(0.25, request["min_step_mm"] / request["z_scale"]), batch_roi,
+                roof_planes=request.get('roof_planes', True), parts_by_parent=parts_by_parent,
+                source_parts_by_parent=source_parts_by_parent,
+                observations_out=evidence, neighbors_by_id=neighbors_by_id,
+                prefer_lidar=request.get('prefer_lidar', True))
+            plan.observe(source, batch, records, rejected_features, info)
+            collect(records, evidence, source, info)
+            evaluate_batch(batch, before)
+            counts.update(reasons)
+            rejected.update(rejected_features)
+            info = {**info, "name": source["name"], "accepted": len(records), 'bbox': list(batch_query)}
+            provenance.append(info)
+            temporary = checkpoint.with_suffix('.partial')
+            temporary.write_text(json.dumps({'records': records, 'reasons': reasons,
+                'rejected': rejected_features, 'info': info, 'observations':evidence}, allow_nan=False), encoding='utf-8')
+            temporary.replace(checkpoint)
+            del points
+        source['acquired_buildings'] = len(attempted)
     for source in sources:
         if not source.get('acquired_buildings'):
             progress(f"Skipped {source['format']} {source['name']}: no unresolved buildings requiring this source")

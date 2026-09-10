@@ -98,8 +98,8 @@ class IdentityTests(unittest.TestCase):
         self.assertIn('no suitable EPT coverage', reason)
 
     def test_failed_and_empty_ept_delivery_allow_same_survey_fallback(self):
-        for rejection, info in (('source_read_failed', None), ('insufficient_coverage', {'points': 100}),
-                                ('insufficient_ground', {'points': 0})):
+        for rejection, info in (('source_read_failed', None), ('insufficient_coverage', {'points': 100, 'ept_delivery_gap': True}),
+                                ('insufficient_ground', {'points': 0, 'nodes': 0})):
             ept, laz = source('ept', 'EPT'), source('laz', 'LAZ')
             plan, features = self.plan(ept, laz)
             plan.next(set())
@@ -107,6 +107,21 @@ class IdentityTests(unittest.TestCase):
             selected, _, reason = plan.next(set())
             self.assertIs(selected, laz)
             self.assertIn('delivery gap', reason)
+
+    def test_generic_roof_coverage_rejection_does_not_establish_delivery_gap(self):
+        ept, laz = source('ept', 'EPT'), source('laz', 'LAZ')
+        plan, features = self.plan(ept, laz)
+        plan.next(set())
+        plan.observe(ept, features, {}, {f['id']: 'insufficient_coverage' for f in features}, {'points': 100})
+        self.assertIsNone(plan.next(set()))
+
+    def test_zero_filtered_returns_are_not_proof_of_an_ept_delivery_gap(self):
+        for info in ({'points': 0}, {'points': 0, 'nodes': 5}):
+            ept, laz = source('ept', 'EPT'), source('laz', 'LAZ')
+            plan, features = self.plan(ept, laz)
+            plan.next(set())
+            plan.observe(ept, features, {}, {f['id']: 'insufficient_ground' for f in features}, info)
+            self.assertIsNone(plan.next(set()))
 
     def test_unknown_identity_preserves_deterministic_gap_and_upgrade_fallbacks(self):
         ept, laz = source('ept', 'EPT'), source('laz', 'LAZ')

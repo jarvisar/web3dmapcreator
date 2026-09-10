@@ -456,15 +456,16 @@ roofs, including a Chicago part inflated from 177.4 to 250.4 m. A shaped roof wi
 `roof_height` gets an ordinary pitch recorded as `roof_height_source =
 default`.
 
-**Trees are simple solid cones.** They have broad, flat bases seated on the
-actual terrain, land surface, or surface road, with the usual surface embed.
-Under **Ground Surfaces > Trees**, **Minimum Tree Width** (1.2 mm) and
-**Minimum Tree Height** (2.0 mm) set model-space size floors intended for a
-0.4 mm nozzle and 0.2 mm layers. **Size Variation** retains natural variation
-without shrinking below either minimum. Width is measured across the cone's
-base flats. The narrow pointed tip can lose its final layers when sliced;
-the wider body remains. Regenerate the model to apply these settings.
-Existing saved height settings are retained.
+**Trees have compact, three-tier foliage and no trunk.** Their broad bases embed
+directly in terrain, even beneath raised land surfaces or roads. Each tree is one
+closed low-poly solid; the tiers have sloped undersides for FDM printing.
+Under **Ground Surfaces > Trees**, **Minimum Tree Width** (1.1 mm across flats)
+and **Minimum Tree Height** (1.6 mm) apply independently after **Size Variation**
+(18%). **Tree Spacing** defaults to 26 m for forests. All tree sources share a
+0.2 mm gap between finished crowns, with mapped trees placed first, so overlapping
+forest polygons cannot stack trees on top of one another. Pointed tips and small
+tier notches may soften when sliced at 0.2 mm layers. Regenerate to apply changes;
+saved scenes retain explicitly stored settings, which can be reset in this panel.
 
 **Regional source polygons are rejected.** Overture's bbox filter returns every
 feature that *intersects* the selection, including continental ones — a single

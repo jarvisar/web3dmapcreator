@@ -864,8 +864,6 @@ class JARVIZAR_OT_generate_model(Operator):
                         progress_callback=lambda f: progress(0.55 + f * 0.15),
                         merge=settings.merge_buildings_and_trees,
                         reuse_mesh=False,
-                        ground_objects=(list(hierarchy["land_surfaces"].objects)
-                                        + list(hierarchy["surface_roads"].objects)),
                     )
                 )
             progress(0.70, "Loading LiDAR measurements")

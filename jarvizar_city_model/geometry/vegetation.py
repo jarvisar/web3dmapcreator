@@ -22,8 +22,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import bpy
-from mathutils import Vector
-from mathutils.bvhtree import BVHTree
 
 from ..blender.mesh_utils import (
     MeshBuilder,
@@ -41,6 +39,7 @@ from ..data.land import (
     tree_point_coordinates,
 )
 from .planar import point_in_polygon, ring_bounds, signed_area
+from .tree_geometry import TreeClearance
 
 
 @dataclass
@@ -52,12 +51,13 @@ class TreeSettings:
     # Defaults target the normal 0.4 mm nozzle / 0.2 mm layer profile.
     # Widths are the narrow dimension across polygon flats. These floors
     # apply to the finished tree, including its random size variation.
-    minimum_height_mm: float = 2.0
-    minimum_canopy_diameter_mm: float = 1.2
+    minimum_height_mm: float = 1.6
+    minimum_canopy_diameter_mm: float = 1.1
     embed_mm: float = 0.15
-    size_variation: float = 0.28
-    scatter_spacing_m: float = 22.0
-    scatter_jitter: float = 0.42
+    size_variation: float = 0.18
+    scatter_spacing_m: float = 26.0
+    scatter_jitter: float = 0.30
+    canopy_clearance_mm: float = 0.2
     maximum_trees: int = 24000
     include_mapped_points: bool = True
     include_forest_scatter: bool = True
@@ -100,7 +100,7 @@ def scatter_points_in_polygon(
     avoids the clumps and bald patches that random placement produces, without
     the cost of a true Poisson-disc pass.
     """
-    if not rings or spacing <= 0.0:
+    if not rings or spacing <= 0.0 or limit <= 0:
         return []
     min_x, min_y, max_x, max_y = ring_bounds(rings[0])
     if max_x - min_x <= 0.0 or max_y - min_y <= 0.0:
@@ -128,7 +128,11 @@ def scatter_points_in_polygon(
 
 
 def _tree_dimensions(transform, settings: TreeSettings) -> Tuple[float, float, float]:
-    """Return cone radius, visible height, and exaggeration."""
+    """Return crown radius, visible height, and largest dimension exaggeration.
+
+    Enforce the print floors independently: a wider printable crown should
+    not also stretch the tree above the surrounding buildings.
+    """
     true_height_mm = transform.vertical_meters_to_model_mm(settings.height_m)
     true_diameter_mm = settings.canopy_diameter_m * transform.scale_x_mm_per_m
     flat_factor = math.cos(math.pi / max(3, settings.sides))
@@ -137,8 +141,8 @@ def _tree_dimensions(transform, settings: TreeSettings) -> Tuple[float, float, f
         1.0, settings.minimum_canopy_diameter_mm / max(true_diameter_mm * flat_factor, 1.0e-9)
     )
     exaggeration = max(height_scale, diameter_scale)
-    height_mm = true_height_mm * exaggeration
-    diameter_mm = true_diameter_mm * exaggeration
+    height_mm = true_height_mm * height_scale
+    diameter_mm = true_diameter_mm * diameter_scale
     return diameter_mm * 0.5, height_mm, exaggeration
 
 
@@ -148,30 +152,6 @@ def _tree_scale(size, radius, height, settings):
     minimum = max(settings.minimum_height_mm / height,
                   settings.minimum_canopy_diameter_mm / (2*radius*flat_factor))
     return max(minimum, 1.0 + (size-0.5)*2.0*settings.size_variation)
-
-
-def _ground_sampler(heightfield, ground_objects):
-    """Stand on the actual generated slabs/roads, including their cutouts."""
-    surfaces = []
-    for obj in ground_objects:
-        if obj.type != 'MESH' or not obj.data.polygons:
-            continue
-        corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
-        bounds = (min(p.x for p in corners), min(p.y for p in corners),
-                  max(p.x for p in corners), max(p.y for p in corners), max(p.z for p in corners))
-        tree = BVHTree.FromPolygons([obj.matrix_world @ v.co for v in obj.data.vertices],
-                                   [tuple(p.vertices) for p in obj.data.polygons])
-        surfaces.append((bounds, tree))
-
-    def height(x, y):
-        z = heightfield.height_mm(x, y)
-        for (x0, y0, x1, y1, top), tree in surfaces:
-            if x0 <= x <= x1 and y0 <= y <= y1 and top >= z:
-                hit = tree.ray_cast(Vector((x, y, top+1)), Vector((0, 0, -1)))[0]
-                if hit is not None:
-                    z = max(z, hit.z)
-        return z
-    return height
 
 
 def generate_trees(
@@ -185,7 +165,6 @@ def generate_trees(
     bounds: Tuple[float, float, float, float] | None = None,
     progress_callback=None,
     merge: bool = False,
-    ground_objects: Iterable = (),
     reuse_mesh: bool = True,
 ) -> Dict[str, Any]:
     """Place mapped trees and scattered forest trees.
@@ -203,10 +182,30 @@ def generate_trees(
     # A tree standing in a cut-out river would float at the level of a bed
     # that is no longer printed, so the water is simply not planted.
     skipped_over_water = 0
+    skipped_crowded = 0
+    maximum_factor = max(_tree_scale(0, canopy_radius, tree_height, settings),
+                         _tree_scale(1, canopy_radius, tree_height, settings))
+    clearance = TreeClearance(canopy_radius * maximum_factor, settings.canopy_clearance_mm)
+
+    def place(x, y, size):
+        nonlocal skipped_over_water, skipped_crowded
+        if len(placements) >= settings.maximum_trees:
+            return False
+        if heightfield.over_open_water(x, y):
+            skipped_over_water += 1
+            return False
+        radius = canopy_radius * _tree_scale(size, canopy_radius, tree_height, settings)
+        if not clearance.accept(x, y, radius):
+            skipped_crowded += 1
+            return False
+        placements.append((x, y, size))
+        return True
 
     land_features = list(land_features)
     if settings.include_mapped_points:
         for feature in land_features:
+            if len(placements) >= settings.maximum_trees:
+                break
             if not is_tree_point(feature):
                 continue
             coordinates = tree_point_coordinates(feature)
@@ -218,17 +217,14 @@ def generate_trees(
                 and model_bounds.min_y_mm <= y <= model_bounds.max_y_mm
             ):
                 continue
-            if heightfield.over_open_water(x, y):
-                skipped_over_water += 1
-                continue
             _a, _b, size = _jitter(_stable_seed(feature_id(feature)))
-            placements.append((x, y, size))
+            place(x, y, size)
 
     mapped_count = len(placements)
-    scattered_count = 0
 
     if settings.include_forest_scatter:
-        spacing_mm = settings.scatter_spacing_m * transform.scale_x_mm_per_m
+        spacing_mm = max(settings.scatter_spacing_m * transform.scale_x_mm_per_m,
+                         2 * canopy_radius + settings.canopy_clearance_mm)
         sources = [("land", land_features)]
         if settings.include_land_cover:
             sources.append(("land_cover", list(land_cover_features)))
@@ -257,15 +253,9 @@ def generate_trees(
                     found = scatter_points_in_polygon(
                         rings, spacing_mm, settings.scatter_jitter, seed, remaining
                     )
-                    kept = [
-                        item
-                        for item in found
-                        if not heightfield.over_open_water(item[0], item[1])
-                    ]
-                    skipped_over_water += len(found) - len(kept)
-                    placements.extend(kept)
-                    scattered_count += len(kept)
-                    remaining -= len(kept)
+                    for item in found:
+                        place(*item)
+                    remaining = settings.maximum_trees - len(placements)
                     if remaining <= 0:
                         break
 
@@ -273,7 +263,8 @@ def generate_trees(
         placements = placements[: settings.maximum_trees]
 
     total = max(1, len(placements))
-    ground_height = _ground_sampler(heightfield, ground_objects) if placements else heightfield.height_mm
+    # Trees grow directly from terrain, even beneath raised land/road slabs.
+    ground_height = heightfield.height_mm
     shape_options = dict(sides=settings.sides, embed_mm=settings.embed_mm)
     if merge:
         # Every tree is the one solid scaled, turned about Z, and moved onto
@@ -306,7 +297,7 @@ def generate_trees(
             obj["feature_type"] = "trees"
             obj["source"] = "Overture base/land tree points and forest scatter"
             obj["tree_size_exaggeration"] = round(exaggeration, 3)
-    else:
+    elif placements:
         mesh = tree_mesh_datablock(
             "JCM_Tree",
             canopy_radius,
@@ -338,4 +329,6 @@ def generate_trees(
         "tree_minimum_canopy_width_mm": settings.minimum_canopy_diameter_mm,
         "tree_capped": len(placements) >= settings.maximum_trees,
         "trees_skipped_over_water": skipped_over_water,
+        "trees_skipped_crowded": skipped_crowded,
+        "tree_canopy_clearance_mm": settings.canopy_clearance_mm,
     }
