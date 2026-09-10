@@ -18,14 +18,19 @@ from pyproj import CRS, Transformer
 try:
     from .lidar_ept import BudgetExceeded
     from .lidar_selection import gps_capture_years
+    from .lidar_normalize import vertical_factor, classifications, source_metadata, header_metadata
 except ImportError:
     from lidar_ept import BudgetExceeded
     from lidar_selection import gps_capture_years
+    from lidar_normalize import vertical_factor, classifications, source_metadata, header_metadata
 
 
-def coordinate_system(header):
+def coordinate_system(header, metadata=None):
     """Respect independent XY/Z units, including legacy GeoTIFF vertical keys."""
+    metadata = metadata or {}
     crs = header.parse_crs()
+    if crs is None and metadata.get('horizontal_crs'):
+        crs = CRS.from_user_input(metadata['horizontal_crs'])
     if crs is None or not (crs.is_projected or crs.is_geographic or crs.is_compound):
         raise ValueError('LAS header lacks a supported horizontal CRS')
     vertical = [c for c in crs.sub_crs_list if c.is_vertical] if crs.is_compound else []
@@ -41,12 +46,14 @@ def coordinate_system(header):
         vertical_crs = CRS.from_epsg(keys[4096])
         if vertical_crs.is_vertical:
             factor = vertical_crs.axis_info[0].unit_conversion_factor
+    if factor is None:
+        factor = vertical_factor(metadata)
     if factor is None or not math.isfinite(factor) or factor <= 0:
         raise ValueError('Unknown LAS vertical units; a vertical CRS or unit key is required')
     return crs.to_2d(), factor
 
 
-def validate_download_prefix(stream, limit):
+def validate_download_prefix(stream, limit, metadata=None):
     """Reject unusable CRS before streaming point records, without another GET.
 
     EVLR-only CRS must wait for the full file. Unusually large VLR regions
@@ -64,7 +71,7 @@ def validate_download_prefix(stream, limit):
     try:
         header = laspy.LasHeader.read_from(io.BytesIO(prefix))
         try:
-            coordinate_system(header)
+            coordinate_system(header, metadata)
         except ValueError:
             if not header.number_of_evlrs:
                 raise
@@ -120,9 +127,9 @@ def header_bounds(fetch, url):
             'horizontal_crs': crs.to_string(), 'z_to_metres': factor}
 
 
-def normalized_chunk(points, header, bbox, query, to_lonlat, factor):
+def normalized_chunk(points, header, bbox, query, to_lonlat, factor, metadata=None):
     x, y, z = np.asarray(points.x), np.asarray(points.y), np.asarray(points.z)
-    cls = np.asarray(points.classification)
+    cls = classifications(points, header, metadata)
     mask = ((x >= query[0]) & (x <= query[2]) & (y >= query[1]) & (y <= query[3])
             & np.isin(cls, [1, 2, 6]) & (np.asarray(points.withheld) == 0)
             & np.isfinite(x) & np.isfinite(y) & np.isfinite(z))
@@ -148,20 +155,29 @@ def read_laz(fetch, source, bbox, max_points=8_000_000, chunk_size=250_000):
     pieces, retained, details = [], 0, []
     for tile in tiles:
         try:
-            path = fetch.download(tile['url'], revision=tile.get('updated') or '')
+            if tile.get('archive_url') and hasattr(fetch, 'cache'):
+                try:
+                    from .lidar_archives import fetch_tile
+                except ImportError:
+                    from lidar_archives import fetch_tile
+                path = fetch_tile(fetch, {**source, **tile})
+            else:
+                path = fetch.download(tile['url'], revision=tile.get('updated') or '')
             fetch.progress(f"Decoding and cropping LAZ tile: {tile['url'].rsplit('/', 1)[-1]}")
             with laspy.open(path) as reader:
-                crs, factor = coordinate_system(reader.header)
+                metadata = source_metadata(source, tile)
+                crs, factor = coordinate_system(reader.header, metadata)
                 query = Transformer.from_crs(4326, crs, always_xy=True).transform_bounds(*bbox, densify_pts=21)
                 to_lonlat = Transformer.from_crs(crs, 4326, always_xy=True)
                 for chunk in reader.chunk_iterator(chunk_size):
-                    piece = normalized_chunk(chunk, reader.header, bbox, query, to_lonlat, factor)
+                    piece = normalized_chunk(chunk, reader.header, bbox, query, to_lonlat, factor, metadata)
                     retained += len(piece)
                     if retained > max_points:
                         raise BudgetExceeded('Cropped LiDAR point budget reached; subdivide group')
                     if len(piece):
                         pieces.append(piece)
-                details.append({**tile, 'horizontal_crs': crs.to_string(), 'z_to_metres': factor})
+                details.append({**tile, **header_metadata(reader.header),
+                                'horizontal_crs': crs.to_string(), 'z_to_metres': factor})
         except (LaspyException, LazrsError) as exc:
             raise ValueError(f"Unreadable LAZ tile {tile['url']}; use Refresh to retry: {exc}") from exc
     points = np.concatenate(pieces) if pieces else np.empty((0, 7))

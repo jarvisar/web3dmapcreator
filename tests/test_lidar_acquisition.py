@@ -103,7 +103,7 @@ class AcquisitionTests(unittest.TestCase):
                 return page
             raise error
         fetch.json.side_effect = read
-        sources, failures = acquisition.discover_sources(fetch, self.bbox)
+        sources, failures = acquisition.discover_sources(fetch, self.bbox, discovery={'providers': ['usgs']})
         self.assertEqual(len(sources), 1)
         self.assertEqual(len(sources[0]['tiles']), 1)
         self.assertEqual(failures[0]['source'], 'TNMAccess')
@@ -118,7 +118,7 @@ class AcquisitionTests(unittest.TestCase):
                 if is_ept == (broken == 'EPT'):
                     raise OSError('offline')
                 return catalog if is_ept else {'items': [self.item()], 'total': 1}
-            sources, failures = acquisition.discover_sources(Mock(json=Mock(side_effect=read)), self.bbox)
+            sources, failures = acquisition.discover_sources(Mock(json=Mock(side_effect=read)), self.bbox, discovery={'providers': ['usgs']})
             self.assertEqual(len(sources), 1)
             self.assertNotEqual(sources[0]['format'], broken)
             self.assertEqual(len(failures), 1)
@@ -265,7 +265,7 @@ class AcquisitionTests(unittest.TestCase):
             bundle.data_path('building_part').write_text('{"features": []}')
             cloud = Path(temp)/'test.laz'
             self.cloud().write(cloud)
-            request = request_signature(bundle, .07, .077)
+            request = request_signature(bundle, .07, .077, providers=['usgs'])
             def catalog(url, **kwargs):
                 if url == adapter.lidar_ept.CATALOG_URL:
                     return {'features': []}

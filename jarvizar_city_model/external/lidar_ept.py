@@ -25,9 +25,11 @@ from pyproj import CRS, Transformer
 try:
     from .lidar_selection import gps_capture_years
     from .lidar_transfer import BudgetExceeded, stream_tile
+    from .lidar_normalize import vertical_factor as declared_vertical_factor, classifications
 except ImportError:
     from lidar_selection import gps_capture_years
     from lidar_transfer import BudgetExceeded, stream_tile
+    from lidar_normalize import vertical_factor as declared_vertical_factor, classifications
 
 CATALOG_URL = "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson"
 
@@ -44,31 +46,40 @@ class Fetcher:
         self.progress = lambda _: None
         self._download_state = threading.Lock()
         self._download_keys = {}
+        self._download_failures = {}
         self._download_budget = threading.Lock()
 
-    def get(self, url, limit=32 * 1024 * 1024, fresh=False):
+    def get(self, url, limit=32 * 1024 * 1024, fresh=False, body=None,
+            ttl=None, timeout=45, attempts=3, content_type='application/json'):
         if urlparse(url).scheme != "https":
             raise ValueError("LiDAR downloads require HTTPS")
-        path = self.cache / hashlib.sha256(url.encode()).hexdigest()
+        encoded = (body.encode() if isinstance(body, str) else json.dumps(body, sort_keys=True).encode()) if body is not None else None
+        key = url + ('#POST=' + encoded.decode() +
+                     ('#Content-Type=' + content_type if content_type != 'application/json' else '')
+                     if encoded is not None else '')
+        path = self.cache / hashlib.sha256(key.encode()).hexdigest()
         # Neighboring building batches share additive EPT ancestors. Count
         # each resource once per preparation, including with Refresh enabled.
-        repeated = url in self.seen
+        repeated = key in self.seen
         remaining = min(limit, self.max_bytes - self.bytes) if self.max_bytes is not None and not repeated else limit
         if remaining <= 0:
             raise BudgetExceeded("LiDAR byte budget reached; select a smaller area")
         # Immutable tile cache can be explicitly refreshed with the scene option.
-        if path.is_file() and (not (self.refresh or fresh) or repeated):
+        expired = ttl is not None and path.is_file() and time.time() - path.stat().st_mtime >= ttl
+        if path.is_file() and (not (self.refresh or fresh or expired) or repeated):
             if path.stat().st_size > remaining:
                 raise BudgetExceeded("LiDAR byte budget reached; select a smaller area")
             data = path.read_bytes()
         else:
-            for attempt in range(3):
+            for attempt in range(attempts):
                 try:
-                    with urllib.request.urlopen(url, timeout=45) as response:
+                    request = urllib.request.Request(url, data=encoded,
+                        headers={'Content-Type': content_type}) if encoded is not None else url
+                    with urllib.request.urlopen(request, timeout=timeout) as response:
                         data = response.read(remaining + 1)
                     break
                 except OSError:
-                    if attempt == 2:
+                    if attempt == attempts - 1:
                         raise
                     time.sleep(attempt + 1)
             self.requests += 1
@@ -79,11 +90,15 @@ class Fetcher:
             temporary.replace(path)
         if not repeated:
             self.bytes += len(data)
-        self.seen.add(url)
+        self.seen.add(key)
         return data
 
     def json(self, url, fresh=False, limit=32 * 1024 * 1024):
         return json.loads(self.get(url, fresh=fresh, limit=limit))
+
+    def json_request(self, url, body):
+        """STAC read-only POST Item Search, sharing bounded caching/accounting."""
+        return json.loads(self.get(url, fresh=True, body=body))
 
     def download(self, url, limit=4 * 1024 ** 3, revision='', cancel=None, validate_prefix=None):
         """Allow independent tiles in parallel; coalesce shared cache writes.
@@ -96,7 +111,16 @@ class Fetcher:
         with self._download_state:
             lock = self._download_keys.setdefault(key, threading.Lock())
         with lock, (self._download_budget if self.max_bytes is not None else nullcontext()):
-            return self._download(url, limit, revision, cancel, validate_prefix)
+            # A failed shared delivery (e.g. one ZIP used by several members)
+            # already exhausted its transport retries. Do not repeat them for
+            # every building batch. A new preparation/Refresh can retry it.
+            if key in self._download_failures:
+                raise OSError('Earlier download failed in this preparation: ' + self._download_failures[key])
+            try:
+                return self._download(url, limit, revision, cancel, validate_prefix)
+            except OSError as exc:
+                self._download_failures[key] = str(exc)
+                raise
 
     def _download(self, url, limit, revision, cancel, validate_prefix):
         """Stream a staged tile to disk; never allocate its compressed contents."""
@@ -200,7 +224,7 @@ def collect_nodes(fetch, base, metadata, query, max_nodes=4096, max_points=40_00
     return sorted(nodes, key=lambda key: tuple(map(int, key.split("-"))))
 
 
-def ept_coordinate_system(meta, url):
+def ept_coordinate_system(meta, url, source=None):
     """Validate delivery and units identically for discovery and point reads.
 
     The AWS USGS mirror normalizes XY to EPSG:3857 and Z to metres. For a
@@ -211,29 +235,37 @@ def ept_coordinate_system(meta, url):
     if meta.get("dataType") != "laszip" or meta.get("hierarchyType") != "json":
         raise ValueError("This first LiDAR reader supports laszip/JSON EPT only")
     srs = meta.get("srs", {})
-    horizontal = CRS.from_user_input(srs.get("wkt") or f"{srs['authority']}:{srs['horizontal']}")
+    declared = srs.get('wkt') or (f"{srs.get('authority', 'EPSG')}:{srs['horizontal']}" if srs.get('horizontal') else None)
+    declared = declared or (source or {}).get('horizontal_crs')
+    if not declared:
+        raise ValueError('EPT lacks a horizontal CRS in source or catalog metadata')
+    horizontal = CRS.from_user_input(declared)
     xy_crs = horizontal.to_2d()
     vertical_factor = None
     if srs.get("vertical"):
-        vertical_factor = CRS.from_user_input(f"{srs['authority']}:{srs['vertical']}").axis_info[0].unit_conversion_factor
+        vertical_factor = CRS.from_user_input(f"{srs.get('authority', 'EPSG')}:{srs['vertical']}").axis_info[0].unit_conversion_factor
     elif horizontal.is_compound:
         for crs in horizontal.sub_crs_list:
             if crs.is_vertical:
                 vertical_factor = crs.axis_info[0].unit_conversion_factor
+    elif len(horizontal.axis_info) == 3:
+        vertical_factor = horizontal.axis_info[2].unit_conversion_factor
+    if vertical_factor is None:
+        vertical_factor = declared_vertical_factor({**(source or {}), **meta})
     parsed = urlparse(url)
     known_mirror = (parsed.netloc in ("s3-us-west-2.amazonaws.com", "s3.us-west-2.amazonaws.com")
                     and parsed.path.startswith("/usgs-lidar-public/")) or parsed.netloc == "usgs-lidar-public.s3.amazonaws.com"
     if vertical_factor is None:
         if not known_mirror or xy_crs.to_epsg() != 3857:
-            raise ValueError("Unknown LiDAR vertical units; use a USGS EPT source with known units")
+            raise ValueError("Unknown LiDAR vertical units; supply documented units or a vertical CRS")
         vertical_factor = 1.0
     return xy_crs, vertical_factor, known_mirror
 
 
-def read_ept(fetch, url, bbox, max_points=8_000_000, resolution_m=0.75):
+def read_ept(fetch, url, bbox, max_points=8_000_000, resolution_m=0.75, source=None):
     """Return cropped lon/lat/Z/class/single-return arrays and source metadata."""
     meta = fetch.json(url)
-    xy_crs, vertical_factor, known_mirror = ept_coordinate_system(meta, url)
+    xy_crs, vertical_factor, known_mirror = ept_coordinate_system(meta, url, source)
     to_cloud = Transformer.from_crs(4326, xy_crs, always_xy=True)
     to_lonlat = Transformer.from_crs(xy_crs, 4326, always_xy=True)
     query = to_cloud.transform_bounds(*bbox, densify_pts=21)
@@ -260,7 +292,7 @@ def read_ept(fetch, url, bbox, max_points=8_000_000, resolution_m=0.75):
         except (LaspyException, LazrsError) as exc:
             raise ValueError(f'Unreadable LiDAR node {key}; use Refresh to retry its cached download: {exc}') from exc
         x, y, z = np.asarray(points.x), np.asarray(points.y), np.asarray(points.z)
-        cls = np.asarray(points.classification)
+        cls = classifications(points, points.header, {**(source or {}), **meta})
         mask = ((x >= query[0]) & (x <= query[2]) & (y >= query[1]) & (y <= query[3])
                 & np.isin(cls, [1, 2, 6]) & (np.asarray(points.withheld) == 0)
                 & np.isfinite(x) & np.isfinite(y) & np.isfinite(z))

@@ -29,6 +29,36 @@ PROVENANCE_BUDGET = 8 * 1024 ** 2
 ERRORS = (ValueError, OSError, RuntimeError, KeyError, TypeError, IndexError, AttributeError, struct.error)
 
 
+def enrich_asset_provenance(sources, progress):
+    """Metadata-only aliases, restricted to the matched original tiles' area.
+
+    Exact delivery URLs also catch assets repeated in STAC/aggregator catalogs.
+    A bare grid filename, similar survey title or overlapping extent is never
+    enough. No staged point headers are fetched to establish these aliases.
+    """
+    assets = {}
+    for source in sources:
+        for tile in source.get('tiles', [source]):
+            geom = box(*tile['bbox']).intersection(source['coverage']) if tile.get('bbox') else source['coverage']
+            keys = {tile['url'], tile.get('original_asset_id'), tile.get('original_asset_url')} - {None, ''}
+            for key in keys:
+                assets.setdefault(key, []).append((source, geom))
+    regions = {}
+    for members in assets.values():
+        for i, (a, ga) in enumerate(members):
+            for b, gb in members[i + 1:]:
+                if a['url'] == b['url']:
+                    continue
+                region = ga.intersection(gb)
+                if not region.is_empty:
+                    for left, right in ((a, b), (b, a)):
+                        regions.setdefault((left['url'], right['url']), []).append(region)
+    lookup = {s['url']: s for s in sources}
+    for (a, b), polygons in regions.items():
+        lookup[a].setdefault('provenance_coverage', {})[b] = unary_union(polygons)
+        progress(f"Shared original point-cloud tiles: {lookup[a]['name']} / {lookup[b]['name']}; duplicate suppression applies inside matched coverage")
+
+
 def header_signature(fetch, tile, allow_network=False):
     """Read only the fixed LAS header, at most 375 bytes (no VLR/point reads)."""
     url, revision = tile['url'], tile.get('updated') or ''

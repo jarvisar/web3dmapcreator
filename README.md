@@ -320,9 +320,9 @@ height. Explicit totals include roofs, for buildings and parts. Inverted
 intervals are reported and skipped instead of inventing a taller top.
 Missing heights are never randomized.
 
-**Optional USGS LiDAR buildings (0.15.0).** Install `requirements-lidar.txt`
+**Optional LiDAR buildings.** Install `requirements-lidar.txt`
 in the existing external downloader environment, cache buildings normally,
-then use **Buildings > USGS LiDAR Buildings > Prepare LiDAR Buildings** and
+then use **Buildings > LiDAR Buildings > Prepare LiDAR Buildings** and
 **Generate Model**. This measures heights, printable roof tiers, and supported
 shed/gable/hip roof planes inside the existing footprints. Keep **Generate
 Roof Shapes** enabled for measured slopes. **Prefer LiDAR on Conflicts** is on
@@ -345,28 +345,39 @@ batches replace the old whole-map point, area, download and time caps. Larger
 selections require more time and disk space. Preparation and generation counts
 appear in Buildings. Overlapping surveys are compared using supported roof detail,
 coverage and capture age.
-Automatic discovery compares the EPT coverage index and USGS TNMAccess
-**Lidar Point Cloud (LPC)** LAZ products for the selected bounds. EPT downloads
-automatically. After EPT preparation, meaningful remaining building gaps with
-available LAZ coverage appear in the sidebar, including area bounds, dataset
-details and known tile sizes. Choose **Download and Use LAZ Gap Tiles** to download
-them, or generate with the existing EPT coverage. Adequately covered EPT buildings
-are excluded from LAZ offers. Publication dates are not flight dates.
-Only intersecting EPT nodes or explicitly approved LAZ gap tiles are downloaded,
-with the existing small ground/boundary halo. Staged LAZ tiles are downloaded whole,
-then decoded in chunks and cropped; large tiles can take time even for a small map.
-Both sources use the same building preparation and generation pipeline.
+Automatic discovery includes USGS EPT/TNM, Open LiDAR Data / Flai COPC and
+OpenTopography's public point-cloud catalog. **STAC Catalog URLs** adds public
+STAC APIs or static catalogs. EPT and COPC stream the required bounds automatically;
+ordinary LAS/LAZ files require **Download and Use Offered Tiles**. Offers identify
+meaningful coverage gaps or substantial upgrades, with dataset metadata, reasons,
+areas and known sizes. Good streamed coverage stays unless you choose a worthwhile
+upgrade. Same-survey duplicates are reserved for actual delivery failures.
+All sources use the existing building measurement and generation pipeline.
 
-Leave **USGS EPT URL** empty for automatic comparison. An explicit EPT URL
-retains the manual survey override. **LAZ Manifest URL (advanced)** optionally
-adds a USGS `0_file_download_links.txt` list to either mode. Tile locations
-come from matching catalog bounds, never filenames. Entries absent from the
-intersecting catalog results are reported and skipped. Discovery does not download
-LAZ headers or point data.
+Leave **EPT / COPC URL** empty for discovery, or supply one streaming asset to
+override the provider set. **International LiDAR Discovery** can be disabled to
+retain only USGS plus any configured STAC catalogs. **LAZ Manifest URL** retains
+USGS catalog matching; unlocated URLs are skipped without fetching LAS headers.
+
+Keep **Missing Z Units** at **Require Metadata** unless source documentation
+establishes a fallback unit. Some Flai deliveries lack vertical units; their CRS
+alone does not establish Z units. Metre, international-foot and US-survey-foot
+fallbacks are available. Explicit header units always take precedence. Unknown
+classification conventions are skipped unless metadata supplies a semantic mapping.
+Building heights use same-survey ground subtraction; datums from different surveys
+or the terrain DEM are never mixed. Broken providers do not block map generation.
+See [international discovery and supported metadata](docs/LIDAR_DISCOVERY.md).
+
 Consistency skips now report roof coverage, ground inside footprints and outside
 roofs separately. Boundary cells count only their tested area, reducing false
 rejections without lowering the coverage or point-support requirements.
-After upgrading from 0.14.2 or earlier, or changing the source, conflict preference or
+Direct official sources now include IGN France and NRCan Canada COPC, England's
+Environment Agency, Scotland's National LiDAR programme, NRW, Bavaria and regional
+PNOA delivery in Castilla-La Mancha. Coverage is regional/project-specific;
+Flai and OpenTopography remain available to fill gaps. See the
+[coverage table and access limitations](docs/LIDAR_OFFICIAL_SOURCES.md).
+
+After upgrading to 0.17.0, or changing sources, units, conflict preference or
 detail settings, **Prepare LiDAR Buildings again**; downloaded tiles are reused.
 Existing scenes retain explicitly saved detail values; set width/step to
 0.1/0.05 mm to use the new defaults.

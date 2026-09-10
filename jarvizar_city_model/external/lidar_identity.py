@@ -1,7 +1,7 @@
 """Conservative survey identity across delivery formats (stdlib only).
 
-Use scoped dataset/project identifiers and provider project directories, never
-tile filenames, overlapping bounds, generic titles, or publication dates. Keep
+Use scoped dataset/project identifiers and verified original assets, never
+generic tile filenames, overlapping bounds, titles, or publication dates. Keep
 years and subprojects in identifiers; a parent programme is not a survey.
 """
 import re
@@ -10,6 +10,22 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 def project_key(value):
     return re.sub(r'[\s-]+', '_', str(value).strip().casefold())
+
+
+def original_asset_id(authority, name):
+    """Recognized official acquisition identifiers retained by delivery mirrors.
+
+    These schemas include a survey/lot and capture interval/year, not only a
+    reusable map-grid name. Callers must verify the publishing authority.
+    """
+    name = name.removesuffix('.copc.laz') + '.laz' if name.endswith('.copc.laz') else name
+    patterns = {
+        'ea': r'[A-Z]{2}\d{4}_P_\d+(?:_\d+)*_\d{8}_\d{8}\.laz',
+        'pnoa': r'PNOA_\d{4}_.+_\d+-\d+_ORT-CLA-(?:RGB|CIR|COL)\.laz',
+    }
+    if authority in patterns and re.fullmatch(patterns[authority], name, re.I):
+        return authority + ':' + name.casefold()
+    return None
 
 
 def usgs_project(url):
@@ -57,7 +73,7 @@ def metadata_identity(data):
     for key in ('survey_metadata', 'metadata'):
         result = merge_identities(result, metadata_identity(data.get(key)))
     authority = data.get('identity_authority') or data.get('provider')
-    if isinstance(authority, str) and authority.strip():
+    if isinstance(authority, str) and authority.strip() and not data.get('identity_is_delivery'):
         authority = project_key(authority)
         for category, aliases in (
                 ('projects', ('project_id', 'projectId', 'project_identifier')),
@@ -111,13 +127,17 @@ def same_survey(a, b, geometry=None):
                 return None
     ld, rd = set(left.get('datasets', [])), set(right.get('datasets', []))
     if ld and rd:
-        return next(iter(sorted(ld & rd)), None)
-    match = next(iter(sorted(set(left.get('projects', [])) & set(right.get('projects', [])))), None)
+        match = next(iter(sorted(ld & rd)), None)
+        if match:
+            return match
+    # Different explicit editions defeat a project-name match, but independent
+    # catalogs can still explicitly reference exactly the same original asset.
+    match = None if ld and rd else next(iter(sorted(set(left.get('projects', [])) & set(right.get('projects', [])))), None)
     if match:
         return match
     if geometry is not None:
         for source, other in ((a, b), (b, a)):
             coverage = source.get('provenance_coverage', {}).get(other['url'])
             if coverage is not None and coverage.covers(geometry):
-                return 'verified original EPT input metadata'
+                return 'verified original point-cloud asset/input metadata'
     return None

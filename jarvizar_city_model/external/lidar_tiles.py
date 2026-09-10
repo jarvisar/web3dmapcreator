@@ -29,7 +29,7 @@ def building_tile_plan(source, features, geometries, to_geographic, selection):
 
 def batch_source(source, features, tile_plan):
     """The reader and prefetcher share this exact allowlist, including split jobs."""
-    if source['format'] != 'LAZ':
+    if source['format'] not in ('LAZ', 'LAS', 'COPC'):
         return source
     identifiers = {feature['id'] for feature in features}
     return {**source, 'tiles': [entry['tile'] for entry in tile_plan.values()

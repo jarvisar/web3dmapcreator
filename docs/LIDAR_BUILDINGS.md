@@ -123,40 +123,18 @@ merged/unmerged solids, winding, roof heights and courtyard voids and can render
 identical flat-shaded comparisons. A closed-mesh audit is not a slicer or physical
 print test.
 
-## Optional LAZ gap downloads (0.15.16)
+## International discovery and optional tile downloads (0.17.0)
 
-**Prepare LiDAR Buildings** automatically acquires EPT and publishes its usable
-measurements. Standalone LAZ files are never downloaded by that action, including
-Refresh and background/scripted preparation. EPT's own compressed nodes continue
-to download normally.
-
-After EPT attempts finish, remaining meaningful building coverage/support gaps
-are compared with available LAZ catalog coverage. The sidebar shows potential
-improvement areas as W/S/E/N bounds, building counts, gap reasons, dataset URLs,
-known acquisition/resolution information, tile counts and reported sizes.
-Choose **Download and Use LAZ Gap Tiles** to acquire that reviewed set, or generate
-immediately using EPT and source-building fallbacks. Recovery is not guaranteed.
-
-Consent is scoped to the request, datasets, buildings and tile URLs; it is not
-a persistent enable-LAZ setting. Changed settings reject stale consent. Changed
-datasets or additional tiles produce a new offer. The consent action reuses EPT
-checkpoints, preserves ranking among eligible LAZ sources, and uses the existing
-incremental footprint/ground-halo acquisition and measurement pipeline.
-Successful EPT buildings never enter LAZ batches. Reconstruction/height conflicts
-and better metadata alone do not count as gaps. Same-survey redundancy rules
-remain in force.
-
-Discovery reads catalog, survey and EPT metadata only. Manifest URL lists now
-match authoritative catalog bounds; entries without intersecting catalog bounds
-are reported and skipped. Survey provenance can inspect already cached LAZ
-headers but never downloads remote headers automatically. This replaces the
-automatic header reads and material-upgrade acquisition described in older
-release sections below.
-
-Public `fallback_policy=4` requires Prepare again while retaining otherwise
-matching per-survey checkpoints. Scripts must first prepare, review `laz_offers`
-in the result, and explicitly pass its `laz_offer_token` as `laz_approval` (or
-`--laz-approval` to the worker) to request those downloads.
+See [LiDAR discovery architecture and source metadata](LIDAR_DISCOVERY.md) for the
+current EPT/COPC/LAS/LAZ providers, normalization, selection and consent behavior.
+This supersedes the USGS-only acquisition and gap-only offers described in older
+release notes below. EPT/COPC stream automatically; ordinary LAS/LAZ require
+request-bound consent for gaps or substantial metadata-backed upgrades. Good
+streamed coverage is retained by default. Acquisition version 4 / fallback policy
+5 require Prepare again; existing point-download caches remain reusable.
+See [official providers, coverage limits and live verification](LIDAR_OFFICIAL_SOURCES.md)
+for the direct national/regional additions. Flai, OpenTopography and USGS remain
+part of discovery; official sources do not replace their coverage.
 
 ## Detailed measured roof surfaces (0.15.15)
 

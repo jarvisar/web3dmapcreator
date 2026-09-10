@@ -241,7 +241,7 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     lidar_laz_offer_details: StringProperty(default='', options={'HIDDEN'})
     use_lidar_buildings: BoolProperty(
         name="Use Prepared LiDAR", default=False,
-        description="Use measured USGS heights, roof tiers and supported roof planes; other buildings retain source geometry",
+        description="Use prepared LiDAR heights, roof tiers and supported roof planes; other buildings retain source geometry",
     )
     lidar_prefer_measured: BoolProperty(
         name="Prefer LiDAR on Conflicts", default=True,
@@ -268,8 +268,24 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         description="Simultaneous LAZ tile downloads for the next preparation. More may help on fast connections; reduce if transfers stall or the server throttles. Does not invalidate prepared LiDAR",
     )
     lidar_source_url: StringProperty(
-        name="USGS EPT URL (optional)", default="",
-        description="Leave empty to compare available EPT and USGS LAZ surveys; set an ept.json HTTPS URL to override automatic discovery",
+        name="EPT / COPC URL (optional)", default="",
+        description="Leave empty for automatic discovery; set an ept.json or COPC HTTPS URL to override provider discovery",
+    )
+    lidar_international: BoolProperty(
+        name="International LiDAR Discovery", default=True,
+        description="Discover official national/regional LiDAR alongside USGS, Flai and OpenTopography; aggregators fill gaps and unavailable sources are skipped",
+    )
+    lidar_stac_urls: StringProperty(
+        name="STAC Catalog URLs (optional)", default="",
+        description="Additional public HTTPS STAC API or static catalog URLs, separated by spaces",
+    )
+    lidar_vertical_units: EnumProperty(
+        name="Missing Z Units",
+        items=(('AUTO', 'Require Metadata', 'Skip data without declared vertical units'),
+               ('m', 'Metres', 'Use metres only when vertical units are missing; verify source documentation'),
+               ('ft', 'International Feet', 'Use international feet only when vertical units are missing'),
+               ('us-ft', 'US Survey Feet', 'Use US survey feet only when vertical units are missing')),
+        default='AUTO', description="Fallback for incomplete source metadata; explicit source units always take precedence",
     )
     lidar_manifest_url: StringProperty(
         name="LAZ Manifest URL (advanced)", default="",

@@ -26,7 +26,7 @@ def offer_details(offers):
     """Readable areas and known catalog information; never imply guaranteed recovery."""
     lines = []
     for offer in offers:
-        lines.append(f"{offer['name']}: may improve {len(offer['buildings'])} building gaps")
+        lines.append(f"{offer.get('provider', 'LiDAR')} / {offer['name']}: may improve {len(offer['buildings'])} buildings")
         for area in offer['areas']:
             w, s, e, n = area['bbox']
             lines.append(f"Area W/S/E/N: {w:.5f}, {s:.5f}, {e:.5f}, {n:.5f} ({area['buildings']} buildings)")
@@ -37,6 +37,8 @@ def offer_details(offers):
         if known and len(known) != len(sizes):
             size += ' + unknown sizes'
         lines.append(f"{len(sizes)} tiles; {size}")
+        if offer.get('delivery_note'):
+            lines.append(offer['delivery_note'])
         meta = offer.get('survey_metadata', {})
         lines.append('Acquired: ' + str(meta.get('acquisition_start', 'unknown')) +
                      ' to ' + str(meta.get('acquisition_end', 'unknown')))
@@ -45,4 +47,7 @@ def offer_details(offers):
             if key in meta:
                 lines.append(f'{label}: {meta[key]}')
         lines.append(offer['url'])
+        for key in ('license', 'attribution', 'vertical_datum'):
+            if offer.get(key):
+                lines.append(f'{key.replace("_", " ").capitalize()}: {offer[key]}')
     return '\n'.join(lines)

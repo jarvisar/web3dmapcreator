@@ -635,7 +635,8 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
             years, numbers = np.unique(known[:,5], return_counts=True)
             significant = years[numbers >= max(20, len(local)*.1)]
             dated = {'capture_year':int(max(years)), 'date_basis':
-                     'gps_declared' if np.all(known[:,6] == 1) else 'gps_inferred_ept'}
+                     'gps_declared' if np.all(known[:,6] == 1) else
+                     'reported_acquisition' if np.all(known[:,6] == .75) else 'gps_inferred_ept'}
             # Do not reconstruct a roof from different annual capture epochs,
             # even if a provider has combined them under one project name.
             if len(known) < len(local)*.9 or len(significant) != 1:

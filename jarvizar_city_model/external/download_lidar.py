@@ -74,6 +74,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     from lidar_measurements import measure_features
     from lidar_selection import choose_measurement, project_year, POLICY, CONTRADICTIONS
     from shapely import STRtree
+    from lidar_candidates import staged, SOURCE_FIELDS, discovery_settings
 
     if request["algorithm"] != 11:
         raise ValueError("Unsupported LiDAR algorithm version")
@@ -128,6 +129,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     geographic_geometries = {f['id']: shape(f['geometry']) for f in features}
     def collect(records, evidence, source, info):
         for identifier, record in records.items():
+            record['source_metadata'] = {k: source[k] for k in SOURCE_FIELDS if k in source}
             record.update(source=source['name'], source_url=source['url'],
                           source_format=source['format'],
                           classified_roof_fraction=info.get('classified_roof_fraction', 0),
@@ -148,16 +150,18 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
         reporter(message, accepted=len(alternatives), candidates=total_candidates)
     fetch.progress = progress
     sources, discovery_failures = discover_sources(fetch, query, request['source_url'],
-        request.get('manifest_url', ''), progress, thresholds=thresholds)
+        request.get('manifest_url', ''), progress, thresholds=thresholds,
+        discovery=request.get('discovery'), vertical_units=request.get('vertical_units', ''))
     failures.extend(discovery_failures)
     plan = AcquisitionPlan(sources, [f for f in features if geographic_geometries[f['id']].intersects(box(*bbox))],
                            geographic_geometries, thresholds)
-    phase = 'EPT'
+    settings = discovery_settings(**{k: v for k, v in request.get('discovery', {}).items() if k != 'version'})
+    phase = 'STREAM'
     while True:
         work = plan.next(resolved, source_format=phase)
-        if work is None and phase == 'EPT':
-            phase = 'LAZ'
-            progress('EPT complete; checking remaining building gaps for optional LAZ coverage')
+        if work is None and phase == 'STREAM':
+            phase = 'STAGED'
+            progress('EPT / COPC complete; checking optional LAZ / LAS gaps and material upgrades')
             work = plan.next(resolved, source_format=phase)
         for candidate in sources:
             skipped = dict(Counter(plan.skipped.get(candidate['url'], {}).values()))
@@ -168,7 +172,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
         if work is None:
             break
         source, candidates, reason = work
-        if source['format'] == 'LAZ':
+        if staged(source):
             # Match the existing measurement preflight and ignore unprintable
             # slivers. A building gap, not empty map acreage, warrants an offer.
             candidates = [f for f in candidates if
@@ -184,7 +188,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                 {f['id']: plan.selection_reasons[f['id'], source['url']] for f in candidates})
             if not audit:
                 continue
-            offer = {'url': source['url'], 'name': source['name'],
+            offer = {**{k: source[k] for k in SOURCE_FIELDS if k in source}, 'url': source['url'], 'name': source['name'], 'format': source['format'],
                 'fingerprint': source.get('fingerprint', ''),
                 'metadata_fingerprint': source.get('metadata_fingerprint', ''),
                 'survey_metadata': source.get('survey_metadata', {}),
@@ -201,7 +205,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                 progress(f"Optional LAZ available: {len(candidates)} building gaps, {len(audit)} tiles in {source['name']}; awaiting explicit download choice")
                 continue
         source.setdefault('acquisition_reasons', []).append(reason)
-        progress(f"Selected {source['format']} {source['name']}: {len(candidates)} unresolved buildings; {reason}")
+        progress(f"Selected {source.get('provider', 'LiDAR')} {source['format']} {source['name']}: {len(candidates)} unresolved buildings; {reason}")
         def batch_job(batch):
             batch_query = map_geometry(to_geographic, box(*batch_bounds(batch, geometries, selected))).bounds
             job_key = hashlib.sha256(json.dumps([checkpoint_request, source['url'], source.get('fingerprint', ''),
@@ -219,17 +223,17 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
             return batch, batch_query, checkpoint, cached
 
         jobs = [batch_job(batch) for batch in building_batches(candidates, geometries)]
-        tiles = building_tile_plan(source, candidates, geometries, to_geographic, selected) if source['format'] == 'LAZ' else {}
+        tiles = building_tile_plan(source, candidates, geometries, to_geographic, selected) if 'tiles' in source else {}
         # Reuse checkpoint evidence before authorizing any new point downloads.
         jobs.sort(key=lambda job: job[3] is None)
         attempted = set()
         trial = {'batches_evaluated': 0, 'recovered_buildings': 0,
                  'unproductive_batches': 0, 'deferred_buildings': 0,
                  'max_unproductive_batches': MAX_UNPRODUCTIVE_LAZ_BATCHES}
-        if source['format'] == 'LAZ':
+        if staged(source):
             source['incremental_acquisition'] = trial
         def evaluate_batch(batch, before):
-            if source['format'] != 'LAZ':
+            if not staged(source):
                 return
             trial['batches_evaluated'] += 1
             gained = {f['id'] for f in batch} & (resolved - before)
@@ -263,7 +267,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                 evaluate_batch(batch, before)
                 continue
             selected_source = batch_source(source, batch, tiles)
-            if source['format'] == 'LAZ':
+            if staged(source):
                 audit = tile_audit(tiles, batch, {f['id']: plan.selection_reasons[f['id'], source['url']] for f in batch})
                 source.setdefault('selected_tiles', []).extend(audit)
                 progress(f"LAZ incremental batch: {len(audit)}/{len(source['tiles'])} tiles for {len(batch)} buildings")
@@ -351,11 +355,11 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                "sources": provenance, "failures": failures, "counts": dict(counts),
                "rejected": rejected, 'rejection_counts': rejection_counts,
                "prepared_at_utc": datetime.now(timezone.utc).isoformat(),
-               "catalog": CATALOG_URL, "catalogs": [CATALOG_URL, TNM_URL],
+               "catalog": CATALOG_URL, "catalogs": settings,
                'discovered_sources': source_audit(sources), "source_selection": POLICY,
                'acquisition_selection': {'version': ACQUISITION_VERSION, 'thresholds': thresholds,
                    'fallback_policy': FALLBACK_POLICY_VERSION,
-                   'policy': 'automatic EPT first; explicit request-bound consent for LAZ gap tiles; same-survey LAZ only for EPT delivery gaps'},
+                   'policy': 'automatic EPT/COPC spatial reads; explicit request-bound consent for LAZ/LAS gaps or material upgrades; same-survey staged data only for delivery gaps'},
                'selection':selection, 'observations':observations,
                'compared_sources':len({item['url'] for item in provenance}),
                'conflict_buildings':conflict_buildings,

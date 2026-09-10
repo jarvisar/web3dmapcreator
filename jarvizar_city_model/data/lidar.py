@@ -14,14 +14,17 @@ from pathlib import Path
 from ..external.lidar_records import validate_records
 from ..external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, validate_download_workers
 from ..external.lidar_ranking import ACQUISITION_VERSION, FALLBACK_POLICY_VERSION, selection_thresholds
+from ..external.lidar_candidates import discovery_settings
 
 FORMAT_VERSION = 1
 ALGORITHM_VERSION = 11
 
 
-def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None, roof_mode='FACETED'):
+def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None, roof_mode='FACETED', providers=None, stac_urls=(), vertical_units=''):
     if roof_mode not in ('TERRACES', 'FACETED'):
         raise ValueError('Unknown LiDAR roof reconstruction mode')
+    if vertical_units not in ('', 'm', 'ft', 'us-ft'):
+        raise ValueError('Unknown fallback LiDAR vertical units')
     files = {}
     for name in ("building", "building_part"):
         path = bundle.data_path(name)
@@ -35,7 +38,8 @@ def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0
             'roof_planes': bool(roof_planes), 'prefer_lidar': bool(prefer_lidar),
             'roof_mode': roof_mode,
             'manifest_url': manifest_url.strip(), 'acquisition_thresholds': selection_thresholds(acquisition_thresholds),
-            'fallback_policy': FALLBACK_POLICY_VERSION}
+            'fallback_policy': FALLBACK_POLICY_VERSION,
+            'discovery': discovery_settings(providers, stac_urls), 'vertical_units': vertical_units}
 
 
 def load_measurements(bundle, signature):

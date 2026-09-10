@@ -275,7 +275,7 @@ class JARVIZAR_PT_buildings(Panel):
         layout.prop(settings, "minimum_height_footprint_mm")
         layout.prop(settings, "generate_roof_shapes")
         box = layout.box()
-        box.label(text="USGS LiDAR Buildings")
+        box.label(text="LiDAR Buildings")
         box.prop(settings, "use_lidar_buildings")
         box.prop(settings, "lidar_prefer_measured")
         roof_row = box.row()
@@ -284,23 +284,27 @@ class JARVIZAR_PT_buildings(Panel):
         box.prop(settings, "lidar_minimum_width_mm")
         box.prop(settings, "lidar_minimum_step_mm")
         box.prop(settings, "lidar_source_url")
+        box.prop(settings, "lidar_international")
+        box.prop(settings, "lidar_stac_urls")
+        box.prop(settings, "lidar_vertical_units")
         box.prop(settings, "lidar_manifest_url")
         download_row = box.row()
         download_row.enabled = not settings.lidar_preparing
         download_row.prop(settings, "lidar_download_workers")
         box.operator("jarvizar.prepare_lidar", icon="IMPORT")
-        box.label(text='EPT automatic; LAZ requires your choice')
+        box.label(text='EPT / COPC stream automatically')
+        box.label(text='LAZ / LAS downloads require your choice')
         if settings.lidar_laz_offer_token:
             offer = box.box()
-            offer.label(text='Additional LAZ coverage available', icon='INFO')
+            offer.label(text='LAZ / LAS gaps or upgrades available', icon='INFO')
             offer.label(text='Potential improvements; recovery is not guaranteed')
             for paragraph in settings.lidar_laz_offer_details.splitlines():
                 for line in textwrap.wrap(paragraph, width=max(25, int(context.region.width/7)-6)):
                     offer.label(text=line)
             row = offer.row()
             row.enabled = not settings.lidar_preparing
-            row.operator('jarvizar.prepare_lidar', text='Download and Use LAZ Gap Tiles', icon='IMPORT').laz_approval = settings.lidar_laz_offer_token
-            offer.label(text='Optional: generate now to keep current EPT coverage')
+            row.operator('jarvizar.prepare_lidar', text='Download and Use Offered Tiles', icon='IMPORT').laz_approval = settings.lidar_laz_offer_token
+            offer.label(text='Optional: keep current streamed coverage')
         if settings.lidar_preparing:
             box.label(text='Preparing in background; Esc cancels', icon='TIME')
         else:

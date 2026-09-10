@@ -109,13 +109,28 @@ class OfferTests(unittest.TestCase):
         self.assertNotEqual(updated['laz_offer_token'], result['laz_offer_token'])
         self.assertEqual(len(updated['laz_offers'][0]['tiles']), 2)
 
-    def test_better_metadata_does_not_make_a_reconstruction_rejection_a_gap(self):
+    def test_material_upgrade_is_offered_separately_without_automatic_download(self):
         self.gap = 'unresolved_upper_roof'
         self.ept['survey_metadata'] = {'point_spacing_m': 2}
         self.laz['survey_metadata'] = {'point_spacing_m': .1}
         result = self.prepare()
-        self.assertFalse(result['laz_offers'])
+        self.assertEqual(result['laz_offers'][0]['buildings'], ['east', 'west'])
+        self.assertIn('optional material upgrade', result['laz_offers'][0]['reasons'][0])
         self.assertFalse(self.downloads)
+
+    def test_adequate_copc_only_offers_material_upgrade_and_keeps_it_without_consent(self):
+        self.ept['format'] = 'COPC'
+        self.ept['survey_metadata'] = {'point_spacing_m': 2}
+        self.laz['survey_metadata'] = {'point_spacing_m': .1}
+        first = self.prepare()
+        self.assertEqual(first['buildings'], 2)
+        self.assertEqual(first['laz_offers'][0]['buildings'], ['east', 'west'])
+        self.prepare(refresh=True)
+        self.assertFalse(self.downloads)
+        self.assertEqual(set(self.reads), {'COPC'})
+        accepted = self.prepare(laz_approval=first['laz_offer_token'])
+        self.assertEqual(len(self.downloads), 2)
+        self.assertEqual(accepted['buildings'], 2)
 
     def test_no_ept_still_requires_consent(self):
         self.sources = [self.laz]

@@ -89,7 +89,7 @@ class FootprintTileTests(unittest.TestCase):
         ground = next(a for a in audit if a['url'].endswith('/ground.laz'))
         self.assertEqual(ground['ground_halos'], ['west'])
         self.assertFalse(ground['footprints'])
-        self.assertIn('no suitable EPT coverage', ground['reasons'])
+        self.assertIn('no suitable EPT coverage (or COPC)', ground['reasons'])
 
     def test_split_batches_keep_the_same_precise_tile_allowlist(self):
         downloads, reads, _ = self.run_worker(split=True)

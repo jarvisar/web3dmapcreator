@@ -1,7 +1,7 @@
 # Downloader dependencies
 
-Optional USGS LiDAR preparation adds `laspy[lazrs]==2.7.0`, `pyproj==3.7.2`
-and `shapely==2.1.2` through `requirements-lidar.txt`, installed explicitly in
+Optional LiDAR preparation adds `laspy[lazrs]==2.7.0`, `pyproj==3.7.2`
+`shapely==2.1.2` and the spatial-index reader `pyshp==2.3.1` through `requirements-lidar.txt`, installed explicitly in
 the same external environment. Blender imports none of these. See
 [LiDAR setup and limits](LIDAR_BUILDINGS.md). PDAL is not required; 0.11.0 adds
 roof-plane fitting and resumable batches using these same dependencies.

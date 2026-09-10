@@ -322,7 +322,10 @@ def _lidar_signature(settings, bundle, transform=None):
         transform.scale_z_mm_per_m * settings.building_height_scale,
         settings.lidar_minimum_width_mm, settings.lidar_minimum_step_mm, settings.lidar_source_url,
         settings.generate_roof_shapes, settings.lidar_prefer_measured, settings.lidar_manifest_url,
-        roof_mode=settings.lidar_roof_mode)
+        roof_mode=settings.lidar_roof_mode,
+        providers=None if settings.lidar_international else ('usgs',),
+        stac_urls=settings.lidar_stac_urls.split(),
+        vertical_units='' if settings.lidar_vertical_units == 'AUTO' else settings.lidar_vertical_units)
 
 
 class JARVIZAR_OT_prepare_lidar(Operator):
@@ -347,6 +350,10 @@ class JARVIZAR_OT_prepare_lidar(Operator):
             message += f"; {result.get('infill_buildings', 0)} main masses restored, {result.get('part_heights', 0)} part heights"
         if result.get('compared_sources'):
             message += f"; compared {result['compared_sources']} surveys"
+        selected = sorted({f"{s.get('provider', 'LiDAR')} {s.get('format', '')}: {s.get('name', '')}"
+                           for s in result.get('sources', []) if s.get('accepted')})
+        if selected:
+            message += '; sources: ' + ', '.join(selected)
         if result.get('conflict_buildings'):
             reasons = result.get('rejection_counts', {})
             labels = {'footprint_roof_mismatch': 'roof coverage',
@@ -366,7 +373,7 @@ class JARVIZAR_OT_prepare_lidar(Operator):
         settings.lidar_laz_offer_details = offer_details(offers)
         if offers:
             gaps = len({identifier for o in offers for identifier in o['buildings']})
-            message += f'; additional LAZ coverage available for {gaps} building gaps (download optional)'
+            message += f'; optional LAZ/LAS gaps or upgrades for {gaps} buildings'
         settings.lidar_preparation_status = settings.last_status = message
         settings.use_lidar_buildings = True
         self.report({'WARNING'} if result.get('failures') or not result['buildings'] else {'INFO'}, message)

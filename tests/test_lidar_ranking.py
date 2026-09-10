@@ -255,12 +255,13 @@ class AcquisitionAdmissionTests(unittest.TestCase):
                 self.assertEqual(set(processed), {('EPT', 'west'), ('EPT', 'east')})
                 self.assertFalse(downloads)
 
-    def test_adequate_ept_never_offers_metadata_only_laz_upgrades(self):
+    def test_adequate_ept_material_upgrades_are_used_after_explicit_consent(self):
         for mode in ('outdated', 'quality', 'partial_superior'):
             with self.subTest(mode=mode):
                 processed, downloads, _ = self.run_worker(mode)
-                self.assertEqual(set(processed), {('EPT', 'west'), ('EPT', 'east')})
-                self.assertFalse(downloads)
+                self.assertTrue({('EPT', 'west'), ('EPT', 'east')}.issubset(processed))
+                self.assertIn(('LAZ', 'east'), processed)
+                self.assertEqual(len(downloads), 1 if mode == 'partial_superior' else 2)
 
     def test_incomplete_coverage_and_observed_gaps_only_fetch_gap_tiles(self):
         for mode in ('incomplete', 'gaps'):
@@ -310,7 +311,8 @@ class AcquisitionAdmissionTests(unittest.TestCase):
         ept['survey_metadata'] = normalized_metadata({'point_spacing_m': 2})
         laz['survey_metadata'] = normalized_metadata({'point_spacing_m': .5})
         plan.observe(ept, features, {}, {'one': 'unresolved_upper_roof'})
-        self.assertFalse(plan.admission('one', laz)[0])
+        self.assertTrue(plan.admission('one', laz)[0])
+        self.assertIn('material upgrade', plan.admission('one', laz)[1])
         plan.observe(ept, features, {}, {'one': 'elevated_or_underground'})
         self.assertFalse(plan.admission('one', laz)[0])
 
@@ -330,7 +332,7 @@ class AcquisitionAdmissionTests(unittest.TestCase):
             if url == acquisition.lidar_ept.CATALOG_URL else {'items': items, 'total': 2}),
             get=Mock(return_value=b'{"acquisition_year": 2024, "point_spacing_m": 0.5}'))
         messages = []
-        sources, failures = acquisition.discover_sources(fetch, bbox, progress=messages.append)
+        sources, failures = acquisition.discover_sources(fetch, bbox, progress=messages.append, discovery={'providers': ['usgs']})
         self.assertFalse(failures)
         self.assertEqual(sources[0]['format'], 'LAZ')
         self.assertAlmostEqual(sources[1]['catalog_coverage'], .5)

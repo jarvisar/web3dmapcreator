@@ -5,15 +5,7 @@ Lower-ranked sources are retained for unresolved coverage and measurement gaps.
 """
 from __future__ import annotations
 
-import hashlib
-import json
-import math
-from urllib.parse import urlencode, urlparse, unquote
-from urllib.error import HTTPError
-
-from shapely.geometry import box, shape
-from shapely.ops import unary_union
-from shapely.errors import ShapelyError
+from shapely.geometry import box
 
 try:
     from . import lidar_ept, lidar_laz
@@ -22,7 +14,7 @@ try:
     from .lidar_ranking import rank_sources
     from .lidar_identity import metadata_identity
     from .lidar_tiles import building_tile_plan, batch_source, tile_audit
-    from .lidar_provenance import enrich_provenance
+    from .lidar_provenance import enrich_provenance, enrich_asset_provenance
 except ImportError:
     import lidar_ept, lidar_laz
     from lidar_selection import project_year
@@ -30,175 +22,90 @@ except ImportError:
     from lidar_ranking import rank_sources
     from lidar_identity import metadata_identity
     from lidar_tiles import building_tile_plan, batch_source, tile_audit
-    from lidar_provenance import enrich_provenance
-
-TNM_URL = 'https://tnmaccess.nationalmap.gov/api/v1/products'
-DISCOVERY_ERRORS = (ValueError, OSError, RuntimeError, KeyError, TypeError, IndexError, AttributeError, ShapelyError)
+    from lidar_provenance import enrich_provenance, enrich_asset_provenance
 
 
-def valid_bbox(values):
-    values = list(map(float, values))
-    if (len(values) != 4 or not all(math.isfinite(v) for v in values)
-            or not -180 <= values[0] < values[2] <= 180
-            or not -90 <= values[1] < values[3] <= 90):
-        raise ValueError('Invalid LPC tile bounds')
-    return values
+try:
+    from .lidar_usgs import TNM_URL, DISCOVERY_ERRORS, valid_bbox, laz_url, tnm_tiles, manifest_tiles, grouped_laz, discover_usgs
+    from .lidar_stac import discover_stac
+    from .lidar_candidates import candidate, asset_format, discovery_settings, SOURCE_FIELDS
+    from .lidar_copc import read_copc
+except ImportError:
+    from lidar_usgs import TNM_URL, DISCOVERY_ERRORS, valid_bbox, laz_url, tnm_tiles, manifest_tiles, grouped_laz, discover_usgs
+    from lidar_stac import discover_stac
+    from lidar_candidates import candidate, asset_format, discovery_settings, SOURCE_FIELDS
+    from lidar_copc import read_copc
+
+def _provider(module, function):
+    # A missing optional index reader must not disable working USGS acquisition.
+    def discover(*args):
+        from importlib import import_module
+        adapter = import_module('.' + module, __package__) if __package__ else import_module(module)
+        yield from getattr(adapter, function)(*args)
+    return discover
 
 
-def laz_url(item):
-    urls = item.get('urls') or {}
-    if not isinstance(urls, dict):
-        urls = {}
-    for url in (urls.get('LAZ'), item.get('downloadLazURL'), item.get('downloadURL')):
-        if isinstance(url, str) and urlparse(url).scheme == 'https' and urlparse(url).path.lower().endswith('.laz'):
-            return url
-    return None
+PROVIDERS = {'usgs': discover_usgs,
+             'flai': _provider('lidar_flai', 'discover_flai'),
+             'opentopography': _provider('lidar_opentopography', 'discover_opentopography'),
+             'ign_france': _provider('lidar_france', 'discover_france'),
+             'nrcan': _provider('lidar_canada', 'discover_canada'),
+             'ea_england': _provider('lidar_england', 'discover_england'),
+             'scotland': _provider('lidar_scotland', 'discover_scotland'),
+             'geobasis_nrw': _provider('lidar_germany', 'discover_nrw'),
+             'bavaria': _provider('lidar_germany', 'discover_bavaria'),
+             'pnoa_clm': _provider('lidar_spain', 'discover_spain_clm')}
 
 
-def tnm_tiles(fetch, bbox, failures, page_size=100):
-    """Page every bbox result. An incomplete catalog is reported, never empty success."""
-    offset, seen = 0, set()
-    roi = box(*bbox)
-    while True:
-        url = TNM_URL+'?'+urlencode({'datasets': 'Lidar Point Cloud (LPC)',
-            'bbox': ','.join(map(str, bbox)), 'prodFormats': 'LAZ',
-            'max': page_size, 'offset': offset})
-        try:
-            page = fetch.json(url, fresh=True)
-        except HTTPError as exc:
-            # The transport already retries transient HTTP errors. TNM can
-            # still fail a large page while a smaller request succeeds. Keep
-            # the exact offset so recovery never skips unreturned products.
-            if exc.code in (500, 502, 503, 504) and page_size > 10:
-                page_size = max(10, page_size // 2)
-                continue
-            raise
-        if not isinstance(page, dict) or page.get('errorMessage') or page.get('errors'):
-            raise ValueError(f'TNMAccess query failed: {page}')
-        items, total = page['items'], int(page['total'])
-        if not isinstance(items, list) or total < 0:
-            raise ValueError('Invalid TNMAccess product page')
-        if not items:
-            if offset < total:
-                raise ValueError('TNMAccess returned an incomplete product listing')
-            break
-        new = 0
-        for item in items:
-            try:
-                identity = item.get('sourceId') or laz_url(item) or json.dumps(item, sort_keys=True)
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                new += 1
-                tile_url = laz_url(item)
-                if not tile_url:
-                    raise ValueError('LPC product lacks a direct HTTPS LAZ URL')
-                bounds = item['boundingBox']
-                bounds = valid_bbox(bounds[k] for k in ('minX', 'minY', 'maxX', 'maxY'))
-                if box(*bounds).intersects(roi):
-                    yield {'url': tile_url, 'bbox': bounds, 'id': item.get('sourceId'),
-                           'publication_date': item.get('publicationDate'),
-                           'updated': item.get('lastUpdated'), 'size_bytes': item.get('sizeInBytes'),
-                           'survey_metadata': normalized_metadata(item),
-                           'survey_identity': metadata_identity(item),
-                           'metadata_url': item.get('vendorMetaUrl') or item.get('metaUrl')}
-            except DISCOVERY_ERRORS as exc:
-                failures.append({'source': 'TNMAccess product', 'reason': str(exc), 'buildings': 0})
-        offset += len(items)
-        if offset >= total:
-            break
-        if not new:
-            raise ValueError('TNMAccess pagination repeated a page without advancing')
-
-
-def manifest_tiles(fetch, url, bbox, failures, progress, catalog_tiles=None):
-    text = fetch.get(url, fresh=True).decode('utf-8-sig')
-    urls = sorted({line.strip() for line in text.splitlines()
-                   if line.strip() and not line.lstrip().startswith('#')})
-    # A plain URL list contains no locations. Match authoritative catalog
-    # bounds instead of silently fetching bytes from every standalone LAZ.
-    if catalog_tiles is None:
-        catalog_tiles = list(tnm_tiles(fetch, bbox, failures))
-    located = {tile['url']: tile for tile in catalog_tiles}
-    missing = 0
-    for i, tile_url in enumerate(urls):
-        if i % 25 == 0:
-            progress(f'Locating manifest tiles: {i}/{len(urls)} catalog matches checked')
-        try:
-            if urlparse(tile_url).scheme != 'https' or not urlparse(tile_url).path.lower().endswith('.laz'):
-                raise ValueError('Manifest entries must be direct HTTPS LAZ URLs')
-            if tile_url in located:
-                yield located[tile_url]
-            else:
-                missing += 1
-        except DISCOVERY_ERRORS as exc:
-            failures.append({'source': tile_url, 'reason': str(exc), 'buildings': 0})
-    if missing:
-        failures.append({'source': url, 'reason': f'{missing} manifest tiles lack intersecting catalog bounds; LAZ headers were not downloaded', 'buildings': 0})
-
-
-def grouped_laz(tiles):
-    groups = {}
-    for tile in tiles:
-        # Directory identity groups delivered survey/subproject tiles. It is
-        # never interpreted as a grid: every location comes from metadata.
-        key = tile['url'].rsplit('/', 1)[0]+'/'
-        group = groups.setdefault(key, {})
-        group[tile['url']] = {**group.get(tile['url'], {}), **tile}
-    sources = []
-    for url, by_url in sorted(groups.items()):
-        tiles = sorted(by_url.values(), key=lambda t: t['url'])
-        name = unquote(urlparse(url).path.rstrip('/'))
-        # Identity only changes admission, not these independently measured points.
-        fingerprint = hashlib.sha256(json.dumps([
-            {k: v for k, v in t.items() if k != 'survey_identity'} for t in tiles], sort_keys=True).encode()).hexdigest()
-        sources.append({'url': url, 'name': name, 'format': 'LAZ', 'tiles': tiles,
-            'coverage': unary_union([box(*t['bbox']) for t in tiles]), 'fingerprint': fingerprint})
-    return sources
-
-
-def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambda _: None, thresholds=None):
+def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambda _: None, thresholds=None,
+                     discovery=None, vertical_units=''):
     sources, tiles, failures = [], [], []
+    settings = discovery_settings(**{k: v for k, v in (discovery or {}).items() if k != 'version'})
     if source_url:
-        # Preserve the existing explicit EPT override; an optional manifest
-        # adds LAZ candidates to that manually selected source set.
-        sources.append({'url': source_url, 'name': source_url.split('/')[-2],
-                        'format': 'EPT', 'coverage': box(*bbox)})
+        format = asset_format(source_url)
+        if format not in ('EPT', 'COPC'):
+            raise ValueError('Explicit streaming source must be EPT or COPC')
+        sources.append(candidate('Explicit', source_url, source_url.split('/')[-2] if format == 'EPT' else source_url.rsplit('/', 1)[-1],
+                                 source_url, format, box(*bbox)))
     else:
-        progress('Discovering EPT and USGS LAZ coverage')
-        try:
-            catalog = fetch.json(lidar_ept.CATALOG_URL, fresh=True)
-            for feature in catalog['features']:
-                try:
-                    coverage = shape(feature['geometry'])
-                    if not coverage.is_valid or coverage.is_empty:
-                        raise ValueError('Invalid EPT coverage geometry')
-                    if coverage.intersects(box(*bbox)):
-                        source = feature['properties']
-                        sources.append({**source, 'url': source['url'], 'name': source['name'],
-                                        'format': 'EPT', 'coverage': coverage})
-                except DISCOVERY_ERRORS as exc:
-                    failures.append({'source': 'EPT catalog entry', 'reason': str(exc), 'buildings': 0})
-        except DISCOVERY_ERRORS as exc:
-            failures.append({'source': 'EPT catalog', 'reason': str(exc), 'buildings': 0})
-        try:
-            tiles.extend(tnm_tiles(fetch, bbox, failures))
-        except DISCOVERY_ERRORS as exc:
-            failures.append({'source': 'TNMAccess', 'reason': str(exc), 'buildings': 0})
+        for name in settings['providers']:
+            progress(f'Discovering LiDAR provider: {name}')
+            before = len(sources)
+            try:
+                sources.extend(PROVIDERS[name](fetch, bbox, failures, progress))
+            except Exception as exc:
+                # Provider boundary: malformed third-party catalogs/indexes are optional.
+                failures.append({'source': name, 'reason': str(exc), 'buildings': 0})
+                progress(f'LiDAR provider {name} unavailable: {exc}; continuing with other sources')
+            progress(f'LiDAR provider {name}: {len(sources) - before} candidate surveys')
+        for endpoint in settings['stac_urls']:
+            try:
+                sources.extend(discover_stac(fetch, bbox, endpoint, failures, progress))
+            except DISCOVERY_ERRORS as exc:
+                failures.append({'source': endpoint, 'reason': str(exc), 'buildings': 0})
     if manifest_url:
         try:
-            tiles.extend(list(manifest_tiles(fetch, manifest_url, bbox, failures, progress,
-                                            tiles if not source_url else None)))
+            catalog_tiles = [t for s in sources if s.get('provider') == 'USGS' for t in s.get('tiles', [])]
+            tiles.extend(manifest_tiles(fetch, manifest_url, bbox, failures, progress,
+                                        catalog_tiles if not source_url else None))
         except DISCOVERY_ERRORS as exc:
             failures.append({'source': manifest_url, 'reason': str(exc), 'buildings': 0})
     sources.extend(grouped_laz(tiles))
+    if vertical_units:
+        for source in sources:
+            source['vertical_units'] = source.get('vertical_units') or vertical_units
+            source['vertical_units_basis'] = 'user-declared fallback for missing vertical units'
     sources = list({s['url']: s for s in sources}.values())
     enrich_sources(fetch, sources, failures, progress)
     enrich_provenance(fetch, sources, bbox, progress)
+    enrich_asset_provenance(sources, progress)
     roi = box(*bbox)
     for source in sources:
         source['catalog_coverage'] = source['coverage'].intersection(roi).area/roi.area
         source['project_year_hint'] = project_year(source['name'])
+        sizes = [t.get('size_bytes') for t in source.get('tiles', [])]
+        if sizes and all(isinstance(n, (int, float)) and n > 0 for n in sizes):
+            source['estimated_bytes'] = sum(sizes)
     ranked = rank_sources(sources, thresholds)
     sources = [s for s, _ in ranked]
     for rank, (source, reason) in enumerate(ranked, 1):
@@ -209,7 +116,7 @@ def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambd
         accuracy = ', '.join(f"{key}={value(key)}" +
             (f" ({value(key.replace('_m', '_basis'))})" if 'accuracy' in key else '') for key in
             ('horizontal_rmse_m', 'vertical_rmse_m', 'horizontal_accuracy_m', 'vertical_accuracy_m'))
-        progress(f"LiDAR rank {rank}: {source['format']} {source['name']}; acquisition="
+        progress(f"LiDAR rank {rank}: {source.get('provider', 'unknown provider')} {source['format']} {source['name']}; acquisition="
                  f"{value('acquisition_start')}..{value('acquisition_end')}; "
                  f"spacing={value('point_spacing_m')} m; density={value('point_density_m2')} pts/m2; "
                  f"{accuracy}; ground={value('ground_class')}, buildings={value('building_class')}; "
@@ -220,20 +127,28 @@ def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambd
 
 
 def read_source(fetch, source, bbox):
-    if source['format'] == 'LAZ':
+    if source['format'] in ('LAZ', 'LAS'):
         points, info = lidar_laz.read_laz(fetch, source, bbox)
+    elif source['format'] == 'COPC':
+        points, info = read_copc(fetch, source, bbox)
     else:
-        points, info = lidar_ept.read_ept(fetch, source['url'], bbox)
+        points, info = lidar_ept.read_ept(fetch, source['url'], bbox, source=source)
+    # A reported single-year acquisition can date undated returns. Never
+    # overwrite GPS evidence or collapse a multi-year survey into one epoch.
+    meta = source.get('survey_metadata', {})
+    start, end = meta.get('acquisition_start', ''), meta.get('acquisition_end', '')
+    if len(points) and not (points[:, 5] > 0).any() and start and end and start[:4] == end[:4]:
+        points[:, 5], points[:, 6] = int(start[:4]), .75
     roof = ((points[:, 3] == 1) & (points[:, 4] == 1)) | (points[:, 3] == 6)
     classified = float((points[:, 3] == 6).sum()/roof.sum()) if roof.any() else 0.0
-    return points, {**info, 'format': source['format'], 'classified_roof_fraction': classified}
+    return points, {**{k: source[k] for k in SOURCE_FIELDS if k in source}, **info, 'format': source['format'], 'classified_roof_fraction': classified}
 
 
 def source_audit(sources):
-    return [{k: s[k] for k in ('url', 'name', 'format', 'catalog_coverage', 'project_year_hint',
+    return [{k: s[k] for k in SOURCE_FIELDS + ('url', 'format', 'catalog_coverage', 'project_year_hint',
                               'survey_metadata', 'rank', 'ranking_reason', 'metadata_note',
                               'unusable_reason', 'acquired_buildings', 'acquisition_reasons',
                               'skipped_fallback_reasons', 'survey_identity', 'selected_tiles',
                               'possible_duplicates', 'provenance_matches', 'provenance_note',
-                              'incremental_acquisition') if k in s}
+                              'incremental_acquisition', 'estimated_bytes', 'vertical_units_basis') if k in s}
             | {'tile_count': len(s.get('tiles', []))} for s in sources]

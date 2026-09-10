@@ -52,7 +52,7 @@ class BatchTests(unittest.TestCase):
             bundle.data_path('building_part').write_text('{"features":[]}')
             request = request_signature(bundle,.07,.077,source_url='https://example.com/test/ept.json')
             calls = []
-            def read(fetch,url,bbox):
+            def read(fetch,url,bbox,**kwargs):
                 calls.append(bbox)
                 self.assertLess(bbox[2]-bbox[0], .003)
                 return np.empty((0,5)), {'url':url,'points':0}
@@ -95,11 +95,11 @@ class BatchTests(unittest.TestCase):
             feature={'id':'one','properties':{},'geometry':mapping(box(-73.999,40.002,-73.998,40.003))}
             bundle.data_path('building').write_text(json.dumps({'features':[feature]}))
             bundle.data_path('building_part').write_text('{"features":[]}')
-            request=request_signature(bundle,.07,.077)
+            request=request_signature(bundle,.07,.077,providers=['usgs'])
             catalog={'features':[{'properties':{'name':f'Project_{i}','url':f'https://example.com/{i}/ept.json'},
                       'geometry':mapping(box(-75,39,-73,41))} for i in range(5)]}
             current=[]
-            def read(fetch,url,bbox):
+            def read(fetch,url,bbox,**kwargs):
                 current.append(int(url.split('/')[-2]))
                 return np.empty((0,5)),{'url':url,'points':0}
             def measure(*args,**kwargs):
@@ -142,12 +142,12 @@ class BatchTests(unittest.TestCase):
             catalog={'features':[{'properties':{'name':name,'url':f'https://example.com/{name}/ept.json',
                       'acquisition_year': int(name[:4])},
                       'geometry':mapping(box(-75,39,-73,41))} for name in ('2022_broken','2014_good')]}
-            def read(fetch,url,bbox):
+            def read(fetch,url,bbox,**kwargs):
                 if 'broken' in url:raise KeyError('bounds')
                 return np.empty((0,5)),{'url':url,'points':0}
             with patch.object(ept.Fetcher,'json',side_effect=lambda url, **kw: catalog if url == ept.CATALOG_URL else {'items':[], 'total':0}),patch.object(ept,'read_ept',side_effect=read),\
                  patch.object(measurements,'measure_features',return_value=({'one':{'height_m':30,'tiers':[]}}, {'height_only':1}, {})):
-                result=worker.prepare(bundle.path,request_signature(bundle,.07,.077))
+                result=worker.prepare(bundle.path,request_signature(bundle,.07,.077,providers=['usgs']))
             self.assertEqual(result['buildings'],1)
             self.assertEqual(len(result['failures']),1)
             self.assertEqual(result['failures'][0]['source'],'2022_broken')

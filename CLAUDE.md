@@ -9,7 +9,7 @@ of this document.
 
 The add-on turns a WGS84 selection into an FDM city miniature: terrain, land
 surfaces, roads/rail, schematic bridges, trees, and building massing from
-Overture Maps, with optional USGS LiDAR building measurements. Blender 3.6 is
+Overture Maps, with optional LiDAR building measurements. Blender 3.6 is
 the local development/test target. Packaging also supports the Blender 4.2+
 extension layout; that does not establish runtime validation on 4.2+.
 
@@ -73,7 +73,7 @@ are errors; missing/stale/invalid optional LiDAR falls back to source buildings.
   install the optional LiDAR requirements. Python 3.11 is the local interpreter;
   setup scripts accept Python 3.10+ for the base downloader.
 - For LiDAR, explicitly install `requirements-lidar.txt` in that environment:
-  `laspy[lazrs]==2.7.0`, `pyproj==3.7.2`, `shapely==2.1.2`, plus the downloader
+  `laspy[lazrs]==2.7.0`, `pyproj==3.7.2`, `shapely==2.1.2`, `pyshp==2.3.1`, plus the downloader
   requirements. Never install wheels into Blender or pip-install at add-on
   runtime. DEM downloading uses only the standard library.
 - Interpreter resolution: scene **Override** → preference `overture_python_path`
@@ -317,42 +317,59 @@ colors, overwriting manual palette edits.
 and survey selection. `geometry/lidar_buildings.py` emits accepted measurements
 through the existing prism builder; raw point clouds never become Blender meshes.
 
-- `lidar_acquisition.py` discovers EPT coverage and paginated USGS TNMAccess LPC
-  LAZ products. An explicit EPT URL replaces automatic discovery; an optional
-  manifest URL adds LAZ candidates matched to catalog bounds. Unlocated manifest
-  entries are reported and skipped; automatic discovery never fetches LAZ headers.
-- `lidar_metadata.py` reads bounded EPT JSON and linked JSON/FGDC survey reports
-  before point acquisition. FGDC external DTD declarations are accepted without
-  fetching DTDs; parser callbacks reject custom and parameter entities, including
-  UTF-16 declarations. `lidar_ranking.py` prefers practical EPT unless
-  known acquisition age, resolution, comparable accuracy or classification
-  metadata establishes a material LAZ advantage in ranking. Acquisition always
-  processes EPT first; ranking still orders eligible surveys within each phase.
-  Threshold defaults and optional
-  request overrides enter the acquisition signature. Unknown metadata retains
-  EPT preference; project names/publication dates never become flight dates.
-  Whole-building coverage determines local eligibility, then only unresolved
-  buildings advance to fallback surveys. Successful buildings are not acquired
-  again; `lidar_tiles.py` uses individual candidate footprints plus 30 m ground
-  halos (25 m measurement neighborhood + 5 m guard) for both LAZ prefetch and
-  reads, excluding empty space inside batch rectangles. Split batches retain
-  this allowlist; the download wrapper rejects unplanned tiles.
-  A rejected reconstruction is not itself a data gap: LAZ fallback requires
-  failed EPT acquisition, missing ground/roof support, or absent coverage.
-  Metadata advantages alone cannot justify a LAZ offer. Use the preferred attempted EPT's evidence;
-  a poorer secondary survey cannot reopen LAZ for a roof/footprint rejection.
-  The fallback-policy signature invalidates public results independently of
-  otherwise identical per-survey measurement checkpoints.
-- `lidar_offer.py` binds explicit consent to the current request and reviewed
-  source/building/tile list. Preparation publishes usable EPT measurements plus
-  optional LAZ offers, with geographic areas, reasons, dataset metadata and known
-  sizes. The sidebar's **Download and Use LAZ Gap Tiles** action alone authorizes
-  those transfers; ordinary Prepare, Refresh, and background calls do not.
-  Consent replays EPT checkpoints and rechecks gaps. Changed or expanded offers
-  require another choice. Generation remains offline and can proceed without LAZ.
+- `lidar_candidates.py` defines the common provider-neutral dataset contract and
+  discovery settings. `lidar_acquisition.py` orchestrates adapters/ranking/readers;
+  `lidar_usgs.py` retains EPT/TNM pagination, reports and manifest behavior.
+  `lidar_flai.py` reads the live Open LiDAR Data inventory and spatial indexes;
+  `lidar_opentopography.py` queries its public catalog and published tile indexes.
+  `lidar_stac.py` supports bounded static catalogs and GET/POST Item Search with
+  pagination. Additional STAC catalogs and international discovery are configurable.
+  Provider failures are isolated. Catalog traversal/metadata budgets report partial
+  listings; unlocated ordinary LAS/LAZ assets never trigger remote header reads.
+  Official adapters add IGN LiDAR HD, NRCan CanElevation, EA England, Scottish
+  National LiDAR, NRW, Bavaria and regional PNOA (Castilla-La Mancha). Shared
+  `lidar_services.py` handles bounded/paginated WFS and ArcGIS queries and survey
+  grouping. Metadata has a 24-hour cache TTL. Published grid inventories/Metalink
+  are discovery mechanisms, never guessed tile URLs. See
+  `docs/LIDAR_OFFICIAL_SOURCES.md` for coverage/access limits and test commands.
+  Multi-nation providers remain fallbacks for unsupported regions and failures.
+- `lidar_metadata.py` reads bounded EPT JSON and linked JSON/FGDC survey reports.
+  XML accepts harmless external DTD declarations without retrieving them and
+  rejects custom/parameter entities. Dates, units, quality and scoped identity
+  remain explicit; publication times and generic name hints never become
+  acquisition dates. Official documented identifiers can encode acquisition
+  information: NRCan's collection end stays end-only, PNOA capture year retains
+  year precision. End-only dates cannot establish a material recency upgrade.
+- Ranking compares whole-building coverage, acquisition age, resolution, comparable
+  accuracy, classification and known tile sizes. EPT and COPC share the efficient
+  acquisition tier, with EPT preferred on quality ties. Both run before staged
+  LAS/LAZ. Successful buildings skip redundant streamed surveys. Material staged
+  upgrades require substantial metadata evidence and explicit consent; unknown
+  or marginal metadata retains good streamed coverage. Same-survey copies remain
+  delivery-gap fallbacks only. Reconstruction rejection alone is not a data gap.
+- `lidar_offer.py` binds consent to the request, reviewed datasets/buildings/tiles
+  and normalization metadata. Ordinary Prepare/Refresh/background runs publish
+  streamed measurements plus optional gap/upgrade offers. **Download and Use
+  Offered Tiles** authorizes only that reviewed set. Replays recheck eligibility;
+  changed/expanded offers require another choice. Generation stays offline.
+- `lidar_copc.py` uses pinned laspy with strict cached HTTP ranges and bounded
+  octree/point allocation. Servers ignoring Range are rejected before body reads;
+  there is no whole-file fallback. COPC and staged tiles share footprint/30 m
+  ground-halo allowlists. All formats feed the same seven-column point array into
+  existing measurements; geometry/FDM defaults are unchanged.
+- `lidar_normalize.py` applies declared classification mappings (including LAS
+  lookup VLRs) and explicit coordinate units. Header CRS takes priority, with
+  catalog CRS as fallback. Unknown custom classifications or Z units are rejected.
+  **Missing Z Units** defaults to requiring metadata; a user-declared unit fallback
+  can fill missing units, never override explicit header units. No horizontal-unit
+  inference or automatic geoid conversion. Ground subtraction is within one survey.
+  Provider/name, acquisition interval, density, CRS/datum, classifications, licence
+  and attribution survive source audits, point provenance and building records.
+  A reported single-year acquisition dates otherwise wholly undated points;
+  multi-year metadata never invents a capture year or overrides GPS evidence.
 - `lidar_identity.py` compares scoped dataset/project metadata and known USGS
   project delivery/metadata directories, retaining subprojects and epochs.
-  Never infer identity from tile names, generic titles or overlap. Conflicting
+  Never infer identity from generic tile names, titles or overlap. Conflicting
   acquisition periods/explicit editions prevent equivalence; missing identity
   remains unknown. LAZ copies of successfully read EPT surveys are redundant
   even after insufficient roof/ground support. Per-building coverage gaps,
@@ -366,9 +383,19 @@ through the existing prism builder; raw point clouds never become Blender meshes
   LAS GUID corroborated by count, XYZ extents/scales, format and encoding can
   confirm equivalence, restricted to verified input/tile coverage. Partial
   metadata must never establish whole-survey equivalence.
+  Exact original asset URLs and recognized acquisition-specific EA/PNOA IDs
+  retained by Flai also establish aliases, restricted to intersecting matched
+  tile coverage. Different catalog namespaces do not defeat proven asset identity.
+  Successfully read duplicate streams are skipped unless materially improved;
+  failed transfers remain eligible for another delivery.
 - `lidar_ept.py` includes additive ancestor nodes as well as leaves.
   `lidar_laz.py` downloads intersecting staged tiles to disk and decodes chunks.
-  Both normalize to WGS84 XY, metre Z, classifications/returns, and capture-age
+  `lidar_archives.py` handles consented minimum ZIP delivery units for EA England,
+  extracts only indexed members to hashed paths, checks sizes/CRC and shares the
+  resumable archive download. Offers disclose the minimum 5 km delivery unit.
+  Failed downloads exhaust retries once per preparation, not once per building
+  batch/member; a new preparation can retry. No point download occurs in discovery.
+  Readers normalize to WGS84 XY, metre Z, classifications/returns, and capture-age
   evidence. Reject missing CRS/unknown vertical units; distinguish international
   and survey feet. Catalog/publication/OSM edit dates are not flight dates.
 - `lidar_batches.py` groups whole buildings spatially (400 m default), retaining
@@ -379,7 +406,7 @@ through the existing prism builder; raw point clouds never become Blender meshes
   evaluate it before admitting the next. One unproductive speculative support-gap
   batch defers further speculative downloads; independently justified coverage,
   delivery gaps and material upgrades remain eligible. Checkpoints supply the
-  same trial evidence before new transfers. EPT remains serial. Changing concurrency must
+  same trial evidence before new transfers. EPT/COPC streaming remains serial. Changing concurrency must
   not change measurement signatures or results. The UI passes the setting to
   interactive and background jobs.
 - `lidar_measurements.py` fits ground-relative scalar heights, supported terraces,

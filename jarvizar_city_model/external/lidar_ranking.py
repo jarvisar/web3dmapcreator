@@ -1,18 +1,20 @@
 """Metadata-only acquisition policy. Safe to import in Blender (stdlib only).
 
 Thresholds are deliberately substantial: EPT wins unknown or marginal
-comparisons. Dates are acquisition intervals, never catalog or filename dates.
+comparisons. Dates are reported acquisitions, never publication dates or name hints.
 See docs/LIDAR_BUILDINGS.md for units, defaults and request configuration.
 """
 from datetime import date
 import math
 try:
     from .lidar_identity import same_survey
+    from .lidar_candidates import streamable, staged
 except ImportError:
     from lidar_identity import same_survey
+    from lidar_candidates import streamable, staged
 
-ACQUISITION_VERSION = 2
-FALLBACK_POLICY_VERSION = 4
+ACQUISITION_VERSION = 4
+FALLBACK_POLICY_VERSION = 5
 # Stop speculative support-gap acquisition after one batch yields no adopted
 # measurements. Coverage/delivery gaps and material upgrades remain independent.
 MAX_UNPRODUCTIVE_LAZ_BATCHES = 1
@@ -99,7 +101,7 @@ def metadata_order(source, thresholds, accuracy_fields):
     """Total deterministic order within a practicality tier; no pairwise cycles."""
     meta = source.get('survey_metadata', {})
     coverage = source.get('catalog_coverage', 0)
-    acquisition = meta.get('acquisition_start') or ''
+    acquisition = meta.get('acquisition_start') or meta.get('acquisition_end') or ''
     ordinal = date.fromisoformat(acquisition).toordinal() if acquisition else 0
     # Resolution is distinct from positional accuracy. Unknowns earn no bonus.
     density, spacing = meta.get('point_density_m2'), meta.get('point_spacing_m')
@@ -116,7 +118,10 @@ def metadata_order(source, thresholds, accuracy_fields):
     accuracy = sum(1 / (1 + meta[key]) for key in accuracy_fields if key in meta)
     classified = sum(meta.get(key) is True for key in ('ground_class', 'building_class'))
     return (not usable(source), coverage < thresholds['adequate_coverage'],
-            -ordinal, -resolution, -accuracy, -classified, -coverage, source['url'])
+            -ordinal, -resolution, -accuracy, -classified, -meta.get('classification_quality', 0), -coverage,
+            {'EPT': 0, 'COPC': 1}.get(source['format'], 2),
+            not source.get('authoritative', False),
+            source.get('estimated_bytes') or float('inf'), source['url'])
 
 
 def rank_sources(sources, thresholds=None, geometry=None):
@@ -139,22 +144,22 @@ def rank_sources(sources, thresholds=None, geometry=None):
                 continue
         accuracy_fields.append(key)
     ordered = sorted(sources, key=lambda s: metadata_order(s, thresholds, accuracy_fields))
-    epts = [s for s in ordered if s['format'] == 'EPT' and usable(s)]
+    epts = [s for s in ordered if streamable(s) and usable(s)]
     preferred = epts[0] if epts else None
     def priority(source):
         if not usable(source):
             return 3, source.get('unusable_reason') or 'no ground classification'
-        if source['format'] == 'EPT':
-            return 1, 'EPT preferred for efficient acquisition'
+        if streamable(source):
+            return 1, f"{source['format']} preferred for efficient spatial acquisition"
         if preferred is None:
-            return 0, 'no suitable EPT coverage'
+            return 0, 'no suitable EPT coverage (or COPC)'
         equivalent = next((ept for ept in epts if same_survey(source, ept, geometry)), None)
         if equivalent is not None:
-            return 2, f"same survey as EPT ({same_survey(source, equivalent, geometry)}); delivery-gap fallback only"
+            return 2, f"same survey as {equivalent['format']} ({same_survey(source, equivalent, geometry)}); delivery-gap fallback only"
         reasons = material_advantages(source, preferred, thresholds)
-        return (0, '; '.join(reasons)) if reasons else (2, 'EPT preferred; LAZ reserved for unresolved gaps')
+        return (0, '; '.join(reasons)) if reasons else (2, f"{preferred['format']} preferred; staged data reserved for unresolved gaps")
     ordered.sort(key=lambda s: priority(s)[0])  # stable within each tier
-    return [(source, priority(source)[1]) for source in ordered]
+    return [(source, priority(source)[1] + ('; official original source (quality ties)' if source.get('authoritative') else '')) for source in ordered]
 
 
 class AcquisitionPlan:
@@ -177,7 +182,7 @@ class AcquisitionPlan:
             # Partial provenance verifies only the covered building, never all
             # buildings sharing a catalog eligibility tuple.
             local_matches = tuple((a, b) for a in eligible for b in eligible
-                if self.sources[a]['format'] == 'LAZ' and self.sources[b]['format'] == 'EPT'
+                if staged(self.sources[a]) and streamable(self.sources[b])
                 and same_survey(self.sources[a], self.sources[b], geometries[identifier]))
             key = eligible, local_matches
             if key not in rankings:
@@ -195,10 +200,10 @@ class AcquisitionPlan:
             # Zero retained roof/ground points alone can be a property of the
             # survey. Require an empty EPT hierarchy query to establish a
             # delivery coverage gap, rather than repeating filtered returns.
-            if (source['format'] == 'EPT' and reason in DATA_GAPS
+            if (streamable(source) and reason in DATA_GAPS
                     and (info or {}).get('points') == 0 and (info or {}).get('nodes') == 0):
                 reason = 'empty_ept_query'
-            elif source['format'] == 'EPT' and reason == 'insufficient_coverage' and (info or {}).get('ept_delivery_gap') is True:
+            elif streamable(source) and reason == 'insufficient_coverage' and (info or {}).get('ept_delivery_gap') is True:
                 reason = 'ept_coverage_gap'
             self.outcomes[identifier, source['url']] = reason
 
@@ -209,34 +214,52 @@ class AcquisitionPlan:
         for _, reason in outcomes:
             if reason in SOURCE_INDEPENDENT_REJECTIONS:
                 return False, f'source-independent rejection: {reason}'
-        if candidate['format'] != 'LAZ':
+        if not staged(candidate):
+            for source, reason in outcomes:
+                if (same_survey(candidate, source, self.geometries[identifier])
+                        and reason not in DELIVERY_GAPS
+                        and not material_advantages(candidate, source, self.thresholds)):
+                    return False, 'redundant streamed survey already read successfully; no material upgrade'
             return True, None
         # All attempted EPT deliveries matter, including a lower-ranked mirror.
         # Sparse ground/roof support in successfully read survey returns does not
         # justify downloading those same returns in another container.
         equivalents = [(s, reason) for s, reason in outcomes
-                       if s['format'] == 'EPT' and same_survey(candidate, s, self.geometries[identifier])]
+                       if streamable(s) and same_survey(candidate, s, self.geometries[identifier])]
         for source, reason in equivalents:
             if reason not in DELIVERY_GAPS:
-                return False, f'redundant survey {same_survey(candidate, source, self.geometries[identifier])} already read as EPT'
+                return False, f'redundant survey {same_survey(candidate, source, self.geometries[identifier])} already read as {source["format"]}'
         if equivalents:
-            return True, 'same-survey EPT delivery gap: ' + ', '.join(sorted({r for _, r in equivalents}))
+            return True, 'same-survey streamed delivery gap: ' + ', '.join(sorted({r for _, r in equivalents}))
         # The preferred EPT's evidence governs fallback. A poorer/older EPT
         # returning fewer points cannot turn its predecessor's roof-fit rejection
         # into a coverage gap and thereby unlock every LAZ survey.
-        ept = next(((s, reason) for s, reason in outcomes if s['format'] == 'EPT'), None)
+        ept = next(((s, reason) for s, reason in outcomes if streamable(s)), None)
         if ept is None:
             return True, None
         source, reason = ept
+        advantages = material_advantages(candidate, source, self.thresholds)
+        if advantages:
+            return True, 'optional material upgrade: ' + '; '.join(advantages)
         if reason in DATA_GAPS:
-            return True, f'EPT data gap: {reason}'
-        return False, f'EPT rejection is not a data gap: {reason}'
+            return True, f"{source['format']} data gap: {reason}"
+        return False, f"{source['format']} rejection is not a data gap: {reason}"
+
+    def upgrade(self, identifier, candidate):
+        if not staged(candidate):
+            return False
+        successes = [s for s, _ in self.orders[identifier]
+                     if self.outcomes.get((identifier, s['url'])) == 'measurement_available']
+        # Never reopen a building already successfully measured from staged data.
+        return bool(successes) and all(streamable(s)
+            and not same_survey(candidate, s, self.geometries[identifier])
+            and material_advantages(candidate, s, self.thresholds) for s in successes)
 
     def speculative(self, identifier, candidate):
         """A sparse-support trial has no independent evidence of a delivery gap."""
-        if candidate['format'] != 'LAZ':
+        if not staged(candidate):
             return False
-        ept = next((s for s, _ in self.orders[identifier] if s['format'] == 'EPT'
+        ept = next((s for s, _ in self.orders[identifier] if streamable(s)
                     and (identifier, s['url']) in self.outcomes), None)
         if ept is None or material_advantages(candidate, ept, self.thresholds):
             return False
@@ -251,10 +274,12 @@ class AcquisitionPlan:
     def next(self, resolved, source_format=None):
         groups, reasons = {}, {}
         for identifier, order in self.orders.items():
-            if identifier in resolved:
-                continue
             for source, reason in order:
-                if source_format and source['format'] != source_format:
+                if identifier in resolved and not self.upgrade(identifier, source):
+                    continue
+                if source_format and not (
+                        (source_format == 'STREAM' and streamable(source)) or
+                        (source_format == 'STAGED' and staged(source)) or source['format'] == source_format):
                     continue
                 url = source['url']
                 if url not in self.tried[identifier]:
@@ -270,7 +295,7 @@ class AcquisitionPlan:
         if not groups:
             return None
         # Process efficient EPT work before fallback LAZ in disjoint areas.
-        url = min(groups, key=lambda u: (self.sources[u]['format'] != 'EPT',
+        url = min(groups, key=lambda u: (not streamable(self.sources[u]),
                                        self.sources[u].get('rank', 0), u))
         for feature in groups[url]:
             self.tried[feature['id']].add(url)

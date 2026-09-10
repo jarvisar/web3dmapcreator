@@ -34,6 +34,14 @@ class TileDownloads:
             for tile in self.tiles:
                 key = (tile['url'], tile.get('updated') or '')
                 if key not in self.futures:
+                    if tile.get('archive_url'):
+                        try:
+                            from .lidar_archives import fetch_tile
+                        except ImportError:
+                            from lidar_archives import fetch_tile
+                        self.futures[key] = self.pool.submit(fetch_tile, self.fetch, tile,
+                            cancel=self.cancel, validate_prefix=self.validate_prefix)
+                        continue
                     self.futures[key] = self.pool.submit(
                         self.fetch.download, key[0], revision=key[1], cancel=self.cancel,
                         validate_prefix=self.validate_prefix)
@@ -56,7 +64,7 @@ class TileDownloads:
 def prefetch_source(fetch, source, queries, workers=DEFAULT_DOWNLOAD_WORKERS):
     """Prefetch an admitted batch; the caller evaluates it before the next."""
     from contextlib import nullcontext
-    if source['format'] != 'LAZ':
+    if source['format'] not in ('LAZ', 'LAS'):
         return nullcontext(fetch)
     from shapely.geometry import box
     from shapely import STRtree
@@ -69,6 +77,7 @@ def prefetch_source(fetch, source, queries, workers=DEFAULT_DOWNLOAD_WORKERS):
     ordered = {}
     for query in queries:
         for i in sorted(tree.query(box(*query), predicate='intersects')):
-            ordered.setdefault(int(i), tiles[i])
+            ordered.setdefault(int(i), {**source, **tiles[i]} if tiles[i].get('archive_url') else tiles[i])
+    from functools import partial
     return TileDownloads(fetch, list(ordered.values()), workers=workers,
-                         validate_prefix=validate_download_prefix)
+                         validate_prefix=partial(validate_download_prefix, metadata=source))

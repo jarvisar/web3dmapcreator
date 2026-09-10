@@ -115,6 +115,10 @@ def normalized_metadata(data):
         start, end = first[0], last[1]
     if start and end and start <= end:
         result.update(acquisition_start=start, acquisition_end=end, date_basis='reported acquisition')
+    elif last and not first and not start:
+        # A reported collection end is useful for recency, but cannot establish
+        # a newer acquisition's lower bound or date all individual returns.
+        result.update(acquisition_end=last[1], date_basis='reported acquisition end only')
     return result
 
 
@@ -279,8 +283,8 @@ def enrich_sources(fetch, sources, failures, progress):
             url = member.get('metadata_url') or member.get('vendorMetaUrl') or ''
             records.append({**reports.get(url, {}), **normalized_metadata(member)})
             identities.append(merge_identities(metadata_identity(member), report_identities.get(url, {})))
-        source['survey_metadata'] = aggregate_metadata(records)
-        source['survey_identity'] = common_identity(identities)
+        source['survey_metadata'] = {**source.get('survey_metadata', {}), **aggregate_metadata(records)}
+        source['survey_identity'] = merge_identities(metadata_identity(source), common_identity(identities))
         if len(urls) > MAX_REPORTS:
             source['metadata_note'] = f'Only {MAX_REPORTS} distinct reports read; incomplete fields remain unknown'
         if source['format'] != 'EPT':
@@ -295,7 +299,7 @@ def enrich_sources(fetch, sources, failures, progress):
             except ImportError:
                 from lidar_ept import ept_coordinate_system
             meta = fetch.json(source['url'], limit=METADATA_LIMIT)
-            crs, _, _ = ept_coordinate_system(meta, source['url'])
+            crs, _, _ = ept_coordinate_system(meta, source['url'], source)
             bounds = meta.get('boundsConforming', meta['bounds'])
             if len(bounds) != 6 or not all(math.isfinite(v) for v in bounds) or bounds[0] >= bounds[3] or bounds[1] >= bounds[4]:
                 raise ValueError('Invalid EPT metadata bounds')
@@ -303,6 +307,8 @@ def enrich_sources(fetch, sources, failures, progress):
             if not all(math.isfinite(v) for v in extent):
                 raise ValueError('Invalid geographic EPT extent')
             source['coverage'] = source['coverage'].intersection(box(*extent))
+            source['horizontal_crs'] = crs.to_string()
+            source.setdefault('vertical_datum', meta.get('srs', {}).get('vertical') or 'unknown')
             source['survey_metadata'].update(normalized_metadata(meta))
             source['survey_identity'] = merge_identities(source['survey_identity'], metadata_identity(meta))
             # Dimension presence does not prove that class 2/6 returns exist.
