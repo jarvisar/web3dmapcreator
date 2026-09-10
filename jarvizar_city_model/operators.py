@@ -9,7 +9,7 @@ from pathlib import Path
 import bpy
 import mathutils
 from bpy.types import Operator
-from bpy.props import IntProperty
+from bpy.props import IntProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
 from .blender.collections import (
@@ -30,6 +30,7 @@ from .data.cache import (
 )
 from .data.dem import DEMTerrain, ElevationGrid, ElevationGridError
 from .data.lidar import request_signature, load_measurements, prepare_lidar, LidarPreparation, measurement_summary
+from .external.lidar_offer import approved_offers, offer_details
 from .data.geojson import load_feature_collection, polygon_features, first_osm_id
 from .data.land import recessed_water_kind
 from .config import preferred_python_path
@@ -319,7 +320,8 @@ def _lidar_signature(settings, bundle, transform=None):
     return request_signature(bundle, min(transform.scale_x_mm_per_m, transform.scale_y_mm_per_m),
         transform.scale_z_mm_per_m * settings.building_height_scale,
         settings.lidar_minimum_width_mm, settings.lidar_minimum_step_mm, settings.lidar_source_url,
-        settings.generate_roof_shapes, settings.lidar_prefer_measured, settings.lidar_manifest_url)
+        settings.generate_roof_shapes, settings.lidar_prefer_measured, settings.lidar_manifest_url,
+        roof_mode=settings.lidar_roof_mode)
 
 
 class JARVIZAR_OT_prepare_lidar(Operator):
@@ -327,6 +329,7 @@ class JARVIZAR_OT_prepare_lidar(Operator):
     bl_label = "Prepare LiDAR Buildings"
     bl_description = "Prepare USGS heights, tiers and roof planes in small resumable groups; Esc cancels and keeps completed work"
     _running = False
+    laz_approval: StringProperty(default='', options={'HIDDEN', 'SKIP_SAVE'})
 
     @classmethod
     def poll(cls, context):
@@ -337,6 +340,8 @@ class JARVIZAR_OT_prepare_lidar(Operator):
         settings = context.scene.jarvizar_city_model
         message = (f"Prepared {result['buildings']}/{result.get('candidate_buildings', result['buildings'])} buildings; "
                    f"{result['tiered_buildings']} tiered, {result.get('roof_plane_buildings', 0)} with roof planes")
+        if result.get('faceted_roof_buildings'):
+            message += f"; {result['faceted_roof_buildings']} detailed roof surfaces"
         if result.get('infill_buildings') or result.get('part_heights'):
             message += f"; {result.get('infill_buildings', 0)} main masses restored, {result.get('part_heights', 0)} part heights"
         if result.get('compared_sources'):
@@ -355,6 +360,12 @@ class JARVIZAR_OT_prepare_lidar(Operator):
             message += f"; {len(result['failures'])} source issues: {result['failures'][0]['reason']}"
         elif not result['buildings']:
             message += '; no reliable measurements for this selection'
+        offers = result.get('laz_offers', [])
+        settings.lidar_laz_offer_token = result.get('laz_offer_token', '')
+        settings.lidar_laz_offer_details = offer_details(offers)
+        if offers:
+            gaps = len({identifier for o in offers for identifier in o['buildings']})
+            message += f'; additional LAZ coverage available for {gaps} building gaps (download optional)'
         settings.lidar_preparation_status = settings.last_status = message
         settings.use_lidar_buildings = True
         self.report({'WARNING'} if result.get('failures') or not result['buildings'] else {'INFO'}, message)
@@ -414,20 +425,23 @@ class JARVIZAR_OT_prepare_lidar(Operator):
                 raise ValueError("Blender online access is disabled")
             bundle = _cache_bundle(settings)
             signature = _lidar_signature(settings, bundle)
+            laz_approval = getattr(self, 'laz_approval', '')
+            if laz_approval:
+                approved_offers(bundle.path, signature, laz_approval)
             records, message = load_measurements(bundle, signature)
-            if not settings.force_redownload and message.startswith("LiDAR measurements:"):
+            if not laz_approval and not settings.force_redownload and message.startswith("LiDAR measurements:"):
                 summary = measurement_summary(bundle)
                 if not summary['failures']:
                     return self.finish(context, summary)
             settings.lidar_preparation_status = 'Preparing LiDAR buildings... (Esc to cancel)'
             python_path = _resolve_downloader(context, settings)
             if bpy.app.background:
-                return self.finish(context, prepare_lidar(python_path, bundle, signature, settings.force_redownload,
-                                   download_workers=settings.lidar_download_workers))
+                return self.finish(context, prepare_lidar(python_path, bundle, signature, settings.force_redownload and not laz_approval,
+                                   download_workers=settings.lidar_download_workers, laz_approval=laz_approval))
             self._signature = signature
             self._settings, self._scene = settings, context.scene
-            self._job = LidarPreparation(python_path, bundle, signature, settings.force_redownload,
-                                         download_workers=settings.lidar_download_workers)
+            self._job = LidarPreparation(python_path, bundle, signature, settings.force_redownload and not laz_approval,
+                                         download_workers=settings.lidar_download_workers, laz_approval=laz_approval)
             self._timer = context.window_manager.event_timer_add(0.5, window=context.window)
             context.window_manager.modal_handler_add(self)
             settings.lidar_preparing = True
@@ -912,7 +926,8 @@ class JARVIZAR_OT_generate_model(Operator):
                         lidar_generation_status = (
                             f"Used LiDAR on {counts.get('lidar_buildings', 0)} buildings: "
                             f"{counts.get('lidar_tier_solids', 0)} tier sections, "
-                            f"{counts.get('lidar_roof_plane_buildings', 0)} sloped roofs; "
+                            f"{counts.get('lidar_roof_plane_buildings', 0)} sloped roofs, "
+                            f"{counts.get('lidar_faceted_roof_buildings', 0)} detailed surfaces; "
                             f"{counts.get('lidar_infill_buildings', 0)} main masses restored, "
                             f"{counts.get('lidar_part_heights', 0)} part heights; "
                             f"{counts.get('lidar_source_detail_preserved', 0)} richer source buildings kept; "

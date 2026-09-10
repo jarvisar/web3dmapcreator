@@ -16,10 +16,12 @@ from ..external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, validate_downlo
 from ..external.lidar_ranking import ACQUISITION_VERSION, FALLBACK_POLICY_VERSION, selection_thresholds
 
 FORMAT_VERSION = 1
-ALGORITHM_VERSION = 7
+ALGORITHM_VERSION = 9
 
 
-def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None):
+def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None, roof_mode='FACETED'):
+    if roof_mode not in ('TERRACES', 'FACETED'):
+        raise ValueError('Unknown LiDAR roof reconstruction mode')
     files = {}
     for name in ("building", "building_part"):
         path = bundle.data_path(name)
@@ -31,6 +33,7 @@ def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0
             "z_scale": round(float(z_scale), 10), "min_width_mm": round(float(min_width_mm), 6),
             "min_step_mm": round(float(min_step_mm), 6), "source_url": source_url.strip(),
             'roof_planes': bool(roof_planes), 'prefer_lidar': bool(prefer_lidar),
+            'roof_mode': roof_mode,
             'manifest_url': manifest_url.strip(), 'acquisition_thresholds': selection_thresholds(acquisition_thresholds),
             'fallback_policy': FALLBACK_POLICY_VERSION}
 
@@ -40,7 +43,7 @@ def load_measurements(bundle, signature):
     if not path.is_file():
         return {}, "No prepared LiDAR; using source buildings"
     try:
-        if path.stat().st_size > 32 * 1024 * 1024:
+        if path.stat().st_size > 128 * 1024 * 1024:
             raise ValueError("LiDAR measurement cache is oversized")
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
@@ -63,9 +66,12 @@ def measurement_summary(bundle):
             'part_heights': sum(len(r.get('part_heights', {})) for r in records.values()),
             'estimated_heights_corrected': sum(r.get('source_height_decision', r.get('height_decision')) == 'corrected_estimated_height' for r in records.values()),
             'tiered_buildings': sum(bool(r['tiers']) for r in records.values()),
-            'roof_plane_buildings': sum(bool(r.get('roof_surfaces')) for r in records.values()),
+            'roof_plane_buildings': sum(bool(r.get('roof_surfaces')) and r.get('method') != 'faceted_roof' for r in records.values()),
+            'faceted_roof_buildings': sum(r.get('method') == 'faceted_roof' for r in records.values()),
             'compared_sources': payload.get('compared_sources', 0),
             'conflict_buildings': payload.get('conflict_buildings', 0),
+            'laz_offers': payload.get('laz_offers', []),
+            'laz_offer_token': payload.get('laz_offer_token', ''),
             'rejection_counts': dict(Counter(reason for key, reason in payload.get('rejected', {}).items()
                                             if key not in records)),
             'failures': payload.get('failures', []), 'counts': payload.get('counts', {})}
@@ -78,7 +84,7 @@ class LidarPreparation:
     individual HTTP requests still have a timeout. Cancel preserves completed
     tile and measurement checkpoints and the previous public result.
     """
-    def __init__(self, python_path, bundle, signature, refresh=False, download_workers=DEFAULT_DOWNLOAD_WORKERS):
+    def __init__(self, python_path, bundle, signature, refresh=False, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval=''):
         download_workers = validate_download_workers(download_workers)
         self.bundle = bundle
         bundle.ensure_directory()
@@ -94,6 +100,8 @@ class LidarPreparation:
                    '--download-workers', str(download_workers), '--parent-pid', str(os.getpid())]
         if refresh:
             command.append('--refresh')
+        if laz_approval:
+            command.extend(['--laz-approval', laz_approval])
         try:
             with self.stdout_path.open('w', encoding='utf-8') as output, self.stderr_path.open('w', encoding='utf-8') as errors:
                 self.process = subprocess.Popen(command, stdout=output, stderr=errors,
@@ -142,5 +150,5 @@ class LidarPreparation:
         self.temporary.cleanup()
 
 
-def prepare_lidar(python_path, bundle, signature, refresh=False, download_workers=DEFAULT_DOWNLOAD_WORKERS):
-    return LidarPreparation(python_path, bundle, signature, refresh, download_workers).result()
+def prepare_lidar(python_path, bundle, signature, refresh=False, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval=''):
+    return LidarPreparation(python_path, bundle, signature, refresh, download_workers, laz_approval).result()

@@ -1,5 +1,101 @@
 # Building heights and USGS LiDAR
 
+## Optional LAZ gap downloads (0.15.16)
+
+**Prepare LiDAR Buildings** automatically acquires EPT and publishes its usable
+measurements. Standalone LAZ files are never downloaded by that action, including
+Refresh and background/scripted preparation. EPT's own compressed nodes continue
+to download normally.
+
+After EPT attempts finish, remaining meaningful building coverage/support gaps
+are compared with available LAZ catalog coverage. The sidebar shows potential
+improvement areas as W/S/E/N bounds, building counts, gap reasons, dataset URLs,
+known acquisition/resolution information, tile counts and reported sizes.
+Choose **Download and Use LAZ Gap Tiles** to acquire that reviewed set, or generate
+immediately using EPT and source-building fallbacks. Recovery is not guaranteed.
+
+Consent is scoped to the request, datasets, buildings and tile URLs; it is not
+a persistent enable-LAZ setting. Changed settings reject stale consent. Changed
+datasets or additional tiles produce a new offer. The consent action reuses EPT
+checkpoints, preserves ranking among eligible LAZ sources, and uses the existing
+incremental footprint/ground-halo acquisition and measurement pipeline.
+Successful EPT buildings never enter LAZ batches. Reconstruction/height conflicts
+and better metadata alone do not count as gaps. Same-survey redundancy rules
+remain in force.
+
+Discovery reads catalog, survey and EPT metadata only. Manifest URL lists now
+match authoritative catalog bounds; entries without intersecting catalog bounds
+are reported and skipped. Survey provenance can inspect already cached LAZ
+headers but never downloads remote headers automatically. This replaces the
+automatic header reads and material-upgrade acquisition described in older
+release sections below.
+
+Public `fallback_policy=4` requires Prepare again while retaining otherwise
+matching per-survey checkpoints. Scripts must first prepare, review `laz_offers`
+in the result, and explicitly pass its `laz_offer_token` as `laz_approval` (or
+`--laz-approval` to the worker) to request those downloads.
+
+## Detailed measured roof surfaces (0.15.15)
+
+**LiDAR Roof Reconstruction → Detailed Surfaces** is the new default. With
+**Generate Roof Shapes** enabled, supported slopes and curved crowns can become
+connected triangular roof facets instead of horizontal height bands. **Terraces**
+retains the previous reconstruction. Changing modes requires **Prepare LiDAR
+Buildings** again; leave **Refresh Existing Cache** off to reuse cached points.
+
+The usual footprint, ground, coverage, classification and height checks run
+first. `lidar_facets.py` then fits the same supported cell samples (three returns
+per cell, existing 1.5 m cell floor), using deterministic boundary estimates and
+adaptive interior refinement. No additional EPT points or LAZ tiles are requested.
+Existing measured roof planes remain unchanged. Major terrace jumps of at least
+`max(2 m, 4 × minimum step)` divide the fit, retaining vertical podium/setback
+walls. Holes and footprint boundaries clip every facet. Unsupported patches keep
+their original measured terraces; an incomplete or excessive fit keeps the entire
+original envelope. This does not reconstruct facades or infer absent survey detail.
+
+Comparison and complexity limits are explicit in `lidar_facets.py`: the 95th
+percentile residual must be at most `max(0.35 m, minimum step / 2)` and the maximum
+residual at most `max(1.25 m, 3 × that tolerance)`. Boundary estimates need three
+nearby supported samples and a nearest sample within two cells. Refinement uses
+at most 120 vertices per patch, 24 iterations and 1,024 facets per building.
+The top must agree with the existing measured height within `max(2 m, 5%)`.
+Clipping slivers less than 5 mm wide in survey space (0.00035 mm at the default
+print scale) are discarded with a maximum footprint-area loss of 0.1%; the
+existing solid builder still checks coverage and closed geometry before adoption.
+
+The existing ground-draped solid builder supplies printable walls beneath each
+facet. Smooth shading is not required, and no smoothing modifier rounds major
+building corners. Preparation and generation report detailed-roof counts;
+per-building records retain fit error and reasons for keeping terrace patches.
+Measurement algorithm **9** includes the reconstruction mode in cache identity.
+The public measurement-cache read limit is 128 MiB to accommodate bounded facets;
+individual source-download limits and acquisition policy remain unchanged.
+
+## Roof coverage and FGDC reports (0.15.14)
+
+The measurement grid can split nearby returns across cell boundaries, causing
+a well observed roof to fall just short of the coverage requirement. Only
+coverage near misses with at least **80% supported footprint area in every
+polygon component** now retry the grid at three fixed offsets: half a cell in
+X, half in Y, then half in both. The first complete fit wins deterministically.
+Each fit still needs **three returns per supported cell**, **85% coverage per
+component**, and all existing ground, exterior-roof, height and printability
+checks. Broad missing sections, observed ground, and mismatched exterior roofs
+remain rejections. Accepted original fits retain their measurements and geometry.
+The retries reuse the same cropped EPT points and ground reference; they do not
+request LAZ or denser EPT data. Recovered records log `coverage_grid_offset`.
+
+Standard FGDC XML reports can declare an external DTD. That declaration is now
+accepted without fetching the DTD. Custom entity declarations and references
+remain blocked, including UTF-16 input; ordinary XML escapes are supported.
+The previous warning discarded useful survey metadata but did not invalidate
+successfully prepared EPT buildings. Acquisition dates still come from reported
+ground/collection time, and point spacing remains resolution rather than accuracy.
+
+Measurement algorithm **8** requires **Prepare LiDAR Buildings** again. Cached
+point files remain reusable; old measurement checkpoints are not treated as
+newly evaluated roofs. Source ranking and incremental LAZ admission are unchanged.
+
 ## Verified input provenance and incremental fallback (0.15.13)
 
 Differently named EPT/LAZ deliveries are now compared using the EPT input

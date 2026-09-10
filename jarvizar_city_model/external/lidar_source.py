@@ -56,7 +56,7 @@ def strong_measurement(record):
     return (record.get('coverage', 0) >= .9
             and record.get('explained_fraction', 0) >= .8
             and record.get('roof_support_density_m2', 0) >= 1
-            and record.get('method') in ('flat_regions', 'roof_planes', 'supported_roof_height'))
+            and record.get('method') in ('flat_regions', 'roof_planes', 'supported_roof_height', 'faceted_roof'))
 
 
 def height_decision(properties, observed, strong, corroborated=False):

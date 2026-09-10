@@ -278,6 +278,9 @@ class JARVIZAR_PT_buildings(Panel):
         box.label(text="USGS LiDAR Buildings")
         box.prop(settings, "use_lidar_buildings")
         box.prop(settings, "lidar_prefer_measured")
+        roof_row = box.row()
+        roof_row.enabled = settings.generate_roof_shapes
+        roof_row.prop(settings, "lidar_roof_mode")
         box.prop(settings, "lidar_minimum_width_mm")
         box.prop(settings, "lidar_minimum_step_mm")
         box.prop(settings, "lidar_source_url")
@@ -286,6 +289,18 @@ class JARVIZAR_PT_buildings(Panel):
         download_row.enabled = not settings.lidar_preparing
         download_row.prop(settings, "lidar_download_workers")
         box.operator("jarvizar.prepare_lidar", icon="IMPORT")
+        box.label(text='EPT automatic; LAZ requires your choice')
+        if settings.lidar_laz_offer_token:
+            offer = box.box()
+            offer.label(text='Additional LAZ coverage available', icon='INFO')
+            offer.label(text='Potential improvements; recovery is not guaranteed')
+            for paragraph in settings.lidar_laz_offer_details.splitlines():
+                for line in textwrap.wrap(paragraph, width=max(25, int(context.region.width/7)-6)):
+                    offer.label(text=line)
+            row = offer.row()
+            row.enabled = not settings.lidar_preparing
+            row.operator('jarvizar.prepare_lidar', text='Download and Use LAZ Gap Tiles', icon='IMPORT').laz_approval = settings.lidar_laz_offer_token
+            offer.label(text='Optional: generate now to keep current EPT coverage')
         if settings.lidar_preparing:
             box.label(text='Preparing in background; Esc cancels', icon='TIME')
         else:

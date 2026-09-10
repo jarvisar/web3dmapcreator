@@ -32,7 +32,7 @@ retain explicitly stored values when defaults change.
 | Ground surfaces | 0.4 mm rise, 0.15 mm embed; roads and ground-founded buildings use that embed too |
 | Buildings | Height multiplier 1.1; minimum height 0.8 mm, gated by a 0.6 mm footprint setting |
 | Source building detail | Minimum effective width 0.08 mm; slenderness limit 30 below 0.45 mm width |
-| LiDAR | Opt-in; Prefer LiDAR on Conflicts enabled; detail width 0.1 mm / step 0.05 mm |
+| LiDAR | Opt-in; Prefer LiDAR on Conflicts enabled; Detailed Surfaces; detail width 0.1 mm / step 0.05 mm |
 | Ponds / fountains | Recess enabled, depth 1.0 mm, water thickness 0.8 mm (0.2 mm below the lowest sampled bank) |
 | Trees | Trunkless three-tier solids, minimum width 1.1 mm / height 1.6 mm; 26 m forest spacing, 18% variation, 0.2 mm crown clearance |
 
@@ -319,12 +319,16 @@ through the existing prism builder; raw point clouds never become Blender meshes
 
 - `lidar_acquisition.py` discovers EPT coverage and paginated USGS TNMAccess LPC
   LAZ products. An explicit EPT URL replaces automatic discovery; an optional
-  manifest URL adds LAZ candidates. Manifest tile locations come from bounded
-  LAS header/VLR/EVLR reads, never guessed filename coordinates.
+  manifest URL adds LAZ candidates matched to catalog bounds. Unlocated manifest
+  entries are reported and skipped; automatic discovery never fetches LAZ headers.
 - `lidar_metadata.py` reads bounded EPT JSON and linked JSON/FGDC survey reports
-  before point acquisition. `lidar_ranking.py` prefers practical EPT unless
+  before point acquisition. FGDC external DTD declarations are accepted without
+  fetching DTDs; parser callbacks reject custom and parameter entities, including
+  UTF-16 declarations. `lidar_ranking.py` prefers practical EPT unless
   known acquisition age, resolution, comparable accuracy or classification
-  metadata establishes a material LAZ advantage. Threshold defaults and optional
+  metadata establishes a material LAZ advantage in ranking. Acquisition always
+  processes EPT first; ranking still orders eligible surveys within each phase.
+  Threshold defaults and optional
   request overrides enter the acquisition signature. Unknown metadata retains
   EPT preference; project names/publication dates never become flight dates.
   Whole-building coverage determines local eligibility, then only unresolved
@@ -334,11 +338,18 @@ through the existing prism builder; raw point clouds never become Blender meshes
   reads, excluding empty space inside batch rectangles. Split batches retain
   this allowlist; the download wrapper rejects unplanned tiles.
   A rejected reconstruction is not itself a data gap: LAZ fallback requires
-  failed EPT acquisition, missing ground/roof support, absent coverage, or a
-  material metadata advantage. Use the preferred attempted EPT's evidence;
+  failed EPT acquisition, missing ground/roof support, or absent coverage.
+  Metadata advantages alone cannot justify a LAZ offer. Use the preferred attempted EPT's evidence;
   a poorer secondary survey cannot reopen LAZ for a roof/footprint rejection.
   The fallback-policy signature invalidates public results independently of
   otherwise identical per-survey measurement checkpoints.
+- `lidar_offer.py` binds explicit consent to the current request and reviewed
+  source/building/tile list. Preparation publishes usable EPT measurements plus
+  optional LAZ offers, with geographic areas, reasons, dataset metadata and known
+  sizes. The sidebar's **Download and Use LAZ Gap Tiles** action alone authorizes
+  those transfers; ordinary Prepare, Refresh, and background calls do not.
+  Consent replays EPT checkpoints and rechecks gaps. Changed or expanded offers
+  require another choice. Generation remains offline and can proceed without LAZ.
 - `lidar_identity.py` compares scoped dataset/project metadata and known USGS
   project delivery/metadata directories, retaining subprojects and epochs.
   Never infer identity from tile names, generic titles or overlap. Conflicting
@@ -349,7 +360,8 @@ through the existing prism builder; raw point clouds never become Blender meshes
   fallback; zero filtered points or generic roof-coverage rejection do not.
   Identity and per-tile footprint/halo ownership/reasons are logged and audited.
 - `lidar_provenance.py` verifies differently named deliveries through bounded
-  EPT manifests/input metadata and fixed LAS headers (no point records).
+  EPT manifests/input metadata and already cached fixed LAS headers (no automatic
+  remote LAZ reads, including header ranges).
   Names only flag possible duplicates. Original project identity or a nonzero
   LAS GUID corroborated by count, XYZ extents/scales, format and encoding can
   confirm equivalence, restricted to verified input/tile coverage. Partial
@@ -374,7 +386,23 @@ through the existing prism builder; raw point clouds never become Blender meshes
   and `lidar_planes.py` roof planes within source footprints. Enforce sufficient
   ground/roof support, component-wise coverage, footprint consistency, and capture
   consistency. Coverage fallback uses actual clipped cell area at the same 85%
-  threshold. Missing returns alone are not proof that a building is absent.
+  threshold. Near misses with at least 80% supported area in every component
+  retry three fixed half-cell grid offsets, retaining the first complete fit.
+  Every retry keeps the three-return cell minimum, 85% component coverage and
+  all ground/roof/printability checks; already accepted fits stay identical.
+  Ground fitting is reused across retries and no additional points are fetched.
+  Missing returns alone are not proof that a building is absent.
+- `lidar_facets.py` optionally refines accepted envelopes into measured triangular
+  surfaces, reusing supported cell samples. Detailed Surfaces is the UI default;
+  Terraces preserves the classic reconstruction. Major terrace jumps partition
+  fits before refinement, and clipping retains outlines/courtyards. Uncertain
+  patches retain their original terraces; incomplete or over-budget envelopes
+  fall back as a whole. Bounds are 120 vertices per patch, 1,024 roof facets per
+  building and documented residual/height tolerances. The existing ground-draped
+  solid builder remains responsible for closed geometry and atomic adoption.
+  Record validation permits the larger surface budget only for `faceted_roof`.
+  Algorithm 9 includes roof mode in cache identity; the measurement reader permits
+  128 MiB. Native triangulation remains outside Blender, with no extra point reads.
 - Width/step controls filter measured detail; they cannot create survey resolution
   (roof sampling has a 1.5 m cell floor). Higher supported returns contribute to
   the mass beneath them. Reject materially incomplete envelopes rather than
@@ -471,7 +499,7 @@ Select focused checks based on the change:
 | Core pipeline | `test_*.py`, `blender_smoke.py`; smoke exercises merged/unmerged geometry, heights, roofs, and cleanup. `blender_generation_transaction.py` checks rollback/ownership. `blender_generation_modal.py` exercises real worker cancellation at each phase, import, retries and cleanup; windowed `blender_generation_gui.py` checks real Esc/Cancel and event-loop responsiveness. |
 | Water / supports | `blender_water_cut.py`, `blender_ground_support.py`, `blender_pond_basins.py`; cached `blender_water_cut_live.py`, `blender_coastline_live.py`, `blender_pond_basins_live.py` |
 | Roads / surface ownership | `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
-| Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
+| Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
 | Export / trees / clipboard | `blender_export_cutout.py` and its live counterpart; `blender_tree_printability.py`; `test_projection.py` and windowed `blender_gui_paste.py` |
 
 For geometry work, compare identical inputs/settings, check closure **and winding**,

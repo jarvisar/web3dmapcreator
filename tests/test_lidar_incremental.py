@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from lidar_consent_fixture import prepare_reviewed_laz
 from unittest.mock import patch
 
 try:
@@ -66,12 +67,12 @@ class IncrementalTests(unittest.TestCase):
                  patch.object(acquisition, 'read_source', side_effect=read), \
                  patch.object(measurements, 'measure_features', side_effect=measure), \
                  patch.object(acquisition.lidar_ept.Fetcher, 'download', side_effect=transfer):
-                worker.prepare(bundle.path, request)
+                prepare_reviewed_laz(worker, bundle.path, request)
                 result = json.loads((bundle.path / 'lidar_buildings.json').read_text())
                 first = list(events)
                 if mode != 'read_failure':
                     events.clear()
-                    worker.prepare(bundle.path, request)
+                    prepare_reviewed_laz(worker, bundle.path, request)
                     self.assertFalse(events, 'Checkpoint replay must preserve the stop decision without point reads')
                 return first, next(s for s in result['discovered_sources'] if s['format'] == 'LAZ')
 

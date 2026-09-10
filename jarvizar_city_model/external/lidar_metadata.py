@@ -13,6 +13,7 @@ import math
 import re
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from xml.etree import ElementTree as ET
+from xml.parsers import expat
 
 try:
     from .lidar_identity import metadata_identity, merge_identities, common_identity
@@ -139,8 +140,33 @@ def aggregate_metadata(records):
 
 
 def xml_root(data):
-    if b'<!DOCTYPE' in data.upper() or b'<!ENTITY' in data.upper():
-        raise ValueError('Survey metadata must not contain XML entities')
+    """Accept FGDC's external DTD declaration without resolving any entities.
+
+    Parse declarations before building the tree, including UTF-16 input. A byte
+    substring check both rejected harmless DOCTYPEs and missed encoded entities.
+    Expat never retrieves the external DTD; custom/parameter entities are refused
+    before expansion. Predefined escapes such as &amp; remain ordinary XML text.
+    """
+    def reject_entity(*args):
+        raise ValueError('Survey metadata must not declare or reference custom XML entities')
+    def inspect_tag(token):
+        # Expat can silently omit undefined attribute entities when a DTD is
+        # skipped. Its default handler retains the original start-tag text.
+        if token.startswith('<') and not token.startswith(('<!', '<?', '</')):
+            for name in re.findall(r'&([^;]+);', token):
+                if name not in ('amp', 'lt', 'gt', 'apos', 'quot') and not name.startswith('#'):
+                    reject_entity()
+    guard = expat.ParserCreate()
+    guard.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    guard.EntityDeclHandler = reject_entity
+    guard.ExternalEntityRefHandler = reject_entity
+    guard.SkippedEntityHandler = reject_entity
+    guard.DefaultHandler = inspect_tag
+    guard.CharacterDataHandler = lambda text: None  # CDATA/text is not markup.
+    try:
+        guard.Parse(data, True)
+    except expat.ExpatError as exc:
+        raise ET.ParseError(str(exc)) from exc
     root = ET.fromstring(data)
     for node in root.iter():
         node.tag = node.tag.rsplit('}', 1)[-1]

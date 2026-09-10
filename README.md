@@ -346,21 +346,23 @@ selections require more time and disk space. Preparation and generation counts
 appear in Buildings. Overlapping surveys are compared using supported roof detail,
 coverage and capture age.
 Automatic discovery compares the EPT coverage index and USGS TNMAccess
-**Lidar Point Cloud (LPC)** LAZ products for the selected bounds. Either format
-can win on usable roof coverage, point support or capture age; classification
-availability breaks quality ties. Publication dates are not flight dates.
-Only intersecting EPT nodes or individual LAZ tiles are downloaded, with the
-existing small ground/boundary halo. Staged LAZ tiles are downloaded whole,
+**Lidar Point Cloud (LPC)** LAZ products for the selected bounds. EPT downloads
+automatically. After EPT preparation, meaningful remaining building gaps with
+available LAZ coverage appear in the sidebar, including area bounds, dataset
+details and known tile sizes. Choose **Download and Use LAZ Gap Tiles** to download
+them, or generate with the existing EPT coverage. Adequately covered EPT buildings
+are excluded from LAZ offers. Publication dates are not flight dates.
+Only intersecting EPT nodes or explicitly approved LAZ gap tiles are downloaded,
+with the existing small ground/boundary halo. Staged LAZ tiles are downloaded whole,
 then decoded in chunks and cropped; large tiles can take time even for a small map.
 Both sources use the same building preparation and generation pipeline.
 
 Leave **USGS EPT URL** empty for automatic comparison. An explicit EPT URL
 retains the manual survey override. **LAZ Manifest URL (advanced)** optionally
 adds a USGS `0_file_download_links.txt` list to either mode. Tile locations
-come from LAS headers and CRS information, never filenames. Every listed
-header must be inspected, so large manifests are slower than TNMAccess.
-Stale links, servers without HTTP Range support and missing coordinate units
-are reported; they do not trigger a whole-project download.
+come from matching catalog bounds, never filenames. Entries absent from the
+intersecting catalog results are reported and skipped. Discovery does not download
+LAZ headers or point data.
 Consistency skips now report roof coverage, ground inside footprints and outside
 roofs separately. Boundary cells count only their tested area, reducing false
 rejections without lowering the coverage or point-support requirements.

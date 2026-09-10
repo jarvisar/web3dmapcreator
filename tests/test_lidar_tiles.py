@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from lidar_consent_fixture import prepare_reviewed_laz
 from unittest.mock import patch
 
 try:
@@ -67,14 +68,14 @@ class FootprintTileTests(unittest.TestCase):
                  patch.object(acquisition, 'read_source', side_effect=read), \
                  patch.object(measurement, 'measure_features', side_effect=measure), \
                  patch.object(acquisition.lidar_ept.Fetcher, 'download', side_effect=lambda url, **kw: Path(url.rsplit('/', 1)[-1])) as download:
-                result = worker.prepare(bundle.path, request)
+                result = prepare_reviewed_laz(worker, bundle.path, request)
                 self.assertEqual(result['buildings'], 0 if same else 2)
                 payload = json.loads((bundle.path / 'lidar_buildings.json').read_text())
                 downloads = [c.args[0].rsplit('/', 1)[-1] for c in download.call_args_list]
                 if not split:
                     download.reset_mock()
                     count = len(reads)
-                    worker.prepare(bundle.path, request)
+                    prepare_reviewed_laz(worker, bundle.path, request)
                     self.assertEqual(len(reads), count)
                     download.assert_not_called()
             return downloads, reads, payload

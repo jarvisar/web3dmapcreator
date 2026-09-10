@@ -237,6 +237,8 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     lidar_preparation_status: StringProperty(name='Last LiDAR Preparation', default='')
     lidar_generation_status: StringProperty(name='Last LiDAR Generation', default='')
     lidar_preparing: BoolProperty(default=False, options={'SKIP_SAVE'})
+    lidar_laz_offer_token: StringProperty(default='', options={'HIDDEN'})
+    lidar_laz_offer_details: StringProperty(default='', options={'HIDDEN'})
     use_lidar_buildings: BoolProperty(
         name="Use Prepared LiDAR", default=False,
         description="Use measured USGS heights, roof tiers and supported roof planes; other buildings retain source geometry",
@@ -244,6 +246,13 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     lidar_prefer_measured: BoolProperty(
         name="Prefer LiDAR on Conflicts", default=True,
         description="Prefer a usable measured building over conflicting source heights, dates or roof detail; disable for conservative source checks. Prepare again after changing",
+    )
+    lidar_roof_mode: EnumProperty(
+        name="LiDAR Roof Reconstruction",
+        items=(('FACETED', 'Detailed Surfaces', 'Measured roof facets follow slopes and crowns while preserving major setbacks'),
+               ('TERRACES', 'Terraces', 'Use the established horizontal tiers and simple measured roof planes')),
+        default='FACETED',
+        description="Reconstruct supported roof detail; prepare LiDAR again after changing",
     )
     lidar_minimum_width_mm: FloatProperty(
         name="Minimum LiDAR Detail Width (mm)", default=0.1, min=0.01, soft_max=2.0,
@@ -264,7 +273,7 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     )
     lidar_manifest_url: StringProperty(
         name="LAZ Manifest URL (advanced)", default="",
-        description="Optional USGS 0_file_download_links.txt HTTPS URL; compare its intersecting LAZ tiles too. Locating tiles requires reading every tile header",
+        description="Optional USGS 0_file_download_links.txt HTTPS URL; match tiles to catalog bounds and offer useful gap coverage. Tiles absent from the catalog cannot be located without LAZ reads and are skipped",
     )
     minimum_building_width_mm: FloatProperty(
         name="Minimum Building Width (mm)",

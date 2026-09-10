@@ -84,3 +84,28 @@ with patch.object(module,'bpy',fake_bpy),patch.object(module,'_cache_bundle',ret
     assert driver.modal(context,SimpleNamespace(type='TIMER'))=={'FINISHED'}
     assert not settings.lidar_preparing and not Driver._running
 print('LIDAR_CANCEL_FAILURE_RECOVERY_OK')
+
+# The optional download button carries a reviewed token, bypasses the EPT
+# result shortcut, validates current settings, and reuses healthy checkpoints.
+settings.force_redownload = True
+with patch.object(module, 'bpy', fake_bpy), patch.object(module, '_cache_bundle', return_value=Mock()), \
+     patch.object(module, '_lidar_signature', return_value={'algorithm': 9}), \
+     patch.object(module, '_resolve_downloader', return_value='python'), \
+     patch.object(module, 'approved_offers') as approval, \
+     patch.object(module, 'load_measurements', return_value=({}, 'LiDAR measurements: 1 buildings')), \
+     patch.object(module, 'LidarPreparation') as job_type:
+    driver = Driver()
+    driver.laz_approval = 'reviewed-token'
+    assert driver.execute(context) == {'RUNNING_MODAL'}
+    approval.assert_called_once()
+    assert job_type.call_args.kwargs['laz_approval'] == 'reviewed-token'
+    assert not job_type.call_args.args[3]  # Refresh must not re-download EPT on consent.
+    job_type.return_value.process.poll.return_value = 0
+    job_type.return_value.result.return_value = summary
+    assert driver.modal(context, SimpleNamespace(type='TIMER')) == {'FINISHED'}
+    job_type.reset_mock()
+    approval.side_effect = ValueError('LAZ offer changed or is stale')
+    assert driver.execute(context) == {'CANCELLED'}
+    job_type.assert_not_called()
+settings.force_redownload = False
+print('LIDAR_EXPLICIT_CONSENT_OK')

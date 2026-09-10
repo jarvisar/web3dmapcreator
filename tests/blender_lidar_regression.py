@@ -35,6 +35,8 @@ s.lidar_prefer_measured=data['request'].get('prefer_lidar', True)
 s.lidar_source_url=data['request']['source_url']
 s.lidar_manifest_url=data['request'].get('manifest_url', '')
 s.generate_roof_shapes=data['request'].get('roof_planes', True)
+if hasattr(s, 'lidar_roof_mode'):
+    s.lidar_roof_mode=data['request'].get('roof_mode', 'TERRACES')
 assert bpy.ops.jarvizar.generate_model()=={'FINISHED'}
 root=bpy.data.collections['CITY_MODEL']
 counts=json.loads(root['generation_counts_json'])

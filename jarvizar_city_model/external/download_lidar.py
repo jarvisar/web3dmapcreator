@@ -17,11 +17,13 @@ try:
     from .lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
     from .lidar_worker import cache_owner, watch_parent
     from .lidar_progress import ProgressReporter
+    from .lidar_offer import approved_offers, offer_token
 except ImportError:
     from lidar_records import validate_records, finite_number
     from lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
     from lidar_worker import cache_owner, watch_parent
     from lidar_progress import ProgressReporter
+    from lidar_offer import approved_offers, offer_token
 
 
 def valid_checkpoint(cached, identifiers, source_url):
@@ -54,13 +56,13 @@ def valid_checkpoint(cached, identifiers, source_url):
     return True
 
 
-def prepare(bundle, request, refresh=False, progress_path=None, download_workers=DEFAULT_DOWNLOAD_WORKERS):
+def prepare(bundle, request, refresh=False, progress_path=None, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval=''):
     download_workers = validate_download_workers(download_workers)
     with cache_owner(bundle.parent):
-        return _prepare(bundle, request, refresh, progress_path, download_workers)
+        return _prepare(bundle, request, refresh, progress_path, download_workers, laz_approval)
 
 
-def _prepare(bundle, request, refresh, progress_path, download_workers):
+def _prepare(bundle, request, refresh, progress_path, download_workers, laz_approval=''):
     from pyproj import CRS, Transformer
     from shapely.geometry import box, shape
     from shapely.ops import transform as map_geometry
@@ -73,12 +75,16 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
     from lidar_selection import choose_measurement, project_year, POLICY, CONTRADICTIONS
     from shapely import STRtree
 
-    if request["algorithm"] != 7:
+    if request["algorithm"] != 9:
         raise ValueError("Unsupported LiDAR algorithm version")
+    if request.get('roof_mode', 'TERRACES') not in ('TERRACES', 'FACETED'):
+        raise ValueError('Unknown LiDAR roof reconstruction mode')
     if request.get('acquisition') != ACQUISITION_VERSION:
         raise ValueError('Unsupported LiDAR acquisition version; prepare with the updated add-on')
     if request.get('fallback_policy') != FALLBACK_POLICY_VERSION:
         raise ValueError('Unsupported LiDAR fallback policy; prepare with the updated add-on')
+    approved = {o['url']: o for o in approved_offers(bundle, request, laz_approval)}
+    laz_offers = []
     # Fallback admission changes public result identity, not independent survey
     # measurements. Preserve matching pre-policy checkpoints without new reads.
     checkpoint_request = {key: value for key, value in request.items() if key != 'fallback_policy'}
@@ -146,8 +152,13 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
     failures.extend(discovery_failures)
     plan = AcquisitionPlan(sources, [f for f in features if geographic_geometries[f['id']].intersects(box(*bbox))],
                            geographic_geometries, thresholds)
+    phase = 'EPT'
     while True:
-        work = plan.next(resolved)
+        work = plan.next(resolved, source_format=phase)
+        if work is None and phase == 'EPT':
+            phase = 'LAZ'
+            progress('EPT complete; checking remaining building gaps for optional LAZ coverage')
+            work = plan.next(resolved, source_format=phase)
         for candidate in sources:
             skipped = dict(Counter(plan.skipped.get(candidate['url'], {}).values()))
             if skipped and skipped != candidate.get('skipped_fallback_reasons'):
@@ -157,6 +168,38 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
         if work is None:
             break
         source, candidates, reason = work
+        if source['format'] == 'LAZ':
+            # Match the existing measurement preflight and ignore unprintable
+            # slivers. A building gap, not empty map acreage, warrants an offer.
+            candidates = [f for f in candidates if
+                geometries[f['id']].is_valid and geometries[f['id']].area >= 4
+                and geometries[f['id']].area >= (request['min_width_mm']/request['xy_scale'])**2
+                and halo.covers(geometries[f['id']].buffer(25))
+                and not any((f.get('properties') or {}).get(k)
+                            for k in ('is_underground', 'min_height', 'min_floor'))]
+            if not candidates:
+                continue
+            tiles = building_tile_plan(source, candidates, geometries, to_geographic, selected)
+            audit = tile_audit(tiles, candidates,
+                {f['id']: plan.selection_reasons[f['id'], source['url']] for f in candidates})
+            if not audit:
+                continue
+            offer = {'url': source['url'], 'name': source['name'],
+                'fingerprint': source.get('fingerprint', ''),
+                'metadata_fingerprint': source.get('metadata_fingerprint', ''),
+                'survey_metadata': source.get('survey_metadata', {}),
+                'buildings': sorted(f['id'] for f in candidates), 'tiles': audit,
+                'reasons': sorted({plan.selection_reasons[f['id'], source['url']] for f in candidates}),
+                'areas': [{'bbox': list(map_geometry(to_geographic, box(*batch_bounds(batch, geometries, selected))).bounds),
+                           'buildings': len(batch)} for batch in building_batches(candidates, geometries)]}
+            consent = approved.get(source['url'])
+            if not (consent and all(consent.get(k) == offer.get(k) for k in
+                    ('fingerprint', 'metadata_fingerprint', 'survey_metadata'))
+                    and set(offer['buildings']).issubset(consent['buildings'])
+                    and set(tiles).issubset(t['url'] for t in consent['tiles'])):
+                laz_offers.append(offer)
+                progress(f"Optional LAZ available: {len(candidates)} building gaps, {len(audit)} tiles in {source['name']}; awaiting explicit download choice")
+                continue
         source.setdefault('acquisition_reasons', []).append(reason)
         progress(f"Selected {source['format']} {source['name']}: {len(candidates)} unresolved buildings; {reason}")
         def batch_job(batch):
@@ -253,9 +296,18 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
                 request["min_width_mm"] / request["xy_scale"],
                 max(0.25, request["min_step_mm"] / request["z_scale"]), batch_roi,
                 roof_planes=request.get('roof_planes', True), parts_by_parent=parts_by_parent,
+                roof_mode=request.get('roof_mode', 'TERRACES'),
                 source_parts_by_parent=source_parts_by_parent,
                 observations_out=evidence, neighbors_by_id=neighbors_by_id,
                 prefer_lidar=request.get('prefer_lidar', True))
+            grid_recovered = sum('coverage_grid_offset' in record for record in records.values())
+            if grid_recovered:
+                progress(f"Recovered {grid_recovered} roof measurements with shifted sampling grids; "
+                         "unchanged point support, coverage and consistency requirements")
+            faceted = sum(r.get('method') == 'faceted_roof' for r in records.values())
+            if request.get('roof_mode') == 'FACETED':
+                retained = dict(Counter(r['faceted_fallback'] for r in records.values() if r.get('faceted_fallback')))
+                progress(f"Detailed roof surfaces: {faceted} fitted; retained existing envelopes: {retained}")
             plan.observe(source, batch, records, rejected_features, info)
             collect(records, evidence, source, info)
             evaluate_batch(batch, before)
@@ -272,7 +324,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
     for source in sources:
         if not source.get('acquired_buildings'):
             progress(f"Skipped {source['format']} {source['name']}: no unresolved buildings requiring this source")
-    if failures and not provenance:
+    if failures and not provenance and not laz_offers:
         raise ValueError("; ".join(item["reason"] for item in failures))
     selection = {}
     for identifier, candidates in alternatives.items():
@@ -294,6 +346,8 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
         for reason in rejected.values())
     validate_records(measured)
     payload = {"format": 1, "request": request, "buildings": measured,
+               'laz_offers': laz_offers,
+               'laz_offer_token': offer_token(request, laz_offers) if laz_offers else '',
                "sources": provenance, "failures": failures, "counts": dict(counts),
                "rejected": rejected, 'rejection_counts': rejection_counts,
                "prepared_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -301,7 +355,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
                'discovered_sources': source_audit(sources), "source_selection": POLICY,
                'acquisition_selection': {'version': ACQUISITION_VERSION, 'thresholds': thresholds,
                    'fallback_policy': FALLBACK_POLICY_VERSION,
-                   'policy': 'practical EPT; footprint/ground-halo LAZ tiles for material advantages or data gaps; same-survey LAZ only for EPT delivery gaps'},
+                   'policy': 'automatic EPT first; explicit request-bound consent for LAZ gap tiles; same-survey LAZ only for EPT delivery gaps'},
                'selection':selection, 'observations':observations,
                'compared_sources':len({item['url'] for item in provenance}),
                'conflict_buildings':conflict_buildings,
@@ -312,10 +366,12 @@ def _prepare(bundle, request, refresh, progress_path, download_workers):
     temporary.write_text(json.dumps(payload, allow_nan=False), encoding="utf-8")
     temporary.replace(destination)
     return {"ok": True, "buildings": len(measured), "tiered_buildings": sum(bool(r["tiers"]) for r in measured.values()),
+            'laz_offers': laz_offers, 'laz_offer_token': payload['laz_offer_token'],
             'infill_buildings': sum(bool(r.get('infill_geometry')) for r in measured.values()),
             'part_heights': sum(len(r.get('part_heights', {})) for r in measured.values()),
             'estimated_heights_corrected': sum(r.get('source_height_decision', r.get('height_decision')) == 'corrected_estimated_height' for r in measured.values()),
-            'roof_plane_buildings': sum(bool(r.get('roof_surfaces')) for r in measured.values()),
+            'roof_plane_buildings': sum(bool(r.get('roof_surfaces')) and r.get('method') != 'faceted_roof' for r in measured.values()),
+            'faceted_roof_buildings': sum(r.get('method') == 'faceted_roof' for r in measured.values()),
             "candidate_buildings": payload['candidate_buildings'],
             'compared_sources':payload['compared_sources'], 'conflict_buildings':conflict_buildings,
             "sources": provenance, "counts": dict(counts), 'rejection_counts': rejection_counts, "failures": failures,
@@ -329,6 +385,7 @@ def main():
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument('--progress', type=Path)
     parser.add_argument('--parent-pid', type=int)
+    parser.add_argument('--laz-approval', default='', help='Token from the reviewed gap offer; never enables unrestricted LAZ')
     parser.add_argument('--download-workers', type=int, choices=range(1, MAX_DOWNLOAD_WORKERS+1),
                         default=DEFAULT_DOWNLOAD_WORKERS, metavar=f'1-{MAX_DOWNLOAD_WORKERS}')
     args = parser.parse_args()
@@ -336,7 +393,7 @@ def main():
         if args.parent_pid:
             watch_parent(args.parent_pid)
         result = prepare(args.bundle, json.loads(args.request.read_text(encoding="utf-8")),
-                         args.refresh, args.progress, args.download_workers)
+                         args.refresh, args.progress, args.download_workers, args.laz_approval)
     except ImportError as exc:
         result = {"ok": False, "detail": f"Install requirements-lidar.txt in the external downloader environment: {exc}"}
     except Exception as exc:

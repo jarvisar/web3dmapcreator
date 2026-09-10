@@ -111,23 +111,30 @@ def tnm_tiles(fetch, bbox, failures, page_size=100):
             raise ValueError('TNMAccess pagination repeated a page without advancing')
 
 
-def manifest_tiles(fetch, url, bbox, failures, progress):
+def manifest_tiles(fetch, url, bbox, failures, progress, catalog_tiles=None):
     text = fetch.get(url, fresh=True).decode('utf-8-sig')
     urls = sorted({line.strip() for line in text.splitlines()
                    if line.strip() and not line.lstrip().startswith('#')})
-    roi = box(*bbox)
+    # A plain URL list contains no locations. Match authoritative catalog
+    # bounds instead of silently fetching bytes from every standalone LAZ.
+    if catalog_tiles is None:
+        catalog_tiles = list(tnm_tiles(fetch, bbox, failures))
+    located = {tile['url']: tile for tile in catalog_tiles}
+    missing = 0
     for i, tile_url in enumerate(urls):
         if i % 25 == 0:
-            progress(f'Locating manifest tiles: {i}/{len(urls)} headers checked')
+            progress(f'Locating manifest tiles: {i}/{len(urls)} catalog matches checked')
         try:
             if urlparse(tile_url).scheme != 'https' or not urlparse(tile_url).path.lower().endswith('.laz'):
                 raise ValueError('Manifest entries must be direct HTTPS LAZ URLs')
-            header = lidar_laz.header_bounds(fetch, tile_url)
-            header['bbox'] = valid_bbox(header['bbox'])
-            if box(*header['bbox']).intersects(roi):
-                yield {'url': tile_url, **header}
+            if tile_url in located:
+                yield located[tile_url]
+            else:
+                missing += 1
         except DISCOVERY_ERRORS as exc:
             failures.append({'source': tile_url, 'reason': str(exc), 'buildings': 0})
+    if missing:
+        failures.append({'source': url, 'reason': f'{missing} manifest tiles lack intersecting catalog bounds; LAZ headers were not downloaded', 'buildings': 0})
 
 
 def grouped_laz(tiles):
@@ -180,7 +187,8 @@ def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambd
             failures.append({'source': 'TNMAccess', 'reason': str(exc), 'buildings': 0})
     if manifest_url:
         try:
-            tiles.extend(manifest_tiles(fetch, manifest_url, bbox, failures, progress))
+            tiles.extend(list(manifest_tiles(fetch, manifest_url, bbox, failures, progress,
+                                            tiles if not source_url else None)))
         except DISCOVERY_ERRORS as exc:
             failures.append({'source': manifest_url, 'reason': str(exc), 'buildings': 0})
     sources.extend(grouped_laz(tiles))

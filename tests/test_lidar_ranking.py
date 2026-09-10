@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from lidar_consent_fixture import prepare_reviewed_laz
 from unittest.mock import Mock, patch
 
 from jarvizar_city_model.external.lidar_metadata import (
@@ -227,11 +228,11 @@ class AcquisitionAdmissionTests(unittest.TestCase):
                  patch.object(adapter, 'read_source', side_effect=read), \
                  patch.object(measurements, 'measure_features', side_effect=measure), \
                  patch.object(adapter.lidar_ept.Fetcher, 'download', side_effect=lambda url, **kw: Path(url.rsplit('/', 1)[-1])) as transfer:
-                first = worker.prepare(bundle.path, request)
+                first = prepare_reviewed_laz(worker, bundle.path, request)
                 downloads = [c.args[0] for c in transfer.call_args_list]
                 transfer.reset_mock()
                 count = len(reads)
-                second = worker.prepare(bundle.path, request)
+                second = prepare_reviewed_laz(worker, bundle.path, request)
                 if mode != 'failure':
                     self.assertEqual(len(reads), count)
                 transfer.assert_not_called()
@@ -254,15 +255,15 @@ class AcquisitionAdmissionTests(unittest.TestCase):
                 self.assertEqual(set(processed), {('EPT', 'west'), ('EPT', 'east')})
                 self.assertFalse(downloads)
 
-    def test_old_or_clearly_poor_ept_is_not_read_before_laz(self):
-        for mode in ('outdated', 'quality'):
+    def test_adequate_ept_never_offers_metadata_only_laz_upgrades(self):
+        for mode in ('outdated', 'quality', 'partial_superior'):
             with self.subTest(mode=mode):
                 processed, downloads, _ = self.run_worker(mode)
-                self.assertEqual(set(processed), {('LAZ', 'west'), ('LAZ', 'east')})
-                self.assertEqual(len(downloads), 2)
+                self.assertEqual(set(processed), {('EPT', 'west'), ('EPT', 'east')})
+                self.assertFalse(downloads)
 
     def test_incomplete_coverage_and_observed_gaps_only_fetch_gap_tiles(self):
-        for mode in ('incomplete', 'gaps', 'partial_superior'):
+        for mode in ('incomplete', 'gaps'):
             with self.subTest(mode=mode):
                 processed, downloads, payload = self.run_worker(mode)
                 self.assertIn(('EPT', 'west'), processed)
@@ -309,7 +310,7 @@ class AcquisitionAdmissionTests(unittest.TestCase):
         ept['survey_metadata'] = normalized_metadata({'point_spacing_m': 2})
         laz['survey_metadata'] = normalized_metadata({'point_spacing_m': .5})
         plan.observe(ept, features, {}, {'one': 'unresolved_upper_roof'})
-        self.assertTrue(plan.admission('one', laz)[0])
+        self.assertFalse(plan.admission('one', laz)[0])
         plan.observe(ept, features, {}, {'one': 'elevated_or_underground'})
         self.assertFalse(plan.admission('one', laz)[0])
 
@@ -354,7 +355,7 @@ class AcquisitionAdmissionTests(unittest.TestCase):
             with patch.object(sys, 'path', [external] + sys.path):
                 worker = importlib.import_module('download_lidar')
                 with self.assertRaisesRegex(ValueError, 'acquisition version'):
-                    worker.prepare(bundle.path, {**first, 'acquisition': 1})
+                    prepare_reviewed_laz(worker, bundle.path, {**first, 'acquisition': 1})
 
     def test_holes_are_not_covered_by_an_adequate_map_fraction(self):
         from jarvizar_city_model.external.lidar_ranking import AcquisitionPlan

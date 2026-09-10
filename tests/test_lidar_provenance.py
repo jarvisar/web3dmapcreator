@@ -62,7 +62,7 @@ class ProvenanceTests(unittest.TestCase):
 
     def test_original_project_guid_and_header_facts_verify_renamed_delivery_locally(self):
         fetch, ept, laz, _, _ = self.fixture()
-        provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None)
+        provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None, allow_header_reads=True)
         inside, outside = box(2, 2, 3, 3), box(7, 7, 8, 8)
         self.assertTrue(same_survey(ept, laz, inside))
         self.assertIsNone(same_survey(ept, laz, outside))
@@ -77,7 +77,7 @@ class ProvenanceTests(unittest.TestCase):
 
     def test_legacy_list_and_numbered_metadata_are_supported(self):
         fetch, ept, laz, _, _ = self.fixture(legacy=True)
-        provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None)
+        provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None, allow_header_reads=True)
         self.assertTrue(same_survey(ept, laz, box(2, 2, 3, 3)))
 
     def test_changed_or_unknown_original_header_is_not_equivalent(self):
@@ -86,7 +86,7 @@ class ProvenanceTests(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 fetch, ept, laz, documents, base = self.fixture()
                 documents[base + 'input.json']['metadata'][field] = value
-                provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None)
+                provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None, allow_header_reads=True)
                 self.assertIsNone(same_survey(ept, laz, box(2, 2, 3, 3)))
 
     def test_failed_entries_missing_metadata_and_bounds_do_not_confirm_identity(self):
@@ -100,16 +100,16 @@ class ProvenanceTests(unittest.TestCase):
                 documents[base + 'manifest.json'][0]['bounds'] = []
             else:
                 documents[base + 'input.json']['path'] = 'another.laz'
-            provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None)
+            provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None, allow_header_reads=True)
             self.assertFalse(laz.get('provenance_matches'))
 
     def test_limits_and_untrusted_links_fail_conservatively(self):
         fetch, ept, laz, _, base = self.fixture()
         with patch.object(provenance, 'MAX_INPUTS', 0):
-            provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None)
+            provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None, allow_header_reads=True)
         self.assertFalse(fetch.ranges)
         with patch.object(provenance, 'PROVENANCE_BUDGET', 1):
-            provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None)
+            provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None, allow_header_reads=True)
         self.assertFalse(laz.get('provenance_matches'))
         for path in ('../ept-data/file.json', '%2e%2e/ept-data/file.json', 'https://elsewhere.test/file.json', 'file.laz'):
             with self.assertRaises(ValueError):
@@ -121,11 +121,17 @@ class ProvenanceTests(unittest.TestCase):
         self.assertTrue(possible_duplicate(a, b))
         self.assertIsNone(same_survey(a, b))
 
+    def test_default_provenance_never_fetches_laz_headers(self):
+        fetch, ept, laz, _, _ = self.fixture()
+        provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None)
+        self.assertFalse(fetch.ranges)
+        self.assertFalse(laz.get('provenance_matches'))
+
     def test_original_project_path_can_establish_identity_without_headers(self):
         fetch, ept, laz, documents, base = self.fixture()
         documents[base + 'manifest.json'][0]['path'] = 's3://usgs-lidar/Projects/ST_Project_2020/laz/input.laz'
         laz['survey_identity'] = metadata_identity({'provider': 'usgs', 'project_id': 'ST_Project_2020'})
-        provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None)
+        provenance.enrich_provenance(fetch, [ept, laz], [0, 0, 10, 10], lambda _: None, allow_header_reads=True)
         self.assertTrue(same_survey(ept, laz))
         self.assertFalse(fetch.ranges)
 

@@ -321,6 +321,7 @@ def generate_buildings(
     counts["lidar_tier_solids"] = 0
     counts["lidar_geometry_fallbacks"] = 0
     counts['lidar_roof_plane_buildings'] = 0
+    counts['lidar_faceted_roof_buildings'] = 0
     counts['lidar_roof_plane_solids'] = 0
     counts['lidar_part_boundaries_used'] = 0
     counts['lidar_source_detail_preserved'] = 0
@@ -372,7 +373,7 @@ def generate_buildings(
                 obj["feature_type"] = "building"
                 obj["height_source"] = "lidar:" + record.get("method", "measured")
                 obj["height_m"] = metadata['height_m']
-                obj["roof_geometry"] = ('lidar_infill' if supplement else 'lidar_planes' if record.get('roof_surfaces') else
+                obj["roof_geometry"] = ('lidar_infill' if supplement else 'lidar_facets' if record.get('method') == 'faceted_roof' else 'lidar_planes' if record.get('roof_surfaces') else
                                         'lidar_tiers' if record['tiers'] else 'lidar_height')
                 obj["lidar_source"] = record.get("source", "")
                 obj["lidar_coverage"] = record.get("coverage", 0.0)
@@ -396,7 +397,8 @@ def generate_buildings(
             counts["lidar_buildings"] += 1
             measured_parent_ids.add(identifier)
             counts["lidar_tier_solids"] += metadata["lidar_tiers"]
-            counts['lidar_roof_plane_buildings'] += bool(metadata['lidar_roof_planes'])
+            counts['lidar_roof_plane_buildings'] += bool(metadata['lidar_roof_planes']) and record.get('method') != 'faceted_roof'
+            counts['lidar_faceted_roof_buildings'] += record.get('method') == 'faceted_roof'
             counts['lidar_roof_plane_solids'] += metadata['lidar_roof_planes']
             counts['lidar_part_boundaries_used'] += record.get('part_boundaries_used', 0)
             counts['lidar_estimated_heights_corrected'] += record.get('source_height_decision', record.get('height_decision')) == 'corrected_estimated_height'

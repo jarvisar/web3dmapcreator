@@ -29,7 +29,7 @@ PROVENANCE_BUDGET = 8 * 1024 ** 2
 ERRORS = (ValueError, OSError, RuntimeError, KeyError, TypeError, IndexError, AttributeError, struct.error)
 
 
-def header_signature(fetch, tile):
+def header_signature(fetch, tile, allow_network=False):
     """Read only the fixed LAS header, at most 375 bytes (no VLR/point reads)."""
     url, revision = tile['url'], tile.get('updated') or ''
     key = url + ('#revision=' + revision if revision else '')
@@ -42,6 +42,8 @@ def header_signature(fetch, tile):
                 raise ValueError('Unsupported LAS public header size')
             prefix += stream.read(size - 227)
     else:
+        if not allow_network:
+            raise ValueError('LAZ header not cached; no automatic LAZ reads')
         prefix = fetch.range(url, 0, 227)
         size = struct.unpack_from('<H', prefix, 94)[0]
         if not 227 <= size <= 375:
@@ -97,7 +99,7 @@ def input_metadata_url(base, value):
     return url
 
 
-def enrich_provenance(fetch, sources, bbox, progress):
+def enrich_provenance(fetch, sources, bbox, progress, allow_header_reads=False):
     laz_sources = [s for s in sources if s['format'] == 'LAZ']
     if not laz_sources:
         return
@@ -191,7 +193,7 @@ def enrich_provenance(fetch, sources, bbox, progress):
                         if key not in headers and header_attempts < MAX_HEADERS:
                             header_attempts += 1
                             try:
-                                headers[key] = header_signature(fetch, tile)
+                                headers[key] = header_signature(fetch, tile, allow_network=allow_header_reads)
                             except ERRORS:
                                 headers[key] = {}
                         if same_input(metadata, headers.get(key, {})):

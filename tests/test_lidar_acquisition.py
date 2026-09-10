@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from lidar_consent_fixture import prepare_reviewed_laz
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError
@@ -186,7 +187,7 @@ class AcquisitionTests(unittest.TestCase):
         self.assertAlmostEqual(result['height_m'], 30)
         self.assertEqual([round(t['top_m']) for t in result['tiers']], [60])
 
-    def test_manifest_locates_arbitrary_names_by_headers_only(self):
+    def test_manifest_uses_catalog_bounds_without_reading_laz_headers(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp)/'cloud.laz'
             self.cloud().write(path)
@@ -200,9 +201,12 @@ class AcquisitionTests(unittest.TestCase):
         self.assertTrue(box(*header['bbox']).intersects(box(*self.bbox)))
         self.assertLess(sum(size for _, size in ranges), len(data))
         fetch.get.return_value = b'\xef\xbb\xbf# downloads\nhttps://example.com/a.laz\nhttps://example.com/z.laz\nhttps://example.com/a.laz\n'
-        with patch.object(lidar_laz, 'header_bounds', side_effect=[header, {'bbox': [0, 0, 1, 1]}]):
-            tiles = list(acquisition.manifest_tiles(fetch, 'https://example.com/0_file_download_links.txt', self.bbox, [], lambda _: None))
+        failures = []
+        with patch.object(lidar_laz, 'header_bounds', side_effect=AssertionError('No automatic LAZ header reads')):
+            tiles = list(acquisition.manifest_tiles(fetch, 'https://example.com/0_file_download_links.txt', self.bbox, failures, lambda _: None,
+                [{'url': 'https://example.com/a.laz', 'bbox': header['bbox']}]))
         self.assertEqual([t['url'] for t in tiles], ['https://example.com/a.laz'])
+        self.assertIn('headers were not downloaded', failures[0]['reason'])
         fetch.download.assert_not_called()
 
     def test_http_range_refusal_never_reads_point_body(self):
@@ -274,8 +278,8 @@ class AcquisitionTests(unittest.TestCase):
             with patch.object(adapter.lidar_ept.Fetcher, 'json', side_effect=catalog), \
                  patch.object(adapter.lidar_ept.Fetcher, 'download', return_value=cloud) as download, \
                  patch.object(measurements, 'measure_features', side_effect=measure) as processor:
-                self.assertEqual(worker.prepare(bundle.path, request)['buildings'], 1)
-                self.assertEqual(worker.prepare(bundle.path, request)['buildings'], 1)
+                self.assertEqual(prepare_reviewed_laz(worker, bundle.path, request)['buildings'], 1)
+                self.assertEqual(prepare_reviewed_laz(worker, bundle.path, request)['buildings'], 1)
                 self.assertEqual(processor.call_count, 1)
                 self.assertEqual(download.call_count, 1)
             payload = json.loads((bundle.path/'lidar_buildings.json').read_text())

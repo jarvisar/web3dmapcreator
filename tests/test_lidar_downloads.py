@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from lidar_consent_fixture import prepare_reviewed_laz
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
@@ -205,15 +206,15 @@ class DownloadTests(unittest.TestCase):
                  patch.object(acquisition, 'read_source', side_effect=read), \
                  patch.object(measurements, 'measure_features', side_effect=measure), \
                  patch.object(acquisition.lidar_ept.Fetcher, 'download', side_effect=download) as transfer:
-                self.assertEqual(worker.prepare(bundle.path, request, progress_path=Path(temp)/'progress.json')['buildings'], 4)
+                self.assertEqual(prepare_reviewed_laz(worker, bundle.path, request, progress_path=Path(temp)/'progress.json')['buildings'], 4)
                 self.assertEqual(transfer.call_count, 4)
                 transfer.reset_mock()
-                self.assertEqual(worker.prepare(bundle.path, request, download_workers=8)['buildings'], 4)
+                self.assertEqual(prepare_reviewed_laz(worker, bundle.path, request, download_workers=8)['buildings'], 4)
                 transfer.assert_not_called()
                 checkpoint = next((bundle.path/'lidar_jobs').glob('*.json'))
                 checkpoint.write_text('{}')
                 transfer.side_effect = lambda url, **kw: Path(url.rsplit('/', 1)[-1])
-                self.assertEqual(worker.prepare(bundle.path, request, download_workers=16)['buildings'], 4)
+                self.assertEqual(prepare_reviewed_laz(worker, bundle.path, request, download_workers=16)['buildings'], 4)
                 self.assertEqual(transfer.call_count, 1)
 
 

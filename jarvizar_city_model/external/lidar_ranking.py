@@ -12,7 +12,7 @@ except ImportError:
     from lidar_identity import same_survey
 
 ACQUISITION_VERSION = 2
-FALLBACK_POLICY_VERSION = 3
+FALLBACK_POLICY_VERSION = 4
 # Stop speculative support-gap acquisition after one batch yields no adopted
 # measurements. Coverage/delivery gaps and material upgrades remain independent.
 MAX_UNPRODUCTIVE_LAZ_BATCHES = 1
@@ -228,9 +228,6 @@ class AcquisitionPlan:
         if ept is None:
             return True, None
         source, reason = ept
-        advantages = material_advantages(candidate, source, self.thresholds)
-        if advantages:
-            return True, '; '.join(advantages)
         if reason in DATA_GAPS:
             return True, f'EPT data gap: {reason}'
         return False, f'EPT rejection is not a data gap: {reason}'
@@ -251,12 +248,14 @@ class AcquisitionPlan:
             self.outcomes[identifier, source['url']] = 'speculative_trial_stopped'
             self.skipped.setdefault(source['url'], {})[identifier] = 'LAZ trial produced no adopted measurements; further speculative downloads deferred'
 
-    def next(self, resolved):
+    def next(self, resolved, source_format=None):
         groups, reasons = {}, {}
         for identifier, order in self.orders.items():
             if identifier in resolved:
                 continue
             for source, reason in order:
+                if source_format and source['format'] != source_format:
+                    continue
                 url = source['url']
                 if url not in self.tried[identifier]:
                     admitted, explanation = self.admission(identifier, source)

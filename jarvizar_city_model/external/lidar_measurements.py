@@ -114,7 +114,51 @@ def ground_reference(footprint, index, margin=25.0):
     return float(elevations.min())
 
 
-def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False):
+def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, roof_mode='TERRACES'):
+    """Retry coverage failures at bounded grid offsets, without adding returns.
+
+    Three fixed half-cell shifts reduce sensitivity to returns split across
+    cell boundaries. Every fit still needs three returns per supported cell,
+    85% coverage of every footprint component, and the full consistency and
+    printability checks. Missing roofs are never interpolated. Preserve the
+    initial fit exactly when it works; use the first complete retry otherwise.
+    Retry only near misses (at least 80% supported area in every component).
+    """
+    if not footprint.is_valid or footprint.is_empty or footprint.area < 4:
+        return None, 'invalid_or_small_footprint'
+    if ground_m is None:
+        ground_m = ground_reference(footprint, index)
+    if ground_m is None:
+        return None, 'insufficient_ground'
+    options = dict(ground_m=ground_m, roof_planes=roof_planes, part_footprints=part_footprints,
+                   neighboring_footprints=neighboring_footprints, allow_complex_height=allow_complex_height)
+    def finish(record, reason, details):
+        if record and roof_planes and roof_mode == 'FACETED' and 'samples' in details:
+            try:
+                from .lidar_facets import fit_faceted_roof
+            except ImportError:
+                from lidar_facets import fit_faceted_roof
+            fitted, note = fit_faceted_roof(footprint, details['samples'], record['cell_m'],
+                                           min_width_m, min_step_m, record)
+            if fitted:
+                return {**record, **fitted}, 'faceted_roof'
+            record['faceted_fallback'] = note
+        return record, reason
+    coverage = {}
+    result, reason = _measure_building(footprint, index, min_width_m, min_step_m, coverage_out=coverage, **options)
+    if reason != 'footprint_roof_mismatch' or coverage.get('minimum_component', 0) < .8:
+        return finish(result, reason, coverage)
+    for offset in ((.5, 0), (0, .5), (.5, .5)):
+        details = {}
+        recovered, recovered_reason = _measure_building(footprint, index, min_width_m, min_step_m,
+                                                       grid_offset=offset, coverage_out=details, **options)
+        if recovered:
+            recovered['coverage_grid_offset'] = list(offset)
+            return finish(recovered, recovered_reason, details)
+    return result, reason
+
+
+def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, grid_offset=(0, 0), coverage_out=None):
     """Measure the whole roof envelope; hidden undersides stay source-derived.
 
     Flat regions require dense spatial coverage and small vertical residuals.
@@ -151,6 +195,8 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
                           -xy[:, 0] * sine + xy[:, 1] * cosine)) + origin
     cell = max(1.5, min_width_m / 3)
     x0, y0, x1, y1 = rotated.bounds
+    x0 -= cell * grid_offset[0]
+    y0 -= cell * grid_offset[1]
     nx, ny = math.ceil((x1 - x0) / cell), math.ceil((y1 - y0) / cell)
     if nx * ny > 40000:
         return None, "footprint_cell_budget"
@@ -158,7 +204,7 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
     for row, pos in zip(points, uv):
         key = (math.floor((pos[0] - x0) / cell), math.floor((pos[1] - y0) / cell))
         groups.setdefault(key, []).append(row)
-    cells, samples, expected, supported_points = {}, {}, 0, 0
+    cells, samples, facet_samples, expected, supported_points = {}, {}, {}, 0, 0
     expected_by_piece, supported_by_piece = Counter(), Counter()
     supported_area_by_piece = Counter()
     pieces = polygons(rotated)
@@ -196,6 +242,12 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
             # The XYZ centroid stays exactly on a plane; independent medians
             # do not, particularly on oblique slopes and at cell boundaries.
             samples[(ix, iy)] = [float(np.mean(band[:,0])), float(np.mean(band[:,1])), float(np.mean(band[:,2])-ground)]
+            # Include every tie at a supported band's endpoints and sum in a
+            # stable XYZ order. A faceted triangulation must not move its sample
+            # vertices when acquisition happens to reorder equal-height returns.
+            facet_band = rows[(rows[:,2]-ground >= z[start]) & (rows[:,2]-ground <= z[ends[start]-1])]
+            facet_band = facet_band[np.lexsort((facet_band[:,2], facet_band[:,1], facet_band[:,0]))]
+            facet_samples[(ix, iy)] = [float(np.mean(facet_band[:,0])), float(np.mean(facet_band[:,1])), float(np.mean(facet_band[:,2])-ground)]
     coverage = len(cells) / max(expected, 1)
     area_coverage = False
     if coverage < 0.65 or len(cells) < 4:
@@ -206,6 +258,9 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
         # polygon component. No extra points, interpolated cells or lower point
         # thresholds enter the measurement. Already accepted fits stay intact.
         coverage = sum(supported_area_by_piece.values()) / footprint.area
+        if coverage_out is not None:
+            coverage_out['minimum_component'] = min([coverage] + [
+                supported_area_by_piece[i] / piece.area for i,piece in enumerate(pieces)])
         if coverage < .85 or any(supported_area_by_piece[i] < piece.area*.85
                                   for i,piece in enumerate(pieces)):
             return None, 'footprint_roof_mismatch'
@@ -277,6 +332,8 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
              'explained_fraction': sum(len(group) for _,group in regions)/max(expected,1)}
     if area_coverage:
         stats['coverage_basis'] = 'footprint_area'
+    if coverage_out is not None:
+        coverage_out['samples'] = np.array([facet_samples[key] for key in sorted(facet_samples)])
     if roof_planes and max(map(len, continuous)) >= len(cells)*0.85:
         group = max(continuous, key=len)
         elevations = [cells[key] for key in group]
@@ -472,7 +529,7 @@ def measure_source_parts(feature, parts, footprint, index, min_width_m, min_step
     return result, 'source_parts'
 
 
-def measure_features(features, points, to_metric, to_geographic, min_width_m, min_step_m, roi, roof_planes=True, parts_by_parent=None, observations_out=None, neighbors_by_id=None, source_parts_by_parent=None, prefer_lidar=False):
+def measure_features(features, points, to_metric, to_geographic, min_width_m, min_step_m, roi, roof_planes=True, parts_by_parent=None, observations_out=None, neighbors_by_id=None, source_parts_by_parent=None, prefer_lidar=False, roof_mode='TERRACES'):
     """One survey at a time; return measurements keyed by original feature ID."""
     index = PointIndex(points)
     results, counts, rejected = {}, Counter(), {}
@@ -513,12 +570,12 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
             reason = 'predates_building'
         if reason is None:
             measured, reason = measure_building(footprint, PointIndex(local), min_width_m, min_step_m,
-                roof_planes=roof_planes, part_footprints=(parts_by_parent or {}).get(identifier, ()),
+                roof_planes=roof_planes, roof_mode=roof_mode, part_footprints=(parts_by_parent or {}).get(identifier, ()),
                 neighboring_footprints=(neighbors_by_id or {}).get(identifier, ()))
         source_parts = (source_parts_by_parent or {}).get(identifier, ())
         # Source-shaped roofs remain useful even when a whole-envelope fit is
         # too complex. Footprint/epoch contradictions never enter this fallback.
-        if source_parts and props.get('has_parts') is True and reason in ('tiers', 'height_only', 'roof_planes',
+        if source_parts and props.get('has_parts') is True and reason in ('tiers', 'height_only', 'roof_planes', 'faceted_roof',
                 'complex_unclassified_roof', 'unclassified_nonplanar_roof',
                 'unresolved_upper_roof', 'unprintable_major_tier'):
             shaped = any((p.get('properties') or {}).get('roof_shape') not in (None, '', 'flat') for p,_ in source_parts)

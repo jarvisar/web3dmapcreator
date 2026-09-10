@@ -89,6 +89,14 @@ class LidarCacheTests(unittest.TestCase):
         path.write_text(json.dumps(payload))
         self.assertIn('stale', load_measurements(self.bundle,self.signature)[1])
 
+    def test_previous_grid_measurements_require_new_preparation(self):
+        self.write({'one':{'height_m':30, 'tiers':[]}})
+        path = self.bundle.path/'lidar_buildings.json'
+        payload = json.loads(path.read_text())
+        payload['request']['algorithm'] = 7
+        path.write_text(json.dumps(payload))
+        self.assertIn('stale', load_measurements(self.bundle,self.signature)[1])
+
     def test_summary_counts_final_rejections_not_observations(self):
         self.write({'accepted':{'height_m':30, 'tiers':[]}})
         path = self.bundle.path/'lidar_buildings.json'
@@ -119,5 +127,30 @@ class LidarCacheTests(unittest.TestCase):
         altered=request_signature(self.bundle,.07,.077,roof_planes=False)
         self.assertIn('stale',load_measurements(self.bundle,altered)[1])
         record['roof_surfaces'][0]['geometry']['coordinates'][0][1][2]=float('nan')
+        self.write({'one':record})
+        self.assertFalse(load_measurements(self.bundle,self.signature)[0])
+
+    def test_surface_mode_changes_signature_and_keeps_classic_fallback_available(self):
+        self.assertEqual(self.signature['roof_mode'], 'FACETED')
+        self.write({'one':{'height_m':30, 'tiers':[]}})
+        classic = request_signature(self.bundle, .07, .077, roof_mode='TERRACES')
+        self.assertIn('stale', load_measurements(self.bundle, classic)[1])
+        with self.assertRaises(ValueError):
+            request_signature(self.bundle, .07, .077, roof_mode='unknown')
+        payload = json.loads((self.bundle.path/'lidar_buildings.json').read_text())
+        payload['request']['algorithm'] = 8
+        (self.bundle.path/'lidar_buildings.json').write_text(json.dumps(payload))
+        self.assertIn('stale', load_measurements(self.bundle, self.signature)[1])
+
+    def test_facets_have_a_bounded_surface_contract(self):
+        surface = {'bottom_m':20, 'geometry':{'type':'Polygon', 'coordinates':[
+            [[-87.8,41.2,20],[-87.7,41.2,30],[-87.7,41.3,30],[-87.8,41.2,20]]]}}
+        record = {'height_m':20, 'tiers':[], 'method':'faceted_roof', 'roof_surfaces':[surface]*9}
+        self.write({'one':record})
+        self.assertTrue(load_measurements(self.bundle,self.signature)[0])
+        record['method'] = 'roof_planes'
+        self.write({'one':record})
+        self.assertFalse(load_measurements(self.bundle,self.signature)[0])
+        record.update(method='faceted_roof', roof_surfaces=[surface]*1025)
         self.write({'one':record})
         self.assertFalse(load_measurements(self.bundle,self.signature)[0])

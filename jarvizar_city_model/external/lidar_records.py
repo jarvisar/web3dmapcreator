@@ -5,6 +5,8 @@ never turn a missing upper roof into an apparently valid podium-only model.
 """
 import math
 
+MAX_ROOF_FACETS = 1024
+
 
 def finite_number(value):
     if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -84,7 +86,8 @@ def validate_records(buildings):
             validate_geometry(tier.get('geometry'))
             previous = top
         surfaces = record.get('roof_surfaces', [])
-        if not isinstance(surfaces, list) or len(surfaces) > 8 or (surfaces and tiers):
+        limit = MAX_ROOF_FACETS if record.get('method') == 'faceted_roof' else 8
+        if not isinstance(surfaces, list) or len(surfaces) > limit or (surfaces and tiers):
             raise ValueError('Invalid LiDAR roof surfaces')
         for surface in surfaces:
             if not isinstance(surface, dict) or not finite_number(surface.get('bottom_m')) or abs(surface['bottom_m']-height) > 1e-6:

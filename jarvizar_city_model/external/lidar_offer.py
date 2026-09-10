@@ -1,0 +1,48 @@
+"""Request-bound, explicit consent for a finite set of LAZ gap tiles (stdlib)."""
+import hashlib
+import json
+
+
+def offer_token(request, offers):
+    return hashlib.sha256(json.dumps([request, offers], sort_keys=True,
+                                    allow_nan=False).encode()).hexdigest()
+
+
+def approved_offers(bundle, request, token):
+    if not token:
+        return []
+    try:
+        payload = json.loads((bundle / 'lidar_buildings.json').read_text(encoding='utf-8'))
+        offers = payload['laz_offers']
+        if (payload['request'] == request and offers
+                and token == offer_token(request, offers)):
+            return offers
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    raise ValueError('LAZ offer changed or is stale; prepare EPT again and review the current gaps')
+
+
+def offer_details(offers):
+    """Readable areas and known catalog information; never imply guaranteed recovery."""
+    lines = []
+    for offer in offers:
+        lines.append(f"{offer['name']}: may improve {len(offer['buildings'])} building gaps")
+        for area in offer['areas']:
+            w, s, e, n = area['bbox']
+            lines.append(f"Area W/S/E/N: {w:.5f}, {s:.5f}, {e:.5f}, {n:.5f} ({area['buildings']} buildings)")
+        lines.append('; '.join(offer['reasons']).replace('_', ' '))
+        sizes = [t.get('size_bytes') for t in offer['tiles']]
+        known = [s for s in sizes if isinstance(s, (int, float)) and s > 0]
+        size = f"{sum(known)/1024**2:.1f} MiB" if known else 'size unknown'
+        if known and len(known) != len(sizes):
+            size += ' + unknown sizes'
+        lines.append(f"{len(sizes)} tiles; {size}")
+        meta = offer.get('survey_metadata', {})
+        lines.append('Acquired: ' + str(meta.get('acquisition_start', 'unknown')) +
+                     ' to ' + str(meta.get('acquisition_end', 'unknown')))
+        for key, label in (('point_spacing_m', 'Spacing (m)'), ('point_density_m2', 'Density (pts/m²)'),
+                           ('vertical_rmse_m', 'Vertical RMSE (m)')):
+            if key in meta:
+                lines.append(f'{label}: {meta[key]}')
+        lines.append(offer['url'])
+    return '\n'.join(lines)
