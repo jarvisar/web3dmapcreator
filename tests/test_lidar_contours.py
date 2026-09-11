@@ -148,7 +148,10 @@ class GridContourTests(unittest.TestCase):
             self.assertLess(outline.exterior.length, old_outline.exterior.length*.9)
             self.assertLess(outline.symmetric_difference(actual).area,
                             old_outline.symmetric_difference(actual).area*.8)
-            self.assertAlmostEqual(outline.area, old_outline.area, delta=old_outline.area*.05)
+            self.assertAlmostEqual(outline.area, actual.area, delta=actual.area*.05)
+            self.assertLess(outline.exterior.hausdorff_distance(actual.exterior), self.cell)
+            self.assertLess(sum(Polygon(ring).area for ring in outline.interiors), 1e-6,
+                            'A solid tower must not acquire unsupported lower-roof pits')
             self.assertFalse(outline.buffer(-settings['min_width_m']*.45).is_empty)
             support = outline
 

@@ -281,8 +281,9 @@ class JARVIZAR_PT_buildings(Panel):
         roof_row = box.row()
         roof_row.enabled = settings.generate_roof_shapes
         roof_row.prop(settings, "lidar_roof_mode")
-        box.prop(settings, "lidar_minimum_width_mm")
-        box.prop(settings, "lidar_minimum_step_mm")
+        if settings.lidar_roof_mode == 'TERRACES':
+            box.prop(settings, "lidar_minimum_width_mm")
+            box.prop(settings, "lidar_minimum_step_mm")
         box.prop(settings, "lidar_source_url")
         box.prop(settings, "lidar_international")
         box.prop(settings, "lidar_stac_urls")

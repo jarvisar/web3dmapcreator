@@ -1,7 +1,7 @@
-"""Conservative footprint-constrained height/terrace measurements (no bpy).
+"""Footprint-constrained roof evidence and reconstruction (no bpy).
 
 Uses NumPy and Shapely only in the external environment. The output contains
-clean 2D polygons and ground-relative heights, never a point-derived mesh.
+clean planar surface polygons and ground-relative heights, never raw points.
 """
 from __future__ import annotations
 
@@ -114,7 +114,7 @@ def ground_reference(footprint, index, margin=25.0):
     return float(elevations.min())
 
 
-def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, roof_mode='TERRACES'):
+def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, roof_mode='TERRACES', surface_scale=None):
     """Retry coverage failures at bounded grid offsets, without adding returns.
 
     Three fixed half-cell shifts reduce sensitivity to returns split across
@@ -130,52 +130,46 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
         ground_m = ground_reference(footprint, index)
     if ground_m is None:
         return None, 'insufficient_ground'
+    if roof_planes and roof_mode == 'FACETED':
+        sx, sz = surface_scale or (.07, .077)
+        min_width_m, min_step_m = .1 / sx, max(.25, .05 / sz)
     options = dict(ground_m=ground_m, roof_planes=roof_planes, part_footprints=part_footprints,
                    neighboring_footprints=neighboring_footprints, allow_complex_height=allow_complex_height,
-                   detailed_surfaces=roof_planes and roof_mode == 'FACETED')
+                   detailed_surfaces=roof_planes and roof_mode == 'FACETED', surface_scale=surface_scale)
     def finish(record, reason, details, offset=(0, 0)):
-        if roof_planes and roof_mode == 'FACETED' and 'samples' in details:
+        # Keep an already supported detailed envelope when the new surface
+        # inference is uncertain. This bounded compatibility path is never
+        # a prerequisite for the main surface reconstruction.
+        if (options['detailed_surfaces'] and 'samples' in details
+                and not (record or {}).get('surface_reconstruction')):
             try:
                 from .lidar_facets import fit_faceted_roof
             except ImportError:
                 from lidar_facets import fit_faceted_roof
             fitted, note = (fit_faceted_roof(footprint, details['samples'], record['cell_m'],
-                                            min_width_m, min_step_m, record,
-                                            sample_boundaries=details.get('tier_sample_regions'))
-                            if record else (None, reason))
+                min_width_m, min_step_m, record, sample_boundaries=details.get('tier_sample_regions'))
+                if record else (None, reason))
             if fitted:
                 return {**record, **fitted}, 'faceted_roof'
-            if details.get('boundary_refined'):
-                # A sub-cell outline is adopted together with its complete roof.
-                # If it cannot be meshed within the existing guards, preserve
-                # the previous detailed reconstruction before the older retry.
+            # Preserve the established complete envelope if regularized legacy
+            # contours exceed a budget. This bounded compatibility fallback
+            # reuses the same acquired points without new surface inference.
+            if note not in ('flat roof', 'existing measured planes'):
                 coarse_details = {}
-                coarse, coarse_reason = _measure_building(
-                    footprint, index, min_width_m, min_step_m, grid_offset=offset,
-                    coverage_out=coarse_details, **options, boundary_refinement=False)
-                if coarse and offset != (0, 0):
-                    coarse['coverage_grid_offset'] = list(offset)
-                return finish(coarse, coarse_reason, coarse_details, offset)
-            # Refinement must not turn an already supported detailed roof into
-            # a box when cleaner boundaries or extra real steps exceed a budget.
-            # One bounded retry uses the established contours/partition fit,
-            # with the same points, ground, grid and all acceptance checks.
-            if (record and note not in ('flat roof', 'existing measured planes')) or reason == 'unprintable_major_tier':
-                previous_details = {}
-                previous, previous_reason = _measure_building(
-                    footprint, index, min_width_m, min_step_m, grid_offset=offset,
-                    coverage_out=previous_details, **{**options, 'detailed_surfaces': False})
-                if previous and 'samples' in previous_details:
+                coarse, coarse_reason = _measure_building(footprint, index, min_width_m,
+                    min_step_m, grid_offset=offset, coverage_out=coarse_details,
+                    **{**options, 'detailed_surfaces': False})
+                if coarse and 'samples' in coarse_details:
                     if offset != (0, 0):
-                        previous['coverage_grid_offset'] = list(offset)
-                    old_fit, _ = fit_faceted_roof(footprint, previous_details['samples'],
-                        previous['cell_m'], min_width_m, min_step_m, previous, refine=False)
-                    if old_fit:
-                        return {**previous, **old_fit, 'faceted_refinement_fallback': note}, 'faceted_roof'
+                        coarse['coverage_grid_offset'] = list(offset)
+                    fitted, _ = fit_faceted_roof(footprint, coarse_details['samples'],
+                        coarse['cell_m'], min_width_m, min_step_m, coarse, refine=False)
+                    if fitted:
+                        return {**coarse, **fitted,
+                                'faceted_fallback': (record or {}).get('faceted_fallback', reason)}, 'faceted_roof'
                     if not record:
-                        return previous, previous_reason
-            if record:
-                record['faceted_fallback'] = note
+                        coarse['faceted_fallback'] = reason
+                        return coarse, coarse_reason
         return record, reason
     coverage = {}
     result, reason = _measure_building(footprint, index, min_width_m, min_step_m, coverage_out=coverage, **options)
@@ -191,7 +185,7 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
     return result, reason
 
 
-def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, grid_offset=(0, 0), coverage_out=None, detailed_surfaces=False, boundary_refinement=True):
+def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, grid_offset=(0, 0), coverage_out=None, detailed_surfaces=False, boundary_refinement=True, surface_scale=None):
     """Measure the whole roof envelope; hidden undersides stay source-derived.
 
     Flat regions require dense spatial coverage and small vertical residuals.
@@ -226,7 +220,7 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
     xy = points[:, :2] - origin
     uv = np.column_stack((xy[:, 0] * cosine + xy[:, 1] * sine,
                           -xy[:, 0] * sine + xy[:, 1] * cosine)) + origin
-    cell = max(1.5, min_width_m / 3)
+    cell = 1.5 if detailed_surfaces else max(1.5, min_width_m / 3)
     x0, y0, x1, y1 = rotated.bounds
     x0 -= cell * grid_offset[0]
     y0 -= cell * grid_offset[1]
@@ -329,6 +323,33 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             if area >= max(36, footprint.area*.08) and area >= ring.area*.25:
                 return None, 'roof_extends_outside_footprint'
 
+    # Detailed reconstruction starts at supported samples, before scalar roof
+    # levels or terrace outlines can constrain the representation. Acquisition,
+    # ground, per-component coverage and footprint contradiction guards above
+    # are shared with Terraces mode.
+    surface_fallback = None
+    if detailed_surfaces:
+        try:
+            from .lidar_surfaces import fit_surface_roof
+        except ImportError:
+            from lidar_surfaces import fit_surface_roof
+        fitted, surface_fallback = fit_surface_roof(
+            footprint, np.array([facet_samples[key] for key in sorted(facet_samples)]),
+            cell, scale=surface_scale or (.07, .077),
+            boundary_samples=np.concatenate(boundary_samples) if boundary_samples else np.empty((0, 3)),
+            part_footprints=part_footprints)
+        if fitted:
+            stats = {"ground_m": ground, "roof_points": len(points), "coverage": round(coverage, 4),
+                     "cell_m": cell, "classified_fraction": float(np.mean(points[:, 3] == 6)),
+                     'roof_support_density_m2': supported_points/footprint.area,
+                     'explained_fraction': min(1.0, fitted['surface_diagnostics']
+                         ['surface_retained_samples'] / max(expected, 1))}
+            if area_coverage:
+                stats['coverage_basis'] = 'footprint_area'
+            return {**stats, **fitted}, 'faceted_roof'
+        # Failure is explicit and transactional. The established terrace path
+        # remains a conservative fallback; it is not an input to surface fitting.
+
     # Flood-fill *continuous* surfaces, then test each region's flatness.
     # A pitched roof remains connected across its small successive rises.
     pending, regions = set(cells), []
@@ -371,6 +392,8 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
              "cell_m": cell, "classified_fraction": float(np.mean(points[:, 3] == 6)),
              'roof_support_density_m2': supported_points/footprint.area,
              'explained_fraction': sum(len(group) for _,group in regions)/max(expected,1)}
+    if surface_fallback:
+        stats['faceted_fallback'] = surface_fallback
     if area_coverage:
         stats['coverage_basis'] = 'footprint_area'
     if coverage_out is not None:
@@ -608,7 +631,7 @@ def measure_source_parts(feature, parts, footprint, index, min_width_m, min_step
     return result, 'source_parts'
 
 
-def measure_features(features, points, to_metric, to_geographic, min_width_m, min_step_m, roi, roof_planes=True, parts_by_parent=None, observations_out=None, neighbors_by_id=None, source_parts_by_parent=None, prefer_lidar=False, roof_mode='TERRACES'):
+def measure_features(features, points, to_metric, to_geographic, min_width_m, min_step_m, roi, roof_planes=True, parts_by_parent=None, observations_out=None, neighbors_by_id=None, source_parts_by_parent=None, prefer_lidar=False, roof_mode='TERRACES', surface_scale=None):
     """One survey at a time; return measurements keyed by original feature ID."""
     index = PointIndex(points)
     results, counts, rejected = {}, Counter(), {}
@@ -650,7 +673,7 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
             reason = 'predates_building'
         if reason is None:
             measured, reason = measure_building(footprint, PointIndex(local), min_width_m, min_step_m,
-                roof_planes=roof_planes, roof_mode=roof_mode, part_footprints=(parts_by_parent or {}).get(identifier, ()),
+                roof_planes=roof_planes, roof_mode=roof_mode, surface_scale=surface_scale, part_footprints=(parts_by_parent or {}).get(identifier, ()),
                 neighboring_footprints=(neighbors_by_id or {}).get(identifier, ()))
         source_parts = (source_parts_by_parent or {}).get(identifier, ())
         # Source-shaped roofs remain useful even when a whole-envelope fit is

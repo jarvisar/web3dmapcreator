@@ -249,18 +249,18 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     )
     lidar_roof_mode: EnumProperty(
         name="LiDAR Roof Reconstruction",
-        items=(('FACETED', 'Detailed Surfaces', 'Measured roof facets follow slopes and crowns while preserving major setbacks'),
+        items=(('FACETED', 'Detailed Surfaces', 'Infer coherent roof surfaces and setbacks from measured support at the current print scale'),
                ('TERRACES', 'Terraces', 'Use the established horizontal tiers and simple measured roof planes')),
         default='FACETED',
-        description="Reconstruct supported roof detail; prepare LiDAR again after changing",
+        description="Detailed Surfaces adapts to print scale; Terraces uses the width and step controls. Prepare LiDAR again after changing",
     )
     lidar_minimum_width_mm: FloatProperty(
         name="Minimum LiDAR Detail Width (mm)", default=0.1, min=0.01, soft_max=2.0,
-        description="Remove roof islands and narrow strips below this printed width",
+        description="Terraces only: remove roof islands and narrow strips below this printed width",
     )
     lidar_minimum_step_mm: FloatProperty(
         name="Minimum Roof Step (mm)", default=0.05, min=0.02, soft_max=1.0,
-        description="Smallest measured height difference retained as a separate roof tier",
+        description="Terraces only: smallest measured height difference retained as a separate roof tier",
     )
     lidar_download_workers: IntProperty(
         name="LAZ Parallel Downloads", default=DEFAULT_DOWNLOAD_WORKERS,

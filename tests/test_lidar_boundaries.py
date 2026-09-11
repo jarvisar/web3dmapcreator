@@ -98,13 +98,43 @@ class MeasuredBoundaryTests(unittest.TestCase):
         np.random.default_rng(71).shuffle(points)
         self.assertEqual(self.refine(raster, points).wkb, expected.wkb)
 
+    def test_coverage_union_matches_general_overlay_for_measured_boundaries(self):
+        circle = Point(30, 30).buffer(23, quad_segs=64)
+        cases = (circle, rotate(scale(circle, xfact=1, yfact=.55), 31),
+                 circle.difference(box(21, 21, 39, 39)),
+                 circle.difference(box(30, 30, 60, 60)))
+        exercised = 0
+        for actual in cases:
+            with self.subTest(shape=actual.wkt[:80]):
+                raster, points = self.raster(actual), self.cloud(actual)
+                with patch('jarvizar_city_model.external.lidar_boundaries.coverage_union_all',
+                           side_effect=unary_union) as general_overlay:
+                    before = self.refine(raster, points)
+                exercised += general_overlay.call_count >= 2
+                after = self.refine(raster, points)
+                self.assertLess(before.symmetric_difference(after).area, 1e-7)
+                self.assertLess(before.boundary.hausdorff_distance(after.boundary), 1e-7)
+        self.assertGreaterEqual(exercised, 3)
+
+    def test_ring_fitting_ignores_overlay_start_vertex_and_winding(self):
+        from jarvizar_city_model.external.lidar_boundaries import _fit_ring
+        ring = self.raster(Point(30, 30).buffer(23, quad_segs=64)).exterior
+        points = list(ring.coords)[:-1]
+        expected = Polygon(_fit_ring(ring, self.cell))
+        for offset, reverse in ((11, False), (27, True), (44, False)):
+            shifted = points[offset:] + points[:offset]
+            if reverse:
+                shifted.reverse()
+            actual = Polygon(_fit_ring(Polygon(shifted).exterior, self.cell))
+            self.assertLess(actual.symmetric_difference(expected).area, 1e-7)
+
     def test_full_measurement_preserves_levels_and_improves_curved_outline(self):
         actual = Point(30, 30).buffer(23, quad_segs=96)
         cloud = self.cloud(actual)
         points = np.column_stack((cloud, np.full(len(cloud), 6), np.ones(len(cloud))))
         options = dict(min_width_m=self.width, min_step_m=.05/.077, ground_m=0, roof_mode='FACETED')
         index = PointIndex(points)
-        with patch('jarvizar_city_model.external.lidar_boundaries.measured_tier_boundary',
+        with patch('jarvizar_city_model.external.lidar_surfaces.measured_tier_boundary',
                    side_effect=lambda region, *args: region):
             before, why = measure_building(box(0, 0, 60, 60), index, **options)
         after, why = measure_building(box(0, 0, 60, 60), index, **options)
@@ -125,14 +155,19 @@ class MeasuredBoundaryTests(unittest.TestCase):
             self.assertLessEqual(len(roofs), 1024)
         self.assertLess(outlines[1].symmetric_difference(actual).area,
                         outlines[0].symmetric_difference(actual).area*.6)
-        self.assertGreater(len(after['roof_surfaces']), len(before['roof_surfaces']))
-        # A detailed roof that already fits the budget must survive when its
-        # sub-cell boundary trial needs more triangles than are available.
-        with patch('jarvizar_city_model.external.lidar_facets.MAX_FACETS',
-                   len(before['roof_surfaces']) + 1):
+        self.assertLess(len(outlines[1].exterior.coords), 100)
+        # A forced surface-budget failure must retain the whole building,
+        # including its major upper mass, through the conservative fallback.
+        with patch('jarvizar_city_model.external.lidar_facets.MAX_FACETS', 3):
             fallback, why = measure_building(box(0, 0, 60, 60), index, **options)
-        self.assertEqual(why, 'faceted_roof')
-        self.assertEqual(fallback['roof_surfaces'], before['roof_surfaces'])
+        self.assertIsNotNone(fallback, why)
+        self.assertEqual(why, 'tiers')
+        self.assertIn('budget', fallback['faceted_fallback'])
+        self.assertAlmostEqual(fallback['height_m'], 20)
+        self.assertEqual([round(t['top_m']) for t in fallback['tiers']], [50])
+        upper = shape(fallback['tiers'][0]['geometry'])
+        self.assertTrue(box(0, 0, 60, 60).covers(upper))
+        self.assertLess(upper.symmetric_difference(actual).area, actual.area*.1)
 
 
 if __name__ == '__main__':

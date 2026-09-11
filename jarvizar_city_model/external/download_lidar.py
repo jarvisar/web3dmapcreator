@@ -76,7 +76,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     from shapely import STRtree
     from lidar_candidates import staged, SOURCE_FIELDS, discovery_settings
 
-    if request["algorithm"] != 11:
+    if request["algorithm"] != 12:
         raise ValueError("Unsupported LiDAR algorithm version")
     if request.get('roof_mode', 'TERRACES') not in ('TERRACES', 'FACETED'):
         raise ValueError('Unknown LiDAR roof reconstruction mode')
@@ -301,6 +301,8 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                 max(0.25, request["min_step_mm"] / request["z_scale"]), batch_roi,
                 roof_planes=request.get('roof_planes', True), parts_by_parent=parts_by_parent,
                 roof_mode=request.get('roof_mode', 'TERRACES'),
+                surface_scale=((request['xy_scale'], request['z_scale'])
+                               if request.get('roof_mode') == 'FACETED' else None),
                 source_parts_by_parent=source_parts_by_parent,
                 observations_out=evidence, neighbors_by_id=neighbors_by_id,
                 prefer_lidar=request.get('prefer_lidar', True))

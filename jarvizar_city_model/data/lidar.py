@@ -17,7 +17,7 @@ from ..external.lidar_ranking import ACQUISITION_VERSION, FALLBACK_POLICY_VERSIO
 from ..external.lidar_candidates import discovery_settings
 
 FORMAT_VERSION = 1
-ALGORITHM_VERSION = 11
+ALGORITHM_VERSION = 12
 
 
 def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None, roof_mode='FACETED', providers=None, stac_urls=(), vertical_units=''):
@@ -25,6 +25,11 @@ def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0
         raise ValueError('Unknown LiDAR roof reconstruction mode')
     if vertical_units not in ('', 'm', 'ft', 'us-ft'):
         raise ValueError('Unknown fallback LiDAR vertical units')
+    if roof_mode == 'FACETED':
+        # Detailed reconstruction derives its tolerances from model scale and
+        # measured support. Keep canonical legacy fields for the acquisition
+        # and conservative fallback contract, never saved terrace sliders.
+        min_width_mm, min_step_mm = 0.1, 0.05
     files = {}
     for name in ("building", "building_part"):
         path = bundle.data_path(name)

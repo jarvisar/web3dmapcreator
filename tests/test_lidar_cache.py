@@ -47,13 +47,40 @@ class LidarCacheTests(unittest.TestCase):
         self.write({'one':{'height_m':30, 'tiers':[]}})
         strict = request_signature(self.bundle, .07, .077, prefer_lidar=False)
         self.assertIn('stale', load_measurements(self.bundle, strict)[1])
-        narrow = request_signature(self.bundle, .07, .077, min_width_mm=.01)
-        self.assertIn('stale', load_measurements(self.bundle, narrow)[1])
+
+    def test_detailed_surface_cache_ignores_legacy_terrace_controls(self):
+        self.write({'one': {'height_m': 30, 'tiers': []}})
+        for width, step in ((.01, .02), (.5, .2), (2, 1)):
+            altered = request_signature(self.bundle, .07, .077,
+                                        min_width_mm=width, min_step_mm=step)
+            self.assertEqual(altered, self.signature)
+            self.assertTrue(load_measurements(self.bundle, altered)[0])
+        self.assertEqual(self.signature['min_width_mm'], .1)
+        self.assertEqual(self.signature['min_step_mm'], .05)
+
+    def test_detailed_surface_cache_tracks_actual_print_scales(self):
+        self.write({'one': {'height_m': 30, 'tiers': []}})
+        for xy_scale, z_scale in ((.14, .077), (.07, .154)):
+            altered = request_signature(self.bundle, xy_scale, z_scale)
+            self.assertIn('stale', load_measurements(self.bundle, altered)[1])
+
+    def test_terrace_cache_still_tracks_width_and_step(self):
+        classic = request_signature(self.bundle, .07, .077, roof_mode='TERRACES')
+        for detail in ({'min_width_mm': .01}, {'min_step_mm': .02}):
+            altered = request_signature(self.bundle, .07, .077,
+                                        roof_mode='TERRACES', **detail)
+            self.assertNotEqual(altered, classic)
+            for key, value in detail.items():
+                self.assertEqual(altered[key], value)
 
     def test_blender_float_detail_values_have_a_stable_signature(self):
         blender_floats = request_signature(self.bundle, .07, .077,
             min_width_mm=.10000000149011612, min_step_mm=.05000000074505806)
         self.assertEqual(blender_floats, self.signature)
+        classic = request_signature(self.bundle, .07, .077, roof_mode='TERRACES')
+        blender_floats = request_signature(self.bundle, .07, .077, roof_mode='TERRACES',
+            min_width_mm=.10000000149011612, min_step_mm=.05000000074505806)
+        self.assertEqual(blender_floats, classic)
 
     def test_acquisition_and_manifest_change_invalidate_preparation(self):
         self.write({'one': {'height_m': 30, 'tiers': []}})
@@ -96,6 +123,15 @@ class LidarCacheTests(unittest.TestCase):
         payload['request']['algorithm'] = 7
         path.write_text(json.dumps(payload))
         self.assertIn('stale', load_measurements(self.bundle,self.signature)[1])
+
+    def test_previous_terrace_first_surfaces_require_new_preparation(self):
+        self.assertEqual(self.signature['algorithm'], 12)
+        self.write({'one': {'height_m': 30, 'tiers': []}})
+        path = self.bundle.path/'lidar_buildings.json'
+        payload = json.loads(path.read_text())
+        payload['request']['algorithm'] = 11
+        path.write_text(json.dumps(payload))
+        self.assertIn('stale', load_measurements(self.bundle, self.signature)[1])
 
     def test_summary_counts_final_rejections_not_observations(self):
         self.write({'accepted':{'height_m':30, 'tiers':[]}})

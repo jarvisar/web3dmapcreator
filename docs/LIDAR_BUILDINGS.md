@@ -1,5 +1,76 @@
 # Building heights and USGS LiDAR
 
+## Coherent architectural surfaces (0.18.0)
+
+Detailed Surfaces now reconstructs coherent surfaces before it creates any
+terraces. Run **Prepare LiDAR Buildings** again after updating, then **Generate
+Model**. Algorithm 12 invalidates old measurement/checkpoint results; leave
+Refresh off to reuse acquired tiles. Existing source discovery and downloads
+are unchanged.
+
+The former path flood-filled neighboring scalar cell heights, reduced each
+accepted region to an elevation, and extruded nested unions of grid squares.
+Its later faceting pass inherited those boundaries and retained terraces when
+fitting failed. This explains both horizontal stair bands on slopes and noisy
+roof islands. Blender did not introduce the height quantization.
+
+The new path retains the existing ground, classification, per-component roof
+coverage, footprint and survey-consistency checks, then:
+
+1. Fits local robust planes to equally weighted supported cell observations.
+   Compatible surface predictions connect regions; observed jumps act as
+   barriers, so one accidental connection cannot merge a tower with its podium.
+2. Removes spatially isolated residuals and merges statistically compatible
+   planar regions. Independent roof features need two-dimensional support;
+   numerous returns along a narrow facade strip do not establish a roof.
+   Nearly equal flat levels merge horizontally, with measured local gradients
+   distinguishing them from an actual shallow slope. Coherent small crowns
+   remain independently supported features.
+3. Partitions the mapped footprint, refines observed architectural boundaries,
+   and reconciles continuous planar folds at their plane intersections. Shared
+   nested interfaces avoid deep slivers; known courtyards remain open. Width
+   regularization removes unsupported fingers from region outlines rather
+   than filtering the individual triangles of a valid curved surface.
+4. Emits broad fitted planes or adaptive continuous curved surfaces. It uses
+   a bounded, coarser plane for an uncertain patch only when its residual fits
+   fine printed-feature resolution. This is recorded explicitly. Incomplete
+   envelopes keep a complete legacy fallback rather than losing an upper mass.
+
+Minimum LiDAR Detail Width and Minimum Roof Step now apply only to **Terraces**.
+Detailed Surfaces derives approximation tolerances from the selected print scale
+and supported survey evidence; saved low slider values cannot fragment its roofs.
+At the default 0.07 mm/m scale, its nominal fit error is about 0.025 printed mm,
+with a measurement floor. A difficult local patch may be regularized within
+0.1 printed mm; diagnostics distinguish this from the nominal fit and report
+cell adjustments separately. Surface segmentation is not height quantization.
+
+The mesh path still creates supported closed solids. This avoids unsupported
+roof overhangs and does not use smooth shading, subdivision, or a modifier.
+Planar regions may contain several cap polygons around holes; those polygons
+are not independent architectural height levels.
+
+Limitations: roof evidence remains an aerial 2.5D envelope, not a facade model.
+Sub-cell boundaries, parapets, thin spires, occluded roofs, and heavily corrupted
+returns remain uncertain. Curves are bounded polygonal approximations. Complex
+or unsupported envelopes can retain legacy geometry. Closed-mesh verification
+is distinct from slicer validation or a physical print.
+
+Task 2 follow-up: the old terrace acceptance prerequisite could reject an
+otherwise reconstructable sloping upper roof (`unresolved_upper_roof` or
+`unprintable_major_tier`) before surface fitting ran. Bypassing that prerequisite
+is necessary for quality and can incidentally recover those cases. Other skips
+still come from surrounding-ground support, component coverage, footprint/epoch
+contradictions, source-selection policy, and transactional Blender adoption.
+Source-part supplements still deliberately use coarser scalar height correction.
+Mixed polygon/line clipping remnants, unsupported convex-hull probes outside
+concave roofs, and numerically fragile cap outlines were also concrete geometry
+failure causes encountered and fixed here. Rejected full surface fits still
+use a complete legacy fallback. No broad missing-building policy was changed.
+
+The sections below document older reconstruction revisions and investigations;
+the implementation and this section describe the current detailed path.
+
+
 ## Preparation with mixed clipped geometry (0.15.19)
 
 Intersecting valid tier and footprint polygons can produce a GeometryCollection

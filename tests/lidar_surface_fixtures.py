@@ -6,8 +6,9 @@ Run with the optional LiDAR Python environment, for example:
 The default comparison uses unchanged Terraces against Detailed Surfaces. To
 compare an earlier Detailed Surfaces implementation, supply --baseline-dir with
 lidar_measurements.py and lidar_facets.py (the *_baseline.py names also work).
-Only those two reference modules are substituted; their unchanged dependencies
-come from the checkout. No local city caches, network, or Blender are required.
+Reference dependencies are loaded from that directory when supplied, with the
+checkout as a fallback for a two-module snapshot. No city caches, network, or
+Blender are required.
 """
 import argparse
 import hashlib
@@ -33,6 +34,7 @@ POINT_SPACING = .45
 def baseline_modules(directory):
     """Load optional reference code under isolated, non-package module names."""
     sys.path.insert(0, str(ROOT / 'jarvizar_city_model' / 'external'))
+    sys.path.insert(0, str(directory.resolve()))
     hashes = {}
     for stem, module_name in (('lidar_facets', 'lidar_facets'),
                               ('lidar_measurements', 'lidar_measurements_reference')):
@@ -93,9 +95,8 @@ def definitions():
            'roof': kinked_roof,
            'probe_xy': [(x, y) for x in (3, 8, 12, 18, 22) for y in (4, 12, 20)],
            'tolerance_m': 2.0, 'compare_probe_error': True,
-           'note': 'Conservative fallback limit: the unsupported flat-to-steep boundary '
-                   'retains a terrace. The 2 m probe bound is 0.154 mm at default Z scale; '
-                   'this case does not claim exact recovery of the kink.'}
+           'note': 'The former fitter retained a terrace at this flat-to-steep boundary. '
+                   'Surface reconstruction can now recover its supported continuous fold.'}
 
     def curved_roof(x, y):
         return 15 + 7*(1-((x-12)/12)**2)
@@ -106,6 +107,24 @@ def definitions():
            'probe_xy': [(x, y) for x in (3, 6, 12, 18, 21) for y in (3, 21)]
                        + [(3, 12), (21, 12)],
            'void_probes': [(10, 10), (12, 12), (14, 14)], 'tolerance_m': 1.3}
+
+    footprint = box(0, 0, 48, 36)
+    probes = [(x, y) for x in (3, 9, 18, 30, 43) for y in (4, 14, 29)]
+    noise = lambda x, y: np.sin(x*1.7)*np.cos(y*2.1)
+    roofs = {
+        'noisy_flat_roof': lambda x, y: 22 + .12*noise(x, y),
+        'noisy_sloped_roof': lambda x, y: 15 + .42*x + .12*noise(x, y),
+        'noisy_barrel_roof': lambda x, y: 15 + 10*np.sqrt(np.maximum(0, 1-((x-24)/26)**2)) + .1*noise(x, y),
+        'noisy_gabled_roof': lambda x, y: 15 + .55*np.minimum(x, 48-x) + .1*noise(x, y),
+        'flat_roof_with_plant': lambda x, y: 20 + np.where((x>17)&(x<30)&(y>11)&(y<24), 4, 0) + .1*noise(x, y),
+        'three_level_setbacks': lambda x, y: np.where((x>14)&(x<34)&(y>10)&(y<26), 95,
+            np.where((x>7)&(x<41)&(y>5)&(y<31), 55, 18)) + .08*np.sin(x*1.7),
+    }
+    for name, roof in roofs.items():
+        interior_probes = ([(x, y) for x in (3, 9, 18, 24, 32, 43) for y in (4, 14, 29)]
+                           if name == 'flat_roof_with_plant' else probes)
+        yield {'name': name, 'footprint': footprint, 'roof': roof,
+               'probe_xy': interior_probes, 'tolerance_m': .8}
 
 
 def make_cloud(footprint, roof):

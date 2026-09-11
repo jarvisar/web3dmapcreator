@@ -9,7 +9,7 @@ import math
 
 import numpy as np
 from shapely import STRtree, constrained_delaunay_triangles, points as make_points
-from shapely.geometry import MultiPoint, shape
+from shapely.geometry import MultiPoint, Point, shape
 from shapely.errors import GEOSException
 from shapely.ops import triangulate, unary_union
 
@@ -110,11 +110,13 @@ def continuous_boundary(boundary, footprint, samples, cell, tolerance):
     return None
 
 
-def patch_facets(region, samples, cell, tolerance, facet_budget, planar_fit=True):
+def patch_facets(region, samples, cell, tolerance, facet_budget, planar_fit=True,
+                 surface_owned=False):
     """Triangulate with measured boundary heights and bounded interior error."""
     from shapely import contains_xy
-    samples = samples[contains_xy(region.buffer(1e-7), samples[:, 0], samples[:, 1])]
-    if len(samples) < 6:
+    if not surface_owned:
+        samples = samples[contains_xy(region.buffer(1e-7), samples[:, 0], samples[:, 1])]
+    if len(samples) < (3 if surface_owned else 6):
         raise UnsupportedFit('insufficient patch support')
     samples = samples[np.lexsort((samples[:, 1], samples[:, 0]))]
     center = np.mean(samples[:, :2], axis=0)
@@ -131,11 +133,11 @@ def patch_facets(region, samples, cell, tolerance, facet_budget, planar_fit=True
     def elevation(xy):
         distances = np.sum((samples[:, :2] - xy)**2, axis=1)
         order = np.argsort(distances, kind='stable')[:12]
-        if distances[order[0]] > (cell*2)**2:
+        if distances[order[0]] > (cell*(4 if surface_owned else 2))**2:
             raise UnsupportedFit('unobserved roof boundary')
         if planar:
             return float(np.dot(xy-center, plane[:2])+plane[2])
-        local = samples[order[distances[order] <= (cell*3)**2]]
+        local = samples[order[distances[order] <= (cell*(5 if surface_owned else 3))**2]]
         if len(local) < 3:
             raise UnsupportedFit('insufficient boundary support')
         design = np.column_stack((local[:, :2]-xy, np.ones(len(local))))
@@ -159,6 +161,11 @@ def patch_facets(region, samples, cell, tolerance, facet_budget, planar_fit=True
         if math.dist(a, b) <= cell*2 or depth >= 8:
             return
         middle = tuple((x+y)*.5 for x,y in zip(a,b))
+        if surface_owned and not region.buffer(cell * .25).covers(Point(middle)):
+            # A convex-hull chord can cross a courtyard or a deep recess.
+            # These locations disappear when clipping the triangulation and
+            # cannot require roof observations or pin invented roof heights.
+            return
         height = elevation(np.array(middle))
         # Quarter points detect a curved/corrugated edge whose midpoint alone
         # happens to lie on its endpoint chord.
@@ -174,7 +181,9 @@ def patch_facets(region, samples, cell, tolerance, facet_budget, planar_fit=True
     # Triangulate the convex hull, then clip back to the exact outline. Pinning
     # every raster-edge/courtyard vertex wastes the detail budget on boundaries
     # that the clipping step already preserves exactly.
-    for ring in (region.convex_hull.exterior,):
+    hull = (region.union(MultiPoint(samples[:, :2])).convex_hull
+            if surface_owned else region.convex_hull)
+    for ring in (hull.exterior,):
         xy = list(ring.coords)
         for a,b in zip(xy, xy[1:]):
             boundary(a[:2], b[:2])

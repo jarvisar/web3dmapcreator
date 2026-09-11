@@ -7,7 +7,8 @@ No points are fetched and unsupported portions keep their existing outline.
 import math
 
 import numpy as np
-from shapely import contains_xy, delaunay_triangles, force_2d, get_coordinates, get_parts
+from shapely import (contains_xy, coverage_union_all, delaunay_triangles,
+                     force_2d, get_coordinates, get_parts)
 from shapely.errors import GEOSException
 from shapely.geometry import LineString, MultiPoint, Polygon
 from shapely.ops import unary_union
@@ -24,6 +25,10 @@ def _fit_ring(ring, cell):
     the shrinking bias of repeated neighbour averaging. Sampling-scale jaggies
     are filtered; long adjoining edges meeting at a sharp corner are protected.
     """
+    # Equivalent overlay algorithms can choose a different first vertex or
+    # winding. Anchor equal-distance sampling to canonical ring order, rather
+    # than letting those arbitrary choices alter the quadratic-fit phase.
+    ring = Polygon(ring).normalize().exterior
     coarse = np.asarray(LineString(ring.coords).simplify(cell * .4).coords)[:-1, :2]
     anchors = []
     for i, point in enumerate(coarse):
@@ -125,8 +130,13 @@ def measured_tier_boundary(region, samples, threshold, cell, min_width):
                 roof.append(Polygon(ring))
         if not roof:
             return region
-        observed = unary_union(triangles)
-        candidate = region.difference(observed).union(unary_union(roof))
+        # Delaunay triangles have disjoint interiors, and clipping their shared
+        # high/low edges at identical midpoints preserves that coverage. The
+        # coverage union avoids a general overlay of thousands of triangles;
+        # later fitted/filtered polygons still use ordinary union because
+        # their moved boundaries are not guaranteed to remain a coverage.
+        observed = coverage_union_all(triangles)
+        candidate = region.difference(observed).union(coverage_union_all(roof))
         candidate = _remove_unprintable_noise(candidate, region, min_width)
         candidate_parts = list(candidate.geoms) if candidate.geom_type == 'MultiPolygon' else [candidate]
         if any(p.geom_type != 'Polygon' for p in candidate_parts):

@@ -88,7 +88,6 @@ class FacetedRoofTests(unittest.TestCase):
 
     def test_major_podium_step_stays_vertical(self):
         points = self.cloud(lambda x,y:45+3*np.sin(x/5) if 6<x<18 and 6<y<18 else 10)
-        original, _ = self.measure(points, 'TERRACES')
         result, reason = self.measure(points)
         self.assertEqual(reason, 'faceted_roof')
         self.assertGreaterEqual(result['roof_patch_count'], 2)
@@ -98,8 +97,11 @@ class FacetedRoofTests(unittest.TestCase):
             self.assertLess(max(heights)-min(heights), 8, 'No ramp from tower to podium')
         upper = unary_union([shape(s['geometry']) for s in result['roof_surfaces']
                              if max(v[2] for v in s['geometry']['coordinates'][0]) > 30])
-        expected = shape(next(t for t in original['tiers'] if t['top_m'] > 30)['geometry'])
-        self.assertLess(upper.symmetric_difference(expected).area, 1e-6)
+        # Surface ownership is reconstructed directly, so its boundary should
+        # approach the actual tower, not reproduce the old raster contour.
+        expected = box(6, 6, 18, 18)
+        self.assertLess(upper.symmetric_difference(expected).area, expected.area*.1)
+        self.assertLess(upper.boundary.hausdorff_distance(expected.boundary), 1.5)
 
     def test_supported_slope_crosses_artificial_major_terrace_bands(self):
         footprint = box(0, 0, 24, 24)
@@ -201,9 +203,16 @@ class FacetedRoofTests(unittest.TestCase):
 
     def test_detail_budget_falls_back_and_modes_preserve_classic_results(self):
         points = self.cloud()
-        old, old_reason = self.measure(points, 'TERRACES')
+        # Detailed reconstruction derives these controls from output scale;
+        # its conservative fallback uses that same physical detail policy.
+        old, old_reason = measure_building(box(0, 0, 24, 24), PointIndex(points),
+                                          .1 / .07, .05 / .077, ground_m=0,
+                                          roof_mode='TERRACES')
         with patch('jarvizar_city_model.external.lidar_facets.MAX_PATCH_VERTICES', 3):
             result, reason = self.measure(points)
+            for width, step in ((.01/.07, .02/.077), (1/.07, 1/.077)):
+                self.assertEqual(measure_building(box(0, 0, 24, 24), PointIndex(points),
+                    width, step, ground_m=0, roof_mode='FACETED'), (result, reason))
         note = result.pop('faceted_fallback')
         self.assertIn('budget', note)
         self.assertEqual((result, reason), (old, old_reason))
