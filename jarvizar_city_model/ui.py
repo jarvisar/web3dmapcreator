@@ -151,7 +151,12 @@ class JARVIZAR_PT_city_model(Panel):
         box.operator("jarvizar.download_cache", icon="IMPORT")
 
         layout.operator("jarvizar.generate_model", icon="MESH_CUBE")
-        layout.operator("jarvizar.export_3mf", icon="EXPORT")
+        box = layout.box()
+        box.prop(settings, "multi_plate_export")
+        if settings.multi_plate_export:
+            box.prop(settings, "section_width_mm")
+            box.prop(settings, "section_height_mm")
+        box.operator("jarvizar.export_3mf", icon="EXPORT")
         layout.operator("jarvizar.clear_model", icon="TRASH")
         status = layout.box()
         status.label(text=settings.last_status, icon="INFO")

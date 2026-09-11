@@ -413,9 +413,10 @@ class CutoutTests(unittest.TestCase):
         self.assertEqual((len(bpy.data.objects),len(bpy.data.meshes)),counts)
 
 
-addon.register()
-suite=unittest.defaultTestLoader.loadTestsFromTestCase(CutoutTests)
-result=unittest.TextTestRunner(verbosity=2).run(suite)
-if not result.wasSuccessful():
-    raise SystemExit(1)
-print('EXPORT_CUTOUT_OK',result.testsRun)
+if __name__ == '__main__':
+    addon.register()
+    suite=unittest.defaultTestLoader.loadTestsFromTestCase(CutoutTests)
+    result=unittest.TextTestRunner(verbosity=2).run(suite)
+    if not result.wasSuccessful():
+        raise SystemExit(1)
+    print('EXPORT_CUTOUT_OK',result.testsRun)

@@ -1,6 +1,7 @@
 # Semantic names and colors in Bambu Studio
 
-**Export 3MF for Bambu** exports one `Map` object with named normal Parts.
+With **Multi-Plate Export** disabled, **Export 3MF for Bambu** exports one
+`Map` object with named normal Parts.
 Names come from generated `feature_type`, `surface_category`, and `road_class`
 properties copied from the generated meshes. Material roles cover older
 untagged export copies (notably unmerged trees); owned collection roles are
@@ -93,3 +94,87 @@ loaded model and saved names; it is distinct from a visual GUI check or actual
 print. Standard color conversion is also exercised by the GUI import workflow:
 open the generated file, complete the usual color mapping, expand `Map` in
 Objects, and check the named Parts and their filament assignments.
+
+## Multi-plate projects
+
+The opt-in **Multi-Plate Export** setting applies only to this export operator.
+It requires the existing `cutout` frame and completes the normal crop first.
+`data/export_sections.py` measures the inner opening in world X/Y, determines
+the rows/columns, and divides each axis evenly. Width and height maxima default
+to 210 mm and are configurable up to the X1/P1 bed's 256 mm dimension. Grid
+edges and the numerical snapping tolerance are computed once for all cells.
+Rows run north to south, columns west to east, independently of Blender's view.
+For a tilted through-opening, the already cropped solids determine its finite
+XY extent. The crop still uses the frame's actual thickness axis.
+
+`blender/export_cutout.export_section` evaluates temporary copies into world
+coordinates, then reuses `clip_mesh` and its shell-aware plane cuts/caps.
+Independent overlapping shells, holes, material slots, and semantic tags are
+retained. Zero-volume remnants of tangencies to a concave boundary are discarded
+only in the partition pass. Empty grid cells produce no plate, and a miniature
+that fits produces one section. Bambu's maximum 36-plate grid is checked before
+partitioning. No connectors, scaling, gaps, or seam offsets are introduced.
+
+Each section passes through the existing `io_mesh_3mf` writer and `name_3mf`.
+One section's Blender copies are released before the next is prepared. The
+combined archive is published atomically only after every section succeeds;
+failures restore selection and active object and preserve an existing output.
+Original scene objects, geometry, transforms, and materials are unchanged.
+
+### Bambu organization
+
+The supplied `two_plate_example.3mf` and Bambu's reader/writer establish:
+
+- Each section is one build item referencing a multipart assembly. Resource IDs
+  are remapped across section archives; part names remain under their assembly.
+- Each `Metadata/model_settings.config` plate has `plater_id`, `plater_name`,
+  and a `model_instance` mapping its assembly `object_id` to `instance_id=0`.
+- Bambu arranges its virtual plates in `ceil(sqrt(count))` columns, with a
+  20% gap between 256 mm beds and negative Y for later rows. Build translations
+  center each section on its own plate. All parts use one shared Z datum.
+- Project settings carry the printer/bed and filament palette. Native part
+  `extruder` values and triangle `paint_color` preserve colors, including mixed
+  materials within one part, without regrouping or duplicating meshes.
+
+The standard single-plate annotation path deliberately avoids a Bambu
+application identity. Multi-plate output is a native project and uses the
+`BambuStudio-02.00.00.00` Application compatibility marker plus format version
+1: Bambu gates full project loading on that prefix. Without it, actual CLI
+import/save retained plate records but discarded the printer and palette.
+The project description identifies Jarvizar as its generator. This branch uses
+native colors rather than relying on the generic color conversion that Bambu
+skips for its projects. It contains no example thumbnails, account metadata,
+copied personal settings, sliced G-code, or external model references.
+
+The small project configuration selects P1S 0.4 mm, Standard 0.20 mm, and Generic
+PLA as initial presets. Its square purge matrix uses Bambu's 280 mm³ default
+off-diagonal values; select the actual printer/materials and recalculate flushing
+volumes before slicing. The matrix is necessary for reliable native CLI loading
+with a minimal configuration. This is an unsliced project, not a print job.
+
+The format references are Bambu's
+[bbs_3mf reader/writer](https://github.com/bambulab/BambuStudio/blob/master/src/libslic3r/Format/bbs_3mf.cpp),
+[PartPlate layout](https://github.com/bambulab/BambuStudio/blob/master/src/slic3r/GUI/PartPlate.cpp),
+[plate limits](https://github.com/bambulab/BambuStudio/blob/master/src/slic3r/GUI/PartPlate.hpp),
+[triangle paint serialization](https://github.com/bambulab/BambuStudio/blob/master/src/libslic3r/TriangleSelector.cpp),
+and [purge defaults](https://github.com/bambulab/BambuStudio/blob/master/src/libslic3r/PrintConfig.cpp).
+
+### Multi-plate verification
+
+```powershell
+& ./.venv-overture/Scripts/python.exe -m unittest discover -s tests -p 'test_export*.py' -t tests
+& 'C:/Program Files/Blender Foundation/Blender 3.6/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_export_plates.py
+& ./.venv-overture/Scripts/python.exe tests/bambu_export_plates.py --bambu 'C:/Program Files/Bambu Studio/bambu-studio.exe'
+```
+
+The Blender fixture checks volume conservation, closure/winding, layer bounds,
+shared seam coordinates, transformations, curved/concave openings, holes,
+zero-volume cells, failure cleanup, and unchanged disabled-mode output. The
+Bambu fixture imports/saves and reopens those saved projects in fresh processes,
+comparing plate assignments, names, part geometry, native face colors, palette,
+and bed placement. Unlike the standard-color fixture, native colors are fully
+present in the CLI model. This still does not claim physical print validation.
+
+For a cached city, `blender_export_cutout_live.py` accepts `--multi-plate`,
+`--section-width`, `--section-height`, and `--output`; it checks every section's
+closure/winding and total volume before an optional `--export`.

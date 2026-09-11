@@ -18,7 +18,7 @@ from mathutils import Vector
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import jarvizar_city_model as addon
 from jarvizar_city_model.blender.collections import generated_objects
-from jarvizar_city_model.blender.export_cutout import export_geometry
+from jarvizar_city_model.blender.export_cutout import export_geometry, export_grid, export_section
 from jarvizar_city_model.blender.mesh_utils import _prism_geometry
 
 parser=argparse.ArgumentParser()
@@ -29,6 +29,10 @@ parser.add_argument('--export',action='store_true')
 parser.add_argument('--save-generated')
 parser.add_argument('--rotation',type=float,help='Override frame rotation in degrees')
 parser.add_argument('--preview',type=Path)
+parser.add_argument('--multi-plate',action='store_true')
+parser.add_argument('--section-width',type=float,default=210)
+parser.add_argument('--section-height',type=float,default=210)
+parser.add_argument('--output',type=Path)
 args=parser.parse_args(sys.argv[sys.argv.index('--')+1:])
 if args.blend:
     bpy.ops.wm.open_mainfile(filepath=str(Path(args.blend).resolve()))
@@ -67,6 +71,32 @@ with export_geometry(bpy.context,sources) as (parts,stats,opening):
         counts.append((part.name,len(bm.verts),len(bm.faces)))
         bm.free()
     print('LIVE_CROP_AUDIT',json.dumps(counts),flush=True)
+    if args.multi_plate:
+        grid=export_grid(bpy.context,parts,opening,args.section_width,args.section_height)
+        occupied=0
+        faces=0
+        expected_volume=0
+        actual_volume=0
+        for part in parts:
+            bm=bmesh.new();bm.from_mesh(part.data)
+            expected_volume+=bm.calc_volume(signed=True)*part.matrix_world.to_3x3().determinant()
+            bm.free()
+        for section in grid:
+            with export_section(bpy.context,parts,section) as section_parts:
+                occupied+=bool(section_parts)
+                for part in section_parts:
+                    bm=bmesh.new();bm.from_mesh(part.data)
+                    assert all(e.is_manifold and e.is_contiguous for e in bm.edges),(section.name,part.name)
+                    volume=bm.calc_volume(signed=True)
+                    assert volume>0,(section.name,part.name,volume)
+                    actual_volume+=volume
+                    faces+=len(bm.faces)
+                    w,s,e,n=section.bounds
+                    assert all(w-0.001<=v.co.x<=e+0.001 and s-0.001<=v.co.y<=n+0.001 for v in bm.verts)
+                    bm.free()
+                print('LIVE_SECTION_AUDIT',section.name,len(section_parts),flush=True)
+        assert abs(actual_volume-expected_volume)<expected_volume*1e-5,(actual_volume,expected_volume)
+        print('LIVE_PLATES_AUDIT_OK',occupied,faces,actual_volume,expected_volume,flush=True)
     if args.preview:
         scene=bpy.context.scene
         for obj in scene.objects:
@@ -88,7 +118,11 @@ with export_geometry(bpy.context,sources) as (parts,stats,opening):
 assert before==[(o.data.as_pointer(),len(o.data.vertices),len(o.data.polygons),o.matrix_world.copy()) for o in sources]
 if args.export:
     bpy.ops.preferences.addon_enable(module='io_mesh_3mf')
-    output=Path(__file__).resolve().parents[1]/'scratchpad'/'export-cutout'/'live.3mf'
+    settings=bpy.context.scene.jarvizar_city_model
+    settings.multi_plate_export=args.multi_plate
+    settings.section_width_mm=args.section_width
+    settings.section_height_mm=args.section_height
+    output=args.output or Path(__file__).resolve().parents[1]/'scratchpad'/'export-cutout'/'live.3mf'
     output.parent.mkdir(parents=True,exist_ok=True)
     start=time.perf_counter()
     assert bpy.ops.jarvizar.export_3mf(filepath=str(output))=={'FINISHED'}

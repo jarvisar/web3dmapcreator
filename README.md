@@ -199,6 +199,24 @@ openings report an error. A cut that cannot preserve a closed solid also stops
 the export and identifies the source object. With no `cutout` object, the
 existing full-model export remains available. See [export crop details](docs/EXPORT_CUTOUT.md).
 
+Enable **Multi-Plate Export** above the export button to divide the final
+cutout into sections in one Bambu Studio project. **Max Section Width (mm)**
+and **Max Section Height (mm)** both default to **210**. The export first crops
+to the same cutout opening, then splits crossing solids into closed sections;
+the scene and map scale stay unchanged. A cutout is required in this mode.
+
+Sections form an evenly divided grid in map X/Y coordinates, ordered north
+to south and west to east: `Section R1 C1`, `Section R1 C2`, and so on. Empty
+cells are omitted; a miniature that fits produces just one section. Open the
+3MF **as a project** in Bambu Studio to retain the separate plates, aligned
+parts, and colors. Each section is centered on a 256 mm plate. The project
+starts with a P1S 0.4 mm / Generic PLA profile; select your actual X1/P1 printer
+and filaments and recalculate flushing volumes in Bambu before slicing.
+The maximum configurable section dimension is 256 mm; the 210 mm default
+leaves room around the model. Bambu's 36-plate project limit is checked before
+partitioning. No connectors or seam clearance are added. See
+[multi-plate format and verification](docs/EXPORT_3MF.md#multi-plate-projects).
+
 ## Generate a model
 
 1. Enter the bbox as decimal degrees in west, south, east, north order. The

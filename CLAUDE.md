@@ -552,8 +552,8 @@ normal Parts, preserving existing batches, transforms and standard material
 conversion. Base-material colors are also mirrored into Materials-extension
 `m:colorgroup` resources, with property references retargeted and face indices
 preserved, because Bambu reads color groups rather than base-material colors.
-Do not spoof a Bambu application identity or assign extruders merely
-to label parts. Publication is atomic after annotation succeeds. See
+Do not use a Bambu application identity or assign extruders merely
+to label standard single-plate parts. Publication is atomic after annotation succeeds. See
 [3MF naming and verification](docs/EXPORT_3MF.md); `tests/bambu_export_names.py`
 optionally verifies import/save/reopen through installed Bambu Studio.
 
@@ -571,6 +571,28 @@ Convex openings use capped plane cuts; concave openings use per-shell Exact
 intersection with self-intersection disabled. Preserve holes, collinear boundary
 vertices, independent shells, and materials. Export copies/helpers must be
 cleaned up on success and every failure path. See [export design](docs/EXPORT_CUTOUT.md).
+
+`multi_plate_export` is off by default and used only by this export operator.
+It requires a cutout, runs the unchanged final crop first, then uses
+`data/export_sections.py` and `export_cutout.export_section` to partition in
+world X/Y (east/north), with shared edges and one common float32 tolerance.
+The 210 mm width/height maxima are configurable up to 256 mm. A grid exceeding
+Bambu's 36-plate limit fails; empty cells are omitted. Section evaluation is
+baked into temporary world-space meshes and processed one section at a time
+through the same shell cutter, writer, and semantic naming path. Only this
+partition pass discards zero-volume tangent remnants.
+
+`data/export_plates.py` combines those staged archives into a native unsliced
+Bambu project, with one multipart assembly per plate, row/column names, the
+256 mm bed/20% spacing layout, and a common Z datum. This mode requires Bambu's
+Application prefix to retain project settings; generator metadata identifies
+Jarvizar. Native part extruders, face paint, and a shared filament palette
+replace standard color-group import. The small project config starts with
+P1S 0.4 mm / Generic PLA and Bambu's default purge matrix; users choose their
+actual printer/materials before slicing. It does not copy the example project's
+personal settings. Verify with `blender_export_plates.py`,
+`test_export_sections.py`, and installed Bambu `bambu_export_plates.py`;
+the live crop script accepts `--multi-plate` and section size options.
 
 ## Development and verification
 

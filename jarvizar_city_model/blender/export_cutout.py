@@ -434,7 +434,26 @@ def _clip_concave(bm, vertices, edges, faces, opening, transform, collection, ma
                 bpy.data.meshes.remove(mesh)
 
 
-def clip_mesh(mesh, matrix_world, opening, collection, stats):
+def _zero_volume(bm):
+    """A cut tangent to a concavity can leave only folded, doubled walls.
+
+    Evaluate a closed shell's signed volume in double precision relative to a
+    nearby origin. Remove only cancellation at arithmetic precision, not thin
+    printable solids. This also catches two perpendicular zero-thickness walls.
+    """
+    origin = tuple(next(iter(bm.verts)).co)
+    terms = []
+    for face in bm.faces:
+        points = [tuple(float(v.co[i]) - origin[i] for i in range(3)) for v in face.verts]
+        a = points[0]
+        for b, c in zip(points[1:], points[2:]):
+            terms.append(a[0] * (b[1] * c[2] - b[2] * c[1])
+                         + a[1] * (b[2] * c[0] - b[0] * c[2])
+                         + a[2] * (b[0] * c[1] - b[1] * c[0]))
+    return abs(math.fsum(terms)) <= math.fsum(abs(v) for v in terms) * 1e-14
+
+
+def clip_mesh(mesh, matrix_world, opening, collection, stats, *, discard_tangent=False):
     transform = opening.inverse @ matrix_world
     bm = bmesh.new()
     additions = []
@@ -466,7 +485,7 @@ def clip_mesh(mesh, matrix_world, opening, collection, stats):
                     else:
                         _clip_concave(work, list(work.verts), list(work.edges), list(work.faces),
                                       opening, transform, collection, mesh.materials)
-                    if work.faces:
+                    if work.faces and not (discard_tangent and _zero_volume(work)):
                         addition = bpy.data.meshes.new('_CUTOUT_RESULT')
                         additions.append(addition)
                         work.to_mesh(addition)
@@ -530,6 +549,87 @@ def export_geometry(context, sources):
                     continue
             context.scene.collection.objects.link(obj)
         yield temporary, stats, opening
+    finally:
+        for obj in reversed(temporary):
+            bpy.data.objects.remove(obj, do_unlink=True)
+        for mesh in meshes:
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+
+
+def export_grid(context, parts, opening, max_width, max_height):
+    """Measure the authoritative opening only after the normal crop succeeds.
+
+    Grid axes are world X/Y (east/north), in printed millimetres. For tilted
+    through-openings the finite cropped solids determine their XY projection.
+    """
+    from ..data.export_sections import section_grid
+
+    if opening is None:
+        raise CutoutError("Multi-Plate Export needs a cutout frame defining the final boundary")
+    axis = opening.matrix_world.to_3x3() @ Vector((0, 0, 1))
+    if math.hypot(axis.x, axis.y) <= abs(axis.z) * 1e-6:
+        points = [opening.matrix_world @ Vector((x, y, 0)) for x, y in opening.ring]
+    else:
+        points = []
+        depsgraph = context.evaluated_depsgraph_get()
+        for part in parts:
+            evaluated = part.evaluated_get(depsgraph)
+            mesh = evaluated.to_mesh()
+            try:
+                points.extend(evaluated.matrix_world @ v.co for v in mesh.vertices)
+            finally:
+                evaluated.to_mesh_clear()
+    bounds = (min(p.x for p in points), min(p.y for p in points),
+              max(p.x for p in points), max(p.y for p in points))
+    return section_grid(bounds, max_width, max_height)
+
+
+@contextmanager
+def export_section(context, sources, section):
+    """Clip already cropped copies, one section at a time, using the same cutter.
+
+    Bake evaluation into world coordinates before cutting: all layers then use
+    the identical axis-aligned planes, without object-local round-trip offsets.
+    Original meshes and the first crop remain untouched.
+    """
+    west, south, east, north = section.bounds
+    # BMesh stores float32 coordinates. Use the same scale-relative tolerance
+    # as crop extraction so repeated cap cuts can merge numerical duplicates.
+    opening = Opening([(west, south), (east, south), (east, north), (west, north)],
+                      Matrix.Identity(4), section.tolerance)
+    temporary, meshes = [], []
+    stats = defaultdict(int)
+    try:
+        depsgraph = context.evaluated_depsgraph_get()
+        for source in sources:
+            evaluated = source.evaluated_get(depsgraph)
+            corners = [evaluated.matrix_world @ Vector(p) for p in evaluated.bound_box]
+            # Tangency has no volume and must not produce a duplicated wall.
+            if (max(p.x for p in corners) <= west or min(p.x for p in corners) >= east
+                    or max(p.y for p in corners) <= south or min(p.y for p in corners) >= north):
+                continue
+            obj = source.copy()
+            temporary.append(obj)
+            mesh = bpy.data.meshes.new_from_object(evaluated, depsgraph=depsgraph)
+            meshes.append(mesh)
+            obj.data = mesh
+            obj.modifiers.clear()
+            mesh.transform(evaluated.matrix_world)
+            if evaluated.matrix_world.to_3x3().determinant() < 0:
+                mesh.flip_normals()
+            obj.matrix_world = Matrix.Identity(4)
+            try:
+                clip_mesh(mesh, obj.matrix_world, opening, context.scene.collection, stats,
+                          discard_tangent=True)
+            except CutoutError as exc:
+                raise CutoutError(f"{section.name}, {source.name}: {exc}") from exc
+            if not mesh.polygons:
+                bpy.data.objects.remove(obj, do_unlink=True)
+                temporary.pop()
+                continue
+            context.scene.collection.objects.link(obj)
+        yield temporary
     finally:
         for obj in reversed(temporary):
             bpy.data.objects.remove(obj, do_unlink=True)

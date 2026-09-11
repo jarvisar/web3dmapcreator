@@ -153,6 +153,23 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         default=True,
     )
 
+    # These settings are consumed only by Export 3MF for Bambu.
+    multi_plate_export: BoolProperty(
+        name="Multi-Plate Export",
+        description="Split the final cutout into matching sections, one per Bambu Studio plate",
+        default=False,
+    )
+    section_width_mm: FloatProperty(
+        name="Max Section Width (mm)",
+        description="Maximum section size east to west; does not change the map scale",
+        default=210.0, min=1.0, max=256.0, precision=2,
+    )
+    section_height_mm: FloatProperty(
+        name="Max Section Height (mm)",
+        description="Maximum section size north to south; does not change the map scale",
+        default=210.0, min=1.0, max=256.0, precision=2,
+    )
+
     # ---------------------------------------------------------------- terrain
     terrain_source: EnumProperty(
         name="Terrain",
