@@ -27,11 +27,14 @@ from jarvizar_city_model.geometry.basins import recess_terrain_basins, _caps, _c
 
 
 cache = Path(sys.argv[sys.argv.index('--cache') + 1])
-for name, bounds in (
+fixtures = (
     ('clearwater', (-82.83485,27.96044,-82.79572,27.98152)),
     ('sf', (-122.44417,37.76678,-122.37834,37.81745)),
     ('chicago', (-87.64875,41.84962,-87.59743,41.89455)),
-):
+)
+if '--bbox' in sys.argv:
+    fixtures = (('custom', tuple(float(v) for v in sys.argv[sys.argv.index('--bbox') + 1].split(','))),)
+for name, bounds in fixtures:
     bundle = CacheBundle(cache, Bounds(*bounds))
     transform = create_fixed_scale_transform(*bounds, .07)
     field = ModelHeightField.build(transform, DEMTerrain(ElevationGrid.load(bundle.path)), 192, smoothing=1)
@@ -49,7 +52,8 @@ for name, bounds in (
     counts.update(generate_terrain_solid(field, 1.3, terrain))
     counts.update(recess_terrain_basins(field, bodies, terrain, 1.3))
     counts.update(generate_water(bodies, water, None, terrain_bottom_mm=counts['terrain_bottom_z_mm']))
-    terrain_obj, water_obj = terrain.objects[0], water.objects[0]
+    terrain_obj = terrain.objects[0]
+    water_obj = next(obj for obj in water.objects if obj.get('water_recessed'))
     assert _closed(terrain_obj.data) and _closed(water_obj.data)
     def tree(obj):
         return BVHTree.FromPolygons([v.co[:] for v in obj.data.vertices], [p.vertices[:] for p in obj.data.polygons])

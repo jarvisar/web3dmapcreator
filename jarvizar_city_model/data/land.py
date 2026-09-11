@@ -248,17 +248,7 @@ def is_printable_water(feature: Mapping[str, Any]) -> bool:
     return class_name not in EXCLUDED_WATER_CLASSES
 
 
-def recessed_water_kind(feature: Mapping[str, Any]) -> Optional[str]:
-    """Identify mapped ponds/fountain basins, never by size or feature name.
-
-    Overture preserves OSM tags as ``source_tags`` key/value pairs. Also accept
-    dictionaries and raw properties used by GeoJSON importers. Explicit OSM
-    water types take precedence over the normalized class/subtype fallback.
-    A point fountain carries no basin footprint and cannot recess terrain.
-    """
-    if (feature.get("geometry") or {}).get("type") not in {"Polygon", "MultiPolygon"}:
-        return None
-    properties = feature_properties(dict(feature))
+def _water_tags(properties):
     tags = {key: properties[key] for key in ("natural", "water", "amenity", "waterway")
             if key in properties}
     for key in ("tags", "source_tags"):
@@ -271,23 +261,54 @@ def recessed_water_kind(feature: Mapping[str, Any]) -> Optional[str]:
                     tags[str(item[0])] = item[1]
                 elif isinstance(item, Mapping) and "key" in item and "value" in item:
                     tags[str(item["key"])] = item["value"]
-    tags = {str(key).strip().lower(): str(value).strip().lower() for key, value in tags.items()}
+    return {str(key).strip().lower(): str(value).strip().lower() for key, value in tags.items()}
+
+
+def is_untyped_water(feature: Mapping[str, Any]) -> bool:
+    """Generic polygonal water eligible for a size-checked recess fallback."""
+    if (feature.get('geometry') or {}).get('type') not in {'Polygon', 'MultiPolygon'}:
+        return False
+    properties = feature_properties(dict(feature))
+    class_name, subtype = _class_and_subtype(properties)
+    tags = _water_tags(properties)
+    return (class_name in {'', 'water'} and subtype in {'', 'water'}
+            and bool(class_name or subtype or tags.get('natural') == 'water')
+            and not tags.get('water') and not tags.get('waterway')
+            and tags.get('natural', 'water') == 'water'
+            and not tags.get('amenity'))
+
+
+def recessed_water_kind(feature: Mapping[str, Any]) -> Optional[str]:
+    """Identify mapped ponds, fountains and basins, never by size or name.
+
+    Overture preserves OSM tags as ``source_tags`` key/value pairs. Also accept
+    dictionaries and raw properties used by GeoJSON importers. Explicit OSM
+    water types take precedence over the normalized class/subtype fallback.
+    A point fountain carries no basin footprint and cannot recess terrain.
+    """
+    if (feature.get("geometry") or {}).get("type") not in {"Polygon", "MultiPolygon"}:
+        return None
+    properties = feature_properties(dict(feature))
+    tags = _water_tags(properties)
     # A tagged river/canal/etc. must not become a basin through a fallback.
     if tags.get("waterway") in {"river", "stream", "canal", "drain", "ditch"}:
         return None
-    if tags.get("water") and tags["water"] != "pond":
+    if tags.get("water") and tags["water"] not in {"pond", "basin"}:
         return None
     if tags.get("amenity") == "fountain":
         return "fountain"
-    if tags.get("natural") == "water" and tags.get("water") == "pond":
-        return "pond"
+    if tags.get("natural") == "water" and tags.get("water") in {"pond", "basin"}:
+        return tags["water"]
     class_name, subtype = _class_and_subtype(properties)
     if class_name in {"river", "stream", "lake", "reservoir", "canal", "ocean",
                       "bay", "sea", "strait", "drain", "ditch", "swimming_pool"}:
         return None
-    if class_name in {"pond", "fountain"}:
+    # A mapped basin may have the broader normalized subtype "reservoir".
+    # Its explicit class selects the finite-depth path; ordinary reservoirs
+    # remain excluded above.
+    if class_name in {"pond", "fountain", "basin"}:
         return class_name
-    if subtype in {"pond", "fountain"}:
+    if subtype in {"pond", "fountain", "basin"}:
         return subtype
     return None
 

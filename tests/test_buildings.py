@@ -151,9 +151,36 @@ class SelectionTests(unittest.TestCase):
         for props in ({}, {"num_floors": 83}):
             parent = self.rectangle("parent", has_parts=True, **props)
             self.assertFalse(select_building_geometry([parent], [roof]).buildings)
-        parent = self.rectangle("parent", has_parts=True, height=340)
-        unknown = self.rectangle("unknown", (0, 0, 2, 10), building_id="parent")
-        self.assertFalse(select_building_geometry([parent], [roof, unknown]).buildings)
+
+    def test_heightless_detail_does_not_erase_recorded_podium(self):
+        parent = self.rectangle("parent", has_parts=True, height=10, num_floors=2)
+        tower = self.rectangle("tower", (0, 0, 4, 10), building_id="parent", height=100)
+        unknown = self.rectangle("unknown", (5, 5, 7, 7), building_id="parent")
+        selection = select_building_geometry([parent], [tower, unknown])
+        self.assertEqual(selection.buildings, (parent,))
+        self.assertEqual(selection.parts, (tower, unknown))
+        self.assertFalse(selection.suppressed_parent_ids)
+        self.assertNotIn("height", unknown["properties"])
+
+    def test_heightless_coverage_cannot_replace_recorded_mass(self):
+        parent = self.rectangle("parent", has_parts=True, height=100)
+        tower = self.rectangle("tower", (0, 0, 4, 10), building_id="parent", height=100)
+        unknown = self.rectangle("unknown", (4, 0, 10, 10), building_id="parent")
+        self.assertEqual(select_building_geometry([parent], [tower, unknown]).buildings, (parent,))
+        # Complete known-height coverage still replaces the redundant parent.
+        unknown["properties"]["height"] = 100
+        self.assertFalse(select_building_geometry([parent], [tower, unknown]).buildings)
+
+    def test_known_lower_or_invalid_part_still_blocks_parent_infill(self):
+        parent = self.rectangle("parent", has_parts=True, height=100)
+        tower = self.rectangle("tower", (0, 0, 4, 10), building_id="parent", height=110)
+        unknown = self.rectangle("unknown", (5, 5, 7, 7), building_id="parent")
+        for props in ({"height": 20}, {"num_floors": 6}, {"height": 20, "min_height": 25}):
+            with self.subTest(props=props):
+                lower = self.rectangle("lower", (4, 0, 10, 4), building_id="parent", **props)
+                selection = select_building_geometry([parent], [tower, unknown, lower])
+                self.assertFalse(selection.buildings)
+                self.assertEqual(selection.parts, (tower, unknown, lower))
 
     def test_derived_parent_height_does_not_supply_missing_main_mass(self):
         roof = self.rectangle("roof", (2, 2, 8, 8), building_id="parent", height=346)

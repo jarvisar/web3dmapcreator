@@ -1,15 +1,19 @@
 # Water and coastline geometry
 
-## Pond and fountain basins
+## Ponds, fountains and water basins
 
-Ground Surfaces → **Ponds and Fountains** offers an enabled-by-default
-**Recess Ponds and Fountains** toggle and two model-millimetre dimensions:
+Ground Surfaces → **Ponds, Fountains and Basins** offers an enabled-by-default
+**Recess Ponds, Fountains and Basins** toggle and two model-millimetre dimensions:
 
 | Setting | Default |
 | --- | ---: |
 | Recess depth below the local bank | 1.0 mm |
 | Water thickness above the basin floor | 0.8 mm |
 | Resulting water surface below the bank (depth minus thickness) | 0.2 mm |
+
+Recessed fills are batched into `WATER_RECESSED`, separate from ordinary water
+in `WATER_SURFACE`. Both objects stay in the `WATER` collection and use the
+water material. Either can be selected, hidden or deleted independently.
 
 The water stays level, using the lowest sampled bank height (including island
 banks) as the local reference. On a slope the drop below higher banks is larger.
@@ -19,9 +23,14 @@ drop and identifies invalid dimensions. The base extends downward if needed
 to preserve the configured solid base thickness beneath the recessed floor.
 
 Selection primarily uses OSM `source_tags`: `amenity=fountain` or
-`natural=water` + `water=pond`, with normalized pond/fountain class/subtype as
-fallback. Other explicit water types do not become basins; neither names nor
-small area imply a pond. Infrastructure fountain polygons are included, with
+`natural=water` + `water=pond`/`water=basin`, with normalized pond/fountain/basin
+class/subtype as fallback. A mapped `class=basin` qualifies even with the broader
+`subtype=reservoir`; ordinary reservoirs retain their existing behavior.
+Other explicit water types do not become basins. Generic unclassified water
+polygons below 5,000 m² use the same shallow-recess geometry without being
+relabelled as ponds. The fallback checks uncropped source area across all parts,
+so a small crop of a large water body keeps ordinary water handling. Names do
+not affect classification. Infrastructure fountain polygons are included, with
 OSM-identity and identical-footprint deduplication across layers. Points and
 lines have no invented basin. The existing minimum surface area still applies.
 
@@ -32,19 +41,46 @@ uses a temporary mesh and checks closure plus actual floor heights before
 committing. Islands and clipped outlines survive. Basins overlapping another
 water type are skipped and counted, preserving that type's existing behavior
 and preventing its surface from hiding the recessed fill.
-Park/paving footprints are removed over basins, even with water visibility off.
+Natural land-cover slabs (forest, green, sand and rock) are cut
+through their full thickness over every validated water footprint, including
+ordinary water below the terrain-cut area threshold. Exact outlines preserve
+water islands and clear surfaces at the shore. Water visibility and basin mode
+do not control these exclusions once water data is being processed.
+Paving stays on terrain foundations when **Keep Ground Under Structures** is
+enabled; otherwise water cuts it away too. Only surviving paved caps receive
+foundations, preserving courtyards and category priority. Natural surfaces do
+not generate terrain supports.
+
+With **Keep Ground Under Structures** enabled, roads, paths and buildings retain
+their pre-recess terrain grade. Terrain-colored foundations rise under their
+footprints, including narrow overlaps at the shoreline, rather than draping
+structures down to the basin floor. Mapped bridge decks also retain ground
+beneath their basin crossings. Basin islands and building courtyards are
+preserved; water outside the supported footprints stays recessed. This also
+works with the Water fill hidden or ordinary through-cuts disabled.
+Non-bridge foundations have a minimum top 0.2 mm above retained water. Structures
+use the corresponding raised grade without changing their heights or thickness.
+Bridge causeways keep their existing field-relative height beneath the water.
+`tests/blender_visible_supports.py` verifies that exception and structure contact;
+`tests/blender_paved_supports.py` checks paving, natural cover, holes and toggles.
+`tests/blender_untyped_water.py` checks generic small water, cropped large water,
+explicit-type exclusions, visible bank clearance and foundation height.
 
 Turning off **Water** hides the fill while retaining the recess. Turning off
-**Recess Ponds and Fountains** restores the previous pond/fountain rules.
+**Recess Ponds, Fountains and Basins** restores the previous water rules.
 **Cut Water From Terrain** continues to control other water and its existing
 minimum cut area. Terrain must be enabled for the new basin mode.
 
 Run `tests/blender_pond_basins.py` inside Blender for exact dimension, island,
 sub-cell, crop, slope, overlap, failure, UI/toggle and scene-persistence checks.
+`tests/blender_basin_support.py` checks structure placement against unrecessed
+terrain, shoreline widths, foundation contact, bridge supports and holes.
 The new classification tests are in `tests/test_land.py`. Generation reports
 `water_basins`, `water_recesses_built`, `water_basin_surfaces`,
 `water_basin_duplicates`, `water_basin_groups`, `water_basin_other_water_skipped`,
-and `land_surface_basin_cuts`.
+and `land_surface_water_cuts`. `tests/blender_water_surfaces.py` checks all
+surface categories, ordinary and recessed water, islands, slope/thickness
+preservation, fully covered slabs and protected structure geometry.
 
 Validation: 432 pure tests, Blender smoke, focused basin/settings tests and the
 existing water-cut regression pass. Full Cincinnati generation has 14 basin

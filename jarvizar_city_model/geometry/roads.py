@@ -54,6 +54,7 @@ from .planar import (
     buffer_polyline_convex_pieces,
     offset_is_safe,
     oriented_ring,
+    parametric_ribbon,
 )
 
 
@@ -526,12 +527,9 @@ def generate_roads(
     # Where the cut is in force, the ground for draping is the nearest land
     # that survived; a riverside road with a few vertices over the water then
     # keeps the bank's grade instead of dipping to a bed that is not printed.
+    if ground_support is not None and settings.support_over_water:
+        heightfield = ground_support.structure_heightfield
     ground_height = getattr(heightfield, "ground_height_mm", heightfield.height_mm)
-
-    def draped(x: float, y: float):
-        """Bottom and top of a ribbon at any point, for the cap's interior."""
-        height = ground_height(x, y)
-        return height - embed, height + thickness
 
     pieces = list(_subsegments(segment_features, transform, settings, counts))
     pieces = _recover_crossings(pieces, transform, heightfield, settings, counts)
@@ -591,6 +589,12 @@ def generate_roads(
         # Even a deck resting at field height still has that gap beneath it.
         if ground_support is not None and heightfield.in_cut_water(x, y):
             return max(height - ground_support.top_offset_mm, ground_support.bottom_z + 0.05)
+        if ground_support is not None:
+            physical = ground_support.heightfield.height_mm(x, y)
+            if physical < height - 1e-6:
+                if ground_support.heightfield.is_supported(x, y):
+                    return max(height - ground_support.top_offset_mm, ground_support.bottom_z + 0.05)
+                return physical
         return height
 
     for index, ((piece, centerline), heights) in enumerate(zip(decks, deck_heights)):
@@ -608,6 +612,19 @@ def generate_roads(
         counts.bridge_decks += 1
         counts.classes[piece.road_class] = counts.classes.get(piece.road_class, 0) + 1
         counts.evidence[piece.evidence] = counts.evidence.get(piece.evidence, 0) + 1
+
+        # Retain ground below mapped decks over shallow basins too. Use the
+        # deck's printed outline, including its width at the shoreline.
+        if ground_support is not None and settings.support_over_water:
+            if offset_is_safe(centerline, half_width_mm):
+                ring, _parameters = parametric_ribbon(centerline, half_width_mm)
+                basin_rings = [ring] if ring else []
+            else:
+                basin_rings = buffer_polyline_convex_pieces(
+                    centerline, half_width_mm, arc_segments=4, epsilon=EPSILON)
+            for ring in basin_rings:
+                if ground_support.overlaps_basin([ring]):
+                    ground_support.footprint([ring], "bridge_causeway")
 
         # The causeway is built before the piers are placed, so a pier station
         # over the water finds ground under it.
@@ -703,9 +720,8 @@ def generate_roads(
             piece.road_class, MeshBuilder(f"ROAD_{piece.road_class}")
         )
         added = False
-        for ring in rings:
-            if not ring:
-                continue
+        model_rings = []
+        for ring in filter(None, rings):
             # The ring is buffered in metres but printed in millimetres,
             # and the scale factor is roughly 1/30000.  Vertices safely
             # apart in metres can collapse once scaled, so the ring must be
@@ -718,10 +734,26 @@ def generate_roads(
             )
             if not model_ring:
                 continue
+            model_rings.append(model_ring)
+        minimum_ground = None
+        if ground_support is not None and settings.support_over_water:
+            minimum_ground = max((z for ring in model_rings
+                                  if (z := ground_support.minimum_ground([ring], 'road')) is not None),
+                                 default=None)
+
+        def road_ground(x, y):
+            height = ground_height(x, y)
+            return max(height, minimum_ground) if minimum_ground is not None else height
+
+        def draped(x, y):
+            height = road_ground(x, y)
+            return height - embed, height + thickness
+
+        for model_ring in model_rings:
             prism = [
                 (x, y, height - embed, height + thickness)
                 for x, y, height in (
-                    (x, y, ground_height(x, y)) for x, y in model_ring
+                    (x, y, road_ground(x, y)) for x, y in model_ring
                 )
             ]
             # A triangulator may span a run of ring vertices with one long
@@ -729,6 +761,9 @@ def generate_roads(
             # ground along its whole length, not only at its vertices.
             if builder.add_prism([prism], refine=(settings.drape_spacing_mm, draped)):
                 added = True
+                if (ground_support is not None and settings.support_over_water
+                        and (minimum_ground is not None or ground_support.overlaps_basin([model_ring]))):
+                    ground_support.footprint([model_ring], "road", minimum_ground=minimum_ground)
         if added:
             counts.surface_roads += 1
             counts.classes[piece.road_class] = (

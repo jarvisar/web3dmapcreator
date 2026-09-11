@@ -165,19 +165,28 @@ def recess_terrain_basins(heightfield, bodies, collection, base_thickness_mm):
     return counts
 
 
-def cut_basin_land_surfaces(collection, bodies, thickness):
-    """Keep park/paving slabs out of basins, even with water visibility off."""
-    basins = [body for body in bodies if body.basin_kind]
-    if not basins:
-        return {"land_surface_basin_cuts": 0}
+def cut_water_land_surfaces(collection, bodies, thickness, *, preserve_paved=False):
+    """Clear all land-cover slabs from validated water footprints.
+
+    The same exact polygons supply water fills and surface exclusions, with
+    islands preserved. Apply to both recessed basins and ordinary water,
+    regardless of terrain-cut thresholds or water-fill visibility. Removing
+    the full slab thickness prevents buried fragments reappearing at banks.
+    Supported paving can be retained; callers must build its foundations.
+    Structure supports, roads and buildings have separate ownership.
+    """
+    if not bodies:
+        return {"land_surface_water_cuts": 0}
     mask = FootprintIndex(clearance=EPSILON)
-    bounds = [ring_bounds(body.rings[0]) for body in basins]
-    for body in basins:
+    bounds = [ring_bounds(body.rings[0]) for body in bodies]
+    for body in bodies:
         for cap in _caps(body):
             mask.add(cap)
     changed = 0
     for obj in list(collection.objects):
         if obj.type != 'MESH' or obj.get('feature_type') != 'land_surface':
+            continue
+        if preserve_paved and obj.get('surface_category') == 'paved':
             continue
         left, low, right, high = ring_bounds([(p[0], p[1]) for p in obj.bound_box])
         if not any(left < b[2] and b[0] < right and low < b[3] and b[1] < high for b in bounds):
@@ -196,7 +205,7 @@ def cut_basin_land_surfaces(collection, bodies, thickness):
         if builder.is_empty:
             bpy.data.objects.remove(obj, do_unlink=True)
         else:
-            mesh = bpy.data.meshes.new(old.name + '_BASINS')
+            mesh = bpy.data.meshes.new(old.name + '_WATER_CUT')
             mesh.from_pydata(builder.vertices, [], builder.faces)
             for material in old.materials:
                 mesh.materials.append(material)
@@ -207,4 +216,4 @@ def cut_basin_land_surfaces(collection, bodies, thickness):
             obj['solid_count'] = builder.solids
         if old.users == 0:
             bpy.data.meshes.remove(old)
-    return {"land_surface_basin_cuts": changed}
+    return {"land_surface_water_cuts": changed}

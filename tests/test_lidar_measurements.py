@@ -155,6 +155,44 @@ class MeasurementsTests(unittest.TestCase):
         self.assertLess(infill.union(roof).symmetric_difference(footprint).area,1e-5)
         self.assertNotIn('height',part['properties'])
 
+    def test_retained_podium_with_heightless_detail_can_prepare_lidar(self):
+        from jarvizar_city_model.external.lidar_measurements import measure_features
+        from jarvizar_city_model.external.lidar_selection import top_height
+        from jarvizar_city_model.geometry.buildings import select_building_geometry
+        from shapely.geometry import mapping
+        import json
+        footprint = box(0, 0, 60, 60)
+        parent = {'id': 'parent', 'properties': {'height': 10, 'num_floors': 2,
+                  'has_parts': True}, 'geometry': mapping(footprint)}
+        parts = [({'id': identifier, 'properties': {'building_id': 'parent', **props},
+                   'geometry': mapping(geometry)}, geometry)
+                 for identifier, geometry, props in (
+                     ('west', box(0, 0, 20, 60), {'height': 90}),
+                     ('east', box(40, 0, 60, 60), {'height': 70}),
+                     ('detail', box(25, 20, 35, 40), {}))]
+        # Selection consumes decoded GeoJSON lists, not Shapely's tuples.
+        source_parent, source_parts = json.loads(json.dumps([parent, [p for p, _ in parts]]))
+        self.assertEqual(select_building_geometry([source_parent], source_parts).buildings,
+                         (source_parent,))
+        cloud = self.cloud(lambda x, y: 90 if x < 20 else 70 if x > 40 else
+                           16 if 25 < x < 35 and 20 < y < 40 else 10)
+        cloud = np.concatenate([cloud + np.array([dx, dy, 0, 0, 0])
+                                for dx, dy in ((0, 0), (.2, 0), (0, .2), (.2, .2))])
+        for mode in ('TERRACES', 'FACETED'):
+            with self.subTest(mode=mode):
+                records, _, rejected = measure_features([parent], cloud,
+                    lambda x, y: (x, y), lambda x, y: (x, y), 6, 3,
+                    box(-100, -100, 100, 100),
+                    parts_by_parent={'parent': [g for _, g in parts]},
+                    source_parts_by_parent={'parent': parts},
+                    prefer_lidar=True, roof_mode=mode)
+                self.assertFalse(rejected)
+                self.assertAlmostEqual(top_height(records['parent']), 90, delta=.5)
+                self.assertEqual(records['parent']['height_decision'], 'lidar_preferred')
+                self.assertEqual(records['parent']['method'],
+                                 'faceted_roof' if mode == 'FACETED' else 'flat_regions')
+        self.assertNotIn('height', parts[-1][0]['properties'])
+
     def test_tower_above_full_footprint_podium_uses_exposed_source_roofs(self):
         from jarvizar_city_model.external.lidar_source import check_source
         from shapely.geometry import mapping

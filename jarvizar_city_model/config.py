@@ -557,9 +557,9 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     support_structures_over_water: BoolProperty(
         name="Keep Ground Under Structures",
         description=(
-            "Where the cut removes the ground under a bridge, a building, or a "
-            "mapped pier, build that ground back as terrain under the structure's "
-            "own footprint only. The rest of the water stays open"
+            "Keep terrain under structures over cut water, and preserve the "
+            "original ground grade under roads, paths and buildings over recessed "
+            "water. Supports follow the structures' footprints"
         ),
         default=True,
     )
@@ -584,16 +584,17 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         precision=2,
     )
     recess_ponds_and_fountains: BoolProperty(
-        name="Recess Ponds and Fountains",
+        name="Recess Ponds, Fountains and Basins",
         description=(
-            "Keep a solid basin beneath mapped ponds and fountains instead of a "
+            "Recess mapped ponds, fountains, basins and unclassified water polygons below 5000 square metres, "
+            "keeping a solid floor instead of a "
             "through-cut. Disable to restore their previous water behavior"
         ),
         default=True,
     )
     pond_recess_depth_mm: FloatProperty(
         name="Recess Depth (mm)",
-        description="Depth of pond and fountain basins below the local bank",
+        description="Depth of ponds, fountains and water basins below the local bank",
         default=1.0, min=0.01, soft_max=5.0, precision=2,
     )
     pond_water_thickness_mm: FloatProperty(

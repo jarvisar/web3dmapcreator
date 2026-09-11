@@ -122,8 +122,8 @@ independently:
 4. Build terrain and obtain its actual `bottom_z`. Apply basin recesses,
    extending the underside if necessary; register their floors on the field.
    Then build the optional rim and initialize `SupportBuilder` with that bottom.
-5. Build draped land slabs, resolve category priority, and remove basin
-   footprints. Build optional water fills. Generate roads/bridges with causeway
+5. Build draped land slabs, resolve category priority, and remove water
+   footprints except supported paving. Build optional water fills. Generate roads/bridges with causeway
    registration before pier placement; subtract ground-road footprints from slabs.
 6. Place trees directly on terrain. Generate source or prepared LiDAR
    buildings and their foundations. Emit accumulated `TERRAIN_SUPPORTS` last.
@@ -215,8 +215,11 @@ colors, overwriting manual palette edits.
   explicit height → floors × floor height → class/subtype default → configured
   default. Parse unit-tagged lengths rather than stripping their units.
 - Parent/part selection suppresses duplicate boxes while retaining a credible
-  parent beneath incomplete higher roof sections. Do not replace coverage rules
-  with simple polygon intersection; legitimate annexes overlap complexes.
+  explicit parent beneath incomplete higher parts. Heightless parts neither
+  veto that parent nor count toward known-height coverage; a lower recorded
+  height or floor count still prevents filling a real setback. Derived parent
+  heights do not justify infill. Do not replace coverage rules with simple
+  polygon intersection; legitimate annexes overlap complexes.
 - Parts share terrain min/max from their parent's and siblings' footprints.
   Ground-founded undersides drape; elevated parts keep their source underside.
   Building height scaling affects vertical building dimensions together, leaving
@@ -251,10 +254,18 @@ colors, overwriting manual palette edits.
 - Ordinary water through-cuts default to a 5,000 m² minimum; visible cut water
   is a full-depth plug down to the terrain bottom. Hiding the water object must
   not remove the terrain cut. `_needs_water_data` includes cuts **and basins**.
-- Pond/fountain classification uses explicit source tags/class/subtype, never
+  `generate_water` batches ordinary water into `WATER_SURFACE` and all recessed
+  fills into `WATER_RECESSED`, both in `WATER` with `feature_type=water_surface`.
+  `water_recessed` distinguishes the batches; empty batches produce no object.
+- Pond/fountain/water-basin classification uses explicit source tags/class/subtype, never
   names or size. Polygon fountains can come from `infrastructure`; identities
-  and identical basin outlines are deduplicated. Rivers/lakes/reservoirs retain
-  their ordinary water policy. The 0.25 mm² surface floor still applies.
+  and identical basin outlines are deduplicated. Explicit `water=basin` and
+  normalized `class=basin` qualify even with the broader `subtype=reservoir`.
+  Rivers/lakes/reservoirs retain
+  their ordinary water policy. Generic unclassified water below 5,000 m² also
+  recesses: `is_untyped_water` rejects explicit types/tags, and the solver checks
+  the entire uncropped source feature area, including all MultiPolygon parts.
+  A small crop cannot turn a large river into a basin. The 0.25 mm² surface floor still applies.
 - `basins.py` uses Exact Boolean on temporary terrain, checking closure and
   requested floors with rays before committing. Connected parts share the lowest
   bank reference; overlaps with other water types are skipped/counted. Floors
@@ -271,6 +282,24 @@ colors, overwriting manual palette edits.
 - `SupportBuilder` emits terrain-colored pedestals/causeways from terrain bottom
   to 0.05 mm below the field. It checks outline/interior, deduplicates footprints,
   and registers usable ground even without a new solid; pier queries need that.
+  With ground support enabled, structures over recessed basins use a shallow
+  height-field view without basin floors, retaining the pre-recess grade.
+  Exact cap overlap selects supports under built road footprints and building
+  footprints, including sub-cell shoreline overlaps and enclosed basins. The
+  physical field retains its floors; basin islands and courtyards remain open.
+  Non-bridge foundations have a footprint-wide minimum grade that puts their
+  tops at least 0.2 mm above retained water; buildings and roads use that same
+  grade, preserving their thickness/heights. Bridge causeways keep the existing
+  field-relative top. Paving alone among land-cover categories retains supports:
+  build these from surviving caps after category priority, and share their grade
+  with later roads/buildings. Never restore forest, green, sand, or rock footprints.
+- `cut_water_land_surfaces` removes every validated water footprint from all
+  land-cover slabs, including forest/green, sand and rock. Paving is preserved
+  on foundations when ground supports are enabled; otherwise it is cut too. It applies
+  to ordinary water below the terrain-cut threshold as well as recessed
+  basins, and retains island holes and full slab thickness outside the cut.
+  Water-fill visibility does not control these exclusions. Structure supports
+  and road/building geometry keep their separate ownership.
 - Surface priority defaults to **paved > sand > rock > green > forest** and is
   scene configurable. `surface_priority.py` and pure `footprint_cut.py` remove
   full-thickness footprints while preserving slopes, holes, and materials.
@@ -565,6 +594,14 @@ Convex openings use capped plane cuts; concave openings use per-shell Exact
 intersection with self-intersection disabled. Preserve holes, collinear boundary
 vertices, independent shells, and materials. Export copies/helpers must be
 cleaned up on success and every failure path. See [export design](docs/EXPORT_CUTOUT.md).
+Cut-edge cleanup may collapse short connected contour edges, but must never
+weld nearby unrelated contour strands. Prefer endpoints on large retained faces
+to preserve terrain tops/bottoms. Validate new caps for both closure and winding;
+roll back failed scan fills before retrying with boundary-preserving ear clipping.
+If edge cleanup pinches an exact contact, retry that shell from its original
+mesh without collapsing contour edges. Export ear clipping can retain distinct
+indices at coincident points; its degenerate-triangle tests must bound the
+segment rather than treating an entire infinite line as part of the triangle.
 
 `multi_plate_export` is off by default and used only by this export operator.
 It requires a cutout, runs the unchanged final crop first, then uses
@@ -612,7 +649,7 @@ Select focused checks based on the change:
 | Area | Existing checks under `tests/` |
 | --- | --- |
 | Core pipeline | `test_*.py`, `blender_smoke.py`; smoke exercises merged/unmerged geometry, heights, roofs, and cleanup. `blender_generation_transaction.py` checks rollback/ownership. `blender_generation_modal.py` exercises real worker cancellation at each phase, import, retries and cleanup; windowed `blender_generation_gui.py` checks real Esc/Cancel and event-loop responsiveness. |
-| Water / supports | `blender_water_cut.py`, `blender_ground_support.py`, `blender_pond_basins.py`; cached `blender_water_cut_live.py`, `blender_coastline_live.py`, `blender_pond_basins_live.py` |
+| Water / supports | `blender_water_cut.py`, `blender_ground_support.py`, `blender_pond_basins.py`, `blender_basin_support.py`, `blender_water_surfaces.py`, `blender_visible_supports.py`, `blender_paved_supports.py`; cached `blender_water_cut_live.py`, `blender_coastline_live.py`, `blender_pond_basins_live.py` |
 | Roads / surface ownership | `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
 | Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_envelope.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
 | Export / trees / clipboard | `blender_export_cutout.py` and its live counterpart; `blender_tree_printability.py`; `test_projection.py` and windowed `blender_gui_paste.py` |

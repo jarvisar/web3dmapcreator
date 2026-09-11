@@ -219,6 +219,28 @@ if __name__ == "__main__":
 
 
 class EarClipTests(unittest.TestCase):
+    def test_export_contacts_keep_distinct_indices_and_exact_area(self):
+        rings = [
+            [(0,0),(4,0),(4,4),(2,4),(2,2),(2,2),(2,3),(2,2),(2,4),(0,4)],
+            [(-1,-1),(0,-1),(0,0),(1,0),(1,1),(0,1),(0,0),(-1,0)],
+        ]
+        for ring in rings:
+            for points in (ring, list(reversed(ring))):
+                with self.subTest(points=points):
+                    triangles = ear_clip(points, allow_touching=True)
+                    self.assertEqual(len(triangles), len(points)-2)
+                    self.assertEqual({i for t in triangles for i in t}, set(range(len(points))))
+                    self.assertAlmostEqual(sum(abs(signed_area([points[i] for i in t]))
+                                               for t in triangles), abs(signed_area(points)))
+                    edges = {}
+                    for triangle in triangles:
+                        for a,b in zip(triangle, triangle[1:]+triangle[:1]):
+                            edge = tuple(sorted((a,b)))
+                            edges[edge] = edges.get(edge,0)+1
+                    boundary = {tuple(sorted((i,(i+1)%len(points)))) for i in range(len(points))}
+                    self.assertTrue(all(count == (1 if edge in boundary else 2)
+                                        for edge,count in edges.items()))
+
     """Ear clipping is the fallback when Blender's triangulator will not close.
 
     Its contract is stricter than Blender's: use every vertex, and never

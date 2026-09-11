@@ -64,3 +64,35 @@ coll, counts = build([parent],[crown],transform,{'parent':broken},'RetainedFallb
 assert counts['buildings']==1 and counts['lidar_geometry_fallbacks']==1, counts
 assert sorted(o['height_m'] for o in coll.objects)==[50,80]
 print('LIDAR_RETAINED_PARENT_INFILL_OK')
+
+# A heightless detail no longer erases a podium, and retaining that podium
+# must not prevent LiDAR replacement or change complete source fallback.
+parent['properties']['height'] = 10
+unknown = {'id': 'unknown', 'properties': {'building_id': 'parent'}, 'geometry': geometry(5)}
+record = {'height_m': 12, 'tiers': [
+    {'bottom_m': 12, 'top_m': 90, 'geometry': geometry(10)}]}
+def meshes(coll):
+    return [([tuple(v.co) for v in o.data.vertices],
+             [tuple(f.vertices) for f in o.data.polygons]) for o in coll.objects]
+for merge in (False, True):
+    original, counts = build([parent], [crown, unknown], transform, {},
+                             'PodiumSource', merge=merge, minimum_height=.8)
+    assert counts['buildings'] == 1 and counts['building_parts'] == 2, counts
+    _, counts = build([parent], [crown, unknown], transform, {'parent': record},
+                       'PodiumMeasured', merge=merge, prefer_lidar=True, minimum_height=.8)
+    assert counts['lidar_buildings'] == 1 and counts['building_parts'] == 0, counts
+    for measurement in (record, supplement):
+        broken = copy.deepcopy(measurement)
+        if broken.get('method') == 'source_parts':
+            broken['infill_geometry'] = {'type': 'Point', 'coordinates': [0, 0]}
+        else:
+            broken['tiers'][0]['geometry'] = {'type': 'Point', 'coordinates': [0, 0]}
+        fallback, counts = build([parent], [crown, unknown], transform, {'parent': broken},
+            'PodiumFallback', merge=merge, prefer_lidar=True, minimum_height=.8)
+        assert counts['lidar_geometry_fallbacks'] == 1, counts
+        assert counts['buildings'] == 1 and counts['building_parts'] == 2, counts
+        assert meshes(original) == meshes(fallback)
+    _, counts = build([parent], [crown, unknown], transform, {'parent': supplement},
+        'PodiumInfill', merge=merge, prefer_lidar=True, minimum_height=.8)
+    assert counts['lidar_infill_buildings'] == 1 and counts['building_parts'] == 2, counts
+print('LIDAR_HEIGHTLESS_PART_PODIUM_OK')

@@ -157,7 +157,7 @@ class TransactionTests(unittest.TestCase):
             *[(operators, name) for name in (
                 "solve_water_bodies", "flatten_terrain_under_water", "cut_water_from_terrain",
                 "generate_terrain_solid", "recess_terrain_basins", "generate_border_rim",
-                "generate_land_surfaces", "cut_basin_land_surfaces", "generate_water",
+                "generate_land_surfaces", "cut_water_land_surfaces", "generate_water",
                 "generate_roads", "cut_road_footprints", "generate_trees", "load_measurements",
                 "generate_buildings")],
             (operators.SupportBuilder, "build"), (generation.GenerationTransaction, "validate"),

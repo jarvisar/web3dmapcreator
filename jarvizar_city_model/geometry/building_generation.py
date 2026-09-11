@@ -230,6 +230,8 @@ def generate_buildings(
     what turns it into a needle.  A shaped roof rides up with its walls
     instead of being scaled, so the roof keeps its own pitch.
     """
+    if ground_support is not None:
+        heightfield = ground_support.structure_heightfield
     building_features = list(building_features)
     part_features = list(part_features)
     selection = select_building_geometry(building_features, part_features)
@@ -240,8 +242,21 @@ def generate_buildings(
         if parent_id:
             parts_by_parent[parent_id].append(part)
     ground_cache: Dict[str, Optional[Tuple[float, float]]] = {}
+    foundation_cache = {}
     embed = float(embed_mm)
     spacing = float(drape_spacing_mm)
+
+    def family_floor(parent_id):
+        if ground_support is None:
+            return None
+        if parent_id not in foundation_cache:
+            parent = parent_lookup.get(parent_id)
+            features = ([parent] if parent is not None else []) + list(parts_by_parent.get(parent_id, ()))
+            levels = [ground_support.minimum_ground(rings, 'building')
+                      for feature in features
+                      for rings in projected_polygon_rings(feature.get('geometry') or {}, transform)]
+            foundation_cache[parent_id] = max((z for z in levels if z is not None), default=None)
+        return foundation_cache[parent_id]
 
     def shared_ground(parent_id: str) -> Optional[Tuple[float, float]]:
         """The lowest and highest terrain under a whole building.
@@ -258,10 +273,11 @@ def generate_buildings(
         parent = parent_lookup.get(parent_id)
         features = [parent] if parent is not None else []
         features.extend(parts_by_parent.get(parent_id, []))
+        ground_field = ground_support.foundation_field(family_floor(parent_id)) if ground_support else heightfield
         for feature in features:
             for rings in projected_polygon_rings(feature.get("geometry") or {}, transform):
-                bases.append(heightfield.minimum_over(rings[0]))
-                ceilings.append(heightfield.maximum_over(rings[0]))
+                bases.append(ground_field.minimum_over(rings[0]))
+                ceilings.append(ground_field.maximum_over(rings[0]))
         ground_cache[parent_id] = (min(bases), max(ceilings)) if bases else None
         return ground_cache[parent_id]
 
@@ -354,8 +370,10 @@ def generate_buildings(
             ground = shared_ground(identifier)
             if ground is None:
                 continue
+            minimum_ground = family_floor(identifier)
+            ground_field = ground_support.foundation_field(minimum_ground) if ground_support else heightfield
             try:
-                built = measured_builder(feature, record, transform, heightfield, ground, vertical,
+                built = measured_builder(feature, record, transform, ground_field, ground, vertical,
                     embed, spacing, minimum_width_mm, maximum_slenderness,
                     slenderness_exempt_width_mm, minimum_height, minimum_footprint)
             except (ValueError, TypeError, KeyError, IndexError):
@@ -383,7 +401,9 @@ def generate_buildings(
                     obj[key] = value
             if ground_support is not None:
                 for rings in projected_polygon_rings(record.get('infill_geometry') or feature.get("geometry") or {}, transform):
-                    if _needs_ground(rings, heightfield) and ground_support.footprint(rings, "building"):
+                    if (_needs_ground(rings, heightfield) or ground_support.overlaps_basin(rings)
+                            or minimum_ground is not None) and ground_support.footprint(
+                                rings, "building", minimum_ground=minimum_ground):
                         counts["buildings_grounded_over_water"] += 1
             if not supplement:
                 enhanced_ids.add(identifier)
@@ -458,6 +478,8 @@ def generate_buildings(
         # Only a ground-founded mass is draped into the terrain.  An elevated
         # building part must keep its real underside.
         grounded = profile.bottom_m <= 0.0
+        minimum_ground = family_floor(parent_id or source_id)
+        ground_field = ground_support.foundation_field(minimum_ground) if ground_support else heightfield
         # Slenderness is judged on the mass's own extent, not its height above
         # the street.  A tower's crown section is a squat block that happens to
         # start 140 m up, and measuring it from the ground would discard it.
@@ -489,15 +511,18 @@ def generate_buildings(
                     and thickness_mm > width_mm * maximum_slenderness))
             ground = shared_ground(parent_id) if parent_id else None
             if ground is None:
-                terrain_mm = heightfield.minimum_over(rings[0])
-                terrain_top_mm = heightfield.maximum_over(rings[0])
+                terrain_mm = ground_field.minimum_over(rings[0])
+                terrain_top_mm = ground_field.maximum_over(rings[0])
             else:
                 terrain_mm, terrain_top_mm = ground
                 base_source = "parent_footprint"
             bottom = terrain_mm + vertical(profile.bottom_m)
             top = terrain_mm + vertical(profile.top_m)
-            if grounded and ground_support is not None and _needs_ground(rings, heightfield):
-                if ground_support.footprint(rings, "building"):
+            if grounded and ground_support is not None and (
+                _needs_ground(rings, heightfield) or ground_support.overlaps_basin(rings)
+                or minimum_ground is not None
+            ):
+                if ground_support.footprint(rings, "building", minimum_ground=minimum_ground):
                     counts["buildings_grounded_over_water"] += 1
 
             roof = resolve_roof(
@@ -556,7 +581,7 @@ def generate_buildings(
                 if not grounded:
                     return bottom
                 return min(
-                    heightfield.height_mm(x, y) - embed,
+                    ground_field.height_mm(x, y) - embed,
                     ceiling - MINIMUM_BURIED_THICKNESS_MM,
                 )
 

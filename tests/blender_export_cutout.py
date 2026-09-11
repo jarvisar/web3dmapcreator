@@ -3,10 +3,12 @@
 Uses the installed io_mesh_3mf writer for the archive round trip.
 """
 import hashlib
+import json
 import math
 import shutil
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
@@ -21,6 +23,7 @@ import jarvizar_city_model as addon
 from jarvizar_city_model.blender.collections import create_city_hierarchy, GENERATED_KEY
 from jarvizar_city_model.blender.mesh_utils import _prism_geometry
 from jarvizar_city_model.blender.export_cutout import Opening, export_geometry, CutoutError
+from jarvizar_city_model.blender import export_cutout as cutter
 from jarvizar_city_model.data.export_3mf import name_3mf, MODEL, SETTINGS, NS, MATERIALS
 
 
@@ -271,6 +274,90 @@ class CutoutTests(unittest.TestCase):
         tangent=self.source('tangent',rectangle(2,2,6))
         exact=self.source('exact',rectangle(10,10))
         self.crop([tangent,exact],lambda p,s,o:self.assertEqual(len(p),1))
+
+    def test_nearby_cut_contours_remain_separate(self):
+        # A connected road doubles back across the cut. Its two retained arms
+        # are closer than the numerical cleanup tolerance, but must not weld.
+        gap = 0.00002
+        frame(rectangle(170, 100)).location.x = 85
+        ring = [(-3,-2),(3,-2),(3,-gap),(-1,-gap),(-1,gap),(3,gap),(3,2),(-3,2)]
+        obj = self.source('hairpin road', ring, 0, .6)
+        def check(parts, stats, opening):
+            self.assertAlmostEqual(audit(parts[0].data), 2*3*(2-gap)*.6, places=5)
+            bm = bmesh.new()
+            try:
+                bm.from_mesh(parts[0].data)
+                shells = list(cutter._shells(bm))
+                self.assertEqual(len(shells), 2)
+                for vertices, edges, faces in shells:
+                    self.assertTrue(all(v.co.y >= gap*.99 for v in vertices) or
+                                    all(v.co.y <= -gap*.99 for v in vertices))
+            finally:
+                bm.free()
+        self.crop([obj], check)
+
+    def test_draped_cut_slivers(self):
+        # Small isolated closed shells captured before a failing cut; no city
+        # data or saved Blender scene is needed to exercise these intersections.
+        fixtures = Path(__file__).with_name('fixtures') / 'export_cut_slivers.json'
+        for data in json.loads(fixtures.read_text()):
+            with self.subTest(case=data['case']):
+                opening = Opening(data['ring'], Matrix.Identity(4), data['tolerance'])
+                mesh = bpy.data.meshes.new('sliver regression')
+                mesh.from_pydata(data['vertices'], [], data['faces'])
+                try:
+                    stats = cutter.defaultdict(int)
+                    cutter.clip_mesh(mesh, Matrix(data['transform']), opening,
+                                     bpy.context.scene.collection, stats)
+                    self.assertAlmostEqual(audit(mesh), data['volume'], delta=data['volume']*2e-6)
+                    self.assertTrue(all(opening.contains(Matrix(data['transform']) @ v.co)
+                                        for v in mesh.vertices))
+                finally:
+                    bpy.data.meshes.remove(mesh)
+
+    def test_failed_scan_fill_retries_without_changing_walls_or_materials(self):
+        frame(rectangle(10,10))
+        obj = self.source('terrain', rectangle(20,20))
+        materials = [bpy.data.materials.new('bottom'), bpy.data.materials.new('top')]
+        for material in materials:
+            obj.data.materials.append(material)
+        for face in obj.data.polygons:
+            face.material_index = int(face.normal.z > .5)
+        original = cutter._scan_fill_section
+        def failed_fill(bm, edges, normal):
+            original(bm, edges, normal)
+            raise CutoutError('scan fill left invalid triangles')
+        def check(parts, stats, opening):
+            self.assertAlmostEqual(audit(parts[0].data), 200, places=4)
+            self.assertTrue(all(f.material_index == int(f.normal.z > .5)
+                                for f in parts[0].data.polygons))
+        with patch.object(cutter, '_scan_fill_section', side_effect=failed_fill):
+            self.crop([obj], check)
+
+    def test_scan_fill_using_only_one_contour_vertex_retries(self):
+        bm = bmesh.new()
+        try:
+            bmesh.ops.create_cube(bm, size=2)
+            bm.normal_update()
+            top = next(f for f in bm.faces if f.normal.z > .9)
+            boundary = list(top.edges)
+            anchor = top.verts[0]
+            bm.faces.remove(top)
+            retained = set(bm.faces)
+            bottom = [v for v in bm.verts if v.co.z < 0]
+            def incomplete_fill(bm, **kwargs):
+                # Model a scan fill which used one contour vertex and skipped
+                # its whole loop. The repair walk returns to the same BMVert.
+                return {'geom': [bm.faces.new((anchor, bottom[0], bottom[1]))]}
+            fake = SimpleNamespace(types=bmesh.types,
+                                   ops=SimpleNamespace(triangle_fill=incomplete_fill))
+            with patch.object(cutter, 'bmesh', fake):
+                caps = cutter._fill_section(bm, boundary, Vector((0,0,1)))
+            self.assertEqual(set(bm.faces)-retained, set(caps))
+            self.assertTrue(all(e.is_manifold and e.is_contiguous for e in bm.edges))
+            self.assertAlmostEqual(bm.calc_volume(signed=True), 8)
+        finally:
+            bm.free()
 
     def test_invalid_frame_and_failure_cleanup(self):
         obj=self.source('source',rectangle(50,50))

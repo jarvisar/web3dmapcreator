@@ -799,12 +799,11 @@ def main():
             ]
             if not interior:
                 raise AssertionError("No support geometry reaches the middle of the river")
-            support_top = max(p.z for p in interior)
-            if support_top > body.bed_mm + 1.0e-4:
-                raise AssertionError(
-                    f"A support in the river rises to {support_top:.4f}, above the "
-                    f"water level {body.bed_mm:.4f}; the water must stay open around it"
-                )
+            from jarvizar_city_model.geometry.support import SUPPORT_WATER_CLEARANCE_MM
+            water_top = object_z_range(water)[1]
+            assert max(p.z for p in interior) >= water_top + SUPPORT_WATER_CLEARANCE_MM - 1e-4
+            assert any(bottom + .05 < p.z < water_top for p in interior), \
+                'Bridge causeways must still have submerged tops'
             supports = bpy.data.collections["BRIDGE_SUPPORTS"].objects
             piers_in_river = 0
             for obj in supports:

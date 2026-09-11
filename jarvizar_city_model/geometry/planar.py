@@ -258,7 +258,7 @@ def point_in_triangle(point, a, b, c) -> bool:
     return not (has_negative and has_positive)
 
 
-def ear_clip(points: Sequence[Sequence[float]]) -> List[Tuple[int, int, int]]:
+def ear_clip(points: Sequence[Sequence[float]], *, allow_touching=False) -> List[Tuple[int, int, int]]:
     """Triangulate one simple ring, using every vertex exactly as given.
 
     Blender's own triangulator optimises the outline: across a run of nearly
@@ -271,6 +271,10 @@ def ear_clip(points: Sequence[Sequence[float]]) -> List[Tuple[int, int, int]]:
     construction.  A collinear vertex yields a triangle with no area in plan
     but real extent in Z, which is exactly what a slab following a hillside
     along a straight edge should be.
+
+    Export cuts can have coincident points with distinct topological indices.
+    ``allow_touching`` preserves those indices using zero-area triangles at
+    contacts; the default still requires an ordinary simple ring.
     """
     count = len(points)
     if count < 3:
@@ -295,6 +299,16 @@ def ear_clip(points: Sequence[Sequence[float]]) -> List[Tuple[int, int, int]]:
             for other in order:
                 if other in (previous, current, following):
                     continue
+                if allow_touching:
+                    p = points[other]
+                    if tuple(p[:2]) in (tuple(a[:2]), tuple(b[:2]), tuple(c[:2])):
+                        continue
+                    # For a degenerate triangle the side tests alone consider
+                    # the entire infinite line inside. Only its segment can
+                    # block an ear; distant collinear vertices cannot.
+                    if not (min(a[0], b[0], c[0]) <= p[0] <= max(a[0], b[0], c[0])
+                            and min(a[1], b[1], c[1]) <= p[1] <= max(a[1], b[1], c[1])):
+                        continue
                 if point_in_triangle(points[other], a, b, c):
                     blocked = True
                     break

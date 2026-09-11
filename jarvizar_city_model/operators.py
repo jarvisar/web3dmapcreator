@@ -65,7 +65,7 @@ from .geometry.surfaces import (
     solve_water_bodies,
 )
 from .geometry.vegetation import TreeSettings, generate_trees
-from .geometry.basins import recess_terrain_basins, cut_basin_land_surfaces
+from .geometry.basins import recess_terrain_basins, cut_water_land_surfaces
 
 
 def _bounds_from_settings(settings) -> Bounds:
@@ -812,12 +812,13 @@ class JARVIZAR_OT_generate_model(Operator):
             ground_support = None
             if (
                 settings.support_structures_over_water
-                and heightfield.void_mask is not None
+                and water_bodies
             ):
                 ground_support = SupportBuilder(
                     heightfield,
                     terrain_bottom_mm,
                     drape_spacing_mm=surface_settings.drape_spacing_mm,
+                    water_bodies=water_bodies,
                 )
                 for rings in heightfield.restored_footprints:
                     ground_support.footprint(rings, "mapped_deck")
@@ -838,14 +839,21 @@ class JARVIZAR_OT_generate_model(Operator):
                         surface_settings,
                         bounds=bounds.as_tuple(),
                         progress_callback=lambda f: progress(0.10 + f * 0.10),
+                        ground_support=ground_support,
                     )
                 )
-            progress(0.20, "Cutting basin surfaces")
+            progress(0.20, "Clearing land surfaces from water")
 
-            counts.update(cut_basin_land_surfaces(
+            counts.update(cut_water_land_surfaces(
                 hierarchy["land_surfaces"], water_bodies,
                 surface_settings.surface_rise_mm + surface_settings.surface_embed_mm,
+                preserve_paved=ground_support is not None,
             ))
+            if ground_support is not None:
+                counts.update(ground_support.support_paved_surfaces(
+                    hierarchy['land_surfaces'], surface_settings.surface_rise_mm,
+                    surface_settings.surface_embed_mm,
+                ))
 
             progress(.20, "Building water")
             if settings.generate_water:

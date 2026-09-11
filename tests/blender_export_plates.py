@@ -170,6 +170,16 @@ class PlateTests(unittest.TestCase):
         cutout=self.frame(ring)
         terrain=self.source('terrain',rectangle(600,600))
         self.partition([terrain],4)
+        # Edge cleanup must keep the large top/bottom faces flat, even where
+        # successive oblique cuts leave many almost coincident wall vertices.
+        with export_geometry(bpy.context, [terrain]) as (parts, stats, opening):
+            expected = abs(sum(a[0]*b[1]-b[0]*a[1]
+                               for a,b in zip(ring,ring[1:]+ring[:1]))) * 1.5
+            self.assertAlmostEqual(audit(parts[0].data), expected, delta=expected*2e-6)
+            for face in parts[0].data.polygons:
+                if abs(face.normal.z) > .9:
+                    zs = [parts[0].data.vertices[i].co.z for i in face.vertices]
+                    self.assertLess(max(zs)-min(zs), 1e-6)
         bpy.data.objects.remove(cutout,do_unlink=True)
         self.frame(rectangle(400,100))
         left=self.source('left',rectangle(100,20,-50))
@@ -203,8 +213,9 @@ class PlateTests(unittest.TestCase):
         self.check_snapshot(before)
 
 
-addon.register()
-result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(PlateTests))
-if not result.wasSuccessful():
-    raise SystemExit(1)
-print('EXPORT_PLATES_OK', result.testsRun)
+if __name__ == '__main__':
+    addon.register()
+    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(PlateTests))
+    if not result.wasSuccessful():
+        raise SystemExit(1)
+    print('EXPORT_PLATES_OK', result.testsRun)

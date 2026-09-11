@@ -221,10 +221,13 @@ class JARVIZAR_PT_surfaces(Panel):
         column = layout.column(align=True)
         column.enabled = settings.cut_water_from_terrain
         column.prop(settings, "minimum_water_cut_area_m2")
+        column = layout.column(align=True)
+        column.enabled = settings.generate_terrain and (
+            settings.cut_water_from_terrain or settings.recess_ponds_and_fountains)
         column.prop(settings, "support_structures_over_water")
         layout.prop(settings, "water_thickness_mm")
         box = layout.box()
-        box.label(text="Ponds and Fountains")
+        box.label(text="Ponds, Fountains and Basins")
         box.prop(settings, "recess_ponds_and_fountains")
         column = box.column(align=True)
         column.enabled = settings.recess_ponds_and_fountains and settings.generate_terrain

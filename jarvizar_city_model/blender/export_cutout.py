@@ -254,7 +254,7 @@ def _corners(vertices):
                           for i in range(3)]))
 
 
-def _fill_section(bm, edges, normal):
+def _scan_fill_section(bm, edges, normal):
     """Triangulate with holes, then restore collinear contour subdivisions.
 
     Blender's scan fill may omit collinear vertices. Split its spanning cap
@@ -281,45 +281,87 @@ def _fill_section(bm, edges, normal):
                 visited.add(chain[-1])
                 neighbors = adjacency[chain[-1]]
                 chain.append(neighbors[0] if neighbors[0] != chain[-2] else neighbors[1])
+            if chain[0] == chain[-1]:
+                raise CutoutError("Scan fill skipped a complete cut contour")
             edge = bm.edges.get((chain[0], chain[-1]))
             face = next((f for f in edge.link_faces if f in caps), None) if edge else None
             if face is None or len(face.verts) != 3:
                 raise CutoutError("Could not preserve vertices along the new cut cap")
             opposite = next(v for v in face.verts if v not in (chain[0], chain[-1]))
+            if opposite in chain:
+                raise CutoutError("Scan fill overlapped the cut contour")
             caps.remove(face)
             bm.faces.remove(face)
             if not edge.link_faces:
                 bm.edges.remove(edge)
             for a, b in zip(chain, chain[1:]):
                 caps.add(bm.faces.new((a, b, opposite)))
-    cap_edges = {e for f in caps for e in f.edges}
-    if any(len(e.link_faces) != 2 for e in cap_edges | set(edges)):
-        # Scan fill can also overlap itself on almost-collinear contours. The
-        # existing double-precision ear clipper preserves every boundary vertex.
-        # Use it only when needed: quadratic work on long terrain sections is
-        # otherwise needless, and independent hole loops must not be filled in.
-        for face in caps:
-            bm.faces.remove(face)
-        for edge in cap_edges:
-            if edge.is_valid and not edge.link_faces:
-                bm.edges.remove(edge)
-        loops = _edge_loops(edges)
-        axis = max(range(3), key=lambda i: abs(normal[i]))
-        axes = [i for i in range(3) if i != axis]
-        projected = [[(float(v.co[axes[0]]), float(v.co[axes[1]])) for v in loop] for loop in loops]
-        if any(point_in_ring(r[0], other) for r in projected for other in projected if other is not r):
-            raise CutoutError("Could not triangulate the cut cap's inner holes")
-        caps = set()
-        for loop, points in zip(loops, projected):
-            triangles = ear_clip(points)
-            if len(triangles) != len(loop) - 2:
-                raise CutoutError("Could not triangulate the cut cap without overlaps")
-            for triangle in triangles:
-                caps.add(bm.faces.new([loop[i] for i in triangle]))
     return list(caps)
 
 
-def _clip_convex(bm, geom, opening, transform):
+def _orient_caps(caps, edges):
+    """Require a closed, orientable cap attached to the retained walls."""
+    cap_edges = {e for f in caps for e in f.edges} | set(edges)
+    if any(not e.is_manifold for e in cap_edges):
+        raise CutoutError("A cut boundary could not be capped as a closed solid")
+    pending = set(caps)
+    while pending:
+        advanced = False
+        for face in list(pending):
+            for loop in face.loops:
+                other = loop.link_loop_radial_next
+                if other.face != face and other.face not in pending:
+                    if loop.vert == other.vert:
+                        face.normal_flip()
+                    pending.remove(face)
+                    advanced = True
+                    break
+        if not advanced:
+            raise CutoutError("Could not orient a cut cap")
+    if any(not e.is_contiguous for e in cap_edges):
+        raise CutoutError("A cut boundary could not be capped as a consistently wound solid")
+
+
+def _fill_section(bm, edges, normal):
+    """Retry an invalid scan fill using the original, unmodified cut contour.
+
+    Scan fill can skip nearly collinear vertices or overlap tiny triangles.
+    Both missing subdivisions and winding conflicts require retriangulation;
+    merely counting faces per edge misses overlapping, nonorientable caps.
+    """
+    retained_faces = set(bm.faces)
+    retained_edges = set(bm.edges)
+    try:
+        caps = _scan_fill_section(bm, edges, normal)
+        _orient_caps(caps, edges)
+        return caps
+    except CutoutError:
+        # Roll back only this plane's cap. Never alter retained wall geometry.
+        for face in set(bm.faces) - retained_faces:
+            bm.faces.remove(face)
+        for edge in set(bm.edges) - retained_edges:
+            if not edge.link_faces:
+                bm.edges.remove(edge)
+
+    # Double-precision ear clipping retains every boundary vertex. Reserve its
+    # quadratic work for failed scan fills, and never fill an inner hole.
+    loops = _edge_loops(edges)
+    axis = max(range(3), key=lambda i: abs(normal[i]))
+    axes = [i for i in range(3) if i != axis]
+    projected = [[(float(v.co[axes[0]]), float(v.co[axes[1]])) for v in loop] for loop in loops]
+    if any(point_in_ring(r[0], other) for r in projected for other in projected if other is not r):
+        raise CutoutError("Could not triangulate the cut cap's inner holes")
+    caps = []
+    for loop, points in zip(loops, projected):
+        triangles = ear_clip(points, allow_touching=True)
+        if len(triangles) != len(loop) - 2:
+            raise CutoutError("Could not triangulate the cut cap without overlaps")
+        caps.extend(bm.faces.new([loop[i] for i in triangle]) for triangle in triangles)
+    _orient_caps(caps, edges)
+    return caps
+
+
+def _clip_convex(bm, geom, opening, transform, *, preserve_contour=False):
     """Cut one closed shell and fill all its section loops together (holes)."""
     inverse = transform.inverted()
     for co, no in opening.planes:
@@ -348,7 +390,35 @@ def _clip_convex(bm, geom, opening, transform):
         cut_vertices = [v for v in result['geom_cut'] if isinstance(v, bmesh.types.BMVert)]
         for vertex in cut_vertices:
             vertex.co -= (vertex.co - plane_co).dot(plane_no) * plane_no
-        bmesh.ops.remove_doubles(bm, verts=cut_vertices, dist=tolerance)
+        # Collapse only short contour edges, never nearby, unrelated contour
+        # strands. Intersections of sliver triangles can round onto one another;
+        # a proximity weld can instead join disconnected sides of a narrow gap.
+        cut_set = set(cut_vertices)
+        # Prefer the vertex on the largest retained face. In particular, keep
+        # the corner on a terrain top/bottom rather than moving that whole face
+        # onto a nearby subdivision of the cut wall.
+        priorities = {v: (max((f.calc_area() for f in v.link_faces), default=0), tuple(v.co))
+                      for v in cut_vertices}
+        targets = {}
+        for vertex in cut_vertices:
+            for edge in vertex.link_edges:
+                other = edge.other_vert(vertex)
+                if other in cut_set and edge.is_boundary and (vertex.co - other.co).length <= tolerance:
+                    a, b = vertex, other
+                    while a in targets:
+                        a = targets[a]
+                    while b in targets:
+                        b = targets[b]
+                    if a != b:
+                        if priorities[a] < priorities[b]:
+                            a, b = b, a
+                        targets[b] = a
+        for vertex, target in targets.items():
+            while target in targets:
+                target = targets[target]
+            targets[vertex] = target
+        if targets and not preserve_contour:
+            bmesh.ops.weld_verts(bm, targetmap=targets)
         remaining = {v for v in geom if v.is_valid and isinstance(v, bmesh.types.BMVert)}
         geom = list(remaining) + list({e for v in remaining for e in v.link_edges}) + list({f for v in remaining for f in v.link_faces})
         edges = [e for e in geom if isinstance(e, bmesh.types.BMEdge) and e.is_boundary]
@@ -358,24 +428,10 @@ def _clip_convex(bm, geom, opening, transform):
             for face in caps:
                 face.material_index = material
             geom += caps + list({e for f in caps for e in f.edges})
-            # Orient only new caps by propagation from their existing walls.
-            pending = set(caps)
-            while pending:
-                advanced = False
-                for face in list(pending):
-                    for loop in face.loops:
-                        other = loop.link_loop_radial_next
-                        if other.face != face and other.face not in pending:
-                            if loop.vert == other.vert:
-                                face.normal_flip()
-                            pending.remove(face)
-                            advanced = True
-                            break
-                if not advanced:
-                    raise CutoutError("Could not orient a cut cap")
         geom = list({e for e in geom if e.is_valid})
         if any(not e.is_manifold or not e.is_contiguous for e in geom if isinstance(e, bmesh.types.BMEdge)):
             raise CutoutError("A cut boundary could not be capped as a closed solid")
+        bm.normal_update()
 
 
 def _clip_concave(bm, vertices, edges, faces, opening, transform, collection, materials):
@@ -481,7 +537,22 @@ def clip_mesh(mesh, matrix_world, opening, collection, stats, *, discard_tangent
                         copy.material_index = face.material_index
                         copy.smooth = face.smooth
                     if opening.convex:
-                        _clip_convex(work, _geometry(work), opening, transform)
+                        try:
+                            _clip_convex(work, _geometry(work), opening, transform)
+                        except CutoutError:
+                            # At an exact contact even a connected short-edge
+                            # collapse can pinch the wall topology. Rebuild from
+                            # the untouched source shell and preserve every
+                            # contour index on this retry, including coincident
+                            # coordinates. No whole-map boolean or mesh weld.
+                            work.clear()
+                            copied = {v: work.verts.new(v.co) for v in vertices}
+                            for face in faces:
+                                copy = work.faces.new([copied[v] for v in face.verts])
+                                copy.material_index = face.material_index
+                                copy.smooth = face.smooth
+                            stats['retried_shells'] += 1
+                            _clip_convex(work, _geometry(work), opening, transform, preserve_contour=True)
                     else:
                         _clip_concave(work, list(work.verts), list(work.edges), list(work.faces),
                                       opening, transform, collection, mesh.materials)

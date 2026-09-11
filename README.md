@@ -523,15 +523,40 @@ the shoreline's exact crossing of each grid line is recorded when the polygon
 is rasterised, and every cell the shore passes through is clipped against it.
 Overlapping water polygons are combined before choosing those crossings, so
 an edge inside another water body cannot leave a false strip of terrain.
-**Ponds and fountains have shallow basins by default.** Under Ground Surfaces →
-Ponds and Fountains, enable/disable the mode and set recess depth (1.0 mm) and
+**Ponds, fountains and mapped water basins recess by default.**
+All recessed fills share a separate `WATER_RECESSED` object, while other water
+remains in `WATER_SURFACE`. Both are in the `WATER` collection and can be
+selected, hidden or deleted independently.
+
+Under Ground Surfaces →
+Ponds, Fountains and Basins, enable/disable the mode and set recess depth (1.0 mm) and
 water thickness (0.8 mm). The water top is therefore 0.2 mm below the lowest
 sampled local bank. Water stays level; higher banks have a larger drop. The
-terrain retains a solid floor, and park/paving surfaces are excluded from the
+terrain retains a solid floor, and natural land-cover surfaces are excluded from the
 basin. Turning Water off leaves the empty recess; disabling basin mode restores
-the previous behavior. Only mapped pond/fountain polygons qualify, including
-OSM tags retained by the importer. Other water keeps the existing cut/slab
+the previous behavior. Mapped pond/fountain/water-basin polygons qualify, including
+OSM tags retained by the importer. Small polygons mapped only as generic water
+also recess when their full source area is below 5,000 m². Explicit rivers,
+lakes and reservoirs keep their existing handling; a small viewport does not
+reclassify a large water feature. Other water keeps the existing cut/slab
 thresholds, and swimming pools remain excluded.
+
+With **Keep Ground Under Structures** enabled, buildings and roads/paths over
+recessed water stay at the surrounding terrain grade, with terrain foundations
+under their footprints. This prevents paths from dipping at the bank and
+buildings from sinking into the water.
+
+All water footprints clear overlapping forest, green, sand and rock surfaces,
+even when the slab sits above the water. The cut follows the water outline and
+preserves islands, including for small ordinary water bodies and with recessing
+disabled. Paving remains on terrain supports when **Keep Ground Under Structures**
+is enabled; it is cut away when supports are disabled. Natural land-cover surfaces
+never receive these supports.
+
+Non-bridge foundations rise at least 0.2 mm above retained water, and buildings,
+roads and paving sit on the same raised grade. Bridge causeways retain their
+existing height beneath the water, so bridges still look like crossings and
+keep their foundations when the water fill is hidden.
 
 **Ground is kept under anything the cut leaves standing over the opening.**
 Removing the river also removes the ground under every bridge that crosses it,

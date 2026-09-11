@@ -18,6 +18,7 @@ from jarvizar_city_model.data.land import (
     is_regional_feature,
     is_tree_point,
     is_water_deck,
+    is_untyped_water,
     recessed_water_kind,
     surface_priority,
     tree_point_coordinates,
@@ -120,10 +121,25 @@ class WaterTests(unittest.TestCase):
 
 
 class RecessedWaterTests(unittest.TestCase):
+    def test_untyped_fallback_requires_generic_water_evidence(self):
+        for properties in ({'class':'water','subtype':'water'},
+                           {'source_tags':[['natural','water']]},
+                           {'tags':{'natural':'water'}}, {'natural':'water'}):
+            self.assertTrue(is_untyped_water(polygon(0,0,1,1,**properties)))
+        for properties in ({}, {'class':'lake'}, {'class':'water','subtype':'river'},
+                           {'class':'water','water':'reservoir'},
+                           {'class':'water','tags':{'waterway':'stream'}},
+                           {'class':'water','source_tags':[['water','swimming_pool']]},
+                           {'class':'water','amenity':'fountain'}):
+            self.assertFalse(is_untyped_water(polygon(0,0,1,1,**properties)))
+        self.assertFalse(is_untyped_water({'properties':{'class':'water'},
+                                          'geometry':{'type':'LineString'}}))
+
     def test_osm_pond_and_fountain_tags(self):
         for field in ('source_tags', 'tags'):
             for tags, expected in (({'natural': 'water', 'water': 'pond'}, 'pond'),
-                                   ({'amenity': 'fountain'}, 'fountain')):
+                                   ({'amenity': 'fountain'}, 'fountain'),
+                                   ({'natural': 'water', 'water': 'basin'}, 'basin')):
                 for representation in (tags, list(tags.items()),
                                        [{'key': k, 'value': v} for k, v in tags.items()]):
                     with self.subTest(field=field, tags=representation):
@@ -132,9 +148,21 @@ class RecessedWaterTests(unittest.TestCase):
         self.assertEqual(recessed_water_kind(polygon(0,0,1,1, amenity='fountain')), 'fountain')
 
     def test_normalized_importer_class_and_subtype(self):
-        for kind in ('pond', 'fountain'):
+        for kind in ('pond', 'fountain', 'basin'):
             for props in ({'class': kind}, {'subtype': kind}, {'class': 'water', 'subtype': kind}):
                 self.assertEqual(recessed_water_kind(polygon(0,0,1,1, **props)), kind)
+
+    def test_explicit_basins_with_reservoir_subtype(self):
+        # Normalized reservoir subtype also covers mapped retention basins.
+        for extra in ({}, {'source_tags': [['natural', 'water'], ['water', 'basin']]},
+                      {'natural': 'water', 'water': 'basin', 'basin': 'retention'}):
+            self.assertEqual(recessed_water_kind(polygon(0,0,1,1, **{
+                'class': 'basin', 'subtype': 'reservoir', 'is_intermittent': True, **extra,
+            })), 'basin')
+        for tags in ({'water': 'reservoir'}, {'water': 'lake'}, {'waterway': 'drain'}):
+            self.assertIsNone(recessed_water_kind(polygon(0,0,1,1, **{
+                'class': 'basin', 'source_tags': tags,
+            })))
 
     def test_other_water_types_are_never_selected_by_size_or_name(self):
         for kind in ('river', 'stream', 'lake', 'reservoir', 'canal', 'ocean', 'bay',

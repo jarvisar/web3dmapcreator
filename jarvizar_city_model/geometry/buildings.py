@@ -441,10 +441,10 @@ def find_duplicate_outlines(
 def _parent_supplies_main_mass(building, parts) -> bool:
     """A small upper roof section does not replace a recorded main mass.
 
-    Lower or heightless parts might describe real setbacks, so they retain the
-    ordinary assembly rule. Derived parent heights are insufficient evidence
-    for filling the footprint. Use the same coverage sampling as duplicates;
-    a complete upper part already supplies the mass below it.
+    A recorded lower part preserves a real setback. A heightless part supplies
+    no such evidence: its fallback height must not erase an explicit parent
+    mass. Derived parent heights remain insufficient evidence for filling the
+    footprint. Only parts with known heights count toward replacing the parent.
     """
     from ..external.lidar_source import estimated_height
 
@@ -459,7 +459,9 @@ def _parent_supplies_main_mass(building, parts) -> bool:
     part_rings = []
     for part in parts:
         top = resolve_vertical_profile(feature_properties(part), 3.0, 10.0)
-        if top.height_source != "height" or top.thickness_m <= 0 or top.top_m < profile.top_m:
+        if top.height_source.split("+", 1)[0] not in ("height", "num_floors"):
+            continue
+        if top.thickness_m <= 0 or top.top_m < profile.top_m:
             return False
         rings = _outer_rings(part)
         if not rings:
@@ -478,8 +480,9 @@ def select_building_geometry(
     associated part carries vertical data that Phase 1 actually uses.  Once that
     decision is made, all above-ground parts belonging to that parent are emitted
     so a part lacking a height can still receive the configured fallback. An
-    explicit parent mass is retained when the parts describe only higher roof
-    sections and leave a substantial portion of its footprint uncovered.
+    explicit parent mass is retained when the known part heights are at least
+    as high and leave a substantial portion of its footprint uncovered.
+    Heightless parts neither veto that mass nor count as known-height coverage.
 
     A building whose footprint is already modelled by another building's parts,
     or by a better-described twin of itself, is dropped as a duplicate outline

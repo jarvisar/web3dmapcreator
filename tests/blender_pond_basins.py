@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'tests'))
 
-from jarvizar_city_model.geometry.basins import recess_terrain_basins, cut_basin_land_surfaces, _closed
+from jarvizar_city_model.geometry.basins import recess_terrain_basins, cut_water_land_surfaces, _closed
 from jarvizar_city_model.geometry.dem_terrain import generate_terrain_solid
 from jarvizar_city_model.geometry.heightfield import ModelHeightField
 from jarvizar_city_model.geometry.surfaces import (
@@ -81,19 +81,29 @@ def test_basins():
     water = collection('basin_water')
     counts.update(generate_water(bodies, water, None, settings, counts['terrain_bottom_z_mm']))
     assert counts['water_basin_surfaces'] == 3 and counts['water_full_depth_plugs'] == 1
-    water_obj = water.objects[0]
+    assert len(water.objects) == 2
+    water_obj = next(obj for obj in water.objects if obj.get('water_recessed'))
+    ordinary = next(obj for obj in water.objects if not obj.get('water_recessed'))
+    assert water_obj.name.startswith('WATER_RECESSED')
+    assert ordinary.name.startswith('WATER_SURFACE')
+    assert water_obj['water_model'] == 'recessed_basin_fill'
+    assert water_obj['feature_type'] == ordinary['feature_type'] == 'water_surface'
+    assert water_obj['solid_count'] == 3 and ordinary['solid_count'] == 1
     assert _closed(water_obj.data)
+    assert _closed(ordinary.data)
     for point in ((2.5,2.5), (7.5,2.5), (1,8)):
         near(hits(water_obj, *point).z, -.2)
-    near(hits(water_obj, 14,10).z, .18)
+    near(hits(ordinary, 14,10).z, .18)
+    assert hits(water_obj, 14,10) is None
+    assert hits(ordinary, 2.5,2.5) is None
     assert hits(water_obj, 3.5,3.5) is None
     for body in bodies[:3]:
         near(body.top_mm - body.bed_mm, .8)
     park = collection('basin_park')
     generate_land_surfaces([('land_use', [feature('park', rectangle(0,0,10,10))])],
                            Transform(), field, park, {}, settings)
-    counts.update(cut_basin_land_surfaces(park, bodies, .55))
-    assert counts['land_surface_basin_cuts'] == 1
+    counts.update(cut_water_land_surfaces(park, bodies, .55))
+    assert counts['land_surface_water_cuts'] == 1
     for obj in park.objects:
         assert _closed(obj.data)
         assert hits(obj, 2.5,2.5) is None and hits(obj, 7.5,2.5) is None
@@ -150,6 +160,36 @@ def test_failure_keeps_original_terrain():
     assert len(target.objects) == 1
 
 
+def test_mapped_water_basins_recess_instead_of_ordinary_water_slabs():
+    # Both sub-cell and cut-sized basins used to take the raised-water path.
+    field = ModelHeightField(0,0,20,20,3,3,[0,1,2]*3)
+    small = feature('basin', rectangle(2,2,3,3))
+    large = feature('basin', rectangle(5,5,15,15), rectangle(8,8,10,10))
+    for body in (small, large):
+        body['properties'].update(subtype='reservoir', is_intermittent=True,
+                                  source_tags=[['natural','water'],['water','basin']])
+    bodies, _ = solve_water_bodies([small, large], Transform(), field)
+    assert len(bodies) == 2 and all(b.basin_kind == 'basin' and not b.cut for b in bodies)
+    near(flatten_terrain_under_water(field, bodies), 0)
+    cut_water_from_terrain(field, bodies)
+    target, water = collection('mapped_basin_terrain'), collection('mapped_basin_water')
+    generate_terrain_solid(field, 1.3, target)
+    stats = recess_terrain_basins(field, bodies, target, 1.3)
+    assert stats['water_recesses_built'] == 2 and field.void_mask is None
+    generate_water(bodies, water, None, terrain_bottom_mm=stats['terrain_bottom_z_mm'])
+    assert _closed(target.objects[0].data) and _closed(water.objects[0].data)
+    for x, y, bank in ((2.5,2.5,.2), (6,6,.5)):
+        near(hits(target.objects[0],x,y).z, bank - 1)
+        near(hits(water.objects[0],x,y).z, bank - .2)
+        near(field.height_mm(x,y), bank - 1)
+    near(hits(target.objects[0],9,9).z, .9)
+    assert hits(water.objects[0],9,9) is None
+    ordinary, _ = solve_water_bodies([small,large], Transform(), field,
+                                    SurfaceSettings(recess_ponds_and_fountains=False))
+    assert len(ordinary) == 2 and all(not b.basin_kind for b in ordinary)
+    assert not ordinary[0].cut and ordinary[1].cut
+
+
 def test_overlapping_parts_share_a_level_and_river_overlap_is_skipped():
     field = ModelHeightField(0,0,20,20,3,3,[0,1,2]*3)
     bodies, _ = solve_water_bodies([
@@ -200,6 +240,7 @@ test_basins()
 test_disabled_and_parameters()
 test_slopes_and_duplicate_basins()
 test_failure_keeps_original_terrain()
+test_mapped_water_basins_recess_instead_of_ordinary_water_slabs()
 test_overlapping_parts_share_a_level_and_river_overlap_is_skipped()
 test_settings_persist_and_water_toggle_keeps_recess()
 print('JARVIZAR_POND_BASINS_OK')

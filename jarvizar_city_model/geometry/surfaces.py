@@ -30,6 +30,7 @@ from ..data.land import (
     is_printable_water,
     is_regional_feature,
     is_water_deck,
+    is_untyped_water,
     recessed_water_kind,
     surface_priority,
 )
@@ -201,6 +202,7 @@ def generate_land_surfaces(
     settings: SurfaceSettings | None = None,
     bounds: Tuple[float, float, float, float] | None = None,
     progress_callback=None,
+    ground_support=None,
 ) -> Dict[str, Any]:
     """Generate one batched slab object per surface category.
 
@@ -247,7 +249,7 @@ def generate_land_surfaces(
 
     def draped(x: float, y: float):
         """Bottom and top of the slab at any point, for the cap's interior."""
-        height = heightfield.height_mm(x, y)
+        height = surface_field.height_mm(x, y)
         return height - embed, height + rise
 
     for index, (_priority, category, feature, feature_type) in enumerate(classified):
@@ -256,18 +258,21 @@ def generate_land_surfaces(
         for rings in projected_polygon_rings(feature.get("geometry") or {}, transform):
             if _ring_area(rings[0]) < settings.minimum_area_mm2:
                 continue
-            if _reaches_open_water(rings, heightfield, spacing):
+            keep_paving = category == 'paved' and ground_support is not None
+            surface_field = (ground_support.foundation_field(ground_support.minimum_ground(rings,'paved'))
+                             if keep_paving else heightfield)
+            if not keep_paving and _reaches_open_water(rings, heightfield, spacing):
                 built = _slab_clipped_to_land(heightfield, rings, rise, embed)
                 if built is not None and builder.add_raw(*built):
                     added = True
                     clipped += 1
                 continue
-            outer = _draped_prism(rings[0], heightfield, rise, embed, spacing)
+            outer = _draped_prism(rings[0], surface_field, rise, embed, spacing)
             if outer is None:
                 continue
             prism_rings = [outer]
             for hole in rings[1:]:
-                draped_hole = _draped_prism(hole, heightfield, rise, embed, spacing)
+                draped_hole = _draped_prism(hole, surface_field, rise, embed, spacing)
                 if draped_hole is not None:
                     prism_rings.append(draped_hole)
             # The caps are refined to the drape spacing so the slab follows
@@ -318,6 +323,27 @@ class WaterBody:
     basin_kind: str = ""
 
 
+def _source_water_area(geometry, transform):
+    """Uncropped feature area; a tiny viewport must not reclassify a large river."""
+    try:
+        polygons = geometry.get('coordinates') or []
+        if geometry.get('type') == 'Polygon':
+            polygons = [polygons]
+        area = 0.0
+        for polygon in polygons:
+            rings = [[transform.geographic_to_model(p[0], p[1], 0)[:2] for p in ring]
+                     for ring in polygon]
+            if not rings or any(len(ring) < 3 for ring in rings):
+                return math.inf
+            part_area = _ring_area(rings[0]) - sum(_ring_area(ring) for ring in rings[1:])
+            if not math.isfinite(part_area) or part_area <= 0:
+                return math.inf
+            area += part_area
+        return area if area > 0 else math.inf
+    except (ValueError, TypeError, IndexError, OverflowError):
+        return math.inf
+
+
 def solve_water_bodies(
     features: Iterable[Dict[str, Any]],
     transform,
@@ -348,6 +374,10 @@ def solve_water_bodies(
 
     for feature in features:
         basin_kind = recessed_water_kind(feature) if settings.recess_ponds_and_fountains else None
+        if (settings.recess_ponds_and_fountains and not basin_kind and is_untyped_water(feature)
+                and _source_water_area(feature.get('geometry') or {}, transform)
+                < MINIMUM_WATER_CUT_AREA_M2 * area_scale):
+            basin_kind = 'untyped_water'
         if not basin_kind and not is_printable_water(feature):
             skipped_non_polygon += 1
             continue
@@ -512,7 +542,7 @@ def generate_water(
     terrain_bottom_mm: float | None = None,
     progress_callback=None,
 ) -> Dict[str, Any]:
-    """Build one batched object from already-solved water bodies.
+    """Batch recessed and ordinary water into separate objects.
 
     A body that was cut out of the terrain becomes a full-depth plug reaching
     the model's own underside, so it drops into the opening as a separate
@@ -520,11 +550,12 @@ def generate_water(
     would be neither.
     """
     settings = settings or SurfaceSettings()
-    builder = MeshBuilder("WATER_SURFACE")
+    builders = {False: MeshBuilder("WATER_SURFACE"), True: MeshBuilder("WATER_RECESSED")}
     built = 0
     plugs = 0
     total = max(1, len(bodies))
     for index, body in enumerate(bodies):
+        builder = builders[bool(body.basin_kind)]
         if body.basin_kind:
             bottom = body.bed_mm
         elif body.cut and terrain_bottom_mm is not None:
@@ -542,14 +573,17 @@ def generate_water(
         if progress_callback is not None and index % 8 == 0:
             progress_callback((index + 1) / total)
 
-    obj = builder.build(collection, material)
-    if obj is not None:
+    for recessed, builder in builders.items():
+        obj = builder.build(collection, material)
+        if obj is None:
+            continue
         obj["feature_type"] = "water_surface"
         obj["source"] = "Overture base/water"
+        obj["water_recessed"] = recessed
         obj["water_model"] = (
-            "full_depth_plug_in_cut_terrain"
-            if plugs
-            else "flat_surface_per_feature_with_hydro_flattened_bed"
+            "recessed_basin_fill" if recessed else
+            "full_depth_plug_in_cut_terrain" if plugs else
+            "flat_surface_per_feature_with_hydro_flattened_bed"
         )
 
     if progress_callback is not None:
