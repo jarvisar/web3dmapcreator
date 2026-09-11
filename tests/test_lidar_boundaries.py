@@ -128,37 +128,25 @@ class MeasuredBoundaryTests(unittest.TestCase):
             actual = Polygon(_fit_ring(Polygon(shifted).exterior, self.cell))
             self.assertLess(actual.symmetric_difference(expected).area, 1e-7)
 
-    def test_full_measurement_preserves_levels_and_improves_curved_outline(self):
+    def test_envelope_preserves_curved_upper_mass_and_complete_fallback(self):
+        from lidar_envelope_test_utils import height_at, height_contour
         actual = Point(30, 30).buffer(23, quad_segs=96)
         cloud = self.cloud(actual)
         points = np.column_stack((cloud, np.full(len(cloud), 6), np.ones(len(cloud))))
         options = dict(min_width_m=self.width, min_step_m=.05/.077, ground_m=0, roof_mode='FACETED')
         index = PointIndex(points)
-        with patch('jarvizar_city_model.external.lidar_surfaces.measured_tier_boundary',
-                   side_effect=lambda region, *args: region):
-            before, why = measure_building(box(0, 0, 60, 60), index, **options)
         after, why = measure_building(box(0, 0, 60, 60), index, **options)
         self.assertEqual(why, 'faceted_roof')
-        self.assertEqual(after['measured_tier_boundaries'], 1)
-        outlines = []
-        for record in (before, after):
-            roofs, upper = [], []
-            for surface in record['roof_surfaces']:
-                xyz = surface['geometry']['coordinates'][0]
-                self.assertLess(max(v[2] for v in xyz)-min(v[2] for v in xyz), .01)
-                self.assertLess(min(abs(xyz[0][2]-z) for z in (20, 50)), .01)
-                roofs.append(shape(surface['geometry']))
-                if xyz[0][2] > 35:
-                    upper.append(roofs[-1])
-            self.assertLess(unary_union(roofs).symmetric_difference(box(0,0,60,60)).area, .05)
-            outlines.append(unary_union(upper))
-            self.assertLessEqual(len(roofs), 1024)
-        self.assertLess(outlines[1].symmetric_difference(actual).area,
-                        outlines[0].symmetric_difference(actual).area*.6)
-        self.assertLess(len(outlines[1].exterior.coords), 100)
+        self.assertEqual(after['surface_reconstruction'], 'roof_envelope')
+        roofs = [shape(s['geometry']) for s in after['roof_surfaces']]
+        self.assertLess(unary_union(roofs).symmetric_difference(box(0,0,60,60)).area, .05)
+        upper = height_contour(after, 35)
+        self.assertLess(upper.boundary.hausdorff_distance(actual.boundary), 3.5)
+        self.assertAlmostEqual(height_at(after, 30, 30), 50, delta=.04/.077)
+        self.assertAlmostEqual(height_at(after, 2, 2), 20, delta=.04/.077)
         # A forced surface-budget failure must retain the whole building,
         # including its major upper mass, through the conservative fallback.
-        with patch('jarvizar_city_model.external.lidar_facets.MAX_FACETS', 3):
+        with patch('jarvizar_city_model.external.lidar_envelope.MAX_ENVELOPE_FACETS', 3):
             fallback, why = measure_building(box(0, 0, 60, 60), index, **options)
         self.assertIsNotNone(fallback, why)
         self.assertEqual(why, 'tiers')

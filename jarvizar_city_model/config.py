@@ -274,10 +274,10 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     )
     lidar_roof_mode: EnumProperty(
         name="LiDAR Roof Reconstruction",
-        items=(('FACETED', 'Detailed Surfaces', 'Infer coherent roof surfaces and setbacks from measured support at the current print scale'),
+        items=(('FACETED', 'Roof Envelope', 'Drape a continuous upper surface over LiDAR returns, spanning narrow facade recesses'),
                ('TERRACES', 'Terraces', 'Use the established horizontal tiers and simple measured roof planes')),
         default='FACETED',
-        description="Detailed Surfaces adapts to print scale; Terraces uses the width and step controls. Prepare LiDAR again after changing",
+        description="Roof Envelope adapts to print scale; Terraces uses the width and step controls. Prepare LiDAR again after changing",
     )
     lidar_minimum_width_mm: FloatProperty(
         name="Minimum LiDAR Detail Width (mm)", default=0.1, min=0.01, soft_max=2.0,

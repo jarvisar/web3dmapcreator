@@ -8,6 +8,14 @@ UNITS = {'m': 1., 'metre': 1., 'meter': 1., 'metres': 1., 'meters': 1.,
          'us survey feet': 1200 / 3937, 'us-ft': 1200 / 3937}
 SEMANTICS = {'ground': 2, 'building': 6, 'buildings': 6,
              'unclassified': 1, 'unassigned': 1}
+# Ground, building and unclassified returns establish every measurement.
+# Vegetation classes are retained as well because automated classifiers file a
+# large share of articulated and glazed facade returns under them; downstream
+# reconstruction admits those only where the structural envelope already
+# reaches that level. Noise and withheld returns are never retained.
+RETAINED_CLASSES = (1, 2, 3, 4, 5, 6)
+STRUCTURAL_CLASSES = (1, 2, 6)
+SECONDARY_CLASSES = (3, 4, 5)
 
 
 def vertical_factor(metadata):

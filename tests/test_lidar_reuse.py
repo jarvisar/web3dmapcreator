@@ -114,6 +114,7 @@ class DerivedReuseTests(unittest.TestCase):
         original = key()
         self.assertEqual(original,key({**request,'footprint_sha256':{'building':'other'},'discovery':{'providers':['new']},'fallback_policy':99}))
         self.assertNotEqual(original,key({**request,'xy_scale':.14}))
+        self.assertNotEqual(original,key({**request,'algorithm':14}))
         self.assertNotEqual(original,key({**request,'acquisition':999}))
         self.assertNotEqual(original,key(feature={**feature,'properties':{'height':90}}))
         self.assertNotEqual(original,key(parts={'one':[box(1,1,5,5)]}))

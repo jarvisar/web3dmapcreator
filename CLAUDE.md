@@ -32,7 +32,7 @@ retain explicitly stored values when defaults change.
 | Ground surfaces | 0.4 mm rise, 0.15 mm embed; roads and ground-founded buildings use that embed too |
 | Buildings | Height multiplier 1.1; minimum height 0.8 mm, gated by a 0.6 mm footprint setting |
 | Source building detail | Minimum effective width 0.08 mm; slenderness limit 30 below 0.45 mm width |
-| LiDAR | Opt-in; Prefer LiDAR on Conflicts enabled; automatic Detailed Surfaces; legacy Terraces width 0.1 mm / step 0.05 mm |
+| LiDAR | Opt-in; Prefer LiDAR on Conflicts enabled; automatic Roof Envelope; legacy Terraces width 0.1 mm / step 0.05 mm |
 | Ponds / fountains | Recess enabled, depth 1.0 mm, water thickness 0.8 mm (0.2 mm below the lowest sampled bank) |
 | Trees | Trunkless three-tier solids, minimum width 1.1 mm / height 1.6 mm; 26 m forest spacing, 18% variation, 0.2 mm crown clearance |
 
@@ -315,7 +315,7 @@ colors, overwriting manual palette edits.
 `data/lidar.py` defines the request signature and reads `lidar_buildings.json`.
 `external/download_lidar.py` coordinates acquisition, measurements, checkpoints,
 and survey selection. `geometry/lidar_buildings.py` emits accepted measurements
-through the existing prism builder; raw point clouds never become Blender meshes.
+as a shared envelope cap or legacy prisms; raw points never become Blender meshes.
 
 - `lidar_candidates.py` defines the common provider-neutral dataset contract and
   discovery settings. `lidar_acquisition.py` orchestrates adapters/ranking/readers;
@@ -419,61 +419,55 @@ through the existing prism builder; raw point clouds never become Blender meshes
   all ground/roof/printability checks; already accepted fits stay identical.
   Ground fitting is reused across retries and no additional points are fetched.
   Missing returns alone are not proof that a building is absent.
-- Detailed Surfaces (`FACETED`) fits supported cell samples **before** terrace
-  reconstruction. `lidar_surface_regions.py` estimates robust local planes,
-  compares their predictions across neighboring samples, and retains explicit
-  discontinuity barriers during region merging. Spatially isolated residuals
-  are removed only with nearby supported evidence; small coherent crowns are
-  protected independently of whole-building size. Roof connectivity does not
-  depend on the legacy minimum-step control.
-- `lidar_surfaces.py` partitions the authoritative footprint into these surface
-  regions. Voronoi ownership is intermediate evidence, never emitted voxels.
-  Supported returns refine boundaries using `lidar_boundaries.py`; mapped part
-  boundaries remain useful when corroborated. Nested regions share boundaries,
-  exterior/courtyard walls stay fixed, and original sample ownership survives
-  contour movement. Independent features need two-dimensional support, not just
-  many returns along a thin facade strip. `lidar_surface_partition.py` removes
-  unsupported narrow appendages from the final regions while preserving the
-  full footprint. Compatible parallel planes share their measured gradients
-  when merged, so nearly equal flat levels cannot invent a shallow ramp.
-  `lidar_surface_junctions.py` reconciles supported continuous
-  planar folds at their analytic intersection while preserving measured walls.
-- Broad planes suppress noise; `lidar_facets.patch_facets` adaptively represents
-  continuous nonplanar regions. Concave-roof hull chords are not observations.
-  Difficult local patches can use a coarser supported plane bounded by printed
-  feature resolution, recorded in `regularized_surface_patches`. Incomplete or
-  over-budget envelopes retain bounded legacy reconstruction. Never publish a
-  podium-only partial success. `lidar_surface_completion.py` can retain an
-  unresolved connected old roof while preserving supported surfaces elsewhere,
-  but only for already accepted complete measurements. It checks actual XY
-  sample ownership and protects continuous old slopes from partial plateau cuts.
-  Terraces mode and disabled
-  roof generation retain their established reconstruction.
-- `lidar_surface_models.py` consolidates compatible final planes after contour
-  ownership/strip cleanup. It preserves measured gradients and bounds changes
-  against original models through repeated merges. Small coherent residual
-  structures veto coarse merging. A maximum-error plane approximation can
-  suppress subprint roof ripples before adaptive tessellation; a strictly fitted
-  shallow slope retains its gradient.
-- `lidar_surface_outlines.py` fits each internal interface once, polygonizing the
-  shared vector network against the exact footprint/courtyards. Supported closed
-  circles and rectangles use fitted primitives; other chains use bounded line
-  fits with fixed junctions. Possible continuous joins are protected. Topology,
-  coverage, displacement and ownership checks can retain the original network.
-  This also refines compatible old envelopes without inventing new elevations.
-- Detailed mode has a fixed 1.5 m evidence grid and derives feature/error budgets
-  from actual XY/Z print scales, with measurement-uncertainty floors. Legacy
-  width/step sliders are shown only for Terraces and do not affect detailed
-  requests or fallback geometry. Algorithm 13 invalidates prior measurements;
-  Prepare again, reusing cached tiles. Acquisition is unchanged.
-- The output remains footprint-constrained planar `roof_surfaces`, each supported
-  down to a shared base; the existing Blender builder emits independently closed
-  overlapping solids. Limits remain 120 adaptive vertices per patch, 1,024 roof
-  surfaces per building, and 4,096 vertices per surface. `roof_fit_p95_m` describes
-  fitted regularized samples; `surface_diagnostics` separately records changes
-  from observed cells. These are different accuracy claims.
-  See [surface refinement validation](docs/LIDAR_SURFACE_REFINEMENT.md) for
-  identical-input geometry comparisons and remaining reconstruction limits.
+- Roof Envelope (`FACETED`) calls `external/lidar_envelope.py` before any
+  terrace reconstruction. It builds one height raster per footprint component:
+  a high upper quantile of the returns in each cell, then a moving median over
+  a print-scale window, then propagation across unobserved cells. Unobserved
+  cells never vote in the median, so a courtyard or the gap between separate
+  components cannot drag a roof edge across it.
+  **The rank filter is not interchangeable with morphology.** On a near-vertical
+  facade an opening or closing by any flat element is the identity, because the
+  slope dominates every neighbourhood, so dilation, erosion and relaxation
+  passes cannot remove cross-slope detail at all; a rank filter is unaffected by
+  slope. That is why the earlier relaxed height sheet left vertical ribs.
+  Grid cells merge into larger blocks only where the returns really are coplanar
+  within a fraction of a printed layer, and the block grid is kept two-to-one
+  balanced so the cap has no cracks. Every block corner is a raster node, so
+  simplification changes the face count and never the surface. At the default
+  scale the raster pitch is 1 m, coarsened whole-outline in steps if the record
+  budget needs it, and the rank window is twice the pitch.
+- The default path no longer calls the `lidar_surface_*` region, primitive,
+  outline or plane-stitching stack, including its compatibility fallbacks.
+  Those modules remain as historical helper implementations/tests. Entirely
+  planar roofs can suppress bounded noise; local boundary extrapolation can
+  continue a supported slope. Neither owns independent architectural regions.
+  An envelope failure can retain complete legacy terraces/heights, never a
+  partial roof. Terraces and disabled roof generation retain their existing path.
+- `roof_surfaces` holds simple polygons, tagged
+  `surface_reconstruction=roof_envelope`, with up to 4,096 faces. A block wholly
+  inside the outline stays one face; only blocks the outline crosses are cut
+  into triangles. Published coordinates are rounded to about a centimetre.
+  A full raster surface is much larger on disk than the earlier fitted planes:
+  about 320 KB per downtown building, so the reader's `lidar_buildings.json`
+  guard is 512 MB. Raising the pitch or the face budget has to be checked
+  against that file size, not only against appearance. In Blender,
+  `geometry/lidar_envelope.py` joins their shared cap topology and adds only
+  exterior/courtyard walls and a base. The existing terrain-seated foundation
+  overlaps this upper solid slightly. Conform clipping-induced edge splits;
+  verify area, closure and winding before adoption. A join failure must retain
+  source geometry rather than extruding thousands of independent fragments.
+- The saved `FACETED` enum now displays **Roof Envelope**. Legacy width/step
+  sliders remain Terraces-only. Algorithm 15 requires Prepare again with
+  Refresh off. Acquisition version 5 reads every octree level the survey
+  actually has (`resolution_m` 0.35, which for the Cook County EPT is its
+  deepest level) and retains classes 1-6 rather than 1/2/6: automated
+  classifiers file much of an articulated or glazed facade under a vegetation
+  class, and on the Chicago towers that is most of the facade. Those returns
+  never establish coverage, ground or height; reconstruction admits them only
+  where the structural envelope already reaches that level, so a real canopy
+  cannot lift a roof. Cached tiles are reused; normalized point batches and
+  measurements are re-read because their contents changed. See
+  [LiDAR reconstruction](docs/LIDAR_BUILDINGS.md) for behavior and limits.
 - `lidar_source.py` evaluates source-height confidence and incomplete assemblies;
   `lidar_selection.py` chooses one complete survey using measured support/detail
   and capture age, with classification breaking quality ties. Never average or
@@ -620,7 +614,7 @@ Select focused checks based on the change:
 | Core pipeline | `test_*.py`, `blender_smoke.py`; smoke exercises merged/unmerged geometry, heights, roofs, and cleanup. `blender_generation_transaction.py` checks rollback/ownership. `blender_generation_modal.py` exercises real worker cancellation at each phase, import, retries and cleanup; windowed `blender_generation_gui.py` checks real Esc/Cancel and event-loop responsiveness. |
 | Water / supports | `blender_water_cut.py`, `blender_ground_support.py`, `blender_pond_basins.py`; cached `blender_water_cut_live.py`, `blender_coastline_live.py`, `blender_pond_basins_live.py` |
 | Roads / surface ownership | `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
-| Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
+| Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_envelope.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
 | Export / trees / clipboard | `blender_export_cutout.py` and its live counterpart; `blender_tree_printability.py`; `test_projection.py` and windowed `blender_gui_paste.py` |
 
 For geometry work, compare identical inputs/settings, check closure **and winding**,

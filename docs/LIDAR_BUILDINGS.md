@@ -1,5 +1,51 @@
 # Building heights and USGS LiDAR
 
+## Upper roof envelope (0.22.0)
+
+**Roof Envelope** replaces Detailed Surfaces as the default reconstruction.
+The saved enum remains `FACETED`, so existing scenes select the new path.
+After updating, run **Prepare LiDAR Buildings** with Refresh off, then
+**Generate Model**. Reconstruction algorithm 14 invalidates older measurements;
+downloaded tiles and compatible normalized point batches remain reusable.
+Acquisition, survey selection, ground reference, footprint coverage and conflict
+policy are unchanged.
+
+The new path builds a blanket over supported upper returns. Fine spatial bins
+select upper evidence without letting dense lower facade returns erase a roof.
+An upward-relaxed height sheet spans narrow downward recesses; broad level roofs
+anchor it so a podium does not disappear into a whole-building convex hull.
+Supported roof caps, slopes and broad curves remain in the surface. Isolated
+spikes are filtered by neighboring support. There is no architectural region
+segmentation, fitted circle/rectangle outline, setback reconstruction, or plane
+stitching. The old reconstruction modules remain for legacy helper tests; the
+default preparation path does not call that stack, even as a fallback.
+
+The numerical sheet uses 0.5 m spacing and a scale-dependent relaxation reach
+(2 m at the default scale). Its cells never become terraces. An adaptive triangle
+surface approximates it, with nominal error budgets of 0.04 printed mm vertically
+and 0.1 mm laterally, bounded by survey resolution. These describe approximation
+of the **processed sheet**, not accuracy against every raw return. A genuinely
+single planar roof can suppress bounded measurement noise without running the
+sheet. The other local plane calculation only extrapolates a supported slope to
+the mapped boundary. Neither creates independent roof objects.
+
+Blender joins the roof into one shared cap with exterior and courtyard walls.
+It sits on the existing terrain-seated base, with the usual small overlap.
+Interior triangle edges create no walls. Cropping conforms shared cap edges;
+incomplete, inconsistent or unclosable geometry falls back transactionally.
+Mapped courtyards remain open, separate buildings remain separate solids, and
+the output is a fully supported height envelope with no reconstructed undercuts.
+
+**Terraces** remains available with its existing width and step controls. Failed
+envelope preparation can retain a complete conservative terrace/height result;
+failed mesh adoption retains the original source building. No building-specific
+rules or extra native dependencies were added.
+
+The reference screenshots guide the envelope style, not exact dimensions or
+facade reconstruction. Fine survey noise and footprint irregularities can remain;
+the method intentionally spans some real recesses. Mesh closure and rendered
+comparisons do not establish slicer behavior or a completed physical print.
+
 ## Preparation progress and cache reuse (0.20.0)
 
 Preparation now shows its current stage, survey, building counts, cache reuse,

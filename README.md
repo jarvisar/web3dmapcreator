@@ -341,8 +341,9 @@ Missing heights are never randomized.
 **Optional LiDAR buildings.** Install `requirements-lidar.txt`
 in the existing external downloader environment, cache buildings normally,
 then use **Buildings > LiDAR Buildings > Prepare LiDAR Buildings** and
-**Generate Model**. This measures heights, printable roof tiers, and supported
-shed/gable/hip roof planes inside the existing footprints. Keep **Generate
+**Generate Model**. The default **Roof Envelope** drapes a continuous upper
+surface over the LiDAR returns, spanning narrow facade recesses while retaining
+broad curves and supported roof caps inside the mapped footprint. Keep **Generate
 Roof Shapes** enabled for measured slopes. **Prefer LiDAR on Conflicts** is on
 by default: use a usable measured envelope even when source heights, floor
 counts, construction dates, other surveys or mapped roof detail disagree.
@@ -352,11 +353,11 @@ measurements from different surveys are never combined. Invalid, sparse or
 unbuildable measurements still fall back. Incomplete source roof assemblies
 can receive a measured main mass and corrected part heights while keeping
 their mapped shapes. Neighboring roof edges do not determine a part's height.
-Default detail settings are **0.1 mm width / 0.05 mm step**; width can go down
-to **0.01 mm**. This controls filtering, not the resolution of the survey.
-Major shafts, setbacks and separate crowns retain their supporting geometry.
-Minimum Building Height also raises low measured podiums, carrying tiers up
-together while preserving their steps.
+Roof Envelope adapts to the output scale and replaces the former Detailed
+Surfaces mode. After updating from that mode, Prepare again with Refresh off
+to reuse cached points and tiles. The optional **Terraces** mode retains the
+**0.1 mm width / 0.05 mm step** defaults; those controls apply only to Terraces.
+Minimum Building Height lifts measured roofs together, preserving their shape.
 Preparation runs in the background;
 Esc cancels and the next preparation resumes completed work. Small building
 batches replace the old whole-map point, area, download and time caps. Larger

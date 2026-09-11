@@ -151,10 +151,16 @@ def patch_facets(region, samples, cell, tolerance, facet_budget, planar_fit=True
     vertices = {}
     def add(xy, height=None):
         xy = tuple(map(float, xy))
+        if height is not None and xy in vertices:
+            changed = abs(vertices[xy]-float(height)) > 1e-10
+            vertices[xy] = float(height)
+            return changed
         if xy not in vertices:
             if len(vertices) >= MAX_PATCH_VERTICES:
                 raise UnsupportedFit('roof vertex budget')
             vertices[xy] = elevation(np.array(xy)) if height is None else float(height)
+            return True
+        return False
 
     def boundary(a, b, depth=0):
         add(a); add(b)
@@ -212,12 +218,12 @@ def patch_facets(region, samples, cell, tolerance, facet_budget, planar_fit=True
         if fit_error <= tolerance and error.max() <= max(1.25, tolerance*3):
             break
         candidates = np.argsort(-error, kind='stable')
-        before = len(vertices)
+        changed = 0
         for index in candidates:
-            if error[index] <= tolerance or len(vertices)-before >= 8:
+            if error[index] <= tolerance or changed >= 8:
                 break
-            add(samples[index, :2], samples[index, 2])
-        if len(vertices) == before:
+            changed += int(add(samples[index, :2], samples[index, 2]))
+        if not changed:
             raise UnsupportedFit('unresolved roof residuals')
     else:
         raise UnsupportedFit('roof refinement budget')

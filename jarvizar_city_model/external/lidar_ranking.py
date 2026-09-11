@@ -13,7 +13,7 @@ except ImportError:
     from lidar_identity import same_survey
     from lidar_candidates import streamable, staged
 
-ACQUISITION_VERSION = 4
+ACQUISITION_VERSION = 5
 FALLBACK_POLICY_VERSION = 5
 # Stop speculative support-gap acquisition after one batch yields no adopted
 # measurements. Coverage/delivery gaps and material upgrades remain independent.

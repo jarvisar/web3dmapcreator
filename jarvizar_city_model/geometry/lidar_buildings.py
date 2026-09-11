@@ -6,6 +6,8 @@ from ..data.geojson import feature_id
 from .buildings import footprint_admits_minimum_height, resolve_vertical_profile
 from .building_printability import source_part_widths
 from .planar import clean_ring, densify_ring, effective_width, signed_area, EPSILON
+from .planar import clip_ring_to_rectangle
+from .lidar_envelope import envelope_solid
 from .roofs import resolve_roof
 
 
@@ -79,9 +81,8 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
                      exempt_width, minimum_height, minimum_footprint):
     """Build transactionally; failure leaves ordinary parent/part jobs intact.
 
-    Each terrace is a closed solid supported over its full base by the layer
-    below, with a 0.02 mm overlap. Shell vertices are deliberately separate,
-    matching existing merged buildings. No added tier hangs off the footprint.
+    The envelope is one shared cap with exterior/courtyard walls, supported
+    by the terrain-seated base. Legacy terraces retain independent solids.
     """
     outlines = projected_polygon_rings(record.get('infill_geometry') or feature.get("geometry") or {}, transform)
     if not outlines:
@@ -132,7 +133,27 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
                 return None
             tier_count += 1
     roof_count, roof_area = 0, 0.0
-    for surface, height, polygons in projected_surfaces:
+    joined = False
+    if record.get('surface_reconstruction') == 'roof_envelope':
+        # The measured TIN is one connected surface, not thousands of separate
+        # extrusions. Clip in double precision before joining its shared edges.
+        caps = []
+        bounds = transform.model_bounds
+        for surface, height, _polygons in projected_surfaces:
+            for ring in surface['geometry']['coordinates']:
+                xy = [transform.forward(v[0], v[1])[:2] for v in ring[:-1]]
+                clipped = clip_ring_to_rectangle(xy, bounds.min_x_mm, bounds.min_y_mm,
+                    bounds.max_x_mm, bounds.max_y_mm, epsilon=1e-10)
+                if clipped:
+                    caps.append([(x, y, terrain+vertical(height(x, y))+lift) for x, y in clipped])
+        bottom = terrain+vertical(base_height)+lift-min(.02, vertical(base_height)*.1)
+        solid = envelope_solid(caps, bottom, outlines)
+        if solid is None:
+            return None
+        builder.add_raw(*solid)
+        joined = True
+        roof_count = len(caps)
+    for surface, height, polygons in ([] if joined else projected_surfaces):
         bottom = terrain + vertical(surface['bottom_m']) + lift - min(0.02, vertical(base_height)*0.1)
         for rings in polygons:
             prism = []
@@ -148,10 +169,11 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
                 return None
             roof_area += abs(signed_area(rings[0])) - sum(abs(signed_area(r)) for r in rings[1:])
             roof_count += 1
-    if surfaces:
+    if surfaces and not joined:
         footprint_area = sum(abs(signed_area(rings[0]))-sum(abs(signed_area(r)) for r in rings[1:]) for rings in outlines)
         if abs(roof_area-footprint_area) > max(0.001, footprint_area*0.01):
             return None
     return builder, {"terrain_base_mm": terrain, "terrain_top_mm": terrain_top,
                      "minimum_height_lift_mm": lift, "lidar_tiers": tier_count,
-                     'lidar_roof_planes': roof_count, 'height_m': total_height}
+                     'lidar_roof_planes': roof_count, 'lidar_joined_envelope': joined,
+                     'height_m': total_height}

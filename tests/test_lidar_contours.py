@@ -8,6 +8,7 @@ try:
     from shapely.affinity import rotate, scale
     from shapely.geometry import Point, Polygon, MultiPolygon, box, shape
     from shapely.ops import unary_union
+    from lidar_envelope_test_utils import height_contour
     from jarvizar_city_model.external.lidar_contours import regularize_grid_contours
     from jarvizar_city_model.external.lidar_measurements import PointIndex, measure_building
     AVAILABLE = True
@@ -131,25 +132,23 @@ class GridContourTests(unittest.TestCase):
         # the whole mapped outline and keep every roof inside its support.
         self.assertLess(unary_union(roofs).symmetric_difference(footprint).area, .05)
         self.assertTrue(all(footprint.covers(roof) for roof in roofs))
-        for surface in surfaces:
-            z = [v[2] for v in surface['geometry']['coordinates'][0]]
-            self.assertLess(max(z)-min(z), .01, 'Flat tiers must not ramp across a real wall')
-            self.assertLess(min(abs(z[0]-height) for height in (20, 50, 80)), .01)
+        from lidar_envelope_test_utils import height_at
+        self.assertAlmostEqual(height_at(detailed, 30, 30), 80, delta=.04/.077)
+        self.assertAlmostEqual(height_at(detailed, 3, 3), 20, delta=.04/.077)
 
         support = footprint
         for top, actual in ((50, tower), (80, crown)):
-            old_outline = shape(next(t for t in classic['tiers'] if t['top_m'] == top)['geometry'])
-            outline = unary_union([shape(s['geometry']) for s in surfaces
-                                   if max(v[2] for v in s['geometry']['coordinates'][0]) >= top-.01])
+            # A slice through the riser measures the actual silhouette of a
+            # continuous surface; including a whole sloping triangle would
+            # overstate it by that triangle's entire footprint.
+            outline = height_contour(detailed, top-15)
             self.assertEqual(outline.geom_type, 'Polygon')
             self.assertTrue(support.buffer(1e-7).covers(outline))
-            # Measure the external silhouette: tiny filtered triangulation
-            # slivers are independently bounded by the roof-coverage assertion.
-            self.assertLess(outline.exterior.length, old_outline.exterior.length*.9)
-            self.assertLess(outline.symmetric_difference(actual).area,
-                            old_outline.symmetric_difference(actual).area*.8)
-            self.assertAlmostEqual(outline.area, actual.area, delta=actual.area*.05)
-            self.assertLess(outline.exterior.hausdorff_distance(actual.exterior), self.cell)
+            # A supported skirt replaces the old sharp riser. Bound its actual
+            # cross-section by the raster pitch, which is what now decides
+            # where an internal level boundary can fall.
+            self.assertTrue(outline.buffer(2.2).covers(actual))
+            self.assertLess(outline.exterior.hausdorff_distance(actual.exterior), 3.5)
             self.assertLess(sum(Polygon(ring).area for ring in outline.interiors), 1e-6,
                             'A solid tower must not acquire unsupported lower-roof pits')
             self.assertFalse(outline.buffer(-settings['min_width_m']*.45).is_empty)

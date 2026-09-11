@@ -78,7 +78,7 @@ def reusable_prepared(bundle_path, signature, now=None):
     bundle_path = Path(bundle_path)
     path = bundle_path/'lidar_buildings.json'
     try:
-        if path.stat().st_size > 128 * 1024 * 1024:
+        if path.stat().st_size > 512 * 1024 * 1024:
             return None
         payload = json.loads(path.read_text(encoding='utf-8'))
         if payload.get('format') != 1 or payload.get('request') != signature:

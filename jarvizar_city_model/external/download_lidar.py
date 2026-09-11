@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 import sys
 try:
-    from .lidar_records import validate_records, finite_number
+    from .lidar_records import ALGORITHM_VERSION, validate_records, finite_number
     from .lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
     from .lidar_worker import cache_owner, watch_parent
     from .lidar_progress import ProgressReporter
@@ -21,7 +21,7 @@ try:
     from .lidar_reuse import reusable_prepared, summarize_prepared, source_generation, batch_identity, atomic_json
     from .lidar_point_cache import PointBatchCache
 except ImportError:
-    from lidar_records import validate_records, finite_number
+    from lidar_records import ALGORITHM_VERSION, validate_records, finite_number
     from lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
     from lidar_worker import cache_owner, watch_parent
     from lidar_progress import ProgressReporter
@@ -82,7 +82,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     from shapely import STRtree
     from lidar_candidates import staged, SOURCE_FIELDS, discovery_settings
 
-    if request["algorithm"] != 13:
+    if request["algorithm"] != ALGORITHM_VERSION:
         raise ValueError("Unsupported LiDAR algorithm version")
     if request.get('roof_mode', 'TERRACES') not in ('TERRACES', 'FACETED'):
         raise ValueError('Unknown LiDAR roof reconstruction mode')

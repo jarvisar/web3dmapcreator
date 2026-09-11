@@ -5,6 +5,7 @@ try:
     import numpy as np
     from shapely.geometry import box, shape, mapping, GeometryCollection, LineString, Point
     from shapely.ops import unary_union
+    from lidar_envelope_test_utils import height_contour
     from jarvizar_city_model.external.lidar_facets import fit_faceted_roof, continuous_boundary
     from jarvizar_city_model.external.lidar_measurements import measure_building, PointIndex
     AVAILABLE = True
@@ -86,22 +87,22 @@ class FacetedRoofTests(unittest.TestCase):
                 self.assertLess(abs(z-self.curve(x,y)), 1.3)  # 1.5 m supported cell footprint.
         self.assertGreater(slopes, len(result['roof_surfaces'])/2)
 
-    def test_major_podium_step_stays_vertical(self):
+    def test_major_podium_step_keeps_a_localized_envelope_transition(self):
         points = self.cloud(lambda x,y:45+3*np.sin(x/5) if 6<x<18 and 6<y<18 else 10)
         result, reason = self.measure(points)
         self.assertEqual(reason, 'faceted_roof')
-        self.assertGreaterEqual(result['roof_patch_count'], 2)
+        self.assertEqual(result['surface_reconstruction'], 'roof_envelope')
         self.covered(result, box(0,0,24,24))
         for surface in result['roof_surfaces']:
             heights = [v[2] for ring in surface['geometry']['coordinates'] for v in ring]
-            self.assertLess(max(heights)-min(heights), 8, 'No ramp from tower to podium')
-        upper = unary_union([shape(s['geometry']) for s in result['roof_surfaces']
-                             if max(v[2] for v in s['geometry']['coordinates'][0]) > 30])
+            if max(heights)-min(heights) > 8:
+                self.assertTrue(box(6,6,18,18).boundary.buffer(4).covers(shape(surface['geometry'])))
+        upper = height_contour(result, 30)
         # Surface ownership is reconstructed directly, so its boundary should
         # approach the actual tower, not reproduce the old raster contour.
         expected = box(6, 6, 18, 18)
-        self.assertLess(upper.symmetric_difference(expected).area, expected.area*.1)
-        self.assertLess(upper.boundary.hausdorff_distance(expected.boundary), 1.5)
+        self.assertTrue(upper.buffer(.7).covers(expected))
+        self.assertLess(upper.boundary.hausdorff_distance(expected.boundary), 3.5)
 
     def test_supported_slope_crosses_artificial_major_terrace_bands(self):
         footprint = box(0, 0, 24, 24)
@@ -208,7 +209,8 @@ class FacetedRoofTests(unittest.TestCase):
         old, old_reason = measure_building(box(0, 0, 24, 24), PointIndex(points),
                                           .1 / .07, .05 / .077, ground_m=0,
                                           roof_mode='TERRACES')
-        with patch('jarvizar_city_model.external.lidar_facets.MAX_PATCH_VERTICES', 3):
+        with patch('jarvizar_city_model.external.lidar_envelope.MAX_ENVELOPE_FACETS', 3), \
+                patch('jarvizar_city_model.external.lidar_facets.MAX_PATCH_VERTICES', 3):
             result, reason = self.measure(points)
             for width, step in ((.01/.07, .02/.077), (1/.07, 1/.077)):
                 self.assertEqual(measure_building(box(0, 0, 24, 24), PointIndex(points),

@@ -25,11 +25,11 @@ from pyproj import CRS, Transformer
 try:
     from .lidar_selection import gps_capture_years
     from .lidar_transfer import BudgetExceeded, stream_tile
-    from .lidar_normalize import vertical_factor as declared_vertical_factor, classifications
+    from .lidar_normalize import vertical_factor as declared_vertical_factor, classifications, RETAINED_CLASSES
 except ImportError:
     from lidar_selection import gps_capture_years
     from lidar_transfer import BudgetExceeded, stream_tile
-    from lidar_normalize import vertical_factor as declared_vertical_factor, classifications
+    from lidar_normalize import vertical_factor as declared_vertical_factor, classifications, RETAINED_CLASSES
 
 CATALOG_URL = "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson"
 
@@ -262,7 +262,7 @@ def ept_coordinate_system(meta, url, source=None):
     return xy_crs, vertical_factor, known_mirror
 
 
-def read_ept(fetch, url, bbox, max_points=8_000_000, resolution_m=0.75, source=None):
+def read_ept(fetch, url, bbox, max_points=8_000_000, resolution_m=0.35, source=None):
     """Return cropped lon/lat/Z/class/single-return arrays and source metadata."""
     meta = fetch.json(url)
     xy_crs, vertical_factor, known_mirror = ept_coordinate_system(meta, url, source)
@@ -297,7 +297,7 @@ def read_ept(fetch, url, bbox, max_points=8_000_000, resolution_m=0.75, source=N
         x, y, z = np.asarray(points.x), np.asarray(points.y), np.asarray(points.z)
         cls = classifications(points, points.header, {**(source or {}), **meta})
         mask = ((x >= query[0]) & (x <= query[2]) & (y >= query[1]) & (y <= query[3])
-                & np.isin(cls, [1, 2, 6]) & (np.asarray(points.withheld) == 0)
+                & np.isin(cls, RETAINED_CLASSES) & (np.asarray(points.withheld) == 0)
                 & np.isfinite(x) & np.isfinite(y) & np.isfinite(z))
         if "overlap" in points.point_format.dimension_names:
             mask &= np.asarray(points.overlap) == 0

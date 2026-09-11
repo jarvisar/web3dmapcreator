@@ -13,13 +13,12 @@ import tempfile
 import time
 from collections import Counter
 from pathlib import Path
-from ..external.lidar_records import validate_records
+from ..external.lidar_records import ALGORITHM_VERSION, validate_records
 from ..external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, validate_download_workers
 from ..external.lidar_ranking import ACQUISITION_VERSION, FALLBACK_POLICY_VERSION, selection_thresholds
 from ..external.lidar_candidates import discovery_settings
 
 FORMAT_VERSION = 1
-ALGORITHM_VERSION = 13
 
 
 def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None, roof_mode='FACETED', providers=None, stac_urls=(), vertical_units=''):
@@ -54,7 +53,7 @@ def load_measurements(bundle, signature):
     if not path.is_file():
         return {}, "No prepared LiDAR; using source buildings"
     try:
-        if path.stat().st_size > 128 * 1024 * 1024:
+        if path.stat().st_size > 512 * 1024 * 1024:
             raise ValueError("LiDAR measurement cache is oversized")
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):

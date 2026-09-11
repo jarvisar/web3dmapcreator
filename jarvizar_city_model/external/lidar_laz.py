@@ -18,11 +18,11 @@ from pyproj import CRS, Transformer
 try:
     from .lidar_ept import BudgetExceeded
     from .lidar_selection import gps_capture_years
-    from .lidar_normalize import vertical_factor, classifications, source_metadata, header_metadata
+    from .lidar_normalize import vertical_factor, classifications, source_metadata, header_metadata, RETAINED_CLASSES
 except ImportError:
     from lidar_ept import BudgetExceeded
     from lidar_selection import gps_capture_years
-    from lidar_normalize import vertical_factor, classifications, source_metadata, header_metadata
+    from lidar_normalize import vertical_factor, classifications, source_metadata, header_metadata, RETAINED_CLASSES
 
 
 def coordinate_system(header, metadata=None):
@@ -131,7 +131,7 @@ def normalized_chunk(points, header, bbox, query, to_lonlat, factor, metadata=No
     x, y, z = np.asarray(points.x), np.asarray(points.y), np.asarray(points.z)
     cls = classifications(points, header, metadata)
     mask = ((x >= query[0]) & (x <= query[2]) & (y >= query[1]) & (y <= query[3])
-            & np.isin(cls, [1, 2, 6]) & (np.asarray(points.withheld) == 0)
+            & np.isin(cls, RETAINED_CLASSES) & (np.asarray(points.withheld) == 0)
             & np.isfinite(x) & np.isfinite(y) & np.isfinite(z))
     if 'overlap' in points.point_format.dimension_names:
         mask &= np.asarray(points.overlap) == 0

@@ -99,7 +99,7 @@ class BoundedCopcReader(laspy.CopcReader):
         return super()._fetch_and_decompress_points_of_nodes(nodes)
 
 
-def read_copc(fetch, source, bbox, max_points=8_000_000, resolution_m=.75):
+def read_copc(fetch, source, bbox, max_points=8_000_000, resolution_m=.35):
     tiles = source.get('tiles', [{'url': source['url'], 'bbox': bbox}])
     pieces, details, retained, nodes = [], [], 0, 0
     for position, tile in enumerate(tiles, 1):

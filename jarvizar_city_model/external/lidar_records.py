@@ -5,7 +5,9 @@ never turn a missing upper roof into an apparently valid podium-only model.
 """
 import math
 
+ALGORITHM_VERSION = 15
 MAX_ROOF_FACETS = 1024
+MAX_ENVELOPE_FACETS = 4096
 
 
 def finite_number(value):
@@ -87,12 +89,18 @@ def validate_records(buildings):
             previous = top
         surfaces = record.get('roof_surfaces', [])
         limit = MAX_ROOF_FACETS if record.get('method') == 'faceted_roof' else 8
+        if record.get('surface_reconstruction') == 'roof_envelope':
+            if record.get('method') != 'faceted_roof' or not surfaces:
+                raise ValueError('Invalid LiDAR upper surface')
+            limit = MAX_ENVELOPE_FACETS
         if not isinstance(surfaces, list) or len(surfaces) > limit or (surfaces and tiers):
             raise ValueError('Invalid LiDAR roof surfaces')
         for surface in surfaces:
             if not isinstance(surface, dict) or not finite_number(surface.get('bottom_m')) or abs(surface['bottom_m']-height) > 1e-6:
                 raise ValueError('Disconnected LiDAR roof')
             validate_geometry(surface.get('geometry'), dimensions=3, floor=height)
+            if record.get('surface_reconstruction') == 'roof_envelope' and len(surface['geometry']['coordinates']) != 1:
+                raise ValueError('Envelope faces must be simple polygons')
         for key in ('coverage', 'explained_fraction', 'roof_support_density_m2', 'part_boundaries_used'):
             if key in record and (not finite_number(record[key]) or record[key] < 0):
                 raise ValueError('Invalid LiDAR quality statistic')
