@@ -103,6 +103,13 @@ class CoherentSurfaceTests(unittest.TestCase):
         self.assertEqual(actual['roof_surfaces'], expected['roof_surfaces'])
         self.assertEqual(actual['height_m'], expected['height_m'])
 
+    def test_broad_subprint_roof_ripple_does_not_become_an_adaptive_mesh(self):
+        footprint=box(0,0,48,36)
+        roof=lambda x,y:20+.4*np.sin(x/3)*np.cos(y/4)
+        record=self.reconstructed(footprint,roof=roof,noise=.05)
+        self.assertEqual(len(record['roof_surfaces']),1)
+        self.assert_heights(record,lambda x,y:20,[(3,3),(15,15),(30,25),(44,32)],.3)
+
     def test_slopes_are_planes_including_steep_roofs(self):
         footprint = box(0, 0, 24, 24)
         for gradient in (.35, 2.3):

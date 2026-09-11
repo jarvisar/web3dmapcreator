@@ -278,9 +278,12 @@ def read_ept(fetch, url, bbox, max_points=8_000_000, resolution_m=0.75, source=N
         cloud_resolution = resolution_m / math.cos(math.radians((bbox[1] + bbox[3]) / 2))
         root_spacing = (meta["bounds"][3] - meta["bounds"][0]) / meta["span"]
         max_depth = max(0, math.ceil(math.log2(root_spacing / cloud_resolution)))
+    progress = getattr(fetch, 'progress', lambda message: None)
+    progress('Reading EPT hierarchy for this batch')
     nodes = collect_nodes(fetch, base, meta, query, max_depth=max_depth)
     pieces, retained = [], 0
-    for key in nodes:
+    for position, key in enumerate(nodes, 1):
+        progress(f'Loading and decoding EPT node {position}/{len(nodes)}; {retained:,} cropped points retained')
         data = fetch.get(base + "ept-data/" + key + ".laz")
         # Inspect before decoding, so malformed node counts cannot allocate an
         # enormous array inside laspy.

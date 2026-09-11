@@ -102,11 +102,11 @@ class BoundedCopcReader(laspy.CopcReader):
 def read_copc(fetch, source, bbox, max_points=8_000_000, resolution_m=.75):
     tiles = source.get('tiles', [{'url': source['url'], 'bbox': bbox}])
     pieces, details, retained, nodes = [], [], 0, 0
-    for tile in tiles:
+    for position, tile in enumerate(tiles, 1):
         if not box(*tile['bbox']).intersects(box(*bbox)):
             continue
         metadata = source_metadata(source, tile)
-        fetch.progress(f"Streaming COPC bounds: {tile['url'].rsplit('/', 1)[-1]}")
+        fetch.progress(f"Streaming COPC tile {position}/{len(tiles)}: {tile['url'].rsplit('/', 1)[-1]}")
         try:
             stream = RangeStream(fetch, tile['url'], max_bytes=4 * 1024**2)
             with BoundedCopcReader(stream) as reader:

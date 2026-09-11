@@ -18,12 +18,16 @@ try:
     from .lidar_worker import cache_owner, watch_parent
     from .lidar_progress import ProgressReporter
     from .lidar_offer import approved_offers, offer_token
+    from .lidar_reuse import reusable_prepared, summarize_prepared, source_generation, batch_identity, atomic_json
+    from .lidar_point_cache import PointBatchCache
 except ImportError:
     from lidar_records import validate_records, finite_number
     from lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
     from lidar_worker import cache_owner, watch_parent
     from lidar_progress import ProgressReporter
     from lidar_offer import approved_offers, offer_token
+    from lidar_reuse import reusable_prepared, summarize_prepared, source_generation, batch_identity, atomic_json
+    from lidar_point_cache import PointBatchCache
 
 
 def valid_checkpoint(cached, identifiers, source_url):
@@ -63,6 +67,8 @@ def prepare(bundle, request, refresh=False, progress_path=None, download_workers
 
 
 def _prepare(bundle, request, refresh, progress_path, download_workers, laz_approval=''):
+    reporter = ProgressReporter(progress_path)
+    reporter('Checking prepared results and input settings', stage='Checking cache', completed=0, total=0, force=True)
     from pyproj import CRS, Transformer
     from shapely.geometry import box, shape
     from shapely.ops import transform as map_geometry
@@ -76,7 +82,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     from shapely import STRtree
     from lidar_candidates import staged, SOURCE_FIELDS, discovery_settings
 
-    if request["algorithm"] != 12:
+    if request["algorithm"] != 13:
         raise ValueError("Unsupported LiDAR algorithm version")
     if request.get('roof_mode', 'TERRACES') not in ('TERRACES', 'FACETED'):
         raise ValueError('Unknown LiDAR roof reconstruction mode')
@@ -95,6 +101,12 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
             raise ValueError("Invalid footprint file")
         if hashlib.sha256((bundle / (name + ".geojson")).read_bytes()).hexdigest() != expected:
             raise ValueError("Footprint cache changed during LiDAR preparation")
+    if not refresh and not laz_approval:
+        reusable = reusable_prepared(bundle, request)
+        if reusable is not None:
+            reporter('Reused valid prepared LiDAR; no downloads or reconstruction needed',
+                     stage='Complete', completed=1, total=1, force=True)
+            return summarize_prepared(reusable, reused=True)
     bbox = request["bbox"]
     west, south, east, north = bbox
     if not (-180 <= west < east <= 180 and -85 < south < north < 85):
@@ -145,10 +157,12 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     checkpoints = bundle / 'lidar_jobs'
     checkpoints.mkdir(exist_ok=True)
     total_candidates = sum(shape(f['geometry']).intersects(box(*bbox)) for f in features)
-    reporter = ProgressReporter(progress_path)
-    def progress(message):
-        reporter(message, accepted=len(alternatives), candidates=total_candidates)
+    cache_stats = {'checkpoint_batches': 0, 'cached_buildings': 0, 'point_batches': 0, 'measured_batches': 0}
+    dependencies = []
+    def progress(message, **fields):
+        reporter(message, accepted=len(resolved), candidates=total_candidates, **cache_stats, **fields)
     fetch.progress = progress
+    progress('Finding available surveys and checking source metadata', stage='Finding surveys', completed=0, total=0, force=True)
     sources, discovery_failures = discover_sources(fetch, query, request['source_url'],
         request.get('manifest_url', ''), progress, thresholds=thresholds,
         discovery=request.get('discovery'), vertical_units=request.get('vertical_units', ''))
@@ -161,7 +175,8 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
         work = plan.next(resolved, source_format=phase)
         if work is None and phase == 'STREAM':
             phase = 'STAGED'
-            progress('EPT / COPC complete; checking optional LAZ / LAS gaps and material upgrades')
+            progress('EPT / COPC complete; checking optional LAZ / LAS gaps and material upgrades',
+                     stage='Checking optional sources', source='', completed=0, total=0, force=True)
             work = plan.next(resolved, source_format=phase)
         for candidate in sources:
             skipped = dict(Counter(plan.skipped.get(candidate['url'], {}).values()))
@@ -205,21 +220,36 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                 progress(f"Optional LAZ available: {len(candidates)} building gaps, {len(audit)} tiles in {source['name']}; awaiting explicit download choice")
                 continue
         source.setdefault('acquisition_reasons', []).append(reason)
-        progress(f"Selected {source.get('provider', 'LiDAR')} {source['format']} {source['name']}: {len(candidates)} unresolved buildings; {reason}")
+        dependency = source_generation(bundle.parent, source, refresh)
+        dependencies.append(dependency)
+        source_total = len(candidates)
+        completed = set()
+        progress(f"Selected {source.get('provider', 'LiDAR')} {source['format']} {source['name']}: {len(candidates)} unresolved buildings; {reason}",
+                 stage='Checking survey cache', source=source['name'], completed=0, total=source_total, force=True)
         def batch_job(batch):
             batch_query = map_geometry(to_geographic, box(*batch_bounds(batch, geometries, selected))).bounds
-            job_key = hashlib.sha256(json.dumps([checkpoint_request, source['url'], source.get('fingerprint', ''),
+            legacy_key = hashlib.sha256(json.dumps([checkpoint_request, source['url'], source.get('fingerprint', ''),
                 source.get('metadata_fingerprint', ''), source.get('survey_metadata', {}),
                 sorted(f['id'] for f in batch)], sort_keys=True).encode()).hexdigest()
+            job_key = batch_identity(request, source, dependency, batch, batch_query,
+                                     parts_by_parent, neighbors_by_id, source_parts_by_parent)
             checkpoint = checkpoints / (job_key+'.json')
             cached = None
-            if checkpoint.is_file() and not refresh:
+            compatible = [checkpoint]
+            if dependency['generation'] == 'initial':
+                compatible.append(checkpoints / (legacy_key+'.json'))
+            for candidate_path in compatible if not refresh else ():
                 try:
-                    cached = json.loads(checkpoint.read_text(encoding='utf-8'))
-                    if not valid_checkpoint(cached, {f['id'] for f in batch}, source['url']):
-                        cached = None
+                    candidate_cache = json.loads(candidate_path.read_text(encoding='utf-8'))
+                    identifiers = {f['id'] for f in batch}
+                    if (valid_checkpoint(candidate_cache, identifiers, source['url']) and
+                            set(candidate_cache['records']) | set(candidate_cache['rejected']) == identifiers):
+                        cached = candidate_cache
+                        if candidate_path != checkpoint:
+                            atomic_json(checkpoint, cached)
+                        break
                 except (OSError, ValueError, TypeError):
-                    cached = None
+                    pass
             return batch, batch_query, checkpoint, cached
 
         jobs = [batch_job(batch) for batch in building_batches(candidates, geometries)]
@@ -233,6 +263,8 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
         if staged(source):
             source['incremental_acquisition'] = trial
         def evaluate_batch(batch, before):
+            completed.update(f['id'] for f in batch)
+            progress(f"Checked {len(completed)}/{source_total} buildings in this survey", completed=len(completed), total=source_total)
             if not staged(source):
                 return
             trial['batches_evaluated'] += 1
@@ -250,15 +282,20 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                 if deferred:
                     plan.defer(source, deferred)
                     trial['deferred_buildings'] += len(deferred)
+                    completed.update(f['id'] for f in deferred)
                     batch = [f for f in batch if f not in deferred]
                     if not batch:
                         continue
                     batch, batch_query, checkpoint, cached = batch_job(batch)
             attempted.update(f['id'] for f in batch)
             before = set(resolved)
-            progress(f"Comparing {len(alternatives)} measured buildings; {len(jobs)+1} groups left in {source['name']}")
+            progress(f"{len(jobs)+1} batches remaining; checking {len(batch)} buildings",
+                     stage='Reusing measurements' if cached is not None else 'Loading points',
+                     completed=len(completed), total=source_total, force=True)
             batch_roi = map_geometry(to_metric, box(*batch_query))
             if cached is not None:
+                cache_stats['checkpoint_batches'] += 1
+                cache_stats['cached_buildings'] += len(batch)
                 plan.observe(source, batch, cached['records'], cached['rejected'], cached['info'])
                 collect(cached['records'], cached['observations'], source, cached['info'])
                 counts.update(cached['reasons'])
@@ -275,8 +312,17 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                     progress(f"Selected LAZ tile {entry['url']}: {len(entry['footprints'])} footprints, "
                              f"{len(entry['ground_halos'])} ground halos; " + '; '.join(entry['reasons']))
             try:
-                with prefetch_source(fetch, selected_source, [batch_query], workers=download_workers) as source_fetch:
-                    points, info = read_source(source_fetch, selected_source, batch_query)
+                point_cache = PointBatchCache(bundle.parent, selected_source, dependency, batch_query, ACQUISITION_VERSION)
+                decoded = point_cache.load() if not refresh else None
+                if decoded is not None:
+                    points, info = decoded
+                    cache_stats['point_batches'] += 1
+                    progress(f'Reused {len(points):,} decoded points; preparing roof reconstruction', force=True)
+                else:
+                    with prefetch_source(fetch, selected_source, [batch_query], workers=download_workers) as source_fetch:
+                        points, info = read_source(source_fetch, selected_source, batch_query)
+                    if not point_cache.save(points, info):
+                        progress('Decoded-point cache could not be saved; preparation continues')
             except BudgetExceeded as exc:
                 split = split_batch(batch, geometries)
                 # Spatial subdivision can resolve point/node limits, but
@@ -296,6 +342,11 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
             if len(points):
                 points[:, 0], points[:, 1] = to_metric(points[:, 0].copy(), points[:, 1].copy())
             evidence = {}
+            cache_stats['measured_batches'] += 1
+            def building_progress(position, total, name):
+                message = f'Reconstructing building {position+1}/{total}: {name}' if position < total else 'Building batch reconstructed'
+                progress(message, stage='Reconstructing roofs', completed=len(completed)+position,
+                         total=source_total, force=position == total)
             records, reasons, rejected_features = measure_features(batch, points, to_metric, to_geographic,
                 request["min_width_mm"] / request["xy_scale"],
                 max(0.25, request["min_step_mm"] / request["z_scale"]), batch_roi,
@@ -305,7 +356,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                                if request.get('roof_mode') == 'FACETED' else None),
                 source_parts_by_parent=source_parts_by_parent,
                 observations_out=evidence, neighbors_by_id=neighbors_by_id,
-                prefer_lidar=request.get('prefer_lidar', True))
+                prefer_lidar=request.get('prefer_lidar', True), progress_callback=building_progress)
             grid_recovered = sum('coverage_grid_offset' in record for record in records.values())
             if grid_recovered:
                 progress(f"Recovered {grid_recovered} roof measurements with shifted sampling grids; "
@@ -332,6 +383,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
             progress(f"Skipped {source['format']} {source['name']}: no unresolved buildings requiring this source")
     if failures and not provenance and not laz_offers:
         raise ValueError("; ".join(item["reason"] for item in failures))
+    progress('Comparing survey evidence and saving prepared buildings', stage='Saving results', source='', completed=0, total=0, force=True)
     selection = {}
     for identifier, candidates in alternatives.items():
         record, audit = choose_measurement(candidates, observations.get(identifier, ()), geographic_geometries[identifier],
@@ -352,6 +404,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
         for reason in rejected.values())
     validate_records(measured)
     payload = {"format": 1, "request": request, "buildings": measured,
+               'cache_stats': cache_stats, 'cache_dependencies': dependencies,
                'laz_offers': laz_offers,
                'laz_offer_token': offer_token(request, laz_offers) if laz_offers else '',
                "sources": provenance, "failures": failures, "counts": dict(counts),
@@ -371,7 +424,9 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     temporary = destination.with_suffix(".json.partial")
     temporary.write_text(json.dumps(payload, allow_nan=False), encoding="utf-8")
     temporary.replace(destination)
+    progress(f'Prepared {len(measured)} buildings; cached work is ready to reuse', stage='Complete', completed=1, total=1, force=True)
     return {"ok": True, "buildings": len(measured), "tiered_buildings": sum(bool(r["tiers"]) for r in measured.values()),
+            'cache_stats': cache_stats,
             'laz_offers': laz_offers, 'laz_offer_token': payload['laz_offer_token'],
             'infill_buildings': sum(bool(r.get('infill_geometry')) for r in measured.values()),
             'part_heights': sum(len(r.get('part_heights', {})) for r in measured.values()),

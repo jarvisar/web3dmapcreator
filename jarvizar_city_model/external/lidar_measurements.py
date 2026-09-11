@@ -136,7 +136,7 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
     options = dict(ground_m=ground_m, roof_planes=roof_planes, part_footprints=part_footprints,
                    neighboring_footprints=neighboring_footprints, allow_complex_height=allow_complex_height,
                    detailed_surfaces=roof_planes and roof_mode == 'FACETED', surface_scale=surface_scale)
-    def finish(record, reason, details, offset=(0, 0)):
+    def compatible(record, reason, details, offset=(0, 0)):
         # Keep an already supported detailed envelope when the new surface
         # inference is uncertain. This bounded compatibility path is never
         # a prerequisite for the main surface reconstruction.
@@ -170,6 +170,25 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
                     if not record:
                         coarse['faceted_fallback'] = reason
                         return coarse, coarse_reason
+        return record, reason
+    def finish(record, reason, details, offset=(0, 0)):
+        record, reason = compatible(record, reason, details, offset)
+        if options['detailed_surfaces'] and record and not record.get('surface_reconstruction'):
+            try:
+                from .lidar_surfaces import regularize_compatible_roof
+            except ImportError:
+                from lidar_surfaces import regularize_compatible_roof
+            record = regularize_compatible_roof(record,footprint,surface_scale or (.07,.077))
+            if details.get('surface_candidate'):
+                try:
+                    from .lidar_surface_completion import complete_from_retained
+                except ImportError:
+                    from lidar_surface_completion import complete_from_retained
+                record = complete_from_retained(record,footprint,details['surface_candidate'])
+            if record.get('compatibility_outline_refinement'):
+                reason = 'faceted_roof'
+            if record.get('surface_reconstruction'):
+                reason = 'faceted_roof'
         return record, reason
     coverage = {}
     result, reason = _measure_building(footprint, index, min_width_m, min_step_m, coverage_out=coverage, **options)
@@ -333,11 +352,14 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             from .lidar_surfaces import fit_surface_roof
         except ImportError:
             from lidar_surfaces import fit_surface_roof
+        retained={}
         fitted, surface_fallback = fit_surface_roof(
             footprint, np.array([facet_samples[key] for key in sorted(facet_samples)]),
             cell, scale=surface_scale or (.07, .077),
             boundary_samples=np.concatenate(boundary_samples) if boundary_samples else np.empty((0, 3)),
-            part_footprints=part_footprints)
+            part_footprints=part_footprints,retained_out=retained)
+        if retained and coverage_out is not None:
+            coverage_out['surface_candidate']=retained
         if fitted:
             stats = {"ground_m": ground, "roof_points": len(points), "coverage": round(coverage, 4),
                      "cell_m": cell, "classified_fraction": float(np.mean(points[:, 3] == 6)),
@@ -631,12 +653,16 @@ def measure_source_parts(feature, parts, footprint, index, min_width_m, min_step
     return result, 'source_parts'
 
 
-def measure_features(features, points, to_metric, to_geographic, min_width_m, min_step_m, roi, roof_planes=True, parts_by_parent=None, observations_out=None, neighbors_by_id=None, source_parts_by_parent=None, prefer_lidar=False, roof_mode='TERRACES', surface_scale=None):
+def measure_features(features, points, to_metric, to_geographic, min_width_m, min_step_m, roi, roof_planes=True, parts_by_parent=None, observations_out=None, neighbors_by_id=None, source_parts_by_parent=None, prefer_lidar=False, roof_mode='TERRACES', surface_scale=None, progress_callback=None):
     """One survey at a time; return measurements keyed by original feature ID."""
     index = PointIndex(points)
     results, counts, rejected = {}, Counter(), {}
-    for feature in features:
+    for position, feature in enumerate(features):
         identifier = str(feature.get("id") or feature.get("properties", {}).get("id") or "")
+        if progress_callback:
+            names = (feature.get('properties') or {}).get('names')
+            name = (names.get('primary') if isinstance(names, dict) else None) or identifier
+            progress_callback(position, len(features), str(name))
         footprint = map_geometry(to_metric, shape(feature["geometry"]))
         # Avoid lowering an entire building based on a clipped corner of its
         # roof. The halo permits buildings just outside the selected boundary.
@@ -718,4 +744,6 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
             results[identifier] = measured
         else:
             rejected[identifier] = reason
+    if progress_callback:
+        progress_callback(len(features), len(features), '')
     return results, dict(counts), rejected

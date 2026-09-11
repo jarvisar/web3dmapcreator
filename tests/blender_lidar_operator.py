@@ -28,19 +28,28 @@ fake_bpy=SimpleNamespace(app=SimpleNamespace(background=False,online_access=True
 with patch.object(module,'bpy',fake_bpy),patch.object(module,'_cache_bundle',return_value=Mock()), \
      patch.object(module,'_lidar_signature',return_value={'algorithm':2}), \
      patch.object(module,'_resolve_downloader',return_value='python'), \
-     patch.object(module,'load_measurements',return_value=({},'missing')), \
+     patch.object(module,'reusable_prepared',return_value=None), \
      patch.object(module,'LidarPreparation') as job_type:
-    for cancel in (False,True):
+    for cancel in (False,True,'button'):
         job=job_type.return_value;job.reset_mock();job.process.poll.return_value=None;job.result.return_value=summary
         driver=Driver()
         assert driver.execute(context)=={'RUNNING_MODAL'}
         assert job_type.call_args.kwargs['download_workers']==8
         assert settings.lidar_preparing and Driver._running
-        job.progress.return_value='Measuring test batch'
+        job.status.return_value={'message':'Measuring test batch','stage':'Reconstructing roofs','completed':3,'total':10,'elapsed':12,'cached_buildings':2}
         assert driver.modal(context,SimpleNamespace(type='TIMER'))=={'PASS_THROUGH'}
         assert settings.lidar_preparation_status=='Measuring test batch'
+        assert abs(settings.lidar_progress-.3)<1e-6
+        assert settings.lidar_progress_known and settings.lidar_elapsed_seconds==12
+        assert '3/10' in settings.lidar_progress_scope
+        context.window_manager.progress_update.assert_called()
         if cancel:
-            assert driver.modal(context,SimpleNamespace(type='ESC'))=={'CANCELLED'}
+            event = 'ESC'
+            if cancel == 'button':
+                with patch.object(module,'JARVIZAR_OT_prepare_lidar',Driver):
+                    assert module.JARVIZAR_OT_cancel_lidar.execute(None,context)=={'FINISHED'}
+                event = 'TIMER'
+            assert driver.modal(context,SimpleNamespace(type=event))=={'CANCELLED'}
             job.cancel.assert_called_once()
         else:
             job.process.poll.return_value=0
@@ -50,6 +59,7 @@ with patch.object(module,'bpy',fake_bpy),patch.object(module,'_cache_bundle',ret
             assert '7 consistency skips' in settings.lidar_preparation_status
             assert '3 roof coverage, 2 ground inside footprints, 1 outside roofs, 1 source/survey conflicts' in settings.lidar_preparation_status
         assert not settings.lidar_preparing and not Driver._running
+        context.window_manager.progress_end.assert_called()
     driver=Driver();job.process.poll.return_value=None
     assert driver.execute(context)=={'RUNNING_MODAL'}
     job.process.poll.return_value=0
@@ -69,7 +79,7 @@ assert 'incomplete downloads' not in settings.lidar_preparation_status
 with patch.object(module,'bpy',fake_bpy),patch.object(module,'_cache_bundle',return_value=Mock()), \
      patch.object(module,'_lidar_signature',return_value={'algorithm':3}), \
      patch.object(module,'_resolve_downloader',return_value='python'), \
-     patch.object(module,'load_measurements',return_value=({},'missing')), \
+     patch.object(module,'reusable_prepared',return_value=None), \
      patch.object(module,'LidarPreparation') as job_type:
     job=job_type.return_value
     job.process.poll.return_value=None
@@ -92,7 +102,7 @@ with patch.object(module, 'bpy', fake_bpy), patch.object(module, '_cache_bundle'
      patch.object(module, '_lidar_signature', return_value={'algorithm': 9}), \
      patch.object(module, '_resolve_downloader', return_value='python'), \
      patch.object(module, 'approved_offers') as approval, \
-     patch.object(module, 'load_measurements', return_value=({}, 'LiDAR measurements: 1 buildings')), \
+     patch.object(module, 'reusable_prepared', return_value=None), \
      patch.object(module, 'LidarPreparation') as job_type:
     driver = Driver()
     driver.laz_approval = 'reviewed-token'
@@ -109,3 +119,29 @@ with patch.object(module, 'bpy', fake_bpy), patch.object(module, '_cache_bundle'
     job_type.assert_not_called()
 settings.force_redownload = False
 print('LIDAR_EXPLICIT_CONSENT_OK')
+
+# A matching prepared result is usable offline, including unrelated catalog warnings.
+payload={'buildings':{'one':{'height_m':30,'tiers':[]}},'candidate_buildings':1,
+         'failures':[{'reason':'other provider unavailable','buildings':0}]}
+offline_bpy=SimpleNamespace(app=SimpleNamespace(background=False,online_access=False))
+with patch.object(module,'bpy',offline_bpy), patch.object(module,'_cache_bundle',return_value=Mock()), \
+     patch.object(module,'_lidar_signature',return_value={}), \
+     patch.object(module,'reusable_prepared',return_value=payload), \
+     patch.object(module,'_resolve_downloader') as downloader, patch.object(module,'LidarPreparation') as job:
+    assert Driver().execute(context)=={'FINISHED'}
+    assert 'Reused prepared 1/1' in settings.lidar_preparation_status
+    downloader.assert_not_called()
+    job.assert_not_called()
+print('LIDAR_OFFLINE_PREPARED_REUSE_OK')
+
+with patch.object(module,'bpy',fake_bpy),patch.object(module,'_cache_bundle',return_value=Mock()), \
+     patch.object(module,'_lidar_signature',return_value={}),patch.object(module,'reusable_prepared',return_value=None), \
+     patch.object(module,'_resolve_downloader',return_value='python'),patch.object(module,'LidarPreparation') as job_type:
+    driver=Driver()
+    assert driver.execute(context)=={'RUNNING_MODAL'}
+    job_type.return_value.process.poll.return_value=1
+    job_type.return_value.result.side_effect=module.OvertureDownloadError('worker returned no result')
+    assert driver.modal(context,SimpleNamespace(type='TIMER'))=={'CANCELLED'}
+    assert not settings.lidar_preparing and not Driver._running
+    assert 'worker returned no result' in settings.lidar_preparation_status
+print('LIDAR_FAILED_WORKER_STATUS_OK')

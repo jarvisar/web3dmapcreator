@@ -24,17 +24,20 @@ class ProgressReporter:
         self.lock = Lock()
         self.last_attempt = None
         self.warned = False
+        self.state = {}
 
-    def __call__(self, message, accepted=0, candidates=0):
+    def __call__(self, message, accepted=0, candidates=0, force=False, **fields):
         with self.lock:
+            self.state.update(fields)
             print(message, file=sys.stderr, flush=True)
             now = time.monotonic()
-            if self.path is None or (self.last_attempt is not None
+            if self.path is None or (not force and self.last_attempt is not None
                     and now - self.last_attempt < self.MIN_INTERVAL_SECONDS):
                 return False
             self.last_attempt = now
             temporary = self.path.with_suffix('.partial')
-            data = json.dumps({'message': message, 'accepted': accepted, 'candidates': candidates})
+            data = json.dumps({'message': message, 'accepted': accepted, 'candidates': candidates,
+                               **self.state, **({'updated_at': time.time()} if self.state else {})})
             for attempt in range(self.REPLACE_ATTEMPTS):
                 try:
                     temporary.write_text(data, encoding='utf-8')

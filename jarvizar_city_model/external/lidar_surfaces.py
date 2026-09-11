@@ -10,7 +10,7 @@ import math
 import numpy as np
 from shapely import contains_xy, voronoi_polygons, STRtree, points as make_points
 from shapely.errors import GEOSException
-from shapely.geometry import MultiPoint, Polygon
+from shapely.geometry import MultiPoint, Polygon, shape
 from shapely.ops import unary_union
 
 try:
@@ -18,13 +18,17 @@ try:
     from .lidar_boundaries import measured_tier_boundary
     from .lidar_surface_regions import segment_surfaces
     from .lidar_surface_junctions import reconcile_planar_junctions
+    from .lidar_surface_models import _plane, _consolidate_patches
     from .lidar_surface_partition import clean_partition
+    from .lidar_surface_outlines import regularize_outlines
 except ImportError:
     import lidar_facets as facets
     from lidar_boundaries import measured_tier_boundary
     from lidar_surface_regions import segment_surfaces
     from lidar_surface_junctions import reconcile_planar_junctions
+    from lidar_surface_models import _plane, _consolidate_patches
     from lidar_surface_partition import clean_partition
+    from lidar_surface_outlines import regularize_outlines
 
 
 def surface_parameters(scale):
@@ -38,35 +42,6 @@ def surface_parameters(scale):
     if not all(math.isfinite(s) and s > 0 for s in scale):
         raise ValueError('Invalid LiDAR reconstruction scale')
     return max(1.0, .1 / xy), max(.4, .05 / z), max(.2, .025 / z)
-
-
-def _plane(samples, tolerance, rise=None):
-    """Robust equal-cell regression; don't pin survey extrema into a mesh."""
-    center = np.mean(samples[:, :2], axis=0)
-    level = float(np.median(samples[:, 2]))
-    flat_residual = np.abs(samples[:, 2]-level)
-    flat_span = float(np.quantile(samples[:, 2], .95)-np.quantile(samples[:, 2], .05))
-    if ((np.quantile(flat_residual, .95) <= tolerance or (rise is not None and flat_span <= rise))
-            and flat_residual.max() <= max(tolerance * 3, rise or 0)):
-        return center, np.array([0., 0., level]), float(np.quantile(flat_residual, .95))
-    design = np.column_stack((samples[:, :2] - center, np.ones(len(samples))))
-    keep = np.ones(len(samples), dtype=bool)
-    for _ in range(4):
-        coef, _, rank, _ = np.linalg.lstsq(design[keep], samples[keep, 2], rcond=None)
-        if rank < 3:
-            return None
-        residual = np.abs(design @ coef - samples[:, 2])
-        keep = residual <= max(tolerance, 3 * float(np.median(residual)))
-        if keep.sum() < max(3, len(samples) * .75):
-            return None
-    if (np.linalg.norm(coef[:2]) > 3 or np.quantile(residual, .95) > tolerance
-            or np.max(residual) > max(1.25, tolerance * 4)):
-        return None
-    # Statistically flat roofs are horizontal, rather than imperceptibly tilted
-    # planes whose different extrapolated edges create tiny roof discontinuities.
-    if np.quantile(np.abs(samples[:, 2] - level), .95) <= tolerance:
-        coef = np.array([0., 0., level])
-    return center, coef, float(np.quantile(residual, .95))
 
 
 def _planar_surfaces(region, center, coef):
@@ -284,8 +259,36 @@ def _patches(footprint, samples, labels, cell, width, rise, tolerance, observati
     return patches, refined, diagnostics
 
 
+def _fit_surface_patch(region, support, fit, cell, tolerance, scale, budget):
+    regularized = None
+    if fit is not None:
+        center, coef, error = fit
+        if error > tolerance:
+            regularized = {'reason':'consolidated supported planes','p95_m':error,
+                           'area_m2':float(region.area)}
+        return _planar_surfaces(region,center,coef),error,True,regularized
+    fitted,error=[],0.
+    try:
+        for piece in facets.pieces(region):
+            if piece.area<=1e-8:
+                continue
+            nearby=support[contains_xy(piece.buffer(cell*2),support[:,0],support[:,1])]
+            part,residual=facets.patch_facets(piece,nearby,cell,tolerance,
+                                            budget-len(fitted),surface_owned=True)
+            fitted.extend(part)
+            error=max(error,residual)
+        return fitted,error,False,None
+    except facets.UnsupportedFit as exc:
+        fit=_plane(support,max(tolerance,.1/scale[1]))
+        if fit is None:
+            raise
+        center,coef,error=fit
+        return _planar_surfaces(region,center,coef),error,True,{
+            'reason':str(exc),'p95_m':error,'area_m2':float(region.area)}
+
+
 def fit_surface_roof(footprint, samples, cell, scale=(.07, .077),
-                     boundary_samples=(), part_footprints=()):
+                     boundary_samples=(), part_footprints=(), retained_out=None):
     """Return a complete surface envelope, or an explicit conservative fallback.
 
     This entry point is independent of terrace fitting. A failure never publishes
@@ -311,52 +314,50 @@ def fit_surface_roof(footprint, samples, cell, scale=(.07, .077),
         diagnostics.update(partition_diagnostics)
         patches, spatial_diagnostics = clean_partition(patches, cell, width)
         diagnostics.update(spatial_diagnostics)
+        patches, fits, merge_diagnostics = _consolidate_patches(patches,cell,tolerance,rise,scale)
+        diagnostics.update(merge_diagnostics)
+        patches, outline_diagnostics = regularize_outlines(patches, footprint, cell, scale, fits=fits)
+        diagnostics.update(outline_diagnostics)
         diagnostics['surface_retained_samples'] = sum(len(support) for _region, support in patches)
-        fits = [_plane(support, tolerance, rise) for _region, support in patches]
         reconciled = reconcile_planar_junctions(patches, cell, tolerance,
                                                observations=boundary_samples, fits=fits)
         diagnostics['surface_reconciled_patches'] = sum(
             not a[0].equals(b[0]) for a, b in zip(patches, reconciled))
         patches = reconciled
         surfaces, errors, planar_count, regularized = [], [], 0, []
+        unresolved=[]
+        supported=[]
         for (region, support), fit in zip(patches, fits):
-            if fit is not None:
-                center, coef, error = fit
-                fitted = _planar_surfaces(region, center, coef)
-                planar_count += 1
-            else:
-                fitted, error = [], 0.
-                try:
-                    for piece in facets.pieces(region):
-                        if piece.area <= 1e-8:
-                            continue
-                        # Keep logical sample ownership across regularized contours,
-                        # while assigning disconnected patches only nearby evidence.
-                        nearby = support[contains_xy(piece.buffer(cell * 2), support[:, 0], support[:, 1])]
-                        part, residual = facets.patch_facets(piece, nearby, cell, tolerance,
-                            facets.MAX_FACETS-len(surfaces)-len(fitted), surface_owned=True)
-                        fitted.extend(part)
-                        error = max(error, residual)
-                except facets.UnsupportedFit as exc:
-                    # A noisy, undersampled patch may not justify a curved roof.
-                    # Prefer a supported plane at fine-feature print resolution
-                    # over hundreds of interpolated spikes or a whole-building
-                    # terrace fallback. Meaningful curvature exceeding this
-                    # explicit error bound still requires the continuous fit.
-                    fit = _plane(support, max(tolerance, .1 / scale[1]))
-                    if fit is None:
-                        raise
-                    center, coef, error = fit
-                    fitted = _planar_surfaces(region, center, coef)
-                    regularized.append({'reason': str(exc), 'p95_m': error,
-                                        'area_m2': float(region.area)})
-                    planar_count += 1
-            if not fitted:
-                raise facets.UnsupportedFit('empty fitted surface')
+            try:
+                fitted,error,planar,note=_fit_surface_patch(region,support,fit,cell,tolerance,
+                                                          scale,facets.MAX_FACETS-len(surfaces))
+                if not fitted:
+                    raise facets.UnsupportedFit('empty fitted surface')
+                z=[v[2] for surface in fitted for ring in surface['geometry']['coordinates'] for v in ring]
+                if min(z)<=2 or max(z)>float(np.max(clean[:,2]))+max(2,cell*3):
+                    raise facets.UnsupportedFit('unsupported surface extrapolation')
+            except (facets.UnsupportedFit,np.linalg.LinAlgError,GEOSException) as exc:
+                if retained_out is None:
+                    raise
+                unresolved.append((region,str(exc)))
+                continue
+            planar_count+=int(planar)
+            if note:
+                regularized.append(note)
             surfaces.extend(fitted)
+            supported.append((region,fitted))
             errors.append(error)
             if len(surfaces) > facets.MAX_FACETS:
                 raise facets.UnsupportedFit('roof facet budget')
+        metadata={'roof_fit_p95_m':max(errors,default=0.),'roof_patch_count':len(patches),
+                  'planar_patch_count':planar_count,
+                  'faceted_patch_count':len(patches)-planar_count-len(unresolved),
+                  'measured_tier_boundaries':refined,'surface_diagnostics':diagnostics,
+                  'regularized_surface_patches':regularized}
+        if unresolved:
+            retained_out.update(surfaces=surfaces,unresolved=unresolved,metadata=metadata,
+                                supported=supported,evidence=samples,cell=cell,scale=scale)
+            return None,unresolved[0][1]
         if any(sum(len(ring) for ring in s['geometry']['coordinates']) > 4096 for s in surfaces):
             raise facets.UnsupportedFit('roof polygon vertex budget')
         polygons = [Polygon(s['geometry']['coordinates'][0],
@@ -378,3 +379,62 @@ def fit_surface_roof(footprint, samples, cell, scale=(.07, .077),
                 'regularized_surface_patches': regularized}, None
     except (facets.UnsupportedFit, np.linalg.LinAlgError, GEOSException) as exc:
         return None, str(exc)
+
+
+def regularize_compatible_roof(record, footprint, scale):
+    """Give a retained envelope vector outlines without inventing roof evidence.
+
+    Whole-surface fitting can fail on one uncertain patch. Its compatibility
+    geometry must still benefit from boundary reconstruction. Existing planes,
+    elevations and region identities are preserved; this is explicitly not a
+    successful new coherent-surface fit.
+    """
+    try:
+        groups = {}
+        for surface in record.get('roof_surfaces', ()):
+            polygon = shape(surface['geometry'])
+            xyz = np.asarray(polygon.exterior.coords)[:,:3]
+            center = xyz[:,:2].mean(axis=0)
+            design = np.column_stack((xyz[:,:2]-center,np.ones(len(xyz))))
+            coef,_,rank,_=np.linalg.lstsq(design,xyz[:,2],rcond=None)
+            if rank < 3:
+                return record
+            global_coef=np.r_[coef[:2],coef[2]-center@coef[:2]]
+            # Numerical identity only, not architectural elevation bands.
+            key=tuple(np.round(global_coef,7))
+            groups.setdefault(key,[]).append(Polygon(np.asarray(polygon.exterior.coords)[:,:2],
+                [np.asarray(h.coords)[:,:2] for h in polygon.interiors]))
+        if not groups:
+            remaining=footprint
+            levels=[(shape(t['geometry']),t['top_m']) for t in reversed(record.get('tiers',()))]
+            levels.append((footprint,record['height_m']))
+            for geometry,height in levels:
+                region=remaining.intersection(geometry)
+                if region.area > 1e-8:
+                    groups.setdefault((0.,0.,height),[]).extend(facets.pieces(region))
+                remaining=remaining.difference(geometry)
+        patches=[(unary_union(polygons),np.empty((0,3))) for polygons in groups.values()]
+        fits=[(np.zeros(2),np.array(coef),0.) for coef in groups]
+        if len(patches) < 2 or len(patches) > facets.MAX_FACETS:
+            return record
+        refined,diagnostics=regularize_outlines(patches,footprint,record['cell_m'],scale,fits=fits)
+        if not diagnostics.get('surface_outline_fitted'):
+            return record
+        surfaces=[]
+        for (region,_support),(center,coef,_error) in zip(refined,fits):
+            surfaces.extend(_planar_surfaces(region,center,coef))
+        if not surfaces or len(surfaces)>facets.MAX_FACETS:
+            return record
+        area=sum(shape(s['geometry']).area for s in surfaces)
+        if abs(area-footprint.area)>max(.002,footprint.area*.001):
+            return record
+        heights=[v[2] for s in surfaces for ring in s['geometry']['coordinates'] for v in ring]
+        bottom=min(record['height_m'],min(heights))
+        if bottom <= 2:
+            return record
+        for surface in surfaces:
+            surface['bottom_m']=float(bottom)
+        return {**record,'height_m':float(bottom),'tiers':[],'roof_surfaces':surfaces,
+                'method':'faceted_roof','compatibility_outline_refinement':diagnostics}
+    except (facets.UnsupportedFit,GEOSException,ValueError,np.linalg.LinAlgError):
+        return record

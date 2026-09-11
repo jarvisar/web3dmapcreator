@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import subprocess
 import tempfile
+import time
 from collections import Counter
 from pathlib import Path
 from ..external.lidar_records import validate_records
@@ -17,7 +19,7 @@ from ..external.lidar_ranking import ACQUISITION_VERSION, FALLBACK_POLICY_VERSIO
 from ..external.lidar_candidates import discovery_settings
 
 FORMAT_VERSION = 1
-ALGORITHM_VERSION = 12
+ALGORITHM_VERSION = 13
 
 
 def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None, roof_mode='FACETED', providers=None, stac_urls=(), vertical_units=''):
@@ -96,6 +98,8 @@ class LidarPreparation:
     def __init__(self, python_path, bundle, signature, refresh=False, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval=''):
         download_workers = validate_download_workers(download_workers)
         self.bundle = bundle
+        self.started = time.monotonic()
+        self.last_progress = {'message': 'Checking prepared LiDAR cache...', 'stage': 'Checking cache'}
         bundle.ensure_directory()
         self.temporary = tempfile.TemporaryDirectory(prefix='lidar_job_', dir=str(bundle.path))
         directory = Path(self.temporary.name)
@@ -120,10 +124,23 @@ class LidarPreparation:
             raise
 
     def progress(self):
+        return self.status()['message']
+
+    def status(self):
         try:
-            return json.loads(self.progress_path.read_text(encoding='utf-8')).get('message', '')
-        except (OSError, ValueError, AttributeError):
-            return 'Finding LiDAR coverage...'
+            payload = json.loads(self.progress_path.read_text(encoding='utf-8'))
+            valid = isinstance(payload, dict) and isinstance(payload.get('message'), str)
+            if valid:
+                valid = all(isinstance(payload.get(k, 0), int) and payload.get(k, 0) >= 0
+                            for k in ('completed','total','cached_buildings','point_batches'))
+                valid = valid and all(isinstance(payload.get(k, ''), str) for k in ('stage','source'))
+                updated = payload.get('updated_at', 0)
+                valid = valid and isinstance(updated, (float,int)) and math.isfinite(updated)
+            if valid:
+                self.last_progress = payload
+        except (OSError, ValueError, OverflowError):
+            pass
+        return {**self.last_progress, 'elapsed': max(0., time.monotonic()-self.started)}
 
     def result(self):
         from .overture import _last_json_line

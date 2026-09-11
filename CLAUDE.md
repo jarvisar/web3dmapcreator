@@ -99,8 +99,8 @@ are errors; missing/stale/invalid optional LiDAR falls back to source buildings.
   as building heights or directly mix orthometric and ellipsoid Z values.
 
 Overture and DEM downloads use blocking `subprocess.run`; the UI waits. LiDAR
-uses a modal timer and an external worker in interactive Blender, with progress
-and Esc cancellation. In background Blender, preparation waits synchronously.
+uses a modal timer and an external worker in interactive Blender, with a progress
+panel and Esc/button cancellation. In background Blender, preparation waits synchronously.
 Interactive model generation also uses a modal timer and an offline background
 Blender process, launched from the same executable and exact add-on package.
 It runs all geometry on that process's main thread; no Blender API is accessed
@@ -442,13 +442,29 @@ through the existing prism builder; raw point clouds never become Blender meshes
   continuous nonplanar regions. Concave-roof hull chords are not observations.
   Difficult local patches can use a coarser supported plane bounded by printed
   feature resolution, recorded in `regularized_surface_patches`. Incomplete or
-  over-budget envelopes retain a bounded legacy reconstruction fallback as a
-  whole; never publish a podium-only partial success. Terraces mode and disabled
+  over-budget envelopes retain bounded legacy reconstruction. Never publish a
+  podium-only partial success. `lidar_surface_completion.py` can retain an
+  unresolved connected old roof while preserving supported surfaces elsewhere,
+  but only for already accepted complete measurements. It checks actual XY
+  sample ownership and protects continuous old slopes from partial plateau cuts.
+  Terraces mode and disabled
   roof generation retain their established reconstruction.
+- `lidar_surface_models.py` consolidates compatible final planes after contour
+  ownership/strip cleanup. It preserves measured gradients and bounds changes
+  against original models through repeated merges. Small coherent residual
+  structures veto coarse merging. A maximum-error plane approximation can
+  suppress subprint roof ripples before adaptive tessellation; a strictly fitted
+  shallow slope retains its gradient.
+- `lidar_surface_outlines.py` fits each internal interface once, polygonizing the
+  shared vector network against the exact footprint/courtyards. Supported closed
+  circles and rectangles use fitted primitives; other chains use bounded line
+  fits with fixed junctions. Possible continuous joins are protected. Topology,
+  coverage, displacement and ownership checks can retain the original network.
+  This also refines compatible old envelopes without inventing new elevations.
 - Detailed mode has a fixed 1.5 m evidence grid and derives feature/error budgets
   from actual XY/Z print scales, with measurement-uncertainty floors. Legacy
   width/step sliders are shown only for Terraces and do not affect detailed
-  requests or fallback geometry. Algorithm 12 invalidates prior measurements;
+  requests or fallback geometry. Algorithm 13 invalidates prior measurements;
   Prepare again, reusing cached tiles. Acquisition is unchanged.
 - The output remains footprint-constrained planar `roof_surfaces`, each supported
   down to a shared base; the existing Blender builder emits independently closed
@@ -456,6 +472,8 @@ through the existing prism builder; raw point clouds never become Blender meshes
   surfaces per building, and 4,096 vertices per surface. `roof_fit_p95_m` describes
   fitted regularized samples; `surface_diagnostics` separately records changes
   from observed cells. These are different accuracy claims.
+  See [surface refinement validation](docs/LIDAR_SURFACE_REFINEMENT.md) for
+  identical-input geometry comparisons and remaining reconstruction limits.
 - `lidar_source.py` evaluates source-height confidence and incomplete assemblies;
   `lidar_selection.py` chooses one complete survey using measured support/detail
   and capture age, with classification breaking quality ties. Never average or
@@ -473,7 +491,21 @@ through the existing prism builder; raw point clouds never become Blender meshes
   source URLs. Changes to those inputs require Prepare again. Audit both
   `data/lidar.py` and the worker's version checks when changing the contract.
 - Completed groups live in `<bundle>/lidar_jobs`; reusable tiles live in
-  `<cache-root>/lidar_tiles`. LAZ revisions enter tile and checkpoint keys.
+  `<cache-root>/lidar_tiles`. `lidar_reuse.py` keys measurement checkpoints by
+  batch features, mapped parts/neighbors, query bounds, source normalization and
+  reconstruction/acquisition versions/settings, rather than unrelated discovery
+  options or whole-file hashes. Exact compatible older checkpoints migrate on use.
+  Public results retain the complete request signature. Prepare reuses valid
+  results for 24 hours, including offline; then it rechecks discovery and reuses
+  compatible batches. Actual failed building reads retry immediately; provider
+  warnings affecting zero buildings do not invalidate a completed result.
+  This age limit applies to Prepare, not offline model generation.
+  `lidar_point_cache.py` stores checksummed, non-pickled geographic seven-column
+  arrays under `<cache-root>/lidar_derived`, before in-place XY projection.
+  Scale/roof-setting changes can reconstruct from these normalized points.
+  Source metadata, query/allowlists and acquisition versions enter their keys;
+  Refresh advances source generations so older settings cannot revive stale
+  derived data. No arbitrary cross-bbox point stitching or automatic eviction.
   `lidar_records.py` validates public results and checkpoints; damaged checkpoints
   are disposable. Publication uses a temporary file and replacement. Cancellation
   preserves previous published results and completed work; keep worker ownership
@@ -484,6 +516,12 @@ through the existing prism builder; raw point clouds never become Blender meshes
   a virtual-environment python.exe can launch a separate real Python child.
 - `lidar_progress.py` serializes progress from acquisition/download threads,
   retaining stderr messages while limiting sidebar writes to five per second.
+  Structured stage/source/current-survey building counts survive reader messages;
+  stage boundaries force updates. Readers report node/tile/chunk activity and
+  measurements report individual building progress. The top-level City Model
+  panel displays the current-survey bar, cache reuse, elapsed time and update age.
+  Discovery has no invented completion percentage. `data/lidar.py` retains the
+  last valid status during transient progress-file read failures.
   Progress publication retries brief permission conflicts and remains advisory
   if either temporary-file writing or atomic replacement fails. Checkpoints and
   final measurement publication remain mandatory; progress failures must never

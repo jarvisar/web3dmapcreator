@@ -169,7 +169,10 @@ def read_laz(fetch, source, bbox, max_points=8_000_000, chunk_size=250_000):
                 crs, factor = coordinate_system(reader.header, metadata)
                 query = Transformer.from_crs(4326, crs, always_xy=True).transform_bounds(*bbox, densify_pts=21)
                 to_lonlat = Transformer.from_crs(crs, 4326, always_xy=True)
+                decoded = 0
                 for chunk in reader.chunk_iterator(chunk_size):
+                    decoded += len(chunk)
+                    fetch.progress(f"Decoding LAZ: {decoded:,}/{reader.header.point_count:,} points in {tile['url'].rsplit('/', 1)[-1]}")
                     piece = normalized_chunk(chunk, reader.header, bbox, query, to_lonlat, factor, metadata)
                     retained += len(piece)
                     if retained > max_points:

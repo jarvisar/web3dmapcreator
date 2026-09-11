@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import subprocess
 import tempfile
 from pathlib import Path
@@ -30,7 +31,8 @@ from .data.cache import (
     WATER_TYPES,
 )
 from .data.dem import DEMTerrain, ElevationGrid, ElevationGridError
-from .data.lidar import request_signature, load_measurements, prepare_lidar, LidarPreparation, measurement_summary
+from .data.lidar import request_signature, load_measurements, prepare_lidar, LidarPreparation
+from .external.lidar_reuse import reusable_prepared, summarize_prepared
 from .external.lidar_offer import approved_offers, offer_details
 from .data.geojson import load_feature_collection, polygon_features, first_osm_id
 from .data.land import recessed_water_kind
@@ -331,8 +333,9 @@ def _lidar_signature(settings, bundle, transform=None):
 class JARVIZAR_OT_prepare_lidar(Operator):
     bl_idname = "jarvizar.prepare_lidar"
     bl_label = "Prepare LiDAR Buildings"
-    bl_description = "Prepare USGS heights, tiers and roof planes in small resumable groups; Esc cancels and keeps completed work"
+    bl_description = "Reuse valid LiDAR or prepare buildings with progress; Cancel or Esc keeps completed work"
     _running = False
+    _cancel_requested = False
     laz_approval: StringProperty(default='', options={'HIDDEN', 'SKIP_SAVE'})
 
     @classmethod
@@ -342,10 +345,15 @@ class JARVIZAR_OT_prepare_lidar(Operator):
 
     def finish(self, context, result):
         settings = context.scene.jarvizar_city_model
-        message = (f"Prepared {result['buildings']}/{result.get('candidate_buildings', result['buildings'])} buildings; "
+        action = 'Reused prepared' if result.get('reused_prepared') else 'Prepared'
+        message = (f"{action} {result['buildings']}/{result.get('candidate_buildings', result['buildings'])} buildings; "
                    f"{result['tiered_buildings']} tiered, {result.get('roof_plane_buildings', 0)} with roof planes")
         if result.get('faceted_roof_buildings'):
             message += f"; {result['faceted_roof_buildings']} detailed roof surfaces"
+        reused = result.get('cache_stats', {})
+        if not result.get('reused_prepared') and (reused.get('cached_buildings') or reused.get('point_batches')):
+            message += f"; reused {reused.get('cached_buildings', 0)} building checks and {reused.get('point_batches', 0)} decoded point batches"
+        settings.lidar_progress = 1.
         if result.get('infill_buildings') or result.get('part_heights'):
             message += f"; {result.get('infill_buildings', 0)} main masses restored, {result.get('part_heights', 0)} part heights"
         if result.get('compared_sources'):
@@ -384,11 +392,14 @@ class JARVIZAR_OT_prepare_lidar(Operator):
             context.window_manager.event_timer_remove(self._timer)
         finally:
             type(self)._running = False
+            type(self)._cancel_requested = False
             self._settings.lidar_preparing = False
+            context.window_manager.progress_end()
 
     def modal(self, context, event):
         settings = self._settings
-        if event.type == 'ESC':
+        if event.type == 'ESC' or type(self)._cancel_requested:
+            type(self)._cancel_requested = False
             try:
                 self._job.cancel()
             except (OSError, subprocess.TimeoutExpired) as exc:
@@ -406,7 +417,19 @@ class JARVIZAR_OT_prepare_lidar(Operator):
         if event.type != 'TIMER':
             return {'PASS_THROUGH'}
         if self._job.process.poll() is None:
-            settings.lidar_preparation_status = self._job.progress()
+            status = self._job.status()
+            settings.lidar_preparation_status = status.get('message', 'Preparing LiDAR')
+            total = max(0, int(status.get('total', 0)))
+            completed = max(0, min(total, int(status.get('completed', 0))))
+            settings.lidar_progress = completed/total if total else 0.
+            settings.lidar_progress_known = bool(total)
+            settings.lidar_progress_stage = status.get('stage', 'Preparing LiDAR')
+            settings.lidar_progress_scope = f'Current survey: {completed}/{total} buildings checked' if total else 'Waiting for survey or transfer details'
+            settings.lidar_progress_source = status.get('source', '')
+            settings.lidar_progress_reuse = f"Reused: {status.get('cached_buildings', 0)} building checks, {status.get('point_batches', 0)} point batches"
+            settings.lidar_elapsed_seconds = int(status.get('elapsed', 0))
+            settings.lidar_update_seconds = int(max(0., time.time()-status.get('updated_at', time.time())))
+            context.window_manager.progress_update(settings.lidar_progress*1000)
             for area in context.screen.areas if context.screen else ():
                 if area.type == 'VIEW_3D':
                     area.tag_redraw()
@@ -421,7 +444,7 @@ class JARVIZAR_OT_prepare_lidar(Operator):
                 self.report({'WARNING'}, settings.lidar_preparation_status)
                 return {'FINISHED'}
             return self.finish(context, result)
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, OvertureDownloadError) as exc:
             settings.lidar_preparation_status = settings.last_status = f'LiDAR unavailable: {exc}'
             self.report({'ERROR'}, settings.last_status)
             return {'CANCELLED'}
@@ -429,19 +452,24 @@ class JARVIZAR_OT_prepare_lidar(Operator):
     def execute(self, context):
         settings = context.scene.jarvizar_city_model
         try:
-            if hasattr(bpy.app, "online_access") and not bpy.app.online_access:
-                raise ValueError("Blender online access is disabled")
             bundle = _cache_bundle(settings)
             signature = _lidar_signature(settings, bundle)
             laz_approval = getattr(self, 'laz_approval', '')
             if laz_approval:
                 approved_offers(bundle.path, signature, laz_approval)
-            records, message = load_measurements(bundle, signature)
-            if not laz_approval and not settings.force_redownload and message.startswith("LiDAR measurements:"):
-                summary = measurement_summary(bundle)
-                if not summary['failures']:
-                    return self.finish(context, summary)
+            if not laz_approval and not settings.force_redownload:
+                cached = reusable_prepared(bundle.path, signature)
+                if cached is not None:
+                    return self.finish(context, summarize_prepared(cached, reused=True))
+            if hasattr(bpy.app, "online_access") and not bpy.app.online_access:
+                raise ValueError("Blender online access is disabled; no current prepared result matches these settings")
             settings.lidar_preparation_status = 'Preparing LiDAR buildings... (Esc to cancel)'
+            settings.lidar_progress = 0.
+            settings.lidar_progress_known = False
+            settings.lidar_progress_stage = 'Checking cache'
+            settings.lidar_progress_scope = 'Checking prepared results and input settings'
+            settings.lidar_progress_source = settings.lidar_progress_reuse = ''
+            settings.lidar_elapsed_seconds = settings.lidar_update_seconds = 0
             python_path = _resolve_downloader(context, settings)
             if bpy.app.background:
                 return self.finish(context, prepare_lidar(python_path, bundle, signature, settings.force_redownload and not laz_approval,
@@ -453,6 +481,8 @@ class JARVIZAR_OT_prepare_lidar(Operator):
             self._timer = context.window_manager.event_timer_add(0.5, window=context.window)
             context.window_manager.modal_handler_add(self)
             settings.lidar_preparing = True
+            context.window_manager.progress_begin(0, 1000)
+            type(self)._cancel_requested = False
             type(self)._running = True
             return {'RUNNING_MODAL'}
         except (ValueError, OSError, OvertureDownloadError) as exc:
@@ -460,6 +490,20 @@ class JARVIZAR_OT_prepare_lidar(Operator):
             settings.lidar_preparation_status = settings.last_status
             self.report({"ERROR"}, settings.last_status)
             return {"CANCELLED"}
+
+
+class JARVIZAR_OT_cancel_lidar(Operator):
+    bl_idname = 'jarvizar.cancel_lidar'
+    bl_label = 'Cancel LiDAR Preparation'
+    bl_description = 'Stop preparation and retain completed downloads and building checkpoints'
+
+    @classmethod
+    def poll(cls, context):
+        return JARVIZAR_OT_prepare_lidar._running
+
+    def execute(self, context):
+        JARVIZAR_OT_prepare_lidar._cancel_requested = True
+        return {'FINISHED'}
 
 
 class JARVIZAR_OT_cancel_generation(Operator):
@@ -1160,6 +1204,7 @@ class JARVIZAR_OT_clear_model(Operator):
 
 
 CLASSES = (
+    JARVIZAR_OT_cancel_lidar,
     JARVIZAR_OT_cancel_generation,
     JARVIZAR_OT_move_surface_priority,
     JARVIZAR_OT_paste_bounds,

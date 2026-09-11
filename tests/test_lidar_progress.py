@@ -88,6 +88,30 @@ class ProgressTests(unittest.TestCase):
         payload = json.loads(self.path.read_text())
         self.assertEqual(payload['accepted'], int(payload['message']))
 
+    def test_stage_context_survives_transfer_messages_and_completion_is_not_throttled(self):
+        self.reporter.MIN_INTERVAL_SECONDS = .2
+        with patch('time.monotonic', return_value=100):
+            self.assertTrue(self.reporter('First roof',stage='Reconstructing roofs',completed=0,total=4))
+            self.assertFalse(self.reporter('Download details'))
+            self.assertTrue(self.reporter('Complete',completed=4,force=True))
+        payload=json.loads(self.path.read_text())
+        self.assertEqual((payload['stage'],payload['completed'],payload['total']),('Reconstructing roofs',4,4))
+        self.assertIn('updated_at',payload)
+
+    def test_blender_retains_last_valid_status_during_partial_reads(self):
+        from jarvizar_city_model.data.lidar import LidarPreparation
+        job=object.__new__(LidarPreparation)
+        job.progress_path=self.path
+        job.started=time.monotonic()-12
+        job.last_progress={'message':'Starting'}
+        self.path.write_text(json.dumps({'message':'Fitting roof','completed':2,'total':7}))
+        self.assertEqual(job.status()['completed'],2)
+        self.path.write_text('{broken')
+        self.assertEqual(job.progress(),'Fitting roof')
+        self.path.write_text('{"message":"invalid counters","total":"bad"}')
+        self.assertEqual(job.status()['completed'],2)
+        self.assertGreaterEqual(job.status()['elapsed'],12)
+
     @unittest.skipUnless(os.name == 'nt', 'Windows reader-lock regression')
     def test_real_windows_reader_reproduces_access_denied_and_worker_status_recovers(self):
         temporary = self.path.with_suffix('.partial')

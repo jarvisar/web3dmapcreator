@@ -213,9 +213,14 @@ class DownloadTests(unittest.TestCase):
                 transfer.assert_not_called()
                 checkpoint = next((bundle.path/'lidar_jobs').glob('*.json'))
                 checkpoint.write_text('{}')
+                result_path = bundle.path/'lidar_buildings.json'
+                payload = json.loads(result_path.read_text())
+                payload['prepared_at_utc'] = '2000-01-01T00:00:00+00:00'
+                result_path.write_text(json.dumps(payload))
                 transfer.side_effect = lambda url, **kw: Path(url.rsplit('/', 1)[-1])
                 self.assertEqual(prepare_reviewed_laz(worker, bundle.path, request, download_workers=16)['buildings'], 4)
-                self.assertEqual(transfer.call_count, 1)
+                self.assertEqual(transfer.call_count, 0)  # Repair from decoded points.
+                self.assertEqual(len(evaluated), 5)
 
 
 if __name__ == '__main__':

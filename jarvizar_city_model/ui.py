@@ -12,6 +12,25 @@ from .data.projection import WGS84Bounds
 from .blender.generation_modal import active_session, is_generating
 
 
+def _lidar_progress(layout, settings, region_width):
+    box = layout.box()
+    box.label(text='Preparing LiDAR', icon='TIME')
+    box.label(text=settings.lidar_progress_stage)
+    if settings.lidar_progress_known:
+        row = box.row()
+        row.enabled = False
+        row.prop(settings, 'lidar_progress', text='Current survey', slider=True)
+    for message in (settings.lidar_progress_scope, settings.lidar_progress_source,
+                    settings.lidar_preparation_status, settings.lidar_progress_reuse):
+        for line in textwrap.wrap(message, width=max(25, int(region_width/7)-6)):
+            box.label(text=line)
+    elapsed = settings.lidar_elapsed_seconds
+    box.label(text=f'Elapsed {elapsed//60}:{elapsed%60:02d}')
+    if settings.lidar_update_seconds >= 5:
+        box.label(text=f'Last worker update: {settings.lidar_update_seconds}s ago')
+    box.operator('jarvizar.cancel_lidar', icon='CANCEL')
+
+
 def _scale_summary(settings):
     """Describe what the chosen scale means before anything is generated.
 
@@ -60,6 +79,9 @@ class JARVIZAR_PT_city_model(Panel):
     def draw(self, context):
         layout = self.layout
         settings = context.scene.jarvizar_city_model
+
+        if settings.lidar_preparing:
+            _lidar_progress(layout, settings, context.region.width)
 
         session = active_session()
         if session is not None:

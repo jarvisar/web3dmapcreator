@@ -240,12 +240,9 @@ class AcquisitionAdmissionTests(unittest.TestCase):
                 self.assertEqual(first['buildings'], expected)
                 self.assertEqual(second['buildings'], expected)
                 if mode == 'marginal':
-                    import hashlib
-                    legacy_request = {k: v for k, v in request.items() if k != 'fallback_policy'}
-                    for identifier in ('west', 'east'):
-                        key = hashlib.sha256(json.dumps([legacy_request, ept['url'], '', '',
-                            ept['survey_metadata'], [identifier]], sort_keys=True).encode()).hexdigest()
-                        self.assertTrue((bundle.path / 'lidar_jobs' / (key + '.json')).is_file())
+                    checkpoints = [json.loads(p.read_text()) for p in (bundle.path/'lidar_jobs').glob('*.json')]
+                    ept_records = set().union(*(set(p['records']) for p in checkpoints if p['info']['url']==ept['url']))
+                    self.assertEqual(ept_records, {'west','east'})
             return processed, downloads, json.loads((bundle.path / 'lidar_buildings.json').read_text())
 
     def test_ept_success_and_missing_metadata_never_download_overlapping_laz(self):

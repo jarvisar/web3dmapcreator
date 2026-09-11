@@ -1,6 +1,66 @@
 # Building heights and USGS LiDAR
 
-## Coherent architectural surfaces (0.18.0)
+## Preparation progress and cache reuse (0.20.0)
+
+Preparation now shows its current stage, survey, building counts, cache reuse,
+elapsed time and a Cancel button at the top of the City Model panel. A progress
+bar tracks buildings checked in the current survey; discovery and point reading
+report their actual activity without guessing a whole-job percentage.
+
+Use **Prepare LiDAR Buildings** normally with **Refresh Existing Cache** off.
+Valid prepared results reuse immediately, including offline. After 24 hours,
+Prepare rechecks discovery while retaining compatible measurement batches.
+Failures affecting building reads retry; unrelated provider warnings do not
+force repeated reconstruction. Changed footprints/settings invalidate the
+affected work. A new normalized-point cache lets scale and roof-setting changes
+reuse decoded points instead of reading the same downloaded tiles again.
+
+**Refresh Existing Cache** deliberately bypasses reuse and invalidates older
+derived results for the refreshed sources. Algorithm 13 remains unchanged:
+existing compatible checkpoints migrate, and this release does not require a
+geometry rebuild. Older installations have no decoded-point cache until a point
+batch is read once. See the [workflow report](LIDAR_PREPARATION_WORKFLOW.md) for
+validation and cache limitations. Earlier version sections below are historical.
+
+## Near-touching roof-region crash fix (0.19.1)
+
+Preparation could abort with `index 0 is out of bounds for axis 0 with size 0`
+while ranking roof-plane merge candidates. The spatial query buffered one region,
+but the ranking calculation buffered the other. At nearly touching corners,
+polygonal buffer approximation can make only the first intersection nonempty.
+The ranking pass now checks for an actual contact before reading coordinates;
+the existing shared-edge test keeps unsupported merges separate. This does not
+discard the building or relax reconstruction acceptance.
+
+Algorithm 13 and acquisition remain unchanged, so completed checkpoints and
+downloaded tiles remain reusable. Run **Prepare LiDAR Buildings** again with
+**Refresh Existing Cache** off.
+
+Validation reproduced the exact failure in the cached Chicago preparation and
+then completed that replay after the fix. The repaired roof passes Blender mesh
+closure/winding checks, and the prior 42-building geometry comparison is unchanged.
+The regression test covers the asymmetric contact in both region orders.
+
+## Shared surface outlines and final plane consolidation (0.19.0)
+
+Detailed Surfaces now also consolidates compatible final planes, fits shared
+roof outlines as a vector network, and suppresses subprint surface ripples before
+adaptive meshing. Supported circular and rectangular roof structures receive
+fitted outlines, while genuine discontinuities remain separate surfaces. The
+actual XY/Z output scales determine the approximation budgets; the legacy
+width/step controls still apply only to Terraces.
+
+Run **Prepare LiDAR Buildings** again, then **Generate Model**. Reconstruction
+algorithm 13 invalidates Task 1 measurements; leave Refresh off to reuse acquired
+tiles. Discovery and acquisition are unchanged. Difficult regions can retain
+their previous geometry, including complete connected roofs when necessary to
+avoid cutting terraces into a continuous slope.
+
+The [refinement report](LIDAR_SURFACE_REFINEMENT.md) contains the diagnosis,
+actual Blender comparisons against 0.18.0, scale budgets, limitations and Task 2
+observations. Earlier version sections below are historical.
+
+## Coherent architectural surfaces (0.18.0, historical Task 1)
 
 Detailed Surfaces now reconstructs coherent surfaces before it creates any
 terraces. Run **Prepare LiDAR Buildings** again after updating, then **Generate

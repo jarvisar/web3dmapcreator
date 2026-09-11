@@ -113,16 +113,19 @@ def definitions():
     noise = lambda x, y: np.sin(x*1.7)*np.cos(y*2.1)
     roofs = {
         'noisy_flat_roof': lambda x, y: 22 + .12*noise(x, y),
+        'broad_subprint_roof_ripple': lambda x,y:20+.4*np.sin(x/3)*np.cos(y/4),
+        'subprint_offset_flat_roof': lambda x,y:20+np.where(x>24,.9,0)+.05*noise(x,y),
         'noisy_sloped_roof': lambda x, y: 15 + .42*x + .12*noise(x, y),
         'noisy_barrel_roof': lambda x, y: 15 + 10*np.sqrt(np.maximum(0, 1-((x-24)/26)**2)) + .1*noise(x, y),
         'noisy_gabled_roof': lambda x, y: 15 + .55*np.minimum(x, 48-x) + .1*noise(x, y),
         'flat_roof_with_plant': lambda x, y: 20 + np.where((x>17)&(x<30)&(y>11)&(y<24), 4, 0) + .1*noise(x, y),
+        'sloped_roof_with_plant': lambda x,y:20+.3*x+np.where((x>17)&(x<30)&(y>11)&(y<24),8,0)+.1*noise(x,y),
         'three_level_setbacks': lambda x, y: np.where((x>14)&(x<34)&(y>10)&(y<26), 95,
             np.where((x>7)&(x<41)&(y>5)&(y<31), 55, 18)) + .08*np.sin(x*1.7),
     }
     for name, roof in roofs.items():
         interior_probes = ([(x, y) for x in (3, 9, 18, 24, 32, 43) for y in (4, 14, 29)]
-                           if name == 'flat_roof_with_plant' else probes)
+                           if name in ('flat_roof_with_plant','sloped_roof_with_plant') else probes)
         yield {'name': name, 'footprint': footprint, 'roof': roof,
                'probe_xy': interior_probes, 'tolerance_m': .8}
 

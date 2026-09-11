@@ -65,6 +65,12 @@ class BatchTests(unittest.TestCase):
                 broken = json.loads(checkpoint.read_text())
                 broken['records'] = []
                 checkpoint.write_text(json.dumps(broken))
+                # A healthy published result needs no checkpoint reads. Once
+                # metadata is due for rechecking, repair the damaged batch.
+                result_path = bundle.path/'lidar_buildings.json'
+                payload = json.loads(result_path.read_text())
+                payload['prepared_at_utc'] = '2000-01-01T00:00:00+00:00'
+                result_path.write_text(json.dumps(payload))
                 repaired = worker.prepare(bundle.path,request)
             self.assertEqual(first['buildings'],4)
             self.assertEqual(second['buildings'],4)
