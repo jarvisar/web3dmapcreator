@@ -186,15 +186,60 @@ class OfferTests(unittest.TestCase):
         self.assertEqual(offer['buildings'], ['east'])
         self.assertEqual([t['url'] for t in offer['tiles']], ['https://example.com/laz/east.laz'])
 
-    def test_only_one_survey_is_offered_per_gap_until_its_result_is_known(self):
+    def test_distinct_unknown_surveys_are_offered_and_compared_after_approval(self):
         self.sources.append({**self.laz, 'url': 'https://example.com/spare/',
             'tiles': [dict(t, url=t['url'].replace('/laz/', '/spare/')) for t in self.laz['tiles']]})
         proposal = self.prepare()
-        self.assertEqual(len(proposal['laz_offers']), 1)
+        self.assertEqual(len(proposal['laz_offers']), 2)
         self.assertEqual(proposal['laz_offers'][0]['url'], self.laz['url'])
+        self.assertTrue(all(o['buildings']==['east'] and len(o['tiles'])==1 for o in proposal['laz_offers']))
+        self.assertFalse(self.downloads)
         result = self.prepare(laz_approval=proposal['laz_offer_token'])
         self.assertFalse(result['laz_offers'])
-        self.assertEqual(self.downloads, ['https://example.com/laz/east.laz'])
+        self.assertEqual(self.downloads, ['https://example.com/laz/east.laz','https://example.com/spare/east.laz'])
+        payload = json.loads((self.bundle.path/'lidar_buildings.json').read_text())
+        self.assertEqual(payload['buildings']['east']['selection']['candidates'],2)
+
+    def test_known_duplicate_offers_are_suppressed(self):
+        identity = {'projects':['agency:one-survey'],'datasets':[],'evidence':['official project id']}
+        self.laz['survey_identity'] = identity
+        self.sources.append({**self.laz,'url':'https://example.com/mirror/',
+            'tiles':[dict(t,url=t['url'].replace('/laz/','/mirror/')) for t in self.laz['tiles']]})
+        proposal = self.prepare()
+        self.assertEqual(len(proposal['laz_offers']),1)
+        self.prepare(laz_approval=proposal['laz_offer_token'])
+        self.assertEqual(self.downloads,['https://example.com/laz/east.laz'])
+
+    def test_newer_project_hint_precedes_broader_old_coverage_without_dating_points(self):
+        from jarvizar_city_model.external.lidar_ranking import rank_sources
+        self.laz.update(project_year_hint=2021,catalog_coverage=.57)
+        old = {**self.laz,'url':'https://example.com/legacy/','project_year_hint':2007,'catalog_coverage':1,
+            'tiles':[dict(t,url=t['url'].replace('/laz/','/legacy/')) for t in self.laz['tiles']]}
+        self.sources.append(old)
+        self.sources = [s for s,_ in rank_sources(self.sources)]
+        proposal = self.prepare()
+        self.assertEqual([o['url'] for o in proposal['laz_offers']],[self.laz['url']])
+        self.assertEqual(proposal['laz_offers'][0]['survey_metadata'],{})
+        from jarvizar_city_model.external.lidar_offer import offer_details
+        self.assertIn('Project year hint: 2021 (capture date unverified)',offer_details(proposal['laz_offers']))
+        self.prepare(laz_approval=proposal['laz_offer_token'])
+        self.assertEqual(self.downloads,['https://example.com/laz/east.laz'])
+        record = json.loads((self.bundle.path/'lidar_buildings.json').read_text())['buildings']['east']
+        self.assertIsNone(record.get('capture_year'))
+
+    def test_old_project_remains_a_fallback_after_newer_measurement_fails(self):
+        from jarvizar_city_model.external.lidar_ranking import AcquisitionPlan
+        self.laz['project_year_hint']=2021
+        old = {**self.laz,'url':'https://example.com/legacy/','project_year_hint':2007}
+        features=[{'id':'one'}];geometries={'one':box(-73.92,40.02,-73.919,40.021)}
+        plan=AcquisitionPlan([self.ept,self.laz,old],features,geometries)
+        plan.next(set(),source_format='STREAM')
+        plan.observe(self.ept,features,{}, {'one':'insufficient_roof_points'})
+        selected=plan.next(set(),source_format='STAGED')
+        self.assertEqual(selected[0]['url'],self.laz['url'])
+        self.assertIsNone(plan.next(set(),source_format='STAGED',pending={'one':[self.laz]}))
+        plan.observe(self.laz,features,{}, {'one':'footprint_roof_mismatch'})
+        self.assertEqual(plan.next(set(),source_format='STAGED')[0]['url'],old['url'])
 
     def test_secondary_ept_reconstruction_rejection_still_offers_only_the_gap(self):
         self.sources.append({**self.ept, 'url': 'https://example.com/secondary/ept.json'})

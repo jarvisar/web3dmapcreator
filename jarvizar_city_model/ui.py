@@ -242,6 +242,7 @@ class JARVIZAR_PT_surfaces(Panel):
             box.label(text="Enable Terrain to build basins")
         layout.separator()
         layout.label(text="Trees")
+        layout.prop(settings, "tree_avoid_roads")
         layout.prop(settings, "include_mapped_trees")
         layout.prop(settings, "include_forest_scatter")
         layout.prop(settings, "include_land_cover_scatter")

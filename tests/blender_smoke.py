@@ -926,11 +926,10 @@ def main():
             if counts.get("trees_scattered", 0) < 1:
                 raise AssertionError("Forest polygon produced no scattered trees")
             trees = bpy.data.collections["VEGETATION"].objects
-            intact = [obj for obj in trees if not obj.get("tree_road_trimmed")]
-            if len({obj.data.name for obj in intact}) != 1:
-                raise AssertionError("Intact trees do not share one linked mesh datablock")
-            if sum(bool(obj.get("tree_road_trimmed")) for obj in trees) != counts['trees_road_trimmed']:
-                raise AssertionError("Road-trimmed trees do not match reported count")
+            if len({obj.data.name for obj in trees}) != 1:
+                raise AssertionError("Trees do not share one linked mesh datablock")
+            if not counts['tree_avoid_roads'] or counts['trees_skipped_roads'] < 1:
+                raise AssertionError("Default road avoidance did not skip conflicting trees")
             if any(obj.location.z <= 0.0 for obj in trees):
                 raise AssertionError("A tree was not placed on the terrain surface")
             separate_building_objects = len(

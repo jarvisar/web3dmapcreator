@@ -33,6 +33,12 @@ class RankingTests(unittest.TestCase):
     def first(self, *sources, thresholds=None):
         return rank_sources(sources, thresholds)[0][0]['name']
 
+    def test_old_project_with_documented_quality_advantage_remains_an_alternative(self):
+        from jarvizar_city_model.external.lidar_ranking import older_fallback
+        old={**source('old','LAZ',point_spacing_m=.2),'project_year_hint':2007}
+        new={**source('new','LAZ',point_spacing_m=2),'project_year_hint':2021}
+        self.assertFalse(older_fallback(old,new,selection_thresholds()))
+
     def test_ept_preferred_for_equal_and_marginal_improvements(self):
         ept = source('ept', acquisition_year=2021, point_spacing_m=.7, point_density_m2=4,
                      vertical_rmse_m=.15, horizontal_rmse_m=.3)
@@ -261,22 +267,22 @@ class AcquisitionAdmissionTests(unittest.TestCase):
                 self.assertIn(('LAZ', 'east'), processed)
                 self.assertEqual(len(downloads), 1 if mode == 'partial_superior' else 2)
 
-    def test_incomplete_coverage_and_observed_gaps_only_fetch_gap_tiles(self):
+    def test_approved_alternatives_fetch_only_gap_or_shared_tiles(self):
         for mode in ('incomplete', 'gaps'):
             with self.subTest(mode=mode):
                 processed, downloads, payload = self.run_worker(mode)
                 self.assertIn(('EPT', 'west'), processed)
                 self.assertIn(('LAZ', 'east'), processed)
-                self.assertNotIn(('LAZ', 'west'), processed)
-                self.assertEqual(downloads, ['https://example.com/laz/east.laz'])
-                self.assertEqual(payload['buildings']['west']['source_format'], 'EPT')
+                self.assertEqual(set(downloads), {'https://example.com/laz/east.laz','https://example.com/spare/all.laz'})
+                self.assertEqual(payload['buildings']['west']['selection']['candidates'],2)
                 self.assertEqual(payload['buildings']['east']['source_format'], 'LAZ')
                 self.assertFalse(payload['rejected'])
 
-    def test_ept_read_failure_falls_back_without_trying_every_laz_survey(self):
+    def test_ept_read_failure_compares_reviewed_alternatives(self):
         processed, downloads, payload = self.run_worker('failure')
         self.assertEqual(set(processed), {('LAZ', 'west'), ('LAZ', 'east')})
-        self.assertEqual(len(downloads), 2)
+        self.assertEqual(set(downloads), {'https://example.com/laz/west.laz','https://example.com/laz/east.laz',
+                                        'https://example.com/spare/all.laz'})
         self.assertTrue(payload['failures'])
 
     def test_geometry_and_unknown_rejections_do_not_trigger_new_downloads(self):
@@ -295,12 +301,12 @@ class AcquisitionAdmissionTests(unittest.TestCase):
                        'sparse_or_noisy_roof', 'complex_unclassified_roof'):
             with self.subTest(reason=reason):
                 processed, downloads, payload = self.run_worker('rejected:' + reason)
-                self.assertEqual(downloads, ['https://example.com/laz/east.laz'])
+                self.assertEqual(set(downloads), {'https://example.com/laz/east.laz','https://example.com/spare/all.laz'})
                 self.assertEqual(payload['buildings']['east']['source_format'], 'LAZ')
 
     def test_secondary_stream_does_not_expand_a_reconstruction_gap_offer(self):
         processed, downloads, payload = self.run_worker('downgrade')
-        self.assertEqual(downloads, ['https://example.com/laz/east.laz'])
+        self.assertEqual(set(downloads), {'https://example.com/laz/east.laz','https://example.com/spare/all.laz'})
         self.assertEqual(set(payload['buildings']), {'west','east'})
 
     def test_real_support_gaps_and_material_advantages_remain_eligible(self):

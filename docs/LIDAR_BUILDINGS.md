@@ -1,8 +1,8 @@
 # Building heights and USGS LiDAR
 
-## Automatic LAZ offers and mapped relief (0.23.14)
+## Automatic LAZ offers and mapped relief (0.23.15)
 
-Reconstruction algorithm 17; acquisition remains 5; fallback policy is 7. Run **Prepare LiDAR
+Reconstruction algorithm 17; acquisition remains 5; fallback policy is 8. Run **Prepare LiDAR
 Buildings** with Refresh off after updating. Existing downloaded tiles and
 compatible normalized points remain reusable.
 
@@ -14,11 +14,22 @@ compatible normalized points remain reusable.
 Preparation finishes efficient EPT/COPC work first, then offers staged tiles for
 missing coverage, known measurement gaps, or substantially newer/better catalog
 evidence. A building's measured capture year can fill a missing streamed catalog
-date for that building. Publication dates and survey names never establish age.
+date for that building. Publication dates and survey names never establish measured capture dates.
+When verified acquisition dates are absent, a project-year hint prioritizes
+which survey to try; it is displayed as unverified and never becomes a measured
+capture date. Much older projects without a documented quality advantage remain
+fallbacks if the newer attempt fails, rather than being downloaded alongside it.
 Ordinary roof mismatches or ground where a building is mapped can now prompt a
 different survey; known duplicate deliveries still need an actual delivery gap.
 
-Only one survey is offered per building at a time. Tile selection follows the
+Eligible independent surveys of uncertain relative age remain in the offer even when another survey
+covers the same buildings. Wider coverage or unknown metadata is not proof
+that the earlier-ranked survey is better. Known duplicate deliveries are
+suppressed. Accepting the offer compares its reviewed alternatives even after
+one staged source succeeds; actual support and capture evidence choose the
+result. More alternatives can increase the reviewed download size.
+
+Tile selection follows the
 eligible footprints and their ground halos, excluding unrelated map acreage.
 Nearby buildings, including successful older measurements, are compared too
 when all their required tiles already fit that offer. This does not add downloads;

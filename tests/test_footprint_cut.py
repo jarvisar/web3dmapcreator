@@ -14,6 +14,21 @@ def square(x0, y0, x1, y1):
 
 
 class FootprintCutTests(unittest.TestCase):
+    def test_overlap_handles_crossings_enclosure_and_tangency(self):
+        mask = FootprintIndex(clearance=0)
+        mask.add(square(4, -1, 6, 11))
+        for poly in (square(0, 4, 10, 6), square(4.5, 4, 5.5, 6), square(0, -2, 10, 12)):
+            self.assertTrue(mask.overlaps(poly))
+        self.assertFalse(mask.overlaps(square(0, 0, 4, 1)))
+        self.assertFalse(mask.overlaps(square(8, 0, 9, 1)))
+        triangle = FootprintIndex(clearance=0)
+        triangle.add([(0, 0), (10, 0), (0, 10)])
+        self.assertFalse(triangle.overlaps(square(8, 8, 9, 9)))
+        self.assertFalse(FootprintIndex().overlaps(square(0, 0, 1, 1)))
+        buffered = FootprintIndex(clearance=.005)
+        buffered.add(square(4, -1, 6, 11))
+        self.assertTrue(buffered.overlaps(square(0, 0, 4, 1)))
+
     def test_road_splits_surface_without_changing_slope(self):
         mask = FootprintIndex(clearance=0)
         mask.add(square(4, -1, 6, 11))

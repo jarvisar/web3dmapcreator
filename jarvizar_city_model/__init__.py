@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Jarvizar City Model",
     "author": "Jarvizar workflow / OpenAI",
-    "version": (0, 23, 14),
+    "version": (0, 23, 16),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > City Model",
     "description": (

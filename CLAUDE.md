@@ -311,17 +311,13 @@ colors, overwriting manual palette edits.
   are single closed solids with sloped undersides. Size floors apply independently
   to height and width. A shared spatial clearance check uses varied crown radii
   across mapped points and all forest sources, giving mapped points priority.
-  Built ground-road footprints (including paths/rail and demoted decks) trim
-  trees through their full height with 0.005 mm XY clearance. Roads remain
-  unchanged; high decks do not cut trees beneath them. Only affected trees use
-  capped plane cuts when the retained footprint is convex, with bounded Exact
-  Booleans for concave/split remnants and failed plane caps, before batching.
-  Redundant cutter triangles coalesce only when their union remains convex;
-  Booleans use temporary isolated scenes to avoid reevaluating the city.
-  Keep grounded remnants whose base caliper width reaches 0.4 mm (or a smaller
-  configured tree width); discard
-  wholly covered trees, floating tiers and narrower remnants. Intact unmerged
-  trees still share their mesh; trimmed trees have individual meshes.
+  **Remove Trees Over Roads/Paths** defaults on. A spatial overlap query tests
+  the finished, rotated and varied crown against built ground-road footprints
+  (including paths/rail and demoted decks) with 0.005 mm clearance. Overlapping
+  trees are skipped before tree-to-tree clearance and the placement cap; no
+  trees are cut or modified. Disabling the toggle keeps overlapping trees and
+  skips building the road index. Elevated bridge decks do not exclude ground
+  trees underneath. All unmerged trees share their original mesh.
 
 ### Roads and bridges
 
@@ -393,10 +389,21 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   streamed measurements plus optional gap/upgrade offers. **Download and Use
   Offered Tiles** authorizes only that reviewed set. Replays recheck eligibility;
   changed/expanded offers require another choice. Generation stays offline.
-- Automatic staged selection uses fallback policy 7; there is no full-survey
+- Automatic staged selection uses fallback policy 8; there is no full-survey
   picker or `comparison_url` request setting. A measured capture year can fill
   missing streamed acquisition metadata for that building, never the whole
-  survey. Offer one ranked survey per building at a time. `shared_tile_features`
+  survey. Pending offers suppress known duplicates and substantially older
+  fallback projects without a documented quality advantage. Unknown metadata
+  or broader catalog coverage must not hide another
+  eligible alternative. A substantially newer project-year hint now precedes
+  broad old coverage when verified acquisition dates are absent; the hint is
+  displayed in the offer, never promoted to measured capture metadata. A much
+  older project without a documented quality advantage is deferred while the
+  newer offer is pending and after a newer staged success; failed newer reads
+  or measurements retain the old fallback. Accepted uncertain alternatives are compared even after another
+  staged result succeeds; identical surveys and source-independent failures
+  remain excluded. Consent remains limited to reviewed buildings and tiles.
+  `shared_tile_features`
   adds otherwise eligible comparisons only when their entire footprint/ground
   tile allowlist fits tiles already selected for gaps/upgrades. This can revisit
   successful streamed measurements without extra downloads. It preserves

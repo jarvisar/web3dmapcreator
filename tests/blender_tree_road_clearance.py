@@ -1,4 +1,4 @@
-"""Road/path crown trimming at default print scale, in both output modes."""
+"""Whole-tree road avoidance, intact shared meshes and the UI toggle."""
 import json
 import math
 import sys
@@ -11,12 +11,10 @@ import bpy
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_tree_printability import closed, collection, point, forest
-from jarvizar_city_model.blender.mesh_utils import MeshBuilder, tree_solid_geometry
-from jarvizar_city_model.geometry.tree_road_cut import TreeRoadCutter
-from jarvizar_city_model.geometry.planar import shell_volume
+from jarvizar_city_model.blender.mesh_utils import MeshBuilder
+from jarvizar_city_model.geometry.tree_road_overlap import tree_road_footprints
 from jarvizar_city_model.geometry.vegetation import TreeSettings, generate_trees
 from jarvizar_city_model.geometry.footprint_cut import FootprintIndex, area_xy
-from jarvizar_city_model.geometry.surface_priority import _road_outline_triangles
 
 
 def snapshot(obj):
@@ -31,35 +29,6 @@ def make_road(roads, name, ring, kind='surface_road'):
     obj = builder.build(roads)
     obj['feature_type'] = kind
     return obj
-
-
-def compare_plane_cuts_with_boolean():
-    checked = 0
-    for translation in (0, 1250):
-        for angle in (0, .63):
-            roads = collection('oracle-roads')
-            co, si = math.cos(angle), math.sin(angle)
-            def xy(x, y):
-                return translation+x*co-y*si, translation+x*si+y*co
-            b = MeshBuilder('oracle-road')
-            b.add_flat_prism([xy(x, y) for x, y in [(-3,-.3),(3,-.3),(3,.3),(-3,.3)]], -.15, .6)
-            obj = b.build(roads)
-            obj['feature_type'] = 'surface_road'
-            cutter = TreeRoadCutter(roads)
-            for sides in (4, 6, 8):
-                for offset in (.35, .5, .62):
-                    vertices, faces = tree_solid_geometry(.72, 1.6, sides=sides, embed_mm=.15)
-                    vertices = [(*xy(x, y+offset), z) for x, y, z in vertices]
-                    optimized = cutter.trim(vertices, faces, .4)
-                    with patch.object(cutter, '_clip_planes', return_value=None):
-                        exact = cutter.trim(vertices, faces, .4)
-                    assert bool(optimized[1]) == bool(exact[1])
-                    if optimized[1]:
-                        closed(*optimized[:2])
-                        expected = shell_volume(*exact[:2])
-                        assert abs(shell_volume(*optimized[:2])-expected) < max(2e-5, expected*2e-4)
-                    checked += 1
-    print('TREE_PLANE_BOOLEAN_COMPARISON_OK', checked)
 
 
 def main():
@@ -81,75 +50,82 @@ def main():
                 point('path', 15.5, 10), point('bend', 24.5, 8.5),
                 point('covered', 31, 2), point('under-bridge', 35, 2),
                 point('untouched', 3, 2), forest('wood', 14, 29)]
-    settings = TreeSettings()
-    mask = FootprintIndex(clearance=0)
-    for obj in roads.objects:
-        if obj.get('feature_type') == 'surface_road':
-            for triangle in _road_outline_triangles(obj.data):
-                mask.add(triangle)
-    results = []
-    for merge in (False, True):
-        trees = collection('trees')
-        counts = generate_trees(features, [], transform, field, trees, None, settings,
-                                merge=merge, road_collection=roads)
-        bpy.context.view_layer.update()
-        assert counts['trees_road_trimmed'] >= 4, counts
-        assert counts['trees_mapped'] >= 6, counts
-        assert counts['trees_skipped_roads'] >= 1, counts
-        geometry = []
-        for obj in trees.objects:
-            vertices = [tuple(obj.matrix_world @ v.co) for v in obj.data.vertices]
-            faces = [tuple(p.vertices) for p in obj.data.polygons]
-            closed(vertices, faces)
+    results = {}
+    for avoid in (False, True):
+        for merge in (False, True):
+            trees = collection('trees')
+            settings = TreeSettings(avoid_roads=avoid)
+            counts = generate_trees(features, [], transform, field, trees, None, settings,
+                                    merge=merge, road_collection=roads)
+            bpy.context.view_layer.update()
+            assert counts['tree_avoid_roads'] == avoid
+            assert (counts['trees_skipped_roads'] > 0) == avoid
+            geometry = []
+            for obj in trees.objects:
+                vertices = [tuple(obj.matrix_world @ v.co) for v in obj.data.vertices]
+                faces = [tuple(p.vertices) for p in obj.data.polygons]
+                closed(vertices, faces)
+                if not merge:
+                    assert len(vertices) == 37, 'Every tree must keep the original complete mesh'
+                    assert min(p[2] for p in vertices) < obj.location.z
+                    if avoid:
+                        # Independent slab-difference oracle, rather than the
+                        # early-exit overlap method used for placement.
+                        base = [p for p in vertices if abs(p[2]-min(v[2] for v in vertices)) < 1e-6]
+                        mask = tree_road_footprints(roads)
+                        assert abs(area_xy(base)-sum(area_xy(p) for p in mask.difference(base))) < 1e-6
+                geometry.extend(vertices)
             if not merge:
-                # Every disconnected remnant must reach the original embedded
-                # base. A closed floating upper tier is still unprintable.
-                neighbors = {i: set() for i in range(len(vertices))}
-                for face in faces:
-                    for a, b in zip(face, face[1:] + face[:1]):
-                        neighbors[a].add(b)
-                        neighbors[b].add(a)
-                pending = set(neighbors)
-                while pending:
-                    seed = pending.pop()
-                    shell, stack = {seed}, [seed]
-                    while stack:
-                        for other in neighbors[stack.pop()] & pending:
-                            pending.remove(other)
-                            shell.add(other)
-                            stack.append(other)
-                    assert min(vertices[i][2] for i in shell) < obj.location.z
-            obj.data.calc_loop_triangles()
-            for tri in obj.data.loop_triangles:
-                polygon = [vertices[i] for i in tri.vertices]
-                if area_xy(polygon) < 0:
-                    polygon.reverse()
-                if area_xy(polygon) > 1e-10:
-                    overlap = area_xy(polygon)-sum(area_xy(p) for p in mask.difference(polygon))
-                    assert overlap < 1e-7, (obj.name, overlap, polygon)
-            geometry.extend(vertices)
-        results.append((counts, sorted(geometry)))
-        assert [snapshot(obj) for obj in roads.objects] == originals
-    assert results[0][0] == results[1][0]
-    assert len(results[0][1]) == len(results[1][1])
-    assert max(math.dist(a, b) for a, b in zip(results[0][1], results[1][1])) < 1e-5
-    assert not any(obj.name.startswith('_TREE_ROAD_') for obj in bpy.data.objects)
-    assert not any(mesh.name.startswith('_TREE_ROAD_') for mesh in bpy.data.meshes)
-    compare_plane_cuts_with_boolean()
-    # A near-tangent cut produced a sub-micron wall that rounded to zero area.
-    # Keep this small geometry fixture independent of the originating map cache.
+                assert len({obj.data for obj in trees.objects}) == 1
+                locations = {(round(obj.location.x, 3), round(obj.location.y, 3)) for obj in trees.objects}
+                assert (35, 2) in locations and (3, 2) in locations
+                assert ((3, 5.5) in locations) != avoid
+                assert ((7, 5) in locations) != avoid
+                assert ((15.5, 10) in locations) != avoid
+            results[avoid, merge] = counts, geometry
+            assert [snapshot(obj) for obj in roads.objects] == originals
+        assert results[avoid, False][0] == results[avoid, True][0]
+        assert max(math.dist(a, b) for a, b in zip(results[avoid, False][1], results[avoid, True][1])) < 1e-5
+    assert results[True, False][0]['trees'] < results[False, False][0]['trees']
+    # Toggle off must bypass even preparation of the road index.
+    with patch('jarvizar_city_model.geometry.vegetation.tree_road_footprints', side_effect=AssertionError):
+        generate_trees(features, [], transform, field, collection('disabled'), None,
+                       TreeSettings(avoid_roads=False), road_collection=roads, merge=True)
+    # Rejected trees must reserve neither the tree cap nor crown spacing.
+    adjacent = [point('blocked', 3, 5.5), point('valid', 3, 6.5), point('later', 10, 2)]
+    accepted = collection('cap')
+    capped = generate_trees(adjacent, [], transform, field, accepted, None,
+                            TreeSettings(maximum_trees=1), road_collection=roads)
+    assert capped['trees'] == 1 and capped['trees_skipped_roads'] == 1
+    assert tuple(accepted.objects[0].location[:2]) == (3, 6.5)
+    # The previous near-tangent trimming failure now requires only an overlap query.
     fixture = json.loads((Path(__file__).parent/'fixtures/tree_road_tangent.json').read_text())
-    cutter = TreeRoadCutter(None)
+    mask = FootprintIndex()
     for box, planes in fixture['cutters']:
-        index = len(cutter.mask.cutters)
-        cutter.mask.cutters.append((box, planes))
-        for cell in cutter.mask._cells(box):
-            cutter.mask.cells[cell].append(index)
-    vertices, faces, changed = cutter.trim(fixture['vertices'], fixture['faces'], fixture['width'])
-    assert changed and faces
-    closed(vertices, faces)
-    assert not any(scene.name.startswith('_TREE_ROAD_') for scene in bpy.data.scenes)
-    print('TREE_ROAD_CLEARANCE_OK', results[0][0])
+        index = len(mask.cutters)
+        mask.cutters.append((box, planes))
+        for cell in mask._cells(box):
+            mask.cells[cell].append(index)
+    bottom = min(p[2] for p in fixture['vertices'])
+    assert mask.overlaps([p for p in fixture['vertices'] if p[2] == bottom])
+    import jarvizar_city_model as addon
+    from jarvizar_city_model.blender.generation_modal import settings_snapshot
+    from jarvizar_city_model.ui import JARVIZAR_PT_surfaces
+    addon.register()
+    settings = bpy.context.scene.jarvizar_city_model
+    assert settings.tree_avoid_roads is True
+    assert settings_snapshot(settings)['tree_avoid_roads'] is True
+    settings.tree_avoid_roads = False
+    assert settings_snapshot(settings)['tree_avoid_roads'] is False
+    drawn = []
+    class Layout:
+        def prop(self, settings, name, **kwargs): drawn.append(name)
+        def __getattr__(self, name): return lambda *args, **kwargs: self
+    JARVIZAR_PT_surfaces.draw(SimpleNamespace(layout=Layout()), bpy.context)
+    assert 'tree_avoid_roads' in drawn
+    addon.unregister()
+    assert not any(obj.modifiers for obj in bpy.data.objects if obj.get('feature_type') == 'trees')
+    print('TREE_ROAD_CLEARANCE_OK', {str(key): value[0] for key, value in results.items()})
 
 
 main()

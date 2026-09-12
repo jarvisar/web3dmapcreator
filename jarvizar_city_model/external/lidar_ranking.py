@@ -1,7 +1,7 @@
 """Acquisition policy using catalog and measured evidence (stdlib only).
 
 Thresholds are deliberately substantial: EPT wins unknown or marginal
-comparisons. Dates are reported acquisitions, never publication dates or name hints.
+comparisons. Project-year hints can prioritize offers, but never date points.
 See docs/LIDAR_BUILDINGS.md for units, defaults and request configuration.
 """
 from datetime import date
@@ -14,7 +14,7 @@ except ImportError:
     from lidar_candidates import streamable, staged
 
 ACQUISITION_VERSION = 5
-FALLBACK_POLICY_VERSION = 7
+FALLBACK_POLICY_VERSION = 8
 # These describe absent support/failed acquisition, not failed reconstruction.
 # Unknown rejection reasons conservatively do not justify staged LAZ downloads.
 DELIVERY_GAPS = frozenset({'source_read_failed', 'empty_ept_query', 'ept_coverage_gap'})
@@ -62,6 +62,19 @@ def usable(source):
     return not source.get('unusable_reason') and meta.get('ground_class') is not False
 
 
+def selection_year(source):
+    """Ordering hint only; never published as a measured capture date."""
+    meta = source.get('survey_metadata', {})
+    dated = meta.get('acquisition_end') or meta.get('acquisition_start')
+    return int(dated[:4]) if dated else source.get('project_year_hint') or 0
+
+
+def older_fallback(candidate, preferred, thresholds):
+    older, newer = selection_year(candidate), selection_year(preferred)
+    return bool(older and newer and newer-older >= thresholds['age_difference_years']
+                and not material_advantages(candidate, preferred, thresholds))
+
+
 def material_advantages(candidate, ept, thresholds):
     """Evidence required to pay for LAZ; like-for-like known metrics only."""
     a, b = candidate.get('survey_metadata', {}), ept.get('survey_metadata', {})
@@ -105,11 +118,12 @@ def metadata_order(source, thresholds, accuracy_fields):
     meta = source.get('survey_metadata', {})
     coverage = source.get('catalog_coverage', 0)
     acquisition = meta.get('acquisition_start') or meta.get('acquisition_end') or ''
-    ordinal = date.fromisoformat(acquisition).toordinal() if acquisition else 0
+    hint = selection_year(source)
+    ordinal = date.fromisoformat(acquisition).toordinal() if acquisition else date(hint,1,1).toordinal() if hint else 0
     # Resolution is distinct from positional accuracy. Unknowns earn no bonus.
     density, spacing = meta.get('point_density_m2'), meta.get('point_spacing_m')
     # Put nominal spacing and areal density on a consistent bounded scale:
-    # spacing s and density 1/s² have equal resolution scores. This is only
+    # spacing s and density 1/sÂ² have equal resolution scores. This is only
     # an ordering score, not an invented reported metric. When both are
     # supplied, the weaker evidence limits the score.
     resolution_scores = []
@@ -120,8 +134,8 @@ def metadata_order(source, thresholds, accuracy_fields):
     resolution = min(resolution_scores, default=0)
     accuracy = sum(1 / (1 + meta[key]) for key in accuracy_fields if key in meta)
     classified = sum(meta.get(key) is True for key in ('ground_class', 'building_class'))
-    return (not usable(source), coverage < thresholds['adequate_coverage'],
-            -ordinal, -resolution, -accuracy, -classified, -meta.get('classification_quality', 0), -coverage,
+    return (not usable(source), -ordinal, coverage < thresholds['adequate_coverage'],
+            -resolution, -accuracy, -classified, -meta.get('classification_quality', 0), -coverage,
             {'EPT': 0, 'COPC': 1}.get(source['format'], 2),
             not source.get('authoritative', False),
             source.get('estimated_bytes') or float('inf'), source['url'])
@@ -172,8 +186,9 @@ class AcquisitionPlan:
     downloads; the worker can also compare them within already selected tiles.
     Failed attempts advance deterministically, including checkpoint replay.
     """
-    def __init__(self, sources, features, geometries, thresholds=None):
+    def __init__(self, sources, features, geometries, thresholds=None, reviewed=None):
         self.sources = {s['url']: s for s in sources}
+        self.reviewed = reviewed or {}
         self.features = {f['id']: f for f in features}
         self.geometries = geometries
         self.orders, self.tried = {}, {}
@@ -230,6 +245,9 @@ class AcquisitionPlan:
         for _, reason in outcomes:
             if reason in SOURCE_INDEPENDENT_REJECTIONS:
                 return False, f'source-independent rejection: {reason}'
+        if staged(candidate) and any(staged(s) and reason == 'measurement_available'
+                and same_survey(candidate, s, self.geometries[identifier]) for s, reason in outcomes):
+            return False, 'redundant survey already measured from staged data'
         if not staged(candidate):
             for source, reason in outcomes:
                 if (same_survey(candidate, source, self.geometries[identifier])
@@ -263,6 +281,8 @@ class AcquisitionPlan:
             return True, 'optional material upgrade: ' + '; '.join(advantages)
         if reason in MEASUREMENT_GAPS:
             return True, f"{source['format']} measurement gap: {reason}"
+        if identifier in self.reviewed.get(candidate['url'], ()):
+            return True, 'reviewed survey comparison'
         return False, f"{source['format']} rejection is not a data gap: {reason}"
 
     def upgrade(self, identifier, candidate):
@@ -270,17 +290,28 @@ class AcquisitionPlan:
             return False
         successes = [s for s, _ in self.orders[identifier]
                      if self.outcomes.get((identifier, s['url'])) == 'measurement_available']
-        # Never reopen a building already successfully measured from staged data.
+        # Approval includes comparing the reviewed alternatives, not just the
+        # first survey that produces any usable measurement.
+        if identifier in self.reviewed.get(candidate['url'], ()):
+            return bool(successes) and all(not same_survey(candidate, s, self.geometries[identifier])
+                and not (staged(s) and older_fallback(candidate, s, self.thresholds)) for s in successes)
         return bool(successes) and all(streamable(s)
             and not same_survey(candidate, s, self.geometries[identifier])
             and self.advantages(identifier, candidate, s) for s in successes)
 
-    def next(self, resolved, source_format=None, pending=()):
+    def pending_preferred(self, identifier, candidate, pending):
+        # A clearly older project stays available if the newer attempt fails;
+        # uncertain independent alternatives must remain visible for review.
+        return any(same_survey(candidate, s, self.geometries[identifier])
+                   or older_fallback(candidate, s, self.thresholds)
+                   for s in (pending or {}).get(identifier, ()))
+
+    def next(self, resolved, source_format=None, pending=None):
         groups, reasons = {}, {}
         for identifier, order in self.orders.items():
-            if identifier in pending:
-                continue
             for source, reason in order:
+                if self.pending_preferred(identifier, source, pending):
+                    continue
                 if identifier in resolved and not self.upgrade(identifier, source):
                     continue
                 if source_format and not (

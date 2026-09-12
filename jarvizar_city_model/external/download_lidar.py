@@ -189,7 +189,8 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
         discovery=request.get('discovery'), vertical_units=request.get('vertical_units', ''))
     failures.extend(discovery_failures)
     plan = AcquisitionPlan(sources, [f for f in features if geographic_geometries[f['id']].intersects(box(*bbox))],
-                           geographic_geometries, thresholds)
+                           geographic_geometries, thresholds,
+                           reviewed={url: set(offer['buildings']) for url, offer in approved.items()})
     def eligible_staged(feature):
         geometry = geometries[feature['id']]
         return (geometry.is_valid and geometry.area >= 4
@@ -198,7 +199,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
             and not any((feature.get('properties') or {}).get(k)
                         for k in ('is_underground', 'min_height', 'min_floor')))
 
-    pending_offers = set()
+    pending_offers = {}
     settings = discovery_settings(**{k: v for k, v in request.get('discovery', {}).items() if k != 'version'})
     phase = 'STREAM'
     while True:
@@ -225,7 +226,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                 continue
             tiles = building_tile_plan(source, candidates, geometries, to_geographic, selected)
             extras = [f for identifier, f in plan.features.items()
-                if identifier not in pending_offers and source['url'] not in plan.tried[identifier]
+                if not plan.pending_preferred(identifier, source, pending_offers) and source['url'] not in plan.tried[identifier]
                 and any(s['url'] == source['url'] for s, _ in plan.orders[identifier])
                 and eligible_staged(f) and plan.admission(identifier, source, shared_tiles=True)[0]]
             extras = shared_tile_features(source, extras, tiles, geometries, to_geographic, selected)
@@ -244,17 +245,19 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                 'fingerprint': source.get('fingerprint', ''),
                 'metadata_fingerprint': source.get('metadata_fingerprint', ''),
                 'survey_metadata': source.get('survey_metadata', {}),
+                'project_year_hint': source.get('project_year_hint'),
                 'buildings': sorted(f['id'] for f in candidates), 'tiles': audit,
                 'reasons': sorted({plan.selection_reasons[f['id'], source['url']] for f in candidates}),
                 'areas': [{'bbox': list(map_geometry(to_geographic, box(*batch_bounds(batch, geometries, selected))).bounds),
                            'buildings': len(batch)} for batch in building_batches(candidates, geometries)]}
             consent = approved.get(source['url'])
             if not (consent and all(consent.get(k) == offer.get(k) for k in
-                    ('fingerprint', 'metadata_fingerprint', 'survey_metadata'))
+                    ('fingerprint', 'metadata_fingerprint', 'survey_metadata', 'project_year_hint'))
                     and set(offer['buildings']).issubset(consent['buildings'])
                     and set(tiles).issubset(t['url'] for t in consent['tiles'])):
                 laz_offers.append(offer)
-                pending_offers.update(f['id'] for f in candidates)
+                for feature in candidates:
+                    pending_offers.setdefault(feature['id'], []).append(source)
                 progress(f"Optional LAZ available: {len(candidates)} building comparisons, {len(audit)} tiles in {source['name']}; awaiting explicit download choice")
                 continue
         source.setdefault('acquisition_reasons', []).append(reason)

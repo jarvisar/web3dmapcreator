@@ -8,10 +8,9 @@ same selection always produces the same model.
 
 Trees are emitted as one merged ``TREES`` object by default: a dense selection
 places thousands of them, and one object each makes the outliner unusable and
-post-processing a chore. Trees start as scaled, turned copies of one solid;
-road footprints trim conflicting crowns before batching. Each tree retains
-its own vertices and closed shells. Unmerged trees share their mesh unless
-trimming requires an individual shape.
+post-processing a chore. Each tree is an intact scaled, turned copy of one
+solid, with its own vertices in merged output. Unmerged trees share a mesh.
+Trees overlapping printed roads can be excluded during placement.
 """
 
 from __future__ import annotations
@@ -40,7 +39,7 @@ from ..data.land import (
 )
 from .planar import point_in_polygon, ring_bounds, signed_area
 from .tree_geometry import TreeClearance
-from .tree_road_cut import TreeRoadCutter, TREE_ROAD_CLEARANCE_MM
+from .tree_road_overlap import tree_road_footprints, TREE_ROAD_CLEARANCE_MM
 
 
 @dataclass
@@ -68,6 +67,7 @@ class TreeSettings:
     include_land_cover: bool = True
     maximum_extent_ratio: float = MAXIMUM_EXTENT_RATIO
     sides: int = 6
+    avoid_roads: bool = True
 
 
 def _stable_seed(*parts: Any) -> int:
@@ -171,8 +171,8 @@ def generate_trees(
 ) -> Dict[str, Any]:
     """Place mapped trees and scattered forest trees.
 
-    With *merge* every tree goes into one ``TREES`` object; otherwise intact
-    trees share a mesh and road-trimmed trees have individual geometry.
+    With *merge* every tree goes into one ``TREES`` object; otherwise trees
+    share one linked mesh. Road avoidance skips entire trees before placement.
     """
     settings = settings or TreeSettings()
     canopy_radius, tree_height, exaggeration = _tree_dimensions(
@@ -185,18 +185,28 @@ def generate_trees(
     # that is no longer printed, so the water is simply not planted.
     skipped_over_water = 0
     skipped_crowded = 0
+    skipped_roads = 0
+    road_mask = tree_road_footprints(road_collection) if settings.avoid_roads else None
     maximum_factor = max(_tree_scale(0, canopy_radius, tree_height, settings),
                          _tree_scale(1, canopy_radius, tree_height, settings))
     clearance = TreeClearance(canopy_radius * maximum_factor, settings.canopy_clearance_mm)
 
     def place(x, y, size):
-        nonlocal skipped_over_water, skipped_crowded
+        nonlocal skipped_over_water, skipped_crowded, skipped_roads
         if len(placements) >= settings.maximum_trees:
             return False
         if heightfield.over_open_water(x, y):
             skipped_over_water += 1
             return False
         radius = canopy_radius * _tree_scale(size, canopy_radius, tree_height, settings)
+        if road_mask is not None:
+            sides = max(3, int(settings.sides))
+            angle = size * math.tau
+            footprint = [(x + radius*math.cos(angle + math.tau*i/sides),
+                          y + radius*math.sin(angle + math.tau*i/sides)) for i in range(sides)]
+            if road_mask.overlaps(footprint):
+                skipped_roads += 1
+                return False
         if not clearance.accept(x, y, radius):
             skipped_crowded += 1
             return False
@@ -269,10 +279,8 @@ def generate_trees(
     ground_height = heightfield.height_mm
     shape_options = dict(sides=settings.sides, embed_mm=settings.embed_mm)
     vertices, faces = tree_solid_geometry(canopy_radius, tree_height, **shape_options)
-    cutter = TreeRoadCutter(road_collection)
     builder = MeshBuilder("TREES") if merge else None
     mesh = None
-    trimmed = skipped_roads = kept_mapped = kept_scattered = 0
     for index, (x, y, size) in enumerate(placements):
         factor = _tree_scale(size, canopy_radius, tree_height, settings)
         angle = size * math.tau
@@ -281,38 +289,21 @@ def generate_trees(
         world = [(x + (vx*cos_a-vy*sin_a)*factor,
                   y + (vx*sin_a+vy*cos_a)*factor, base+vz*factor)
                  for vx, vy, vz in vertices]
-        world, tree_faces, changed = cutter.trim(
-            world, faces, min(0.4, settings.minimum_canopy_diameter_mm))
-        if not tree_faces:
-            skipped_roads += 1
+        if merge:
+            builder.add_raw(world, faces)
         else:
-            trimmed += int(changed)
-            if index < mapped_count:
-                kept_mapped += 1
-            else:
-                kept_scattered += 1
-            if merge:
-                builder.add_raw(world, tree_faces)
-            elif changed:
-                individual = MeshBuilder(f"TREE_{index:06d}")
-                individual.add_raw([(vx-x, vy-y, vz-base) for vx, vy, vz in world], tree_faces)
-                obj = individual.build(collection, material)
-                obj.location = (x, y, base)
-                obj["feature_type"] = "trees"
-                obj["tree_road_trimmed"] = True
-            else:
-                if mesh is None:
-                    mesh = tree_mesh_datablock("JCM_Tree", canopy_radius, tree_height,
-                                              reuse=reuse_mesh, **shape_options)
-                    if material is not None and not mesh.materials:
-                        mesh.materials.append(material)
-                obj = bpy.data.objects.new(f"TREE_{index:06d}", mesh)
-                collection.objects.link(obj)
-                obj["jarvizar_generated"] = True
-                obj["feature_type"] = "trees"
-                obj.location = (x, y, base)
-                obj.scale = (factor, factor, factor)
-                obj.rotation_euler = (0.0, 0.0, angle)
+            if mesh is None:
+                mesh = tree_mesh_datablock("JCM_Tree", canopy_radius, tree_height,
+                                          reuse=reuse_mesh, **shape_options)
+                if material is not None and not mesh.materials:
+                    mesh.materials.append(material)
+            obj = bpy.data.objects.new(f"TREE_{index:06d}", mesh)
+            collection.objects.link(obj)
+            obj["jarvizar_generated"] = True
+            obj["feature_type"] = "trees"
+            obj.location = (x, y, base)
+            obj.scale = (factor, factor, factor)
+            obj.rotation_euler = (0.0, 0.0, angle)
         if progress_callback is not None and (index % 32 == 0 or index+1 == total):
             progress_callback((index + 1) / total)
     if merge:
@@ -321,15 +312,14 @@ def generate_trees(
             obj["feature_type"] = "trees"
             obj["source"] = "Overture base/land tree points and forest scatter"
             obj["tree_size_exaggeration"] = round(exaggeration, 3)
-            obj["trees_road_trimmed"] = trimmed
 
     if progress_callback is not None:
         progress_callback(1.0)
     return {
-        "trees": kept_mapped + kept_scattered,
-        "trees_mapped": kept_mapped,
-        "trees_scattered": kept_scattered,
-        "trees_road_trimmed": trimmed,
+        "trees": len(placements),
+        "trees_mapped": mapped_count,
+        "trees_scattered": len(placements) - mapped_count,
+        "tree_avoid_roads": settings.avoid_roads,
         "trees_skipped_roads": skipped_roads,
         "tree_road_clearance_mm": TREE_ROAD_CLEARANCE_MM,
         "tree_size_exaggeration": round(exaggeration, 3),

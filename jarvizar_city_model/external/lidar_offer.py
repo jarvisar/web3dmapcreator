@@ -42,6 +42,8 @@ def offer_details(offers):
         meta = offer.get('survey_metadata', {})
         lines.append('Acquired: ' + str(meta.get('acquisition_start', 'unknown')) +
                      ' to ' + str(meta.get('acquisition_end', 'unknown')))
+        if offer.get('project_year_hint') and not meta.get('acquisition_start'):
+            lines.append(f"Project year hint: {offer['project_year_hint']} (capture date unverified)")
         for key, label in (('point_spacing_m', 'Spacing (m)'), ('point_density_m2', 'Density (pts/m²)'),
                            ('vertical_rmse_m', 'Vertical RMSE (m)')):
             if key in meta:

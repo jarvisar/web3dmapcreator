@@ -646,6 +646,11 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     )
 
     # ------------------------------------------------------------- vegetation
+    tree_avoid_roads: BoolProperty(
+        name="Remove Trees Over Roads/Paths",
+        description="Skip mapped and scattered trees whose finished crowns overlap generated ground roads or paths; disable to keep them intact",
+        default=True,
+    )
     tree_spacing_m: FloatProperty(
         name="Tree Spacing (m)",
         description="Forest scatter spacing; finished crowns also keep a small print-space gap",

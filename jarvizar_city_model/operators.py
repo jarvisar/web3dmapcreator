@@ -925,6 +925,7 @@ class JARVIZAR_OT_generate_model(Operator):
                         hierarchy["vegetation"],
                         materials["tree"],
                         TreeSettings(
+                            avoid_roads=settings.tree_avoid_roads,
                             scatter_spacing_m=settings.tree_spacing_m,
                             minimum_height_mm=settings.tree_minimum_height_mm,
                             minimum_canopy_diameter_mm=settings.tree_minimum_width_mm,
