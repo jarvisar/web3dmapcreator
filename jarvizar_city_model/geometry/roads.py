@@ -524,9 +524,8 @@ def generate_roads(
     support_exclusion_mm = (
         settings.bridge_support_end_exclusion_m * transform.scale_x_mm_per_m
     )
-    # Where the cut is in force, the ground for draping is the nearest land
-    # that survived; a riverside road with a few vertices over the water then
-    # keeps the bank's grade instead of dipping to a bed that is not printed.
+    # Bridge anchors use surviving banks over a cut. Supported surface roads
+    # below use the continuous field shared with their foundations instead.
     if ground_support is not None and settings.support_over_water:
         heightfield = ground_support.structure_heightfield
     ground_height = getattr(heightfield, "ground_height_mm", heightfield.height_mm)
@@ -742,7 +741,13 @@ def generate_roads(
                                  default=None)
 
         def road_ground(x, y):
-            height = ground_height(x, y)
+            # Foundations follow the continuous field. Nearest-bank heights
+            # are for bridge anchors over a cut: switching to them at the
+            # shoreline makes surface roads jagged and lifts them off their
+            # supports. Keep the same grade as the solid underneath instead.
+            height = (heightfield.height_mm(x, y)
+                      if ground_support is not None and settings.support_over_water
+                      else ground_height(x, y))
             return max(height, minimum_ground) if minimum_ground is not None else height
 
         def draped(x, y):
@@ -762,7 +767,10 @@ def generate_roads(
             if builder.add_prism([prism], refine=(settings.drape_spacing_mm, draped)):
                 added = True
                 if (ground_support is not None and settings.support_over_water
-                        and (minimum_ground is not None or ground_support.overlaps_basin([model_ring]))):
+                        and (minimum_ground is not None
+                             or ground_support.overlaps_basin([model_ring])
+                             or (heightfield.void_mask is not None
+                                 and heightfield.void_mask.touches_water([model_ring])))):
                     ground_support.footprint([model_ring], "road", minimum_ground=minimum_ground)
         if added:
             counts.surface_roads += 1

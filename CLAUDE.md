@@ -135,7 +135,10 @@ Every generator samples the shared height field, **not the DEM directly**.
 terrain cell's actual dry polygon. `over_open_water` additionally excludes
 registered supports. Use exact queries for classification; `has_ground` is the
 conservative foundation query. `ground_height_mm` uses surviving bank heights
-over cuts so roads and deck anchors do not dip into a removed riverbed.
+over cuts for deck anchors and roads without ground supports. Supported surface
+roads use the continuous `height_mm` grade and the same water-clearance floor
+as their foundations; switching to nearest-bank heights at the cut creates
+road steps and gaps above the supports.
 
 Ownership uses `jarvizar_generated` tags and a `jarvizar_city_root` marker; legacy
 tagged roots named `CITY_MODEL` remain supported. Published roots normally use
@@ -761,7 +764,7 @@ Select focused checks based on the change:
 | --- | --- |
 | Core pipeline | `test_*.py`, `blender_smoke.py`; smoke exercises merged/unmerged geometry, heights, roofs, and cleanup. `blender_generation_transaction.py` checks rollback/ownership. `blender_generation_modal.py` exercises real worker cancellation at each phase, import, retries and cleanup; windowed `blender_generation_gui.py` checks real Esc/Cancel and event-loop responsiveness. |
 | Water / supports | `blender_water_cut.py`, `blender_ground_support.py`, `blender_pond_basins.py`, `blender_basin_support.py`, `blender_water_surfaces.py`, `blender_visible_supports.py`, `blender_paved_supports.py`; cached `blender_water_cut_live.py`, `blender_coastline_live.py`, `blender_pond_basins_live.py` |
-| Roads / surface ownership | `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
+| Roads / surface ownership | `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_shore_roads.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
 | Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_envelope.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
 | Anchored LiDAR / mapped rock | `test_lidar_relief.py`, `test_lidar_offer.py`, `blender_lidar_relief.py`; verify anchor alignment, class/coverage rejection, transactional fallback, source suppression, and unchanged disabled-LiDAR mesh fingerprints |
 | Export / trees / clipboard | `blender_export_cutout.py` and its live counterpart; `blender_tree_printability.py`, `blender_tree_road_clearance.py`; `test_projection.py` and windowed `blender_gui_paste.py` |
