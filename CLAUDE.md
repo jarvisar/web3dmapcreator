@@ -400,6 +400,14 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   acquisition dates. Official documented identifiers can encode acquisition
   information: NRCan's collection end stays end-only, PNOA capture year retains
   year precision. End-only dates cannot establish a material recency upgrade.
+- `lidar_usgs_projects.py` enriches recognized USGS EPT/LPC deliveries from the
+  3DEP work-unit spatial index before ranking. Match complete work-unit keys and
+  intersecting coverage; retain subunits/editions and skip ambiguous matches.
+  Collection dates use UTC, independently of publication dates; QL is retained
+  as reported metadata, never converted into point spacing or classification
+  quality. Existing wider acquisition intervals survive. Queries reuse bounded,
+  paginated service reads with a 24-hour metadata cache; failures retain other
+  metadata and are reported. Acquisition signature changes require Prepare again.
 - Ranking compares whole-building coverage, acquisition age, resolution, comparable
   accuracy, classification and known tile sizes. EPT and COPC share the efficient
   acquisition tier, with EPT preferred on quality ties. Both run before staged

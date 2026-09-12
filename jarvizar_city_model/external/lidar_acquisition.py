@@ -11,6 +11,7 @@ try:
     from . import lidar_ept, lidar_laz
     from .lidar_selection import project_year
     from .lidar_metadata import normalized_metadata, enrich_sources
+    from .lidar_usgs_projects import enrich_usgs_projects
     from .lidar_ranking import rank_sources
     from .lidar_identity import metadata_identity
     from .lidar_tiles import building_tile_plan, batch_source, tile_audit
@@ -19,6 +20,7 @@ except ImportError:
     import lidar_ept, lidar_laz
     from lidar_selection import project_year
     from lidar_metadata import normalized_metadata, enrich_sources
+    from lidar_usgs_projects import enrich_usgs_projects
     from lidar_ranking import rank_sources
     from lidar_identity import metadata_identity
     from lidar_tiles import building_tile_plan, batch_source, tile_audit
@@ -97,6 +99,7 @@ def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambd
             source['vertical_units_basis'] = 'user-declared fallback for missing vertical units'
     sources = list({s['url']: s for s in sources}.values())
     enrich_sources(fetch, sources, failures, progress)
+    enrich_usgs_projects(fetch, sources, bbox, failures, progress)
     enrich_provenance(fetch, sources, bbox, progress)
     enrich_asset_provenance(sources, progress)
     roi = box(*bbox)

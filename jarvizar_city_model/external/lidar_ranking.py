@@ -13,7 +13,7 @@ except ImportError:
     from lidar_identity import same_survey
     from lidar_candidates import streamable, staged
 
-ACQUISITION_VERSION = 5
+ACQUISITION_VERSION = 6
 FALLBACK_POLICY_VERSION = 8
 # These describe absent support/failed acquisition, not failed reconstruction.
 # Unknown rejection reasons conservatively do not justify staged LAZ downloads.
