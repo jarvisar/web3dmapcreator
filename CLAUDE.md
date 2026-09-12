@@ -222,14 +222,17 @@ colors, overwriting manual palette edits.
   assemblies retain their variable heights. Derived parent
   heights do not justify infill. Do not replace coverage rules with simple
   polygon intersection; legitimate annexes overlap complexes.
-- **Keep Main Bodies with Sparse Parts** defaults on in scene settings and
-  additionally retains a grounded parent with a height or floor count when all
-  mapped parts cover less than 25% of its footprint. Small lower setbacks may
-  be filled intentionally. Parent holes stay open; any holes in parts, or a
-  disconnected parent footprint, disable this extra fallback. Heightless parts
-  count toward coverage. Turning it off restores the prior selection policy.
-  Low-level selection/generation helpers default to the prior policy; the operator
-  passes the scene setting explicitly. No new geometry or height inference is used.
+- **Restore Missing Main Bodies** defaults on (saved property key remains
+  `retain_sparse_building_parents`). It adds grounded parents when all mapped
+  parts cover less than half their footprint, including heightless parents using
+  normal class/configured fallback heights. Disconnected components use
+  area-weighted coverage, with holes excluded. Existing source parts are kept
+  unchanged; lower sections may become enclosed and setbacks may be filled.
+  Parent holes remain open; any part holes disable this extra fallback.
+  Turning it off restores the prior selection policy. Low-level helpers default
+  to that prior policy; the operator passes the scene setting explicitly.
+  Ordinary full LiDAR reconstruction keeps its existing replacement behavior;
+  height-only LiDAR can correct restored masses without sculpting their parts.
 
 - Duplicate footprint checks respect courtyard holes. If every selected source
   part of a suppressed parent fails filtering or meshing, generation retries

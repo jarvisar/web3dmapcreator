@@ -369,8 +369,8 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         precision=2,
     )
     retain_sparse_building_parents: BoolProperty(
-        name="Keep Main Bodies with Sparse Parts", default=True,
-        description="Keep a building's main footprint when mapped parts cover less than 25% and it has a height or floor count. May fill small setbacks; preserves parent courtyard holes and skips parts with courtyard holes",
+        name="Restore Missing Main Bodies", default=True,
+        description="Add the main body when mapped parts cover less than half its footprint, using normal fallback heights if needed. Keeps existing parts, which may become enclosed. May fill setbacks; preserves parent courtyard holes and skips parts with courtyard holes",
     )
     default_building_height_m: FloatProperty(
         name="Default Building Height (m)",

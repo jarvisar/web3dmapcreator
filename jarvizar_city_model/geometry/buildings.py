@@ -504,24 +504,30 @@ def _parent_supplies_main_mass(building, parts) -> bool:
 
 
 def _sparse_parts_leave_main_mass(building, parts):
-    """Retain a usable parent when its parts cover less than one quarter.
+    """Retain a grounded parent when most of its footprint has no mapped parts.
 
     This deliberately accepts filled small setbacks. Part-only courtyards are
     ambiguous, so any part hole opts out; parent holes remain in its geometry.
     Count every part footprint, including those without height information.
     """
     profile = resolve_vertical_profile(feature_properties(building), 3., 10.)
-    if profile.height_source not in ('height', 'num_floors') or profile.thickness_m <= 0 or profile.bottom_m > 0:
+    if profile.thickness_m <= 0 or profile.bottom_m > 0:
         return False
     parent_polygons = _footprint_polygons(building)
     part_polygons = [polygon for part in parts for polygon in _footprint_polygons(part)]
     if not parent_polygons or not part_polygons or any(len(polygon) > 1 for polygon in part_polygons):
         return False
-    # Sampling one component cannot justify filling other disconnected bodies.
-    if len(parent_polygons) != 1:
-        return False
-    samples = _footprint_samples(parent_polygons)
-    return bool(samples) and _footprint_coverage(samples, part_polygons) < .25
+    # Sample each component and weight by its material area, excluding holes.
+    # This keeps small disconnected wings from deciding a whole complex's fate.
+    total_area = covered_area = 0.0
+    for polygon in parent_polygons:
+        area = abs(_ring_area(polygon[0])) - sum(abs(_ring_area(hole)) for hole in polygon[1:])
+        samples = _footprint_samples([polygon])
+        if area <= 0 or not samples:
+            return False
+        total_area += area
+        covered_area += area * _footprint_coverage(samples, part_polygons)
+    return total_area > 0 and covered_area / total_area < .5
 
 
 def select_building_geometry(
