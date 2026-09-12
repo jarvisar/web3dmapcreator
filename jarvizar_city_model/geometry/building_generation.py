@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..blender.mesh_utils import MeshBuilder, projected_polygon_rings
-from ..data.geojson import feature_id, feature_properties, first_osm_id
+from ..data.geojson import feature_id, feature_properties, first_osm_id, geometry_polygons
 from .buildings import (
     footprint_admits_minimum_height,
     resolve_vertical_profile,
@@ -289,11 +289,24 @@ def generate_buildings(
         (feature, "building_part", part_collection, part_material, "PART")
         for feature in selection.parts
     )
+    # Retry a suppressed parent only after every selected part has had its
+    # chance. One successful part preserves the existing assembly/setbacks.
+    jobs.extend(
+        (feature, "building", building_collection, building_material, "BLDG")
+        for feature in building_features if feature_id(feature) in selection.suppressed_parent_ids
+        # Part courtyards may be absent from the parent's outline. Leave those
+        # ambiguous assemblies alone rather than fill their mapped open space.
+        and not any(len(polygon) > 1
+                    for part in parts_by_parent.get(feature_id(feature), ())
+                    for polygon in geometry_polygons(part.get('geometry') or {}))
+    )
+    built_part_parents = set()
 
     counts: Dict[str, Any] = {
         "buildings": 0,
         "building_parts": 0,
         "suppressed_parents": len(selection.suppressed_parent_ids),
+        "building_parents_restored": 0,
         "duplicate_outlines_suppressed": len(selection.duplicate_ids),
         "buildings_rejected_geometry": 0,
         "buildings_invalid_vertical_interval": 0,
@@ -437,6 +450,10 @@ def generate_buildings(
         floor_height_m, default_height_m, minimum_width_mm, maximum_slenderness)
     counts['building_parts_kept_by_adjacency'] = 0
     for index, (feature, feature_type, collection, material, prefix) in enumerate(jobs):
+        restoring_parent = (feature_type == 'building'
+                            and feature_id(feature) in selection.suppressed_parent_ids)
+        if restoring_parent and feature_id(feature) in built_part_parents:
+            continue
         if feature_type == 'building' and feature_id(feature) in infilled_parent_ids:
             continue
         # Preserve identity, footprint, underside and roof shape. Copies leave
@@ -640,8 +657,12 @@ def generate_buildings(
                 counts["parts_founded_on_parent_base"] += 1
             if feature_type == "building":
                 counts["buildings"] += 1
+                if restoring_parent:
+                    counts["building_parents_restored"] += 1
+                    counts["suppressed_parents"] -= 1
             else:
                 counts["building_parts"] += 1
+                built_part_parents.add(parent_id)
                 if source_id in part_height_updates:
                     counts['lidar_part_heights'] += 1
                     if parent_id not in measured_parent_ids:

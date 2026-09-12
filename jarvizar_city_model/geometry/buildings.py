@@ -326,6 +326,31 @@ def _coverage(points, rings) -> float:
     return inside / len(points)
 
 
+def _footprint_polygons(feature):
+    """Polygon components with their courtyard rings, for duplicate checks."""
+    polygons = []
+    for polygon in geometry_polygons(feature.get("geometry") or {}):
+        rings = [[(float(p[0]), float(p[1])) for p in ring
+                  if isinstance(p, (list, tuple)) and len(p) >= 2] for ring in polygon]
+        if rings and len(rings[0]) >= 3:
+            polygons.append([ring for ring in rings if len(ring) >= 3])
+    return polygons
+
+
+def _footprint_samples(polygons):
+    # Keep the existing sampling density and largest-component policy, but
+    # never let a courtyard vote as if it were building material.
+    return [p for p in _samples([polygon[0] for polygon in polygons])
+            if any(point_in_polygon(p, polygon) for polygon in polygons)]
+
+
+def _footprint_coverage(points, polygons):
+    if not points:
+        return 0.0
+    return sum(any(point_in_polygon(p, polygon) for polygon in polygons)
+               for p in points) / len(points)
+
+
 def _overlap_fraction(a, b) -> float:
     """How much of box *a* lies inside box *b*."""
     ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
@@ -364,25 +389,27 @@ def find_duplicate_outlines(
     """
     ids = [feature_id(b) for b in buildings]
     rings = {}
+    polygons = {}
     boxes = {}
     for building, identifier in zip(buildings, ids):
         outer = _outer_rings(building)
         if outer:
             rings[identifier] = outer
+            polygons[identifier] = _footprint_polygons(building)
             boxes[identifier] = _bounds(outer)
 
-    # Parts of each loaded parent, as rings, with the union's bounding box.
-    part_rings: Dict[str, List[List[Tuple[float, float]]]] = {}
+    # Parts of each loaded parent, retaining holes, with the union's bounds.
+    part_polygons = {}
     part_boxes = {}
     for parent_id, associated in parts_by_parent.items():
         if parent_id not in rings:
             continue
-        collected: List[List[Tuple[float, float]]] = []
+        collected = []
         for part in associated:
-            collected.extend(_outer_rings(part))
+            collected.extend(_footprint_polygons(part))
         if collected:
-            part_rings[parent_id] = collected
-            part_boxes[parent_id] = _bounds(collected)
+            part_polygons[parent_id] = collected
+            part_boxes[parent_id] = _bounds([polygon[0] for polygon in collected])
 
     duplicates: Set[str] = set()
     partless = [
@@ -398,8 +425,8 @@ def find_duplicate_outlines(
             if parent_id == identifier or _overlap_fraction(box, parent_box) < 0.5:
                 continue
             if points is None:
-                points = _samples(rings[identifier])
-            if _coverage(points, part_rings[parent_id]) >= DUPLICATE_COVERAGE:
+                points = _footprint_samples(polygons[identifier])
+            if _footprint_coverage(points, part_polygons[parent_id]) >= DUPLICATE_COVERAGE:
                 duplicates.add(identifier)
                 break
 
@@ -426,8 +453,8 @@ def find_duplicate_outlines(
                 if min(_overlap_fraction(a, b), _overlap_fraction(b, a)) < 0.7:
                     continue
                 if (
-                    _coverage(_samples(rings[first]), rings[second]) >= MUTUAL_COVERAGE
-                    and _coverage(_samples(rings[second]), rings[first]) >= MUTUAL_COVERAGE
+                    _footprint_coverage(_footprint_samples(polygons[first]), polygons[second]) >= MUTUAL_COVERAGE
+                    and _footprint_coverage(_footprint_samples(polygons[second]), polygons[first]) >= MUTUAL_COVERAGE
                 ):
                     # On a tie the later id goes, so a rerun makes the same choice.
                     poorer = min(

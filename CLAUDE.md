@@ -222,6 +222,13 @@ colors, overwriting manual palette edits.
   assemblies retain their variable heights. Derived parent
   heights do not justify infill. Do not replace coverage rules with simple
   polygon intersection; legitimate annexes overlap complexes.
+- Duplicate footprint checks respect courtyard holes. If every selected source
+  part of a suppressed parent fails filtering or meshing, generation retries
+  that parent's ordinary source mass and records `building_parents_restored`.
+  Any successful source part or LiDAR replacement prevents that retry; the
+  fallback itself still has to pass the normal geometry and printability checks.
+  Source parent holes are retained. Assemblies with holes in their source parts
+  do not receive this fallback, since their parent could fill those courtyards.
 - Parts share terrain min/max from their parent's and siblings' footprints.
   Ground-founded undersides drape; elevated parts keep their source underside.
   Building height scaling affects vertical building dimensions together, leaving

@@ -29,6 +29,32 @@ def square(identifier, x, y, size, **properties):
 
 
 class DuplicateOutlineTests(unittest.TestCase):
+    def courtyard(self, feature):
+        feature['geometry']['coordinates'].append(
+            [[.0002, .0002], [.0002, .0008], [.0008, .0008], [.0008, .0002], [.0002, .0002]])
+        return feature
+
+    def test_building_inside_part_courtyard_is_not_a_duplicate(self):
+        parent = square('parent', 0, 0, .001, has_parts=True)
+        part = self.courtyard(square('part', 0, 0, .001, building_id='parent', height=20))
+        inner = square('inner', .0004, .0004, .0002, height=10)
+        selection = select_building_geometry([parent, inner], [part])
+        self.assertNotIn('inner', selection.duplicate_ids)
+        self.assertIn(inner, selection.buildings)
+        # Another part can genuinely fill the courtyard; holes are per polygon.
+        filling = square('filling', .0002, .0002, .0006, building_id='parent', height=10)
+        self.assertIn('inner', select_building_geometry([parent, inner], [part, filling]).duplicate_ids)
+
+    def test_partless_courtyard_and_solid_footprint_are_not_twins(self):
+        hollow = self.courtyard(square('hollow', 0, 0, .001, height=20))
+        solid = square('solid', 0, 0, .001, height=10)
+        self.assertFalse(find_duplicate_outlines([hollow, solid], {}))
+
+    def test_actual_courtyard_twins_still_deduplicate(self):
+        one = self.courtyard(square('one', 0, 0, .001, height=20))
+        two = self.courtyard(square('two', 0, 0, .001))
+        self.assertEqual(find_duplicate_outlines([one, two], {}), {'two'})
+
     def test_a_named_box_over_another_buildings_parts_is_dropped(self):
         """The Scripps Center case: a plain box standing over tiered parts."""
         outline = square("outline", 0.0, 0.0, 0.001, has_parts=True)
