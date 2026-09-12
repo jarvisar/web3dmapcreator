@@ -1,4 +1,4 @@
-"""Actual worker acquisition must evaluate a trial before admitting later tiles."""
+"""Accepted offers finish their scope, with transfers confined to each batch."""
 import importlib
 import json
 from pathlib import Path
@@ -73,14 +73,15 @@ class IncrementalTests(unittest.TestCase):
                 if mode != 'read_failure':
                     events.clear()
                     prepare_reviewed_laz(worker, bundle.path, request)
-                    self.assertFalse(events, 'Checkpoint replay must preserve the stop decision without point reads')
+                    self.assertFalse(events, 'Checkpoint replay must reuse the evaluated scope without point reads')
                 return first, next(s for s in result['discovered_sources'] if s['format'] == 'LAZ')
 
-    def test_unproductive_trial_defers_remaining_tiles_even_on_replay(self):
+    def test_unproductive_batch_still_finishes_reviewed_tiles_and_reuses_them(self):
         events, source = self.run_worker('no_benefit')
-        self.assertEqual(events, [('download', '0.laz'), ('evaluated', '0')])
-        self.assertEqual(source['incremental_acquisition']['deferred_buildings'], 2)
-        self.assertEqual(len(source['selected_tiles']), 1)
+        self.assertEqual(events, [(action, str(i) + ('.laz' if action == 'download' else ''))
+                                  for i in range(3) for action in ('download', 'evaluated')])
+        self.assertEqual(source['incremental_acquisition']['batches_evaluated'], 3)
+        self.assertEqual(len(source['selected_tiles']), 3)
 
     def test_successful_trials_continue_one_batch_at_a_time(self):
         events, source = self.run_worker('benefit')
@@ -88,25 +89,25 @@ class IncrementalTests(unittest.TestCase):
                                   for i in range(3) for action in ('download', 'evaluated')])
         self.assertEqual(source['incremental_acquisition']['recovered_buildings'], 3)
 
-    def test_later_unproductive_batch_stops_further_speculation(self):
+    def test_later_unproductive_batch_does_not_cancel_approved_work(self):
         events, source = self.run_worker('later_failure')
-        self.assertEqual([v for action, v in events if action == 'download'], ['0.laz', '1.laz'])
-        self.assertEqual(source['incremental_acquisition']['deferred_buildings'], 1)
+        self.assertEqual([v for action, v in events if action == 'download'], ['0.laz', '1.laz', '2.laz'])
+        self.assertEqual(source['incremental_acquisition']['batches_evaluated'], 3)
 
     def test_independent_coverage_gaps_survive_an_unproductive_trial_elsewhere(self):
         events, source = self.run_worker('hard_gap')
-        self.assertEqual([v for action, v in events if action == 'download'], ['0.laz', '2.laz'])
-        self.assertEqual(source['incremental_acquisition']['deferred_buildings'], 1)
+        self.assertEqual([v for action, v in events if action == 'download'], ['0.laz', '1.laz', '2.laz'])
+        self.assertEqual(source['incremental_acquisition']['batches_evaluated'], 3)
 
     def test_material_upgrade_is_independently_justified(self):
         events, source = self.run_worker('superior')
         self.assertEqual([v for action, v in events if action == 'download'], ['0.laz', '1.laz', '2.laz'])
-        self.assertEqual(source['incremental_acquisition']['deferred_buildings'], 0)
+        self.assertEqual(source['incremental_acquisition']['batches_evaluated'], 3)
 
-    def test_failed_trial_does_not_queue_remaining_speculative_transfers(self):
+    def test_one_failed_tile_does_not_cancel_other_approved_tiles(self):
         events, source = self.run_worker('read_failure')
-        self.assertEqual(events, [('download', '0.laz')])
-        self.assertEqual(source['incremental_acquisition']['deferred_buildings'], 2)
+        self.assertEqual(events, [('download', f'{i}.laz') for i in range(3)])
+        self.assertEqual(source['incremental_acquisition']['batches_evaluated'], 3)
 
 
 if __name__ == '__main__':

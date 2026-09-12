@@ -21,7 +21,7 @@ from ..external.lidar_candidates import discovery_settings
 FORMAT_VERSION = 1
 
 
-def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None, roof_mode='FACETED', providers=None, stac_urls=(), vertical_units=''):
+def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None, roof_mode='FACETED', providers=None, stac_urls=(), vertical_units='', rock_surfaces=False):
     if roof_mode not in ('TERRACES', 'FACETED'):
         raise ValueError('Unknown LiDAR roof reconstruction mode')
     if vertical_units not in ('', 'm', 'ft', 'us-ft'):
@@ -37,12 +37,18 @@ def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0
         if not path.is_file():
             raise ValueError("Cache buildings and building parts before preparing LiDAR")
         files[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    if rock_surfaces:
+        path = bundle.data_path('land')
+        if not path.is_file():
+            raise ValueError('Cache land data before preparing mapped rock surfaces')
+        files['land'] = hashlib.sha256(path.read_bytes()).hexdigest()
     return {"algorithm": ALGORITHM_VERSION, "acquisition": ACQUISITION_VERSION, "bbox": list(bundle.bounds.as_tuple()),
             "footprint_sha256": files, "xy_scale": round(float(xy_scale), 10),
             "z_scale": round(float(z_scale), 10), "min_width_mm": round(float(min_width_mm), 6),
             "min_step_mm": round(float(min_step_mm), 6), "source_url": source_url.strip(),
             'roof_planes': bool(roof_planes), 'prefer_lidar': bool(prefer_lidar),
             'roof_mode': roof_mode,
+            'rock_surfaces': bool(rock_surfaces),
             'manifest_url': manifest_url.strip(), 'acquisition_thresholds': selection_thresholds(acquisition_thresholds),
             'fallback_policy': FALLBACK_POLICY_VERSION,
             'discovery': discovery_settings(providers, stac_urls), 'vertical_units': vertical_units}

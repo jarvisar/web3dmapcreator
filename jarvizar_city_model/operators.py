@@ -34,7 +34,7 @@ from .data.dem import DEMTerrain, ElevationGrid, ElevationGridError
 from .data.lidar import request_signature, load_measurements, prepare_lidar, LidarPreparation
 from .external.lidar_reuse import reusable_prepared, summarize_prepared
 from .external.lidar_offer import approved_offers, offer_details
-from .data.geojson import load_feature_collection, polygon_features, first_osm_id
+from .data.geojson import load_feature_collection, polygon_features, first_osm_id, feature_id
 from .data.land import recessed_water_kind
 from .config import preferred_python_path
 from .data.overture import (
@@ -327,6 +327,7 @@ def _lidar_signature(settings, bundle, transform=None):
         roof_mode=settings.lidar_roof_mode,
         providers=None if settings.lidar_international else ('usgs',),
         stac_urls=settings.lidar_stac_urls.split(),
+        rock_surfaces=settings.lidar_rock_surfaces,
         vertical_units='' if settings.lidar_vertical_units == 'AUTO' else settings.lidar_vertical_units)
 
 
@@ -952,10 +953,20 @@ class JARVIZAR_OT_generate_model(Operator):
                     if not lidar_profiles:
                         self.report({"WARNING"}, lidar_status)
                 progress(.70, "Building buildings")
+                rock_covered = set()
+                if lidar_profiles and settings.lidar_rock_surfaces:
+                    from .geometry.lidar_rock import generate_rock_surfaces
+                    rock_counts, rock_covered = generate_rock_surfaces(
+                        lidar_profiles, transform, heightfield, hierarchy['land_surfaces'], materials['surface_rock'],
+                        height_scale=settings.building_height_scale, embed=settings.surface_embed_mm,
+                        spacing=surface_settings.drape_spacing_mm, minimum_width=settings.minimum_building_width_mm,
+                        ground_support=ground_support)
+                    counts.update(rock_counts)
                 counts.update(
                     generate_buildings(
-                        _load_polygons(bundle, "building"),
-                        _load_polygons(bundle, "building_part"),
+                        [f for f in _load_polygons(bundle, "building") if feature_id(f) not in rock_covered],
+                        [f for f in _load_polygons(bundle, "building_part") if
+                         str((f.get('properties') or {}).get('building_id') or '') not in rock_covered],
                         transform,
                         heightfield,
                         floor_height_m=settings.floor_height_m,
@@ -986,6 +997,7 @@ class JARVIZAR_OT_generate_model(Operator):
                     else:
                         lidar_generation_status = (
                             f"Used LiDAR on {counts.get('lidar_buildings', 0)} buildings: "
+                            f"{counts.get('lidar_rock_surfaces', 0)} mapped rock surfaces; "
                             f"{counts.get('lidar_tier_solids', 0)} tier sections, "
                             f"{counts.get('lidar_roof_plane_buildings', 0)} sloped roofs, "
                             f"{counts.get('lidar_faceted_roof_buildings', 0)} detailed surfaces; "

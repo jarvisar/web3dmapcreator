@@ -19,10 +19,12 @@ try:
     from .lidar_ept import BudgetExceeded
     from .lidar_selection import gps_capture_years
     from .lidar_normalize import vertical_factor, classifications, source_metadata, header_metadata, RETAINED_CLASSES
+    from .lidar_decode_cache import tile_chunks
 except ImportError:
     from lidar_ept import BudgetExceeded
     from lidar_selection import gps_capture_years
     from lidar_normalize import vertical_factor, classifications, source_metadata, header_metadata, RETAINED_CLASSES
+    from lidar_decode_cache import tile_chunks
 
 
 def coordinate_system(header, metadata=None):
@@ -170,15 +172,16 @@ def read_laz(fetch, source, bbox, max_points=8_000_000, chunk_size=250_000):
                 query = Transformer.from_crs(4326, crs, always_xy=True).transform_bounds(*bbox, densify_pts=21)
                 to_lonlat = Transformer.from_crs(crs, 4326, always_xy=True)
                 decoded = 0
-                for chunk in reader.chunk_iterator(chunk_size):
-                    decoded += len(chunk)
-                    fetch.progress(f"Decoding LAZ: {decoded:,}/{reader.header.point_count:,} points in {tile['url'].rsplit('/', 1)[-1]}")
-                    piece = normalized_chunk(chunk, reader.header, bbox, query, to_lonlat, factor, metadata)
-                    retained += len(piece)
-                    if retained > max_points:
-                        raise BudgetExceeded('Cropped LiDAR point budget reached; subdivide group')
-                    if len(piece):
-                        pieces.append(piece)
+                with tile_chunks(fetch, reader, path, chunk_size) as chunks:
+                    for chunk in chunks:
+                        decoded += len(chunk)
+                        fetch.progress(f"Decoding LAZ: {decoded:,}/{reader.header.point_count:,} points in {tile['url'].rsplit('/', 1)[-1]}")
+                        piece = normalized_chunk(chunk, reader.header, bbox, query, to_lonlat, factor, metadata)
+                        retained += len(piece)
+                        if retained > max_points:
+                            raise BudgetExceeded('Cropped LiDAR point budget reached; subdivide group')
+                        if len(piece):
+                            pieces.append(piece)
                 details.append({**tile, **header_metadata(reader.header),
                                 'horizontal_crs': crs.to_string(), 'z_to_metres': factor})
         except (LaspyException, LazrsError) as exc:

@@ -36,6 +36,20 @@ def batch_source(source, features, tile_plan):
             if identifiers.intersection(entry['footprints'] + entry['ground_halos'])]}
 
 
+def shared_tile_features(source, candidates, tile_plan, geometries, to_geographic, selection):
+    """Add comparisons only if their complete tile/ground-halo allowlist fits.
+
+    Check against the full catalog, so a footprint straddling an unoffered tile
+    never silently expands the download or receives a clipped measurement.
+    """
+    required = {}
+    for url, entry in building_tile_plan(source, candidates, geometries, to_geographic, selection).items():
+        for identifier in entry['footprints'] + entry['ground_halos']:
+            required.setdefault(identifier, set()).add(url)
+    available = set(tile_plan)
+    return [f for f in candidates if required.get(f['id']) and required[f['id']] <= available]
+
+
 def tile_audit(tile_plan, features, reasons):
     identifiers = {feature['id'] for feature in features}
     result = []

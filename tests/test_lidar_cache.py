@@ -126,11 +126,11 @@ class LidarCacheTests(unittest.TestCase):
         self.assertIn('stale', load_measurements(self.bundle,self.signature)[1])
 
     def test_previous_surface_reconstruction_requires_new_preparation(self):
-        self.assertEqual(self.signature['algorithm'], 16)
+        self.assertEqual(self.signature['algorithm'], 17)
         self.write({'one': {'height_m': 30, 'tiers': []}})
         path = self.bundle.path/'lidar_buildings.json'
         payload = json.loads(path.read_text())
-        payload['request']['algorithm'] = 15
+        payload['request']['algorithm'] = 16
         path.write_text(json.dumps(payload))
         self.assertIn('stale', load_measurements(self.bundle, self.signature)[1])
 

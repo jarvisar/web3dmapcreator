@@ -68,7 +68,10 @@ def surface_height(surface, transform):
     dx, dy, dz = q[0]-p[0], q[1]-p[1], q[2]-p[2]
     ex, ey, ez = r[0]-p[0], r[1]-p[1], r[2]-p[2]
     det = dx*ey-dy*ex
-    if abs(det) < EPSILON**2:
+    # A clipped envelope can have a very small, well-conditioned triangle.
+    # Reject collinearity relative to its edges, not its printed area; dropping
+    # a valid corner face makes the otherwise complete cap unusable.
+    if abs(det) <= 1e-12 * max(dx*dx+dy*dy, ex*ex+ey*ey):
         raise ValueError('Degenerate measured roof plane')
     a, b = (dz*ey-dy*ez)/det, (dx*ez-dz*ex)/det
     def height(x,y):
@@ -90,6 +93,9 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
     if not outlines:
         return None
     terrain, terrain_top = ground
+    if 'ground_anchor' in record:
+        x, y = transform.forward(*record['ground_anchor'][:2])[:2]
+        terrain = heightfield.height_mm(x, y)-vertical(record['ground_anchor'][2])
     base_height = record["height_m"]
     surfaces = record.get('roof_surfaces', [])
     if record.get('roof_mesh'):
@@ -184,6 +190,7 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
         if abs(roof_area-footprint_area) > max(0.001, footprint_area*0.01):
             return None
     return builder, {"terrain_base_mm": terrain, "terrain_top_mm": terrain_top,
+                     "terrain_base_source": "lidar_ground_anchor" if 'ground_anchor' in record else "parent_footprint",
                      "minimum_height_lift_mm": lift, "lidar_tiers": tier_count,
                      'lidar_roof_planes': roof_count, 'lidar_joined_envelope': joined,
                      'height_m': total_height}

@@ -288,13 +288,17 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         description="Terraces only: smallest measured height difference retained as a separate roof tier",
     )
     lidar_download_workers: IntProperty(
-        name="LAZ Parallel Downloads", default=DEFAULT_DOWNLOAD_WORKERS,
+        name="Parallel Downloads", default=DEFAULT_DOWNLOAD_WORKERS,
         min=1, max=MAX_DOWNLOAD_WORKERS,
-        description="Simultaneous LAZ tile downloads for the next preparation. More may help on fast connections; reduce if transfers stall or the server throttles. Does not invalidate prepared LiDAR",
+        description="Simultaneous EPT node or LAZ tile downloads for the next preparation. Reduce on slow connections or if the server throttles; 1 downloads sequentially. Does not invalidate prepared LiDAR",
     )
     lidar_source_url: StringProperty(
         name="EPT / COPC URL (optional)", default="",
         description="Leave empty for automatic discovery; set an ept.json or COPC HTTPS URL to override provider discovery",
+    )
+    lidar_rock_surfaces: BoolProperty(
+        name="Include Mapped Rock Surfaces", default=False,
+        description="Reconstruct measured relief inside cached bare-rock polygons, including ground-classified rock. Requires cached land data and preparing LiDAR again",
     )
     lidar_international: BoolProperty(
         name="International LiDAR Discovery", default=True,

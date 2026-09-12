@@ -236,7 +236,8 @@ class AcquisitionAdmissionTests(unittest.TestCase):
                 if mode != 'failure':
                     self.assertEqual(len(reads), count)
                 transfer.assert_not_called()
-                expected = 1 if mode.startswith('rejected:') or mode == 'downgrade' else 2
+                from jarvizar_city_model.external.lidar_ranking import MEASUREMENT_GAPS
+                expected = 1 if mode.startswith('rejected:') and mode.split(':',1)[1] not in MEASUREMENT_GAPS else 2
                 self.assertEqual(first['buildings'], expected)
                 self.assertEqual(second['buildings'], expected)
                 if mode == 'marginal':
@@ -278,10 +279,9 @@ class AcquisitionAdmissionTests(unittest.TestCase):
         self.assertEqual(len(downloads), 2)
         self.assertTrue(payload['failures'])
 
-    def test_reconstruction_rejections_never_trigger_speculative_laz_even_on_resume(self):
-        for reason in ('unresolved_upper_roof', 'footprint_roof_mismatch', 'roof_extends_outside_footprint',
-                       'observed_ground_in_footprint', 'sparse_or_noisy_roof', 'complex_unclassified_roof',
-                       'unprintable_major_tier', 'elevated_or_underground', 'incomplete_footprint_or_ground_halo',
+    def test_geometry_and_unknown_rejections_do_not_trigger_new_downloads(self):
+        for reason in ('roof_extends_outside_footprint', 'unprintable_major_tier',
+                       'elevated_or_underground', 'incomplete_footprint_or_ground_halo',
                        'unknown_future_rejection'):
             with self.subTest(reason=reason):
                 processed, downloads, payload = self.run_worker('rejected:' + reason)
@@ -290,10 +290,18 @@ class AcquisitionAdmissionTests(unittest.TestCase):
                 self.assertEqual(payload['rejected']['east'], reason)
                 self.assertTrue(any(s.get('skipped_fallback_reasons') for s in payload['discovered_sources']))
 
-    def test_poorer_ept_cannot_turn_a_roof_fit_rejection_into_a_laz_gap(self):
+    def test_reconstruction_gaps_try_a_distinct_survey_within_the_offer(self):
+        for reason in ('unresolved_upper_roof', 'footprint_roof_mismatch', 'observed_ground_in_footprint',
+                       'sparse_or_noisy_roof', 'complex_unclassified_roof'):
+            with self.subTest(reason=reason):
+                processed, downloads, payload = self.run_worker('rejected:' + reason)
+                self.assertEqual(downloads, ['https://example.com/laz/east.laz'])
+                self.assertEqual(payload['buildings']['east']['source_format'], 'LAZ')
+
+    def test_secondary_stream_does_not_expand_a_reconstruction_gap_offer(self):
         processed, downloads, payload = self.run_worker('downgrade')
-        self.assertFalse(downloads)
-        self.assertEqual(set(payload['buildings']), {'west'})
+        self.assertEqual(downloads, ['https://example.com/laz/east.laz'])
+        self.assertEqual(set(payload['buildings']), {'west','east'})
 
     def test_real_support_gaps_and_material_advantages_remain_eligible(self):
         from jarvizar_city_model.external.lidar_ranking import AcquisitionPlan

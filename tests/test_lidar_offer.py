@@ -118,6 +118,18 @@ class OfferTests(unittest.TestCase):
         self.assertIn('optional material upgrade', result['laz_offers'][0]['reasons'][0])
         self.assertFalse(self.downloads)
 
+    def test_measured_capture_year_can_establish_a_catalog_upgrade(self):
+        from jarvizar_city_model.external.lidar_ranking import AcquisitionPlan
+        features = [{'id': 'old'}, {'id': 'recent'}]
+        shapes = {f['id']: box(-73.99,40.02,-73.98,40.03) for f in features}
+        self.laz['survey_metadata'] = {'acquisition_start':'2023-10-24'}
+        plan = AcquisitionPlan(self.sources, features, shapes)
+        self.assertEqual(plan.next(set(),source_format='STREAM')[0]['format'], 'EPT')
+        plan.observe(self.ept, features, {'old': {'capture_year':2011}, 'recent': {'capture_year':2022}}, {})
+        work = plan.next({'old','recent'},source_format='STAGED')
+        self.assertEqual([f['id'] for f in work[1]], ['old'])
+        self.assertNotIn('survey_metadata', self.ept, 'A building date must not become survey-wide metadata')
+
     def test_adequate_copc_only_offers_material_upgrade_and_keeps_it_without_consent(self):
         self.ept['format'] = 'COPC'
         self.ept['survey_metadata'] = {'point_spacing_m': 2}
@@ -140,12 +152,54 @@ class OfferTests(unittest.TestCase):
         self.assertFalse(self.reads)
         self.assertFalse(self.downloads)
 
-    def test_secondary_ept_reconstruction_rejection_does_not_offer_laz(self):
+    def test_reconstruction_gap_is_offered_automatically_without_extra_tiles(self):
+        self.gap = 'footprint_roof_mismatch'
+        proposal = self.prepare()
+        self.assertEqual(proposal['laz_offers'][0]['buildings'], ['east'])
+        self.assertIn('measurement gap', proposal['laz_offers'][0]['reasons'][0])
+        self.assertFalse(self.downloads)
+        result = self.prepare(laz_approval=proposal['laz_offer_token'])
+        self.assertEqual(set(self.downloads), {'https://example.com/laz/east.laz'})
+        self.assertEqual(result['buildings'], 2)
+        self.assertFalse(result['laz_offers'])
+
+    def test_shared_tile_revisits_successful_building_without_another_download(self):
+        east = next(t for t in self.laz['tiles'] if t['url'].endswith('/east.laz'))
+        self.laz['tiles'] = [dict(east, bbox=[-74, 40, -73.9, 40.1])]
+        proposal = self.prepare()
+        self.assertEqual(proposal['laz_offers'][0]['buildings'], ['east', 'west'])
+        self.assertEqual(len(proposal['laz_offers'][0]['tiles']), 1)
+        self.assertFalse(self.downloads)
+        self.prepare(laz_approval=proposal['laz_offer_token'])
+        self.assertEqual(set(self.downloads), {'https://example.com/laz/east.laz'})
+        payload = json.loads((self.bundle.path/'lidar_buildings.json').read_text())
+        self.assertEqual(payload['buildings']['west']['selection']['candidates'], 2)
+
+    def test_shared_tile_expansion_does_not_add_a_missing_ground_halo_tile(self):
+        path = self.bundle.data_path('building')
+        data = json.loads(path.read_text())
+        data['features'][0]['geometry'] = mapping(box(-73.9499, 40.02, -73.949, 40.021))
+        path.write_text(json.dumps(data))
+        from jarvizar_city_model.data.lidar import request_signature
+        self.request = request_signature(self.bundle, .07, .077)
+        offer = self.prepare()['laz_offers'][0]
+        self.assertEqual(offer['buildings'], ['east'])
+        self.assertEqual([t['url'] for t in offer['tiles']], ['https://example.com/laz/east.laz'])
+
+    def test_only_one_survey_is_offered_per_gap_until_its_result_is_known(self):
+        self.sources.append({**self.laz, 'url': 'https://example.com/spare/',
+            'tiles': [dict(t, url=t['url'].replace('/laz/', '/spare/')) for t in self.laz['tiles']]})
+        proposal = self.prepare()
+        self.assertEqual(len(proposal['laz_offers']), 1)
+        self.assertEqual(proposal['laz_offers'][0]['url'], self.laz['url'])
+        result = self.prepare(laz_approval=proposal['laz_offer_token'])
+        self.assertFalse(result['laz_offers'])
+        self.assertEqual(self.downloads, ['https://example.com/laz/east.laz'])
+
+    def test_secondary_ept_reconstruction_rejection_still_offers_only_the_gap(self):
         self.sources.append({**self.ept, 'url': 'https://example.com/secondary/ept.json'})
-        # First EPT rejects reconstruction, the second cannot turn it into a
-        # LAZ gap even if that second survey is sparse.
         self.gap = 'footprint_roof_mismatch'
         result = self.prepare()
-        self.assertFalse(result['laz_offers'])
+        self.assertEqual(result['laz_offers'][0]['buildings'], ['east'])
         self.assertEqual(len(self.reads), 3)
         self.assertFalse(self.downloads)

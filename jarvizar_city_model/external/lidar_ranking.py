@@ -1,4 +1,4 @@
-"""Metadata-only acquisition policy. Safe to import in Blender (stdlib only).
+"""Acquisition policy using catalog and measured evidence (stdlib only).
 
 Thresholds are deliberately substantial: EPT wins unknown or marginal
 comparisons. Dates are reported acquisitions, never publication dates or name hints.
@@ -14,15 +14,18 @@ except ImportError:
     from lidar_candidates import streamable, staged
 
 ACQUISITION_VERSION = 5
-FALLBACK_POLICY_VERSION = 5
-# Stop speculative support-gap acquisition after one batch yields no adopted
-# measurements. Coverage/delivery gaps and material upgrades remain independent.
-MAX_UNPRODUCTIVE_LAZ_BATCHES = 1
+FALLBACK_POLICY_VERSION = 7
 # These describe absent support/failed acquisition, not failed reconstruction.
 # Unknown rejection reasons conservatively do not justify staged LAZ downloads.
 DELIVERY_GAPS = frozenset({'source_read_failed', 'empty_ept_query', 'ept_coverage_gap'})
 DATA_GAPS = DELIVERY_GAPS | frozenset({'insufficient_ground',
                       'insufficient_roof_points', 'insufficient_coverage'})
+# Another survey can describe a changed building or provide stronger support.
+# These are measurement gaps, not permission to reread a known duplicate cloud.
+MEASUREMENT_GAPS = DATA_GAPS | frozenset({'footprint_roof_mismatch',
+    'observed_ground_in_footprint', 'unresolved_upper_roof', 'source_height_conflict',
+    'predates_building', 'mixed_capture_epochs', 'sparse_or_noisy_roof',
+    'complex_unclassified_roof'})
 SOURCE_INDEPENDENT_REJECTIONS = frozenset({'invalid_or_small_footprint',
     'elevated_or_underground', 'incomplete_footprint_or_ground_halo'})
 DEFAULT_THRESHOLDS = {
@@ -163,11 +166,11 @@ def rank_sources(sources, thresholds=None, geometry=None):
 
 
 class AcquisitionPlan:
-    """Whole-building ownership with lazy, unresolved-only fallback acquisition.
+    """Whole-building ownership with targeted gap and upgrade acquisition.
 
-    Each next() call observes the caller's resolved set. Successful buildings
-    never enter another source's batches or LAZ prefetch. Failed attempts advance
-    deterministically, even when checkpoints supplied the results.
+    Successful streamed buildings need evidence of an upgrade to justify more
+    downloads; the worker can also compare them within already selected tiles.
+    Failed attempts advance deterministically, including checkpoint replay.
     """
     def __init__(self, sources, features, geometries, thresholds=None):
         self.sources = {s['url']: s for s in sources}
@@ -176,6 +179,7 @@ class AcquisitionPlan:
         self.orders, self.tried = {}, {}
         self.thresholds = selection_thresholds(thresholds)
         self.outcomes, self.skipped, self.selection_reasons = {}, {}, {}
+        self.capture_years = {}
         rankings = {}
         for identifier in self.features:
             eligible = tuple(s['url'] for s in sources if usable(s) and s['coverage'].covers(geometries[identifier]))
@@ -206,8 +210,20 @@ class AcquisitionPlan:
             elif streamable(source) and reason == 'insufficient_coverage' and (info or {}).get('ept_delivery_gap') is True:
                 reason = 'ept_coverage_gap'
             self.outcomes[identifier, source['url']] = reason
+            year = records.get(identifier, {}).get('capture_year')
+            if year:
+                self.capture_years[identifier, source['url']] = int(year)
 
-    def admission(self, identifier, candidate):
+    def advantages(self, identifier, candidate, previous):
+        # A measured capture year can fill missing catalog dates for this
+        # building only. Never promote it to survey-wide acquisition metadata.
+        year = self.capture_years.get((identifier, previous['url']))
+        metadata = previous.get('survey_metadata', {})
+        if year and not metadata.get('acquisition_end'):
+            previous = {**previous, 'survey_metadata': {**metadata, 'acquisition_end': f'{year:04d}-12-31'}}
+        return material_advantages(candidate, previous, self.thresholds)
+
+    def admission(self, identifier, candidate, shared_tiles=False):
         outcomes = [(source, self.outcomes[identifier, source['url']])
                     for source, _ in self.orders[identifier]
                     if (identifier, source['url']) in self.outcomes]
@@ -231,6 +247,10 @@ class AcquisitionPlan:
                 return False, f'redundant survey {same_survey(candidate, source, self.geometries[identifier])} already read as {source["format"]}'
         if equivalents:
             return True, 'same-survey streamed delivery gap: ' + ', '.join(sorted({r for _, r in equivalents}))
+        if shared_tiles:
+            if any(staged(s) and reason == 'measurement_available' for s, reason in outcomes):
+                return False, 'already measured from staged data'
+            return True, 'compare using tiles already needed for gaps or upgrades'
         # The preferred EPT's evidence governs fallback. A poorer/older EPT
         # returning fewer points cannot turn its predecessor's roof-fit rejection
         # into a coverage gap and thereby unlock every LAZ survey.
@@ -238,11 +258,11 @@ class AcquisitionPlan:
         if ept is None:
             return True, None
         source, reason = ept
-        advantages = material_advantages(candidate, source, self.thresholds)
+        advantages = self.advantages(identifier, candidate, source)
         if advantages:
             return True, 'optional material upgrade: ' + '; '.join(advantages)
-        if reason in DATA_GAPS:
-            return True, f"{source['format']} data gap: {reason}"
+        if reason in MEASUREMENT_GAPS:
+            return True, f"{source['format']} measurement gap: {reason}"
         return False, f"{source['format']} rejection is not a data gap: {reason}"
 
     def upgrade(self, identifier, candidate):
@@ -253,27 +273,13 @@ class AcquisitionPlan:
         # Never reopen a building already successfully measured from staged data.
         return bool(successes) and all(streamable(s)
             and not same_survey(candidate, s, self.geometries[identifier])
-            and material_advantages(candidate, s, self.thresholds) for s in successes)
+            and self.advantages(identifier, candidate, s) for s in successes)
 
-    def speculative(self, identifier, candidate):
-        """A sparse-support trial has no independent evidence of a delivery gap."""
-        if not staged(candidate):
-            return False
-        ept = next((s for s, _ in self.orders[identifier] if streamable(s)
-                    and (identifier, s['url']) in self.outcomes), None)
-        if ept is None or material_advantages(candidate, ept, self.thresholds):
-            return False
-        return self.outcomes[identifier, ept['url']] in DATA_GAPS - DELIVERY_GAPS
-
-    def defer(self, source, features):
-        for feature in features:
-            identifier = feature['id']
-            self.outcomes[identifier, source['url']] = 'speculative_trial_stopped'
-            self.skipped.setdefault(source['url'], {})[identifier] = 'LAZ trial produced no adopted measurements; further speculative downloads deferred'
-
-    def next(self, resolved, source_format=None):
+    def next(self, resolved, source_format=None, pending=()):
         groups, reasons = {}, {}
         for identifier, order in self.orders.items():
+            if identifier in pending:
+                continue
             for source, reason in order:
                 if identifier in resolved and not self.upgrade(identifier, source):
                     continue

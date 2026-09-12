@@ -1,5 +1,60 @@
 # Building heights and USGS LiDAR
 
+## Automatic LAZ offers and mapped relief (0.23.14)
+
+Reconstruction algorithm 17; acquisition remains 5; fallback policy is 7. Run **Prepare LiDAR
+Buildings** with Refresh off after updating. Existing downloaded tiles and
+compatible normalized points remain reusable.
+
+1. Optionally enable **Include Mapped Rock Surfaces** after caching land data.
+2. Run **Prepare LiDAR Buildings**, with Refresh off to reuse cached data.
+3. Review any optional LAZ offer, then choose **Download and Use Offered Tiles**.
+4. Generate the model.
+
+Preparation finishes efficient EPT/COPC work first, then offers staged tiles for
+missing coverage, known measurement gaps, or substantially newer/better catalog
+evidence. A building's measured capture year can fill a missing streamed catalog
+date for that building. Publication dates and survey names never establish age.
+Ordinary roof mismatches or ground where a building is mapped can now prompt a
+different survey; known duplicate deliveries still need an actual delivery gap.
+
+Only one survey is offered per building at a time. Tile selection follows the
+eligible footprints and their ground halos, excluding unrelated map acreage.
+Nearby buildings, including successful older measurements, are compared too
+when all their required tiles already fit that offer. This does not add downloads;
+a footprint whose ground halo needs another tile is not added this way.
+
+Accepting an offer evaluates its complete reviewed scope. One unproductive
+batch no longer cancels the remaining approved comparisons. Transfers remain
+bounded to each batch, with normal cancellation and cache reuse. If another
+survey is needed after a failure, its tiles require a new offer. Current survey
+support and capture evidence determine which complete measurement wins.
+
+The separate **Compare a Full Survey** control from 0.23.13 is removed. Its old
+saved URL has no effect. Offers from earlier preparation policies must be
+reviewed again. No new downloads occur during model generation.
+
+Buildings on irregular terrain can now use a measured ground anchor when a
+single surrounding plane cannot be fitted. Spatially balanced ground cells
+must enclose the whole footprint; a lower-decile cell provides WGS84 XY and a
+same-survey vertical reference. Blender aligns that specific location with its
+existing heightfield. Successful planar fits are unchanged.
+
+Mapped bare-rock polygons have an optional separate upper-surface path. Class-2
+ground is valid rock-surface evidence inside those polygons; vegetation is
+excluded. Every component still requires 85% supported area and three returns
+per supported cell. The output is a closed, terrain-seated envelope with rock
+material, not a raw point mesh. Missing evidence retains fallback geometry.
+Only a successfully built rock cap replaces source masses wholly contained
+within that mapped domain. General attraction boundaries and point peaks do
+not supply missing outlines. Overhangs, caves and hidden cliff faces cannot be
+represented by a single upper height per XY location.
+
+Small valid triangles at clipped envelope corners are now checked for relative
+collinearity rather than rejected solely for their tiny printed area. This
+keeps a complete cap from falling back because of one sub-print-size face;
+closure, winding and boundary checks remain unchanged.
+
 ## Full plan resolution for large envelopes (0.23.10)
 
 Reconstruction algorithm 16. Run **Prepare LiDAR Buildings** with Refresh off,
@@ -1416,13 +1471,15 @@ additive, so ancestors must be included with descendants. The reader targets
 crops decoded points to the requested area plus a 75 m ground/boundary halo.
 [EPT format](https://entwine.io/en/latest/entwine-point-tile.html).
 
-Staged USGS LAZ acquisition downloads four required tiles concurrently by
-default. **Buildings → USGS LiDAR Buildings → LAZ Parallel Downloads** accepts
+EPT node and staged LAZ acquisition download four required resources concurrently by
+default. **Buildings → USGS LiDAR Buildings → Parallel Downloads** accepts
 1–16 transfers; the limit applies to the next preparation. Changing it preserves
 prepared measurements and checkpoints because it is a transport option, not a
 measurement setting. The external CLI exposes `--download-workers 1–16`.
-The worker looks ahead across building groups for the current
-survey, skipping groups with valid checkpoints and tiles outside those groups.
+The worker prefetches only the currently admitted building group, skipping
+valid checkpoints and unneeded tiles. EPT has a bounded window of node downloads
+and consumes results in the original hierarchy order. Set the limit to 1 for
+sequential downloads; COPC range reads remain sequential.
 Downloads overlap with sequential decoding and measurement; point-array memory
 limits and source selection remain unchanged. Shared URL/revision transfers are
 coalesced, cache replacement is atomic, and progress-file writes are serialized.
@@ -1431,6 +1488,15 @@ reusable. A single large tile still uses one transfer, and throughput depends on
 the connection and USGS server. Explicit total byte budgets serialize transfers
 to preserve the cap; normal preparation uses concurrent transfers with the
 existing per-tile size guard.
+
+Within a preparation, decoded EPT nodes reuse up to 64 MiB of RAM. Decoded LAZ
+tiles reuse read-only mappings of temporary files, limited to 1 GiB total and
+512 MiB per tile. This avoids repeatedly decompressing a tile shared by several
+building groups. Larger tiles, or unavailable temporary storage, use the
+existing chunked reader. These temporary files are removed on eviction, normal
+completion, or process termination. Each batch still applies its own crop and
+normalization to the raw records; no surveys, classifications, or heights are
+combined. The persistent normalized-point and measurement caches are unchanged.
 
 The downloader reports per-tile throughput and identifies decoding/cropping
 separately. LAS header checks run during the initial transfer, before the point

@@ -5,7 +5,7 @@ never turn a missing upper roof into an apparently valid podium-only model.
 """
 import math
 
-ALGORITHM_VERSION = 16
+ALGORITHM_VERSION = 17
 MAX_ROOF_FACETS = 1024
 # A roof envelope costs about one face per print-scale cell, so a downtown
 # outline needs several times the earlier budget to keep its plan resolution
@@ -151,6 +151,20 @@ def validate_records(buildings):
         height = record.get('height_m')
         if not finite_number(height) or height <= 0:
             raise ValueError('Invalid LiDAR height')
+        if 'surface_kind' in record:
+            if record['surface_kind'] != 'rock' or record.get('surface_reconstruction') != 'roof_envelope':
+                raise ValueError('Invalid LiDAR surface kind')
+            validate_geometry(record.get('surface_geometry'))
+            if 'ground_anchor' not in record:
+                raise ValueError('Missing LiDAR ground anchor')
+            covered = record.get('covered_buildings', [])
+            if not isinstance(covered, list) or any(not isinstance(k, str) or not k or k.startswith('rock:') for k in covered):
+                raise ValueError('Invalid rock-covered building identifiers')
+        if 'ground_anchor' in record:
+            anchor = record.get('ground_anchor')
+            if (not isinstance(anchor, (list, tuple)) or len(anchor) != 3 or not all(map(finite_number, anchor))
+                    or not -180 <= anchor[0] <= 180 or not -90 <= anchor[1] <= 90 or anchor[2] < 0):
+                raise ValueError('Invalid LiDAR ground anchor')
         part_heights = record.get('part_heights', {})
         if not isinstance(part_heights, dict) or any(not isinstance(key, str) or not key
                 or not finite_number(value) or value <= 0 for key,value in part_heights.items()):

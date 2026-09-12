@@ -26,10 +26,14 @@ try:
     from .lidar_selection import gps_capture_years
     from .lidar_transfer import BudgetExceeded, stream_tile
     from .lidar_normalize import vertical_factor as declared_vertical_factor, classifications, RETAINED_CLASSES
+    from .lidar_decode_cache import DecodedPointCache
+    from .lidar_downloads import ept_node_data
 except ImportError:
     from lidar_selection import gps_capture_years
     from lidar_transfer import BudgetExceeded, stream_tile
     from lidar_normalize import vertical_factor as declared_vertical_factor, classifications, RETAINED_CLASSES
+    from lidar_decode_cache import DecodedPointCache
+    from lidar_downloads import ept_node_data
 
 CATALOG_URL = "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson"
 
@@ -48,15 +52,25 @@ class Fetcher:
         self._download_keys = {}
         self._download_failures = {}
         self._download_budget = threading.Lock()
+        self.decoded_cache = DecodedPointCache()
+        self.download_workers = 4
 
     def get(self, url, limit=32 * 1024 * 1024, fresh=False, body=None,
             ttl=None, timeout=45, attempts=3, content_type='application/json'):
-        if urlparse(url).scheme != "https":
-            raise ValueError("LiDAR downloads require HTTPS")
+        """Coalesce concurrent node reads, retaining exact cache/budget accounting."""
+        from contextlib import nullcontext
         encoded = (body.encode() if isinstance(body, str) else json.dumps(body, sort_keys=True).encode()) if body is not None else None
         key = url + ('#POST=' + encoded.decode() +
                      ('#Content-Type=' + content_type if content_type != 'application/json' else '')
                      if encoded is not None else '')
+        with self._download_state:
+            lock = self._download_keys.setdefault(key, threading.Lock())
+        with lock, (self._download_budget if self.max_bytes is not None else nullcontext()):
+            return self._get(url, key, encoded, limit, fresh, ttl, timeout, attempts, content_type)
+
+    def _get(self, url, key, encoded, limit, fresh, ttl, timeout, attempts, content_type):
+        if urlparse(url).scheme != "https":
+            raise ValueError("LiDAR downloads require HTTPS")
         path = self.cache / hashlib.sha256(key.encode()).hexdigest()
         # Neighboring building batches share additive EPT ancestors. Count
         # each resource once per preparation, including with Refresh enabled.
@@ -82,15 +96,17 @@ class Fetcher:
                     if attempt == attempts - 1:
                         raise
                     time.sleep(attempt + 1)
-            self.requests += 1
+            with self._download_state:
+                self.requests += 1
             if len(data) > remaining:
                 raise BudgetExceeded("LiDAR response exceeds byte budget; select a smaller area")
             temporary = path.with_suffix(".partial")
             temporary.write_bytes(data)
             temporary.replace(path)
-        if not repeated:
-            self.bytes += len(data)
-        self.seen.add(key)
+        with self._download_state:
+            if not repeated:
+                self.bytes += len(data)
+            self.seen.add(key)
         return data
 
     def json(self, url, fresh=False, limit=32 * 1024 * 1024):
@@ -282,42 +298,51 @@ def read_ept(fetch, url, bbox, max_points=8_000_000, resolution_m=0.35, source=N
     progress('Reading EPT hierarchy for this batch')
     nodes = collect_nodes(fetch, base, meta, query, max_depth=max_depth)
     pieces, retained = [], 0
-    for position, key in enumerate(nodes, 1):
-        progress(f'Loading and decoding EPT node {position}/{len(nodes)}; {retained:,} cropped points retained')
-        data = fetch.get(base + "ept-data/" + key + ".laz")
-        # Inspect before decoding, so malformed node counts cannot allocate an
-        # enormous array inside laspy.
-        try:
-            with laspy.open(io.BytesIO(data)) as reader:
-                if reader.header.point_count > 2_000_000:
-                    raise BudgetExceeded("Unexpectedly large LiDAR node")
-                points = reader.read()
-        except (LaspyException, LazrsError) as exc:
-            raise ValueError(f'Unreadable LiDAR node {key}; use Refresh to retry its cached download: {exc}') from exc
-        x, y, z = np.asarray(points.x), np.asarray(points.y), np.asarray(points.z)
-        cls = classifications(points, points.header, {**(source or {}), **meta})
-        mask = ((x >= query[0]) & (x <= query[2]) & (y >= query[1]) & (y <= query[3])
-                & np.isin(cls, RETAINED_CLASSES) & (np.asarray(points.withheld) == 0)
-                & np.isfinite(x) & np.isfinite(y) & np.isfinite(z))
-        if "overlap" in points.point_format.dimension_names:
-            mask &= np.asarray(points.overlap) == 0
-        if not mask.any():
-            continue
-        lon, lat = to_lonlat.transform(x[mask], y[mask])
-        single = np.asarray(points.number_of_returns)[mask] == 1
-        years, basis = np.zeros(int(mask.sum())), 'unknown'
-        if 'gps_time' in points.point_format.dimension_names:
-            years, basis = gps_capture_years(np.asarray(points.gps_time)[mask],
-                points.header.global_encoding.gps_time_type, known_ept=known_mirror)
-        confidence = np.where(years > 0, 1 if basis == 'gps_declared' else .5, 0)
-        piece = np.column_stack((lon, lat, z[mask] * vertical_factor, cls[mask], single, years, confidence))
-        exact = ((piece[:, 0] >= bbox[0]) & (piece[:, 0] <= bbox[2])
-                 & (piece[:, 1] >= bbox[1]) & (piece[:, 1] <= bbox[3]))
-        piece = piece[exact]
-        retained += len(piece)
-        if retained > max_points:
-            raise BudgetExceeded("Cropped LiDAR point budget reached; select a smaller area")
-        pieces.append(piece)
+    decoded = getattr(fetch, 'decoded_cache', None)
+    decoded = decoded if isinstance(decoded, DecodedPointCache) else None
+    urls = [base + "ept-data/" + key + ".laz" for key in nodes]
+    with ept_node_data(fetch, urls) as downloads:
+        for position, (node_url, data) in enumerate(downloads, 1):
+            progress(f'Loading and decoding EPT node {position}/{len(nodes)}; {retained:,} cropped points retained')
+            # Raw records are independent of this batch's crop/normalization.
+            # Hash the fetched bytes so Refresh or replacement cannot revive
+            # decoded records from a different node revision.
+            cache_key = (node_url, hashlib.sha256(data).digest())
+            points = decoded.node(cache_key) if decoded is not None else None
+            if points is None:
+                try:
+                    with laspy.open(io.BytesIO(data)) as reader:
+                        if reader.header.point_count > 2_000_000:
+                            raise BudgetExceeded("Unexpectedly large LiDAR node")
+                        points = reader.read()
+                except (LaspyException, LazrsError) as exc:
+                    raise ValueError(f'Unreadable LiDAR node {nodes[position-1]}; use Refresh to retry its cached download: {exc}') from exc
+                if decoded is not None:
+                    decoded.store_node(cache_key, points)
+            x, y, z = np.asarray(points.x), np.asarray(points.y), np.asarray(points.z)
+            cls = classifications(points, points.header, {**(source or {}), **meta})
+            mask = ((x >= query[0]) & (x <= query[2]) & (y >= query[1]) & (y <= query[3])
+                    & np.isin(cls, RETAINED_CLASSES) & (np.asarray(points.withheld) == 0)
+                    & np.isfinite(x) & np.isfinite(y) & np.isfinite(z))
+            if "overlap" in points.point_format.dimension_names:
+                mask &= np.asarray(points.overlap) == 0
+            if not mask.any():
+                continue
+            lon, lat = to_lonlat.transform(x[mask], y[mask])
+            single = np.asarray(points.number_of_returns)[mask] == 1
+            years, basis = np.zeros(int(mask.sum())), 'unknown'
+            if 'gps_time' in points.point_format.dimension_names:
+                years, basis = gps_capture_years(np.asarray(points.gps_time)[mask],
+                    points.header.global_encoding.gps_time_type, known_ept=known_mirror)
+            confidence = np.where(years > 0, 1 if basis == 'gps_declared' else .5, 0)
+            piece = np.column_stack((lon, lat, z[mask] * vertical_factor, cls[mask], single, years, confidence))
+            exact = ((piece[:, 0] >= bbox[0]) & (piece[:, 0] <= bbox[2])
+                     & (piece[:, 1] >= bbox[1]) & (piece[:, 1] <= bbox[3]))
+            piece = piece[exact]
+            retained += len(piece)
+            if retained > max_points:
+                raise BudgetExceeded("Cropped LiDAR point budget reached; select a smaller area")
+            pieces.append(piece)
     return (np.concatenate(pieces) if pieces else np.empty((0, 7))), {
         "url": url, "nodes": len(nodes), "points": retained,
         "horizontal_crs": xy_crs.to_string(), "z_to_metres": vertical_factor,

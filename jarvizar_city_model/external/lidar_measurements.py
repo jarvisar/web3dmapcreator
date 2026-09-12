@@ -128,8 +128,17 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
         footprint = unary_union(polygons(footprint))
     if not footprint.is_valid or footprint.is_empty or footprint.area < 4:
         return None, 'invalid_or_small_footprint'
+    anchor = None
     if ground_m is None:
         ground_m = ground_reference(footprint, index)
+        if ground_m is None:
+            try:
+                from .lidar_ground import ground_anchor
+            except ImportError:
+                from lidar_ground import ground_anchor
+            anchor = ground_anchor(footprint, index)
+            if anchor is not None:
+                ground_m = anchor[2]
     if ground_m is None:
         return None, 'insufficient_ground'
     if roof_planes and roof_mode == 'FACETED':
@@ -140,16 +149,21 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
                    detailed_surfaces=roof_planes and roof_mode == 'FACETED', surface_scale=surface_scale)
     coverage = {}
     result, reason = _measure_building(footprint, index, min_width_m, min_step_m, coverage_out=coverage, **options)
+    def aligned(record):
+        if record and anchor is not None:
+            record['ground_anchor'] = [anchor[0], anchor[1], 0.]
+            record['ground_reference'] = 'surrounding_ground_anchor'
+        return record
     if reason != 'footprint_roof_mismatch' or coverage.get('minimum_component', 0) < .8:
-        return result, reason
+        return aligned(result), reason
     for offset in ((.5, 0), (0, .5), (.5, .5)):
         details = {}
         recovered, recovered_reason = _measure_building(footprint, index, min_width_m, min_step_m,
                                                        grid_offset=offset, coverage_out=details, **options)
         if recovered:
             recovered['coverage_grid_offset'] = list(offset)
-            return recovered, recovered_reason
-    return result, reason
+            return aligned(recovered), recovered_reason
+    return aligned(result), reason
 
 
 def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, grid_offset=(0, 0), coverage_out=None, detailed_surfaces=False, boundary_refinement=True, surface_scale=None):
@@ -662,7 +676,13 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
         predates = bool(built and dated['capture_year'] and dated['capture_year'] < built)
         if predates and not prefer_lidar:
             reason = 'predates_building'
-        if reason is None:
+        if reason is None and props.get('lidar_surface_kind') == 'rock':
+            try:
+                from .lidar_rock import measure_rock_surface
+            except ImportError:
+                from lidar_rock import measure_rock_surface
+            measured, reason = measure_rock_surface(footprint, PointIndex(local), surface_scale or (.07, .077))
+        elif reason is None:
             measured, reason = measure_building(footprint, PointIndex(local), min_width_m, min_step_m,
                 roof_planes=roof_planes, roof_mode=roof_mode, surface_scale=surface_scale, part_footprints=(parts_by_parent or {}).get(identifier, ()),
                 neighboring_footprints=(neighbors_by_id or {}).get(identifier, ()))
@@ -698,6 +718,13 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
         counts[reason] += 1
         if measured:
             measured.update(dated)
+            if 'ground_anchor' in measured:
+                x, y, offset = measured['ground_anchor']
+                measured['ground_anchor'] = [*to_geographic(x, y), offset]
+            if measured.get('surface_kind') == 'rock':
+                measured['surface_geometry'] = feature['geometry']
+                measured['source_land_ids'] = props['source_land_ids']
+                measured['covered_buildings'] = props.get('covered_buildings', [])
             if measured.get('infill_geometry'):
                 measured['infill_geometry'] = mapping(map_geometry(to_geographic, shape(measured['infill_geometry'])))
             for tier in measured["tiers"]:

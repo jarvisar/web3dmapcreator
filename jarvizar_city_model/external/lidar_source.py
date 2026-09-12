@@ -97,11 +97,15 @@ def regional_top(record, geometry, footprint):
     regions = []
     for tier in reversed(record['tiers']):
         overlap = remaining.intersection(shape(tier['geometry']))
+        if overlap.is_empty:
+            continue
         regions.append((tier['top_m'], overlap.area))
         remaining = remaining.difference(overlap)
     if record.get('roof_surfaces'):
         for surface in record['roof_surfaces']:
             overlap = remaining.intersection(shape(surface['geometry']))
+            if overlap.is_empty:
+                continue
             regions.append((max(v[2] for ring in surface['geometry']['coordinates'] for v in ring), overlap.area))
             remaining = remaining.difference(overlap)
     regions.append((record['height_m'], remaining.area))

@@ -308,6 +308,7 @@ class JARVIZAR_PT_buildings(Panel):
         box.label(text="LiDAR Buildings")
         box.prop(settings, "use_lidar_buildings")
         box.prop(settings, "lidar_prefer_measured")
+        box.prop(settings, "lidar_rock_surfaces")
         roof_row = box.row()
         roof_row.enabled = settings.generate_roof_shapes
         roof_row.prop(settings, "lidar_roof_mode")

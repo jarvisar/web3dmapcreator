@@ -1,6 +1,8 @@
 """Bounded LAZ download lookahead, independent of point/building processing."""
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
+from collections import deque
+from contextlib import contextmanager
 
 DEFAULT_DOWNLOAD_WORKERS = 4
 MAX_DOWNLOAD_WORKERS = 16
@@ -8,7 +10,7 @@ MAX_DOWNLOAD_WORKERS = 16
 
 def validate_download_workers(value):
     if type(value) is not int or not 1 <= value <= MAX_DOWNLOAD_WORKERS:
-        raise ValueError(f'LAZ parallel downloads must be an integer from 1 to {MAX_DOWNLOAD_WORKERS}')
+        raise ValueError(f'Parallel downloads must be an integer from 1 to {MAX_DOWNLOAD_WORKERS}')
     return value
 
 
@@ -21,6 +23,7 @@ class TileDownloads:
     """
     def __init__(self, fetch, tiles, workers=DEFAULT_DOWNLOAD_WORKERS, validate_prefix=None):
         self.fetch = fetch
+        self.decoded_cache = getattr(fetch, 'decoded_cache', None)
         self.progress = fetch.progress
         self.validate_prefix = validate_prefix
         self.tiles = tiles
@@ -81,3 +84,42 @@ def prefetch_source(fetch, source, queries, workers=DEFAULT_DOWNLOAD_WORKERS):
     from functools import partial
     return TileDownloads(fetch, list(ordered.values()), workers=workers,
                          validate_prefix=partial(validate_download_prefix, metadata=source))
+
+
+@contextmanager
+def ept_node_data(fetch, urls):
+    """Bounded current-batch lookahead; consume nodes in the original order.
+
+    Futures retain no compressed payloads. They populate the ordinary disk
+    cache, so at most one response per active transfer occupies memory.
+    Explicit whole-request byte caps use serial order, including failures.
+    """
+    workers = getattr(fetch, 'download_workers', 1)
+    workers = workers if type(workers) is int else 1
+    workers = validate_download_workers(workers)
+    if workers == 1 or getattr(fetch, 'max_bytes', None) is not None:
+        yield ((url, fetch.get(url)) for url in urls)
+        return
+    pending = deque()
+    remaining = iter(urls)
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='ept')
+    def download(url):
+        fetch.get(url)
+    def enqueue():
+        url = next(remaining, None)
+        if url is not None:
+            pending.append((url, pool.submit(download, url)))
+    def ordered():
+        while pending:
+            url, future = pending.popleft()
+            future.result()
+            yield url, fetch.get(url)
+            enqueue()
+    try:
+        for _ in range(workers):
+            enqueue()
+        yield ordered()
+    finally:
+        for _, future in pending:
+            future.cancel()
+        pool.shutdown(wait=True, cancel_futures=True)

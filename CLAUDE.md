@@ -386,12 +386,22 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   LAS/LAZ. Successful buildings skip redundant streamed surveys. Material staged
   upgrades require substantial metadata evidence and explicit consent; unknown
   or marginal metadata retains good streamed coverage. Same-survey copies remain
-  delivery-gap fallbacks only. Reconstruction rejection alone is not a data gap.
+  delivery-gap fallbacks only. Known reconstruction support/epoch gaps can now
+  offer a different survey; geometry-budget and unknown failures do not seed downloads.
 - `lidar_offer.py` binds consent to the request, reviewed datasets/buildings/tiles
   and normalization metadata. Ordinary Prepare/Refresh/background runs publish
   streamed measurements plus optional gap/upgrade offers. **Download and Use
   Offered Tiles** authorizes only that reviewed set. Replays recheck eligibility;
   changed/expanded offers require another choice. Generation stays offline.
+- Automatic staged selection uses fallback policy 7; there is no full-survey
+  picker or `comparison_url` request setting. A measured capture year can fill
+  missing streamed acquisition metadata for that building, never the whole
+  survey. Offer one ranked survey per building at a time. `shared_tile_features`
+  adds otherwise eligible comparisons only when their entire footprint/ground
+  tile allowlist fits tiles already selected for gaps/upgrades. This can revisit
+  successful streamed measurements without extra downloads. It preserves
+  source-independent and same-survey exclusions and includes the expanded
+  building list in the reviewed offer. A missing halo tile prevents expansion.
 - `lidar_copc.py` uses pinned laspy with strict cached HTTP ranges and bounded
   octree/point allocation. Servers ignoring Range are rejected before body reads;
   there is no whole-file fallback. COPC and staged tiles share footprint/30 m
@@ -441,14 +451,25 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
 - `lidar_batches.py` groups whole buildings spatially (400 m default), retaining
   roofs and a ground halo. Per-group limits can subdivide work; normal preparation
   has no whole-map byte/point/time cap, though per-request/file/group guards remain.
-  LAZ transfers use `lidar_downloads.py` (default 4, allowed 1–16) while decoding
-  and measurement stay sequential. Prefetch is limited to the current batch;
-  evaluate it before admitting the next. One unproductive speculative support-gap
-  batch defers further speculative downloads; independently justified coverage,
-  delivery gaps and material upgrades remain eligible. Checkpoints supply the
-  same trial evidence before new transfers. EPT/COPC streaming remains serial. Changing concurrency must
+  EPT node and LAZ tile transfers use `lidar_downloads.py` (default 4, allowed
+  1–16; 1 is serial) while decoding and measurement stay sequential. EPT
+  lookahead retains at most that many futures and consumes the original node
+  order; futures keep no response payloads. Prefetch is limited to the current batch;
+  evaluate it before admitting the next. Approved staged offers finish their
+  reviewed scope even after unproductive batches; further surveys/expanded tile
+  sets require another offer. Checkpoints replay completed work before new
+  transfers. COPC streaming remains serial. Changing concurrency must
   not change measurement signatures or results. The UI passes the setting to
   interactive and background jobs.
+- `lidar_decode_cache.py` reuses raw records only within one preparation, before
+  applying each batch's unchanged crop, classifications, units and capture dates.
+  EPT nodes use a 64 MiB RAM LRU keyed by URL and fetched-content hash. LAZ tiles
+  use read-only mappings of delete-on-close temporary files, capped at 1 GiB
+  total and 512 MiB per tile, keyed by downloaded file identity/revision stats.
+  Oversized tiles or unavailable temporary storage retain chunked streaming.
+  Failed/incomplete reads never publish a decoded tile. Preparation exit closes
+  mappings; OS file closure removes temporary storage after process termination.
+  This optimization changes neither persistent cache signatures nor geometry.
 - `lidar_measurements.py` fits ground-relative scalar heights, supported terraces,
   and `lidar_planes.py` roof planes within source footprints. Enforce sufficient
   ground/roof support, component-wise coverage, footprint consistency, and capture
@@ -459,6 +480,26 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   all ground/roof/printability checks; already accepted fits stay identical.
   Ground fitting is reused across retries and no additional points are fetched.
   Missing returns alone are not proof that a building is absent.
+- Planar ground fits retain their original result. When the plane fails,
+  `lidar_ground.py` can retain a low ground-cell anchor with its actual location:
+  at least eight 4 m cells, three returns per cell, enclosing the full footprint.
+  Cell medians and the lower decile resist density imbalance and isolated low
+  returns. `ground_anchor` stores WGS84 XY plus a datum offset; the Blender
+  builder aligns that location to its existing heightfield. It never interprets
+  a hillside as a flat plane or mixes ground from different surveys. Roof,
+  footprint, capture and geometry checks still apply.
+- **Include Mapped Rock Surfaces** is opt-in. `external/lidar_rock.py` merges
+  intersecting valid `land` bare-rock polygons without enlarging them, and
+  measures their class-2/6 or single-return class-1 surfaces. Vegetation cannot
+  supply coverage or raise the envelope. Require three returns per supported
+  1.5 m cell and 85% area coverage in every component, plus surrounding ground
+  support and printable relief. Its print-scale area budget bounds fitting.
+  The request signs `land.geojson`; records retain `surface_geometry`,
+  `surface_kind`, source land IDs and an alignment anchor. Blender builds these
+  through `geometry/lidar_rock.py` with rock material. Only a successful complete
+  cap can suppress wholly contained source buildings and their parts. A failed
+  rock fit or cap adds no guessed extrusion. Point landmarks, general attraction
+  boundaries and unmapped cliffs never establish a rock domain.
 - Roof Envelope (`FACETED`) calls `external/lidar_envelope.py` before any
   terrace reconstruction. It builds one height raster per footprint component:
   a high upper quantile of the returns in each cell, then a moving median over
@@ -509,7 +550,7 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   verify area, closure and winding before adoption. A join failure must retain
   source geometry rather than extruding thousands of independent fragments.
 - The saved `FACETED` enum now displays **Roof Envelope**. Legacy width/step
-  sliders remain Terraces-only. Algorithm 16 requires Prepare again with
+  sliders remain Terraces-only. Algorithm 17 requires Prepare again with
   Refresh off; it reuses cached tiles and normalized points, because the
   acquisition version is unchanged, and re-runs measurement only. Acquisition version 5 reads every octree level the survey
   actually has (`resolution_m` 0.35, which for the Cook County EPT is its
@@ -676,6 +717,7 @@ Select focused checks based on the change:
 | Water / supports | `blender_water_cut.py`, `blender_ground_support.py`, `blender_pond_basins.py`, `blender_basin_support.py`, `blender_water_surfaces.py`, `blender_visible_supports.py`, `blender_paved_supports.py`; cached `blender_water_cut_live.py`, `blender_coastline_live.py`, `blender_pond_basins_live.py` |
 | Roads / surface ownership | `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
 | Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_envelope.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
+| Anchored LiDAR / mapped rock | `test_lidar_relief.py`, `test_lidar_offer.py`, `blender_lidar_relief.py`; verify anchor alignment, class/coverage rejection, transactional fallback, source suppression, and unchanged disabled-LiDAR mesh fingerprints |
 | Export / trees / clipboard | `blender_export_cutout.py` and its live counterpart; `blender_tree_printability.py`, `blender_tree_road_clearance.py`; `test_projection.py` and windowed `blender_gui_paste.py` |
 
 For geometry work, compare identical inputs/settings, check closure **and winding**,
@@ -697,7 +739,7 @@ visibility and through-cuts. Do not advertise that legacy command as passing.
 For acquisition changes, check checkpoints, zero-network tile replay, malformed
 records, source failure isolation, concurrency, and cancellation. For LiDAR-only
 changes, verify disabled-LiDAR geometry is unchanged; enabled changes should be
-limited to buildings and their terrain supports. A render, closed-mesh audit,
+limited to buildings, explicitly enabled mapped rock, and their terrain supports. A render, closed-mesh audit,
 export, slicer round-trip, and actual print are different validation claims.
 
 ## Packaging, installation, and other references
