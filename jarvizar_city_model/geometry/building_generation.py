@@ -178,6 +178,7 @@ def generate_buildings(
     minimum_height_footprint_mm: float = 0.0,
     lidar_profiles=None,
     prefer_lidar=False,
+    retain_sparse_parents=False,
 ) -> Dict[str, Any]:
     """Generate selected parent and part meshes, returning honest counts.
 
@@ -234,7 +235,7 @@ def generate_buildings(
         heightfield = ground_support.structure_heightfield
     building_features = list(building_features)
     part_features = list(part_features)
-    selection = select_building_geometry(building_features, part_features)
+    selection = select_building_geometry(building_features, part_features, retain_sparse_parents=retain_sparse_parents)
     parent_lookup = {feature_id(feature): feature for feature in building_features}
     parts_by_parent: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for part in selection.parts:
@@ -346,6 +347,12 @@ def generate_buildings(
     infilled_parent_ids = set()
     measured_parent_ids = set()
     part_height_updates = {}
+    height_only_profiles = {key: {'height_m':height}
+                            for parent_id,record in (lidar_profiles or {}).items() if record.get('method')=='height_only'
+                            for key,height in record.get('source_heights', {}).items()
+                            if _positive(height) is not None and (key==parent_id
+                                or any(feature_id(part)==key for part in parts_by_parent.get(parent_id, ())))}
+    height_only_groups = defaultdict(list)
     counts["lidar_buildings"] = 0
     counts["lidar_tier_solids"] = 0
     counts["lidar_geometry_fallbacks"] = 0
@@ -357,11 +364,16 @@ def generate_buildings(
     counts['lidar_part_heights'] = 0
     counts['lidar_infill_buildings'] = 0
     counts['lidar_estimated_heights_corrected'] = 0
+    counts['lidar_height_only_buildings'] = 0
     if lidar_profiles:
         from .lidar_buildings import measured_builder, prefer_source_detail
         for identifier, feature in parent_lookup.items():
             record = lidar_profiles.get(identifier)
             if not record or identifier in selection.duplicate_ids:
+                continue
+            if record.get('method') == 'height_only':
+                # Build exactly the ordinary source selection first. Scalar
+                # correction never replaces an outline or restores an infill.
                 continue
             supplement = record.get('method') == 'source_parts'
             if supplement and identifier not in selection.suppressed_parent_ids and not prefer_lidar:
@@ -481,6 +493,8 @@ def generate_buildings(
         parent_top_m = (
             _positive(feature_properties(parent).get("height")) if parent is not None else None
         )
+        height_group = source_id
+        height_segments = []
 
         terrain_mm = 0.0
         terrain_top_mm = 0.0
@@ -503,6 +517,7 @@ def generate_buildings(
         thickness_mm = vertical(profile.thickness_m)
         polygons = projected_polygon_rings(feature.get("geometry") or {}, transform)
         for polygon_index, rings in enumerate(polygons):
+            vertex_start = len(builder.vertices)
             # Overture publishes chimneys, spires, and wall fragments as their
             # own masses.  Extruded literally they become needles far below the
             # nozzle width -- the sub-millimetre shards that read as glitched
@@ -571,9 +586,12 @@ def generate_buildings(
             # until its highest point clears the ground by the minimum.  The
             # clearance is measured over the *highest* terrain the footprint
             # covers, so the roof stands proud on the uphill side as well.
+            minimum_for_mass = 0.0
+            polygon_lift = 0.0
             if minimum_height > 0.0 and footprint_admits_minimum_height(
                 rings[0], minimum_footprint
             ):
+                minimum_for_mass = minimum_height
                 # The finished top, which is the apex only where the shaped
                 # roof is actually built.  A roof that fell back to flat still
                 # carries its apex in *roof_top*, and measuring the clearance
@@ -586,6 +604,7 @@ def generate_buildings(
                     roof_top += raise_by
                     ceiling += raise_by
                     lift_mm = max(lift_mm, raise_by)
+                    polygon_lift = raise_by
                     counts[raised_key] += 1
 
             def floor(
@@ -594,6 +613,7 @@ def generate_buildings(
                 grounded: bool = grounded,
                 bottom: float = bottom,
                 ceiling: float = ceiling,
+                ground_field=ground_field,
             ) -> float:
                 if not grounded:
                     return bottom
@@ -634,6 +654,17 @@ def generate_buildings(
                     )
             if built and kept_by_adjacency:
                 counts['building_parts_kept_by_adjacency'] += 1
+            if built and height_group in height_only_profiles:
+                # Capture this polygon's actual floor while its closure still
+                # refers to this mass. Upper vertices alone move for grounded
+                # masses; elevated undersides move with their roof.
+                upper = [i for i in range(vertex_start, len(builder.vertices))
+                         if not grounded or abs(builder.vertices[i][2]-floor(*builder.vertices[i][:2])) > 1e-7]
+                if upper:
+                    height_segments.append(dict(builder=builder, upper=upper,
+                        base=terrain_mm, terrain_top=terrain_top_mm, grounded=grounded,
+                        floor=floor, minimum=minimum_for_mass, lift=polygon_lift,
+                        peak=max(builder.vertices[i][2]-terrain_mm-polygon_lift for i in upper)))
 
         if builder.solids == solids_before:
             if narrow:
@@ -653,6 +684,10 @@ def generate_buildings(
                 obj["terrain_top_mm"] = float(terrain_top_mm)
                 obj["minimum_height_lift_mm"] = float(lift_mm)
                 obj["underside"] = "draped_to_terrain" if grounded else "elevated"
+                for segment in height_segments:
+                    segment['object'] = obj
+            if height_segments:
+                height_only_groups[height_group].extend(height_segments)
             if base_source == "parent_footprint":
                 counts["parts_founded_on_parent_base"] += 1
             if feature_type == "building":
@@ -670,6 +705,12 @@ def generate_buildings(
                         measured_parent_ids.add(parent_id)
         if progress_callback is not None and index % 64 == 0:
             progress_callback((index + 1) / total)
+    if height_only_profiles:
+        from .lidar_height import correct_assemblies
+        corrected = correct_assemblies(height_only_groups, height_only_profiles, vertical,
+                                       MINIMUM_BURIED_THICKNESS_MM)
+        counts['lidar_height_only_buildings'] = corrected
+        counts['lidar_buildings'] += corrected
     if merged is not None:
         slots = [
             slot

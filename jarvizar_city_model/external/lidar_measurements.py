@@ -114,7 +114,7 @@ def ground_reference(footprint, index, margin=25.0):
     return float(elevations.min())
 
 
-def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, roof_mode='TERRACES', surface_scale=None):
+def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, roof_mode='TERRACES', surface_scale=None, height_targets=None, prefer_lidar=False):
     """Retry coverage failures at bounded grid offsets, without adding returns.
 
     Three fixed half-cell shifts reduce sensitivity to returns split across
@@ -146,7 +146,8 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
         min_width_m, min_step_m = .1 / sx, max(.25, .05 / sz)
     options = dict(ground_m=ground_m, roof_planes=roof_planes, part_footprints=part_footprints,
                    neighboring_footprints=neighboring_footprints, allow_complex_height=allow_complex_height,
-                   detailed_surfaces=roof_planes and roof_mode == 'FACETED', surface_scale=surface_scale)
+                   detailed_surfaces=roof_planes and roof_mode == 'FACETED', surface_scale=surface_scale,
+                   height_only=roof_mode == 'HEIGHT_ONLY', height_targets=height_targets, prefer_lidar=prefer_lidar)
     coverage = {}
     result, reason = _measure_building(footprint, index, min_width_m, min_step_m, coverage_out=coverage, **options)
     def aligned(record):
@@ -166,7 +167,7 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
     return aligned(result), reason
 
 
-def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, grid_offset=(0, 0), coverage_out=None, detailed_surfaces=False, boundary_refinement=True, surface_scale=None):
+def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, grid_offset=(0, 0), coverage_out=None, detailed_surfaces=False, boundary_refinement=True, surface_scale=None, height_only=False, height_targets=None, prefer_lidar=False):
     """Measure the whole roof envelope; hidden undersides stay source-derived.
 
     Roof Envelope uses supported upper returns before the legacy terrace
@@ -192,7 +193,7 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
     # facade of every tower. They never establish coverage, ground or height
     # here, and reconstruction admits them only where the structural envelope
     # already reaches that level, so a real canopy cannot raise a roof.
-    secondary = points[inside & np.isin(points[:, 3], (3, 4, 5))
+    secondary = np.empty((0, 3)) if height_only else points[inside & np.isin(points[:, 3], (3, 4, 5))
                        & (points[:, 2] - ground > 2.0)][:, :3].copy()
     secondary[:, 2] -= ground
     points = points[candidate]
@@ -209,7 +210,9 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
     xy = points[:, :2] - origin
     uv = np.column_stack((xy[:, 0] * cosine + xy[:, 1] * sine,
                           -xy[:, 0] * sine + xy[:, 1] * cosine)) + origin
-    cell = 1.5 if detailed_surfaces else max(1.5, min_width_m / 3)
+    # Scalar heights need broad roof support, not a detailed outline. A fixed
+    # 3 m grid cuts cell work to a quarter of the envelope's coverage grid.
+    cell = 3.0 if height_only else 1.5 if detailed_surfaces else max(1.5, min_width_m / 3)
     x0, y0, x1, y1 = rotated.bounds
     x0 -= cell * grid_offset[0]
     y0 -= cell * grid_offset[1]
@@ -269,6 +272,8 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             supported_area_by_piece[component] += (area if len(pieces)==1
                 else tile.intersection(pieces[component]).area)
             supported_points += int(ends[start]-start)
+            if height_only:
+                continue
             band = rows[np.argsort(rows[:,2], kind='stable')[start:ends[start]]]
             # The XYZ centroid stays exactly on a plane; independent medians
             # do not, particularly on oblique slopes and at cell boundaries.
@@ -318,6 +323,40 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             area = occupied_area((key for key,n in occupied.items() if n >= 3), ring, 3)
             if area >= max(36, footprint.area*.08) and area >= ring.area*.25:
                 return None, 'roof_extends_outside_footprint'
+
+    if height_only:
+        try:
+            from .lidar_height import supported_height
+        except ImportError:
+            from lidar_height import supported_height
+        classified = float(np.mean(points[:, 3] == 6))
+        scalar = supported_height(cells, cell, classified)
+        if scalar is None:
+            return None, 'unsupported_scalar_roof'
+        height, explained = scalar
+        record = {'height_m': height, 'tiers': [], 'method': 'height_only',
+                  'ground_m': ground, 'roof_points': len(points), 'coverage': round(coverage, 4),
+                  'cell_m': cell, 'classified_fraction': classified,
+                  'roof_support_density_m2': supported_points/footprint.area,
+                  'explained_fraction': explained}
+        if area_coverage:
+            record['coverage_basis'] = 'footprint_area'
+        if height_targets is not None:
+            try:
+                from .lidar_height import source_heights
+            except ImportError:
+                from lidar_height import source_heights
+            locations = []
+            for (ix,iy),z in cells.items():
+                u,v = x0+(ix+.5)*cell-origin[0], y0+(iy+.5)*cell-origin[1]
+                locations.append(((ix,iy),origin[0]+u*cosine-v*sine,origin[1]+u*sine+v*cosine,z))
+            feature, parts = height_targets
+            corrections = source_heights(feature, parts, footprint, locations, cell, classified, record, prefer_lidar)
+            if not corrections:
+                return None, 'no_supported_main_mass'
+            record['source_heights'] = corrections
+            record['height_m'] = max(corrections.values())
+        return record, 'height_only'
 
     # Detailed reconstruction starts at supported samples, before scalar roof
     # levels or terrace outlines can constrain the representation. Acquisition,
@@ -685,11 +724,13 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
         elif reason is None:
             measured, reason = measure_building(footprint, PointIndex(local), min_width_m, min_step_m,
                 roof_planes=roof_planes, roof_mode=roof_mode, surface_scale=surface_scale, part_footprints=(parts_by_parent or {}).get(identifier, ()),
-                neighboring_footprints=(neighbors_by_id or {}).get(identifier, ()))
+                neighboring_footprints=(neighbors_by_id or {}).get(identifier, ()),
+                height_targets=(feature, (source_parts_by_parent or {}).get(identifier, ())) if roof_mode=='HEIGHT_ONLY' else None,
+                prefer_lidar=prefer_lidar)
         source_parts = (source_parts_by_parent or {}).get(identifier, ())
         # Source-shaped roofs remain useful even when a whole-envelope fit is
         # too complex. Footprint/epoch contradictions never enter this fallback.
-        if source_parts and props.get('has_parts') is True and reason in ('tiers', 'height_only', 'roof_planes', 'faceted_roof',
+        if roof_mode != 'HEIGHT_ONLY' and source_parts and props.get('has_parts') is True and reason in ('tiers', 'height_only', 'roof_planes', 'faceted_roof',
                 'complex_unclassified_roof', 'unclassified_nonplanar_roof',
                 'unresolved_upper_roof', 'unprintable_major_tier'):
             shaped = any((p.get('properties') or {}).get('roof_shape') not in (None, '', 'flat') for p,_ in source_parts)
@@ -704,8 +745,12 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
                 from .lidar_source import check_source
             except ImportError:
                 from lidar_source import check_source
-            decision = (measured.get('height_decision') if measured['method'] == 'source_parts'
-                        else check_source(feature, source_parts, measured, footprint))
+            if measured['method'] == 'height_only':
+                # Each mapped main mass was checked against its own samples.
+                decision = 'measured_height'
+            else:
+                decision = (measured.get('height_decision') if measured['method'] == 'source_parts'
+                            else check_source(feature, source_parts, measured, footprint))
             if decision in ('source_height_conflict', 'weak_height_correction') and not prefer_lidar:
                 measured, reason = None, decision
             else:

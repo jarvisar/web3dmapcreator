@@ -296,6 +296,10 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         name="EPT / COPC URL (optional)", default="",
         description="Leave empty for automatic discovery; set an ept.json or COPC HTTPS URL to override provider discovery",
     )
+    lidar_height_only: BoolProperty(
+        name="Correct Heights Only", default=False,
+        description="Correct clear height errors (over 3 m and 20%) using LiDAR within each existing main-mass footprint. Preserve footprints, courtyards and roof shapes; skip roof reconstruction. Prepare again after changing",
+    )
     lidar_rock_surfaces: BoolProperty(
         name="Include Mapped Rock Surfaces", default=False,
         description="Reconstruct measured relief inside cached bare-rock polygons, including ground-classified rock. Requires cached land data and preparing LiDAR again",
@@ -363,6 +367,10 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         min=0.0,
         soft_max=2.0,
         precision=2,
+    )
+    retain_sparse_building_parents: BoolProperty(
+        name="Keep Main Bodies with Sparse Parts", default=True,
+        description="Keep a building's main footprint when mapped parts cover less than 25% and it has a height or floor count. May fill small setbacks; preserves parent courtyard holes and skips parts with courtyard holes",
     )
     default_building_height_m: FloatProperty(
         name="Default Building Height (m)",

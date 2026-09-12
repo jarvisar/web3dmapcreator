@@ -194,6 +194,17 @@ class WorkerReuseTests(unittest.TestCase):
                 result = worker.prepare(bundle.path,request_signature(bundle,.07,.077))
                 self.assertEqual(result['cache_stats']['point_batches'],2)
                 self.assertEqual((read.call_count,fit.call_count),(4,9))
+                # Height-only preparation reuses acquisitions, but cannot
+                # mistake sculpted checkpoints for scalar measurements.
+                scalar = request_signature(bundle,.07,.077,roof_mode='HEIGHT_ONLY')
+                result = worker.prepare(bundle.path,scalar)
+                self.assertEqual(result['cache_stats']['point_batches'],2)
+                self.assertEqual((read.call_count,fit.call_count),(4,11))
+                self.assertEqual(fit.call_args.kwargs['roof_mode'],'HEIGHT_ONLY')
+                self.assertFalse(fit.call_args.kwargs['roof_planes'])
+                self.assertTrue(worker.prepare(bundle.path,request_signature(bundle,.14,.154,
+                    roof_mode='HEIGHT_ONLY',roof_planes=False))['reused_prepared'])
+                self.assertEqual((read.call_count,fit.call_count),(4,11))
             stages = {p.get('stage') for p in progress}
             self.assertTrue({'Finding surveys','Reusing measurements','Reconstructing roofs','Complete'} <= stages)
             self.assertTrue(any(p.get('completed')==p.get('total')==2 for p in progress))

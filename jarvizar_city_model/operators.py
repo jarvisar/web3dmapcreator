@@ -324,10 +324,10 @@ def _lidar_signature(settings, bundle, transform=None):
         transform.scale_z_mm_per_m * settings.building_height_scale,
         settings.lidar_minimum_width_mm, settings.lidar_minimum_step_mm, settings.lidar_source_url,
         settings.generate_roof_shapes, settings.lidar_prefer_measured, settings.lidar_manifest_url,
-        roof_mode=settings.lidar_roof_mode,
+        roof_mode='HEIGHT_ONLY' if settings.lidar_height_only else settings.lidar_roof_mode,
         providers=None if settings.lidar_international else ('usgs',),
         stac_urls=settings.lidar_stac_urls.split(),
-        rock_surfaces=settings.lidar_rock_surfaces,
+        rock_surfaces=settings.lidar_rock_surfaces and not settings.lidar_height_only,
         vertical_units='' if settings.lidar_vertical_units == 'AUTO' else settings.lidar_vertical_units)
 
 
@@ -955,7 +955,7 @@ class JARVIZAR_OT_generate_model(Operator):
                         self.report({"WARNING"}, lidar_status)
                 progress(.70, "Building buildings")
                 rock_covered = set()
-                if lidar_profiles and settings.lidar_rock_surfaces:
+                if lidar_profiles and settings.lidar_rock_surfaces and not settings.lidar_height_only:
                     from .geometry.lidar_rock import generate_rock_surfaces
                     rock_counts, rock_covered = generate_rock_surfaces(
                         lidar_profiles, transform, heightfield, hierarchy['land_surfaces'], materials['surface_rock'],
@@ -974,6 +974,7 @@ class JARVIZAR_OT_generate_model(Operator):
                         default_height_m=settings.default_building_height_m,
                         height_scale=settings.building_height_scale,
                         minimum_height_mm=settings.minimum_building_height_mm,
+                        retain_sparse_parents=settings.retain_sparse_building_parents,
                         minimum_height_footprint_mm=settings.minimum_height_footprint_mm,
                         building_collection=hierarchy["buildings"],
                         part_collection=hierarchy["building_parts"],
@@ -998,6 +999,7 @@ class JARVIZAR_OT_generate_model(Operator):
                     else:
                         lidar_generation_status = (
                             f"Used LiDAR on {counts.get('lidar_buildings', 0)} buildings: "
+                            f"{counts.get('lidar_height_only_buildings', 0)} height-only corrections; "
                             f"{counts.get('lidar_rock_surfaces', 0)} mapped rock surfaces; "
                             f"{counts.get('lidar_tier_solids', 0)} tier sections, "
                             f"{counts.get('lidar_roof_plane_buildings', 0)} sloped roofs, "

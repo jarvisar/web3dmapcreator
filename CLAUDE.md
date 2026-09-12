@@ -222,6 +222,15 @@ colors, overwriting manual palette edits.
   assemblies retain their variable heights. Derived parent
   heights do not justify infill. Do not replace coverage rules with simple
   polygon intersection; legitimate annexes overlap complexes.
+- **Keep Main Bodies with Sparse Parts** defaults on in scene settings and
+  additionally retains a grounded parent with a height or floor count when all
+  mapped parts cover less than 25% of its footprint. Small lower setbacks may
+  be filled intentionally. Parent holes stay open; any holes in parts, or a
+  disconnected parent footprint, disable this extra fallback. Heightless parts
+  count toward coverage. Turning it off restores the prior selection policy.
+  Low-level selection/generation helpers default to the prior policy; the operator
+  passes the scene setting explicitly. No new geometry or height inference is used.
+
 - Duplicate footprint checks respect courtyard holes. If every selected source
   part of a suppressed parent fails filtering or meshing, generation retries
   that parent's ordinary source mass and records `building_parents_restored`.
@@ -495,6 +504,24 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   Every retry keeps the three-return cell minimum, 85% component coverage and
   all ground/roof/printability checks; already accepted fits stay identical.
   Ground fitting is reused across retries and no additional points are fetched.
+- **Correct Heights Only** is opt-in and uses a separate `HEIGHT_ONLY` cache
+  identity. It keeps acquisition/ground/coverage/epoch checks, samples a fixed
+  3 m grid, and skips roof surfaces, terraces, infill and mapped rock. Connected
+  roof support supplies scalar tops; tiny patches cannot set a large building's
+  height. Reuse those same cells within each existing main-mass footprint,
+  excluding other mapped parts with a half-cell margin. Never associate the
+  tallest scan roof with the tallest source tag. Parts smaller than 5% of the
+  parent, shaped roof parts and elevated parts are left alone; at least 25% of
+  a mass must be exposed. No extra ground fit, point read or geometry fit occurs
+  per source mass. `source_heights` stores scalar corrections by source identity.
+  Generation retains ordinary source selection, XY/topology, courtyard holes and
+  grounded undersides. It rescales only the corresponding mass when the discrepancy
+  exceeds both 3 m and 20%. Print minimums and source roof shapes still apply.
+  This does not restore missing source masses or reconstruct detail.
+  Print/roof-detail changes reuse scalar
+  measurements; switching modes requires Prepare again with Refresh off. Downloads
+  and point decoding are unchanged; savings come from coarser sampling and skipping
+  reconstruction. Keep full-mode cache signatures/results unchanged.
   Missing returns alone are not proof that a building is absent.
 - Planar ground fits retain their original result. When the plane fails,
   `lidar_ground.py` can retain a low ground-cell anchor with its actual location:

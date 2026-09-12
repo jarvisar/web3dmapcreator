@@ -1,5 +1,26 @@
 # Building heights and USGS LiDAR
 
+## Height sanity correction
+
+Enable **Correct Heights Only** under LiDAR Buildings, run **Prepare LiDAR
+Buildings** with Refresh off, then generate. It changes height only when the
+scan and current model differ by more than both **3 metres and 20%**.
+
+Heights are checked within each existing main mass's own footprint, so a tower's
+height cannot stretch its neighboring podium. Footprints, courtyard openings and
+source roof shapes stay intact. Grounded undersides remain seated; print minimum
+heights still apply. Small details, shaped roof parts and elevated parts stay
+unchanged. Overlapping or insufficiently exposed masses retain their source
+heights. It does not add missing main bodies or sculpt roofs. Unusable measurements
+retain the ordinary source model. **Prefer LiDAR on Conflicts** still controls
+whether conflicting source heights/dates can yield to a usable scan.
+
+This mode uses coarser roof sampling and skips reconstruction, infill and mapped
+rock preparation. Downloads and decoding still use the normal data path, so
+total speedup depends on how much time acquisition takes. Switching modes needs
+another Prepare; compatible downloaded and decoded data can be reused. Changing
+print scale or roof-detail settings alone does not invalidate height-only data.
+
 ## Automatic LAZ offers and mapped relief (0.23.15)
 
 Reconstruction algorithm 17; acquisition remains 5; fallback policy is 8. Run **Prepare LiDAR

@@ -23,6 +23,16 @@ class LidarCacheTests(unittest.TestCase):
         (self.bundle.path / "lidar_buildings.json").write_text(json.dumps({
             "format": 1, "request": self.signature, "buildings": buildings}))
 
+    def test_height_only_cache_is_separate_and_ignores_unused_detail(self):
+        scalar = request_signature(self.bundle, .07, .077, roof_mode='HEIGHT_ONLY')
+        self.assertNotEqual(scalar, self.signature)
+        self.assertEqual(scalar, request_signature(self.bundle, .14, .154, roof_mode='HEIGHT_ONLY',
+            roof_planes=False, min_width_mm=.8, min_step_mm=.2, rock_surfaces=True))
+        self.assertFalse(scalar['rock_surfaces'])
+        self.assertFalse(scalar['roof_planes'])
+        self.write({'one':{'height_m':30,'tiers':[]}})
+        self.assertIn('stale', load_measurements(self.bundle, scalar)[1])
+
     def test_missing_stale_and_corrupt_fall_back(self):
         self.assertFalse(load_measurements(self.bundle, self.signature)[0])
         self.write({"one": {"height_m": 30, "tiers": []}})

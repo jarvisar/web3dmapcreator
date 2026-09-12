@@ -303,17 +303,23 @@ class JARVIZAR_PT_buildings(Panel):
         layout.prop(settings, "floor_height_m")
         layout.prop(settings, "building_height_scale")
         layout.prop(settings, "minimum_building_height_mm")
+        layout.prop(settings, "retain_sparse_building_parents")
         layout.prop(settings, "minimum_height_footprint_mm")
         layout.prop(settings, "generate_roof_shapes")
         box = layout.box()
         box.label(text="LiDAR Buildings")
         box.prop(settings, "use_lidar_buildings")
+        box.prop(settings, "lidar_height_only")
         box.prop(settings, "lidar_prefer_measured")
-        box.prop(settings, "lidar_rock_surfaces")
+        rock_row = box.row()
+        rock_row.enabled = not settings.lidar_height_only
+        rock_row.prop(settings, "lidar_rock_surfaces")
         roof_row = box.row()
-        roof_row.enabled = settings.generate_roof_shapes
+        roof_row.enabled = settings.generate_roof_shapes and not settings.lidar_height_only
         roof_row.prop(settings, "lidar_roof_mode")
-        if settings.lidar_roof_mode == 'TERRACES':
+        if settings.lidar_height_only:
+            box.label(text="Preserves shapes; skips roof reconstruction")
+        elif settings.lidar_roof_mode == 'TERRACES':
             box.prop(settings, "lidar_minimum_width_mm")
             box.prop(settings, "lidar_minimum_step_mm")
         box.prop(settings, "lidar_source_url")

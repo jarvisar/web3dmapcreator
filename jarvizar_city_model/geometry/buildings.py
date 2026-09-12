@@ -503,8 +503,30 @@ def _parent_supplies_main_mass(building, parts) -> bool:
     return bool(samples) and _coverage(samples, part_rings) < MUTUAL_COVERAGE
 
 
+def _sparse_parts_leave_main_mass(building, parts):
+    """Retain a usable parent when its parts cover less than one quarter.
+
+    This deliberately accepts filled small setbacks. Part-only courtyards are
+    ambiguous, so any part hole opts out; parent holes remain in its geometry.
+    Count every part footprint, including those without height information.
+    """
+    profile = resolve_vertical_profile(feature_properties(building), 3., 10.)
+    if profile.height_source not in ('height', 'num_floors') or profile.thickness_m <= 0 or profile.bottom_m > 0:
+        return False
+    parent_polygons = _footprint_polygons(building)
+    part_polygons = [polygon for part in parts for polygon in _footprint_polygons(part)]
+    if not parent_polygons or not part_polygons or any(len(polygon) > 1 for polygon in part_polygons):
+        return False
+    # Sampling one component cannot justify filling other disconnected bodies.
+    if len(parent_polygons) != 1:
+        return False
+    samples = _footprint_samples(parent_polygons)
+    return bool(samples) and _footprint_coverage(samples, part_polygons) < .25
+
+
 def select_building_geometry(
-    buildings: Sequence[Dict[str, Any]], parts: Sequence[Dict[str, Any]]
+    buildings: Sequence[Dict[str, Any]], parts: Sequence[Dict[str, Any]],
+    retain_sparse_parents: bool = False,
 ) -> BuildingSelection:
     """Choose parent masses versus parts without creating coincident duplicates.
 
@@ -547,7 +569,8 @@ def select_building_geometry(
         associated = parts_by_parent.get(parent_id, [])
         useful = any(part_has_useful_vertical_data(part) for part in associated)
         if properties.get("has_parts") is True and useful:
-            if _parent_supplies_main_mass(building, associated):
+            if (_parent_supplies_main_mass(building, associated)
+                    or (retain_sparse_parents and _sparse_parts_leave_main_mass(building, associated))):
                 selected_buildings.append(building)
             else:
                 suppressed.add(parent_id)

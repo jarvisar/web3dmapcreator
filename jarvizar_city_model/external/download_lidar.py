@@ -90,7 +90,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
 
     if request["algorithm"] != ALGORITHM_VERSION:
         raise ValueError("Unsupported LiDAR algorithm version")
-    if request.get('roof_mode', 'TERRACES') not in ('TERRACES', 'FACETED'):
+    if request.get('roof_mode', 'TERRACES') not in ('TERRACES', 'FACETED', 'HEIGHT_ONLY'):
         raise ValueError('Unknown LiDAR roof reconstruction mode')
     if request.get('acquisition') != ACQUISITION_VERSION:
         raise ValueError('Unsupported LiDAR acquisition version; prepare with the updated add-on')
@@ -369,8 +369,10 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
             evidence = {}
             cache_stats['measured_batches'] += 1
             def building_progress(position, total, name):
-                message = f'Reconstructing building {position+1}/{total}: {name}' if position < total else 'Building batch reconstructed'
-                progress(message, stage='Reconstructing roofs', completed=len(completed)+position,
+                height_only = request.get('roof_mode') == 'HEIGHT_ONLY'
+                action = 'Measuring height' if height_only else 'Reconstructing building'
+                message = f'{action} {position+1}/{total}: {name}' if position < total else 'Building batch measured'
+                progress(message, stage='Measuring heights' if height_only else 'Reconstructing roofs', completed=len(completed)+position,
                          total=source_total, force=position == total)
             records, reasons, rejected_features = measure_features(batch, points, to_metric, to_geographic,
                 request["min_width_mm"] / request["xy_scale"],

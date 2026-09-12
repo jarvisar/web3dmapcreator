@@ -151,6 +151,15 @@ def validate_records(buildings):
         height = record.get('height_m')
         if not finite_number(height) or height <= 0:
             raise ValueError('Invalid LiDAR height')
+        if record.get('method') == 'height_only' and any(record.get(key) for key in
+                ('tiers', 'roof_surfaces', 'roof_mesh', 'infill_geometry', 'part_heights', 'surface_kind')):
+            raise ValueError('Height-only measurements cannot contain reconstructed geometry')
+        if 'source_heights' in record:
+            heights = record['source_heights']
+            if (record.get('method') != 'height_only' or not isinstance(heights, dict) or not heights
+                    or any(not isinstance(k,str) or not k or not finite_number(v) or v<=0 for k,v in heights.items())
+                    or max(heights.values()) != height):
+                raise ValueError('Invalid source mass heights')
         if 'surface_kind' in record:
             if record['surface_kind'] != 'rock' or record.get('surface_reconstruction') != 'roof_envelope':
                 raise ValueError('Invalid LiDAR surface kind')
