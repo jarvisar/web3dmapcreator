@@ -384,9 +384,10 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
         components = pieces(footprint)
         base = pitch
         for attempt in range(4):
-            # A large outline may not fit the record budget at the print-scale
-            # pitch. Coarsen the whole surface and measure again rather than
-            # thinning it unevenly or guessing the face count in advance.
+            # The pitch fixes how well the cap can follow the building in plan,
+            # so coarsening it turns a drum or a curved facade into blocks: it
+            # is the last resort, for an outline too large to describe at print
+            # scale within the record budget at all, not the ordinary path.
             result = _envelope(components, footprint, observed, secondary, pitch,
                                max(window, pitch*2), mesh_tolerance, tolerance)
             if result is not None:

@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 import math
 import re
 
+try:
+    from .lidar_records import has_roof_surface, roof_faces
+except ImportError:
+    from lidar_records import has_roof_surface, roof_faces
+
 
 POLICY = 'format-neutral EPT/LAZ comparison; source footprints and spatial height confidence; complete survey observations with capture-age preference; classification availability breaks quality ties; no mixed geometry'
 CONTRADICTIONS = frozenset({'source_height_conflict', 'footprint_roof_mismatch',
@@ -37,7 +42,7 @@ def construction_year(properties):
 def top_height(record):
     return max([record['height_m']] + [t['top_m'] for t in record['tiers']]
                + list(record.get('part_heights', {}).values())
-               + [v[2] for s in record.get('roof_surfaces', ()) for r in s['geometry']['coordinates'] for v in r])
+               + [v[2] for ring in roof_faces(record) for v in ring])
 
 
 def height_conflict(a, b):
@@ -55,7 +60,7 @@ def profiles_conflict(a, b, footprint=None):
         for key in set(a.get('part_heights', {})) & set(b.get('part_heights', {})):
             if height_conflict(a['part_heights'][key], b['part_heights'][key]):
                 return True
-    if footprint is None or a.get('roof_surfaces') or b.get('roof_surfaces'):
+    if footprint is None or has_roof_surface(a) or has_roof_surface(b):
         return False
     from shapely.geometry import shape
     def regions(record):

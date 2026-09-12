@@ -1,4 +1,5 @@
 """Blender-side cache contract, independent of optional LiDAR dependencies."""
+import copy
 import json
 from pathlib import Path
 import tempfile
@@ -125,11 +126,11 @@ class LidarCacheTests(unittest.TestCase):
         self.assertIn('stale', load_measurements(self.bundle,self.signature)[1])
 
     def test_previous_surface_reconstruction_requires_new_preparation(self):
-        self.assertEqual(self.signature['algorithm'], 15)
+        self.assertEqual(self.signature['algorithm'], 16)
         self.write({'one': {'height_m': 30, 'tiers': []}})
         path = self.bundle.path/'lidar_buildings.json'
         payload = json.loads(path.read_text())
-        payload['request']['algorithm'] = 14
+        payload['request']['algorithm'] = 15
         path.write_text(json.dumps(payload))
         self.assertIn('stale', load_measurements(self.bundle, self.signature)[1])
 
@@ -190,3 +191,34 @@ class LidarCacheTests(unittest.TestCase):
         record.update(method='faceted_roof', roof_surfaces=[surface]*1025)
         self.write({'one':record})
         self.assertFalse(load_measurements(self.bundle,self.signature)[0])
+
+    def test_packed_envelope_round_trip_and_rejected_damage(self):
+        from jarvizar_city_model.external.lidar_records import (
+            MAX_ENVELOPE_FACETS, envelope_mesh, envelope_rings)
+        rings = [[[-87.8, 41.2, 20], [-87.7, 41.2, 30], [-87.7, 41.3, 30], [-87.8, 41.2, 20]],
+                 [[-87.8, 41.2, 20], [-87.7, 41.3, 30], [-87.8, 41.3, 25], [-87.8, 41.2, 20]]]
+        mesh = envelope_mesh(rings)
+        # Encoding must not move a coordinate, and it must actually share the
+        # corners the two faces have in common.
+        self.assertEqual(envelope_rings(mesh), rings)
+        self.assertEqual(len(mesh['vertices']), 4)
+        record = {'height_m': 20, 'tiers': [], 'method': 'faceted_roof',
+                  'surface_reconstruction': 'roof_envelope', 'roof_mesh': mesh}
+        self.write({'one': record})
+        self.assertTrue(load_measurements(self.bundle, self.signature)[0])
+        for damage in (lambda m: m['faces'].append([0, 1, 99]),
+                       lambda m: m['faces'].append([0, 1, 1]),
+                       lambda m: m['vertices'].append([-87.8, 41.2, 3]),
+                       lambda m: m['faces'].extend([[0, 1, 2]]*MAX_ENVELOPE_FACETS)):
+            broken = copy.deepcopy(record)
+            damage(broken['roof_mesh'])
+            self.write({'one': broken})
+            self.assertFalse(load_measurements(self.bundle, self.signature)[0])
+        # A cap cannot be published both ways, and only an envelope packs one.
+        both = dict(record, roof_surfaces=[{'bottom_m': 20, 'geometry': {
+            'type': 'Polygon', 'coordinates': [rings[0]]}}])
+        self.write({'one': both})
+        self.assertFalse(load_measurements(self.bundle, self.signature)[0])
+        stray = {'height_m': 20, 'tiers': [], 'method': 'faceted_roof', 'roof_mesh': mesh}
+        self.write({'one': stray})
+        self.assertFalse(load_measurements(self.bundle, self.signature)[0])

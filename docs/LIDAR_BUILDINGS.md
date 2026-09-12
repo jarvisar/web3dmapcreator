@@ -1,5 +1,42 @@
 # Building heights and USGS LiDAR
 
+## Full plan resolution for large envelopes (0.23.10)
+
+Reconstruction algorithm 16. Run **Prepare LiDAR Buildings** with Refresh off,
+then **Generate Model**. Downloaded tiles and normalized point batches are
+reused; the acquisition version is unchanged, so nothing is downloaded again
+and only measurement re-runs.
+
+Large buildings were losing their shape, not their detail. A cap costs about
+one face per print-scale raster cell, so a downtown outline exceeded the old
+4,096-face record budget, and the whole surface was then rebuilt at a coarser
+pitch — 1.5 m, 2.25 m, or 3.37 m — until it fit. The pitch is what fixes how
+well a cap follows the building in plan, so the result was a faceted circular
+drum, a stepped curved facade and setbacks merged into blocks. In a dense
+Chicago selection 201 of 1,204 reconstructed buildings were coarsened this way,
+including most of the landmark towers.
+
+The budget is now 16,384 faces and the pitch stays at print scale, so those
+buildings keep a 1 m plan grid. Coarsening remains only as a last resort for an
+outline too large to describe at print scale at all. Nothing else about the
+reconstruction changed: the same upper-quantile raster, the same rank filter,
+the same coplanar block merging, the same clipping and the same joined cap.
+
+The larger budget is affordable because an envelope now publishes one shared
+vertex table and integer faces (`roof_mesh`) instead of an independent GeoJSON
+polygon per face. A cap's faces meet at common corners, so the polygon form
+repeated every corner about six times and the wrapper once per face: 238 bytes
+a face against 42, on disk and again in the reader's memory. Packing moves no
+coordinate. Measured on the Chicago landmarks, the buildings that gained the
+most detail are still smaller on disk than before, and small buildings drop to
+about a sixth of their previous size. Records written by earlier algorithms, and
+every other reconstruction, keep the loose `roof_surfaces` list.
+
+One robustness fix travelled with this: when the reader conformed
+clipping-induced edge splits it could treat a vertex a rounding distance from
+an edge's own endpoint as a T-junction, fan the face around that sliver, and
+leave three faces on one edge, which rejected the whole cap.
+
 ## Upper roof envelope (0.22.0)
 
 **Roof Envelope** replaces Detailed Surfaces as the default reconstruction.

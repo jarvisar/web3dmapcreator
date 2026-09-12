@@ -717,6 +717,19 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
                         surface['geometry']['coordinates'] = rings
                         retained.append(surface)
                 measured['roof_surfaces'] = retained
+                if measured.get('surface_reconstruction') == 'roof_envelope':
+                    # A continuous cap publishes one shared vertex table: its
+                    # faces meet at common corners, so an independent polygon
+                    # per face repeats every corner about six times over, on
+                    # disk and again in the reader's memory.
+                    try:
+                        from .lidar_records import envelope_mesh
+                    except ImportError:
+                        from lidar_records import envelope_mesh
+                    measured['roof_mesh'] = envelope_mesh(
+                        [ring for surface in retained
+                         for ring in surface['geometry']['coordinates']])
+                    measured.pop('roof_surfaces')
             results[identifier] = measured
         else:
             rejected[identifier] = reason

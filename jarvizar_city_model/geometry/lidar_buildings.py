@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from ..blender.mesh_utils import MeshBuilder, projected_polygon_rings
 from ..data.geojson import feature_id
+from ..external.lidar_records import envelope_rings, has_roof_surface
 from .buildings import footprint_admits_minimum_height, resolve_vertical_profile
 from .building_printability import source_part_widths
 from .planar import clean_ring, densify_ring, effective_width, signed_area, EPSILON
@@ -41,14 +42,15 @@ def prefer_source_detail(features, parent, record, transform, vertical, floor_he
             roof = resolve_roof(props, profile, feature is not parent, parent_height,
                                 width / max(transform.scale_x_mm_per_m, 1e-12))
             if generate_roofs and roof.is_shaped and len(rings)==1 and vertical(roof.height_m) >= minimum_roof:
-                if not record.get('roof_surfaces'):
+                if not has_roof_surface(record):
                     return True
             levels.append(vertical(profile.top_m))
     distinct = []
     for height in sorted(levels):
         if not distinct or height-distinct[-1] >= max(minimum_roof, .2):
             distinct.append(height)
-    measured_sections = 1 + len(record['tiers']) + len(record.get('roof_surfaces', []))
+    measured_sections = (1 + len(record['tiers']) + len(record.get('roof_surfaces', []))
+                         + len((record.get('roof_mesh') or {}).get('faces', [])))
     return len(distinct) >= 2 and len(levels) > measured_sections
 
 
@@ -90,6 +92,14 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
     terrain, terrain_top = ground
     base_height = record["height_m"]
     surfaces = record.get('roof_surfaces', [])
+    if record.get('roof_mesh'):
+        # Unpack this one building's cap for construction. The cached records
+        # stay packed, which is where the size and the memory matter; these
+        # rings are transient and let the tested clipping, plane fitting and
+        # joining path stay exactly as it is.
+        surfaces = [{'geometry': {'type': 'Polygon', 'coordinates': [ring]},
+                     'bottom_m': base_height}
+                    for ring in envelope_rings(record['roof_mesh'])]
     total_height = max([base_height] + [t['top_m'] for t in record['tiers']]
                        + [v[2] for s in surfaces for ring in s['geometry']['coordinates'] for v in ring])
     projected_surfaces = [(surface, surface_height(surface, transform),

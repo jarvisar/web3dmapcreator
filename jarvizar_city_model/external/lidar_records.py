@@ -5,9 +5,15 @@ never turn a missing upper roof into an apparently valid podium-only model.
 """
 import math
 
-ALGORITHM_VERSION = 15
+ALGORITHM_VERSION = 16
 MAX_ROOF_FACETS = 1024
-MAX_ENVELOPE_FACETS = 4096
+# A roof envelope costs about one face per print-scale cell, so a downtown
+# outline needs several times the earlier budget to keep its plan resolution
+# instead of having its whole surface coarsened into blocks. That is affordable
+# because an envelope publishes one shared vertex table rather than repeating
+# every corner in every face: see `envelope_mesh`.
+MAX_ENVELOPE_FACETS = 16384
+MAX_ENVELOPE_VERTICES = MAX_ENVELOPE_FACETS*3
 
 
 def finite_number(value):
@@ -54,6 +60,88 @@ def validate_geometry(geometry, dimensions=2, floor=None):
         raise ValueError('Oversized LiDAR roof')
 
 
+def envelope_mesh(rings):
+    """Pack cap faces into one shared vertex table and integer faces.
+
+    A roof envelope is one continuous surface whose faces meet at shared
+    corners, so writing each face as an independent polygon repeats every
+    corner about six times and repeats the GeoJSON wrapper once per face.
+    Measured on downtown buildings that is about 238 bytes a face against 42
+    here, and the same saving applies to what the reader has to hold in
+    memory. Vertices keep their exact published values, so this is only a
+    change of encoding: no coordinate moves.
+    """
+    vertices, lookup, faces = [], {}, []
+    for ring in rings:
+        indices = []
+        # Rings arrive closed, GeoJSON style; a shared table needs each corner
+        # once and the closure is implied by the face.
+        for vertex in (ring[:-1] if len(ring) > 1 and ring[0] == ring[-1] else ring):
+            key = (vertex[0], vertex[1], vertex[2])
+            if key not in lookup:
+                lookup[key] = len(vertices)
+                vertices.append([key[0], key[1], key[2]])
+            if not indices or indices[-1] != lookup[key]:
+                indices.append(lookup[key])
+        if len(indices) > 1 and indices[0] == indices[-1]:
+            indices.pop()
+        if len(indices) >= 3:
+            faces.append(indices)
+    return {'vertices': vertices, 'faces': faces}
+
+
+def envelope_rings(mesh):
+    """The closed rings of a packed cap, in publication order."""
+    vertices = mesh['vertices']
+    return [[vertices[index] for index in face]+[vertices[face[0]]] for face in mesh['faces']]
+
+
+def roof_faces(record):
+    """The record's cap faces as closed rings, whichever encoding it uses."""
+    if 'roof_mesh' in record:
+        return envelope_rings(record['roof_mesh'])
+    return [ring for surface in record.get('roof_surfaces') or ()
+            for ring in surface['geometry']['coordinates']]
+
+
+def has_roof_surface(record):
+    """Does this record carry measured roof geometry of any kind?"""
+    return bool(record.get('roof_surfaces') or record.get('roof_mesh'))
+
+
+def validate_envelope_mesh(mesh, floor):
+    """A packed cap: finite geographic vertices and simple, closed faces."""
+    if not isinstance(mesh, dict):
+        raise ValueError('Invalid LiDAR envelope mesh')
+    vertices, faces = mesh.get('vertices'), mesh.get('faces')
+    if (not isinstance(vertices, list) or not isinstance(faces, list)
+            or not faces or len(faces) > MAX_ENVELOPE_FACETS
+            or not vertices or len(vertices) > MAX_ENVELOPE_VERTICES):
+        raise ValueError('Invalid LiDAR envelope mesh size')
+    for vertex in vertices:
+        if not isinstance(vertex, (list, tuple)) or len(vertex) != 3 or not all(map(finite_number, vertex)):
+            raise ValueError('Invalid LiDAR envelope vertex')
+        if not (-180 <= vertex[0] <= 180 and -90 <= vertex[1] <= 90):
+            raise ValueError('Invalid LiDAR envelope coordinates')
+        if vertex[2] < floor-1e-6:
+            raise ValueError('LiDAR envelope below its base')
+    count = len(vertices)
+    for face in faces:
+        if not isinstance(face, (list, tuple)) or len(face) < 3 or len(face) > 4096:
+            raise ValueError('Invalid LiDAR envelope face')
+        if any(not isinstance(index, int) or isinstance(index, bool)
+               or not 0 <= index < count for index in face):
+            raise ValueError('Invalid LiDAR envelope face index')
+        if len(set(face)) != len(face):
+            raise ValueError('Degenerate LiDAR envelope face')
+        first = vertices[face[0]]
+        ring = [vertices[index] for index in face]
+        area = sum((a[0]-first[0])*(b[1]-first[1])-(b[0]-first[0])*(a[1]-first[1])
+                   for a, b in zip(ring, ring[1:]+ring[:1]))
+        if area == 0:
+            raise ValueError('Degenerate LiDAR envelope ring')
+
+
 def validate_records(buildings):
     if not isinstance(buildings, dict):
         raise ValueError('Invalid buildings dictionary')
@@ -90,10 +178,21 @@ def validate_records(buildings):
         surfaces = record.get('roof_surfaces', [])
         limit = MAX_ROOF_FACETS if record.get('method') == 'faceted_roof' else 8
         if record.get('surface_reconstruction') == 'roof_envelope':
-            if record.get('method') != 'faceted_roof' or not surfaces:
+            # An envelope publishes one packed mesh instead of thousands of
+            # independent faces; the legacy polygon list stays for every other
+            # reconstruction, including a record written before that change.
+            if record.get('method') != 'faceted_roof' or (not surfaces and 'roof_mesh' not in record):
                 raise ValueError('Invalid LiDAR upper surface')
             limit = MAX_ENVELOPE_FACETS
+            if 'roof_mesh' in record:
+                if surfaces:
+                    raise ValueError('Duplicate LiDAR upper surface')
+                validate_envelope_mesh(record['roof_mesh'], height)
+        elif 'roof_mesh' in record:
+            raise ValueError('Unexpected LiDAR envelope mesh')
         if not isinstance(surfaces, list) or len(surfaces) > limit or (surfaces and tiers):
+            raise ValueError('Invalid LiDAR roof surfaces')
+        if tiers and 'roof_mesh' in record:
             raise ValueError('Invalid LiDAR roof surfaces')
         for surface in surfaces:
             if not isinstance(surface, dict) or not finite_number(surface.get('bottom_m')) or abs(surface['bottom_m']-height) > 1e-6:

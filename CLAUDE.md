@@ -463,8 +463,13 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   within a fraction of a printed layer, and the block grid is kept two-to-one
   balanced so the cap has no cracks. Every block corner is a raster node, so
   simplification changes the face count and never the surface. At the default
-  scale the raster pitch is 1 m, coarsened whole-outline in steps if the record
-  budget needs it, and the rank window is twice the pitch.
+  scale the raster pitch is 1 m and the rank window is twice the pitch. The
+  pitch fixes the plan resolution of the building, so coarsening it turns a
+  drum or a curved facade into blocks: it is a last resort for an outline too
+  large to describe at print scale within the record budget at all, not the
+  ordinary path. A cap costs roughly one face per cell; adaptive triangulation
+  does not change that materially, because measured roofs carry relief
+  everywhere. Spend faces, not plan resolution.
 - The default path no longer calls the `lidar_surface_*` region, primitive,
   outline or plane-stitching stack, including its compatibility fallbacks.
   Those modules remain as historical helper implementations/tests. Entirely
@@ -472,22 +477,30 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   continue a supported slope. Neither owns independent architectural regions.
   An envelope failure can retain complete legacy terraces/heights, never a
   partial roof. Terraces and disabled roof generation retain their existing path.
-- `roof_surfaces` holds simple polygons, tagged
-  `surface_reconstruction=roof_envelope`, with up to 4,096 faces. A block wholly
-  inside the outline stays one face; only blocks the outline crosses are cut
-  into triangles. Published coordinates are rounded to about a centimetre.
-  A full raster surface is much larger on disk than the earlier fitted planes:
-  about 320 KB per downtown building, so the reader's `lidar_buildings.json`
-  guard is 512 MB. Raising the pitch or the face budget has to be checked
-  against that file size, not only against appearance. In Blender,
+- An envelope publishes `roof_mesh`, one shared vertex table plus integer
+  faces, tagged `surface_reconstruction=roof_envelope`, with up to 16,384
+  faces. Its faces meet at common corners, so a polygon per face repeated
+  every corner about six times and the GeoJSON wrapper once per face: measured
+  on downtown buildings that was 238 bytes a face against 42, on disk and again
+  in the reader's memory. `lidar_records.envelope_mesh`/`envelope_rings` pack
+  and unpack it without moving a coordinate; `roof_faces`/`has_roof_surface`
+  read either encoding, and the loose `roof_surfaces` list remains valid for
+  every other reconstruction and for records written before algorithm 16.
+  A block wholly inside the outline stays one face; only blocks the outline
+  crosses are cut into triangles. Published coordinates are rounded to about a
+  centimetre. The reader's `lidar_buildings.json` guard is 512 MB; with the
+  packed mesh a dense downtown selection lands well inside it even at the
+  larger budget, but a raised budget still has to be checked against that file
+  size, not only against appearance. In Blender,
   `geometry/lidar_envelope.py` joins their shared cap topology and adds only
   exterior/courtyard walls and a base. The existing terrain-seated foundation
   overlaps this upper solid slightly. Conform clipping-induced edge splits;
   verify area, closure and winding before adoption. A join failure must retain
   source geometry rather than extruding thousands of independent fragments.
 - The saved `FACETED` enum now displays **Roof Envelope**. Legacy width/step
-  sliders remain Terraces-only. Algorithm 15 requires Prepare again with
-  Refresh off. Acquisition version 5 reads every octree level the survey
+  sliders remain Terraces-only. Algorithm 16 requires Prepare again with
+  Refresh off; it reuses cached tiles and normalized points, because the
+  acquisition version is unchanged, and re-runs measurement only. Acquisition version 5 reads every octree level the survey
   actually has (`resolution_m` 0.35, which for the Cook County EPT is its
   deepest level) and retains classes 1-6 rather than 1/2/6: automated
   classifiers file much of an articulated or glazed facade under a vegetation

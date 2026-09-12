@@ -82,10 +82,14 @@ def envelope_solid(polygons, bottom, outlines):
                         for y in range(math.floor((min(ay, by)-epsilon)/pitch), math.floor((max(ay, by)+epsilon)/pitch)+1)
                         for i in buckets.get((x, y), ()) if i not in (a, b)]
         chain = []
+        # A vertex within rounding distance of this edge's own endpoint is that
+        # endpoint, not a T-junction. Splitting there would fan the face around
+        # a degenerate sliver and leave three faces on one edge.
+        margin = epsilon/math.sqrt(length2)
         for index in candidates:
             x, y, z = vertices[index]
             t = ((x-ax)*(bx-ax)+(y-ay)*(by-ay))/length2
-            if (0 < t < 1 and math.hypot(x-(ax+t*(bx-ax)), y-(ay+t*(by-ay))) <= epsilon
+            if (margin < t < 1-margin and math.hypot(x-(ax+t*(bx-ax)), y-(ay+t*(by-ay))) <= epsilon
                     and abs(z-(az+t*(bz-az))) < .002):
                 chain.append((t, index))
         if chain:
