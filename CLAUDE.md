@@ -216,8 +216,10 @@ colors, overwriting manual palette edits.
   default. Parse unit-tagged lengths rather than stripping their units.
 - Parent/part selection suppresses duplicate boxes while retaining a credible
   explicit parent beneath incomplete higher parts. Heightless parts neither
-  veto that parent nor count toward known-height coverage; a lower recorded
-  height or floor count still prevents filling a real setback. Derived parent
+  veto that parent nor count toward known-height coverage; an explicitly lower
+  height still prevents filling a real setback. Floor-derived estimates do not
+  veto an explicit parent height, but still count toward coverage so complete
+  assemblies retain their variable heights. Derived parent
   heights do not justify infill. Do not replace coverage rules with simple
   polygon intersection; legitimate annexes overlap complexes.
 - Parts share terrain min/max from their parent's and siblings' footprints.

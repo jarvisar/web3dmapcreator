@@ -96,3 +96,24 @@ for merge in (False, True):
         'PodiumInfill', merge=merge, prefer_lidar=True, minimum_height=.8)
     assert counts['lidar_infill_buildings'] == 1 and counts['building_parts'] == 2, counts
 print('LIDAR_HEIGHTLESS_PART_PODIUM_OK')
+
+# Floor estimates below an explicit main roof must keep the full source mass;
+# LiDAR can still enhance it or fall back to precisely that complete assembly.
+floor_part = copy.deepcopy(crown)
+floor_part['properties'] = {'building_id': 'parent', 'num_floors': 3}
+for merge in (False, True):
+    original, counts = build([parent], [floor_part], transform, {}, 'FloorEstimate', merge=merge)
+    assert counts['buildings'] == 1 and counts['building_parts'] == 1, counts
+    if not merge:
+        main = next(o for o in original.objects if o.get('feature_type') == 'building')
+        assert main['height_m'] == 10 and main['height_source'] == 'height'
+    _, counts = build([parent], [floor_part], transform, {'parent': record},
+                     'FloorEstimateMeasured', merge=merge, prefer_lidar=True)
+    assert counts['lidar_buildings'] == 1 and counts['building_parts'] == 0, counts
+    broken = copy.deepcopy(record)
+    broken['tiers'][0]['geometry'] = {'type': 'Point', 'coordinates': [0, 0]}
+    fallback, counts = build([parent], [floor_part], transform, {'parent': broken},
+                            'FloorEstimateFallback', merge=merge, prefer_lidar=True)
+    assert counts['lidar_geometry_fallbacks'] == 1, counts
+    assert meshes(original) == meshes(fallback)
+print('LIDAR_FLOOR_ESTIMATE_PARENT_OK')

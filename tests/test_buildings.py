@@ -175,12 +175,36 @@ class SelectionTests(unittest.TestCase):
         parent = self.rectangle("parent", has_parts=True, height=100)
         tower = self.rectangle("tower", (0, 0, 4, 10), building_id="parent", height=110)
         unknown = self.rectangle("unknown", (5, 5, 7, 7), building_id="parent")
-        for props in ({"height": 20}, {"num_floors": 6}, {"height": 20, "min_height": 25}):
+        for props in ({"height": 20}, {"height": 20, "min_height": 25},
+                      {"num_floors": 6, "min_floor": 7}):
             with self.subTest(props=props):
                 lower = self.rectangle("lower", (4, 0, 10, 4), building_id="parent", **props)
                 selection = select_building_geometry([parent], [tower, unknown, lower])
                 self.assertFalse(selection.buildings)
                 self.assertEqual(selection.parts, (tower, unknown, lower))
+
+    def test_floor_estimates_below_explicit_parent_do_not_erase_main_mass(self):
+        parent = self.rectangle("parent", has_parts=True, height=10, num_floors=2)
+        parts = [self.rectangle("west", (0, 0, 1, 1), building_id="parent", num_floors=3),
+                 self.rectangle("east", (9, 9, 10, 10), building_id="parent", num_floors=3)]
+        selection = select_building_geometry([parent], parts)
+        self.assertEqual(selection.buildings, (parent,))
+        self.assertEqual(selection.parts, tuple(parts))
+        self.assertFalse(selection.suppressed_parent_ids)
+        self.assertEqual(resolve_vertical_profile(parent["properties"], 3, 10).top_m, 10)
+        self.assertTrue(all("height" not in p["properties"] for p in parts))
+        # An actual recorded lower height still establishes a setback.
+        parts[0]["properties"]["height"] = 9
+        self.assertFalse(select_building_geometry([parent], parts).buildings)
+
+    def test_complete_floor_derived_assembly_still_replaces_parent(self):
+        parent = self.rectangle("parent", has_parts=True, height=10)
+        part = self.rectangle("part", building_id="parent", num_floors=3)
+        for floors in (3, 4):
+            part["properties"]["num_floors"] = floors
+            selection = select_building_geometry([parent], [part])
+            self.assertFalse(selection.buildings)
+            self.assertEqual(selection.parts, (part,))
 
     def test_derived_parent_height_does_not_supply_missing_main_mass(self):
         roof = self.rectangle("roof", (2, 2, 8, 8), building_id="parent", height=346)
