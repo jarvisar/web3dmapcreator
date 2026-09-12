@@ -213,6 +213,10 @@ colors, overwriting manual palette edits.
 
 ### Buildings and roofs
 
+- Explicit `is_underground=True` excludes that building or part from source
+  generation and cached full-LiDAR reconstruction. Separately mapped surface
+  parts remain eligible. A negative `level`, basement floors, or a station name
+  alone does not establish that an entire structure is underground.
 - `buildings.py` selects source masses/profiles; `building_generation.py` applies
   print settings and builds meshes. `height` is the top above ground, **not
   thickness above `min_height`**. Invalid intervals are skipped. Fallback:

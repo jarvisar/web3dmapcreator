@@ -10,6 +10,7 @@ from ..blender.mesh_utils import MeshBuilder, projected_polygon_rings
 from ..data.geojson import feature_id, feature_properties, first_osm_id, geometry_polygons
 from .buildings import (
     footprint_admits_minimum_height,
+    is_above_ground,
     resolve_vertical_profile,
     select_building_geometry,
 )
@@ -369,7 +370,9 @@ def generate_buildings(
         from .lidar_buildings import measured_builder, prefer_source_detail
         for identifier, feature in parent_lookup.items():
             record = lidar_profiles.get(identifier)
-            if not record or identifier in selection.duplicate_ids:
+            # Cached measurements must obey the same underground exclusion as
+            # source selection, while separately mapped entrances remain usable.
+            if not record or identifier in selection.duplicate_ids or not is_above_ground(feature):
                 continue
             if record.get('method') == 'height_only':
                 # Build exactly the ordinary source selection first. Scalar
