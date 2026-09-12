@@ -8,6 +8,7 @@ from __future__ import annotations
 from shapely.geometry import box
 
 try:
+    from .lidar_storage import StorageFull
     from . import lidar_ept, lidar_laz
     from .lidar_selection import project_year
     from .lidar_metadata import normalized_metadata, enrich_sources
@@ -17,6 +18,7 @@ try:
     from .lidar_tiles import building_tile_plan, batch_source, tile_audit
     from .lidar_provenance import enrich_provenance, enrich_asset_provenance
 except ImportError:
+    from lidar_storage import StorageFull
     import lidar_ept, lidar_laz
     from lidar_selection import project_year
     from lidar_metadata import normalized_metadata, enrich_sources
@@ -75,6 +77,8 @@ def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambd
             before = len(sources)
             try:
                 sources.extend(PROVIDERS[name](fetch, bbox, failures, progress))
+            except StorageFull:
+                raise
             except Exception as exc:
                 # Provider boundary: malformed third-party catalogs/indexes are optional.
                 failures.append({'source': name, 'reason': str(exc), 'buildings': 0})

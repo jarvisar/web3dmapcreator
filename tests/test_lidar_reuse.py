@@ -202,8 +202,11 @@ class WorkerReuseTests(unittest.TestCase):
                 self.assertEqual((read.call_count,fit.call_count),(4,11))
                 self.assertEqual(fit.call_args.kwargs['roof_mode'],'HEIGHT_ONLY')
                 self.assertFalse(fit.call_args.kwargs['roof_planes'])
-                self.assertTrue(worker.prepare(bundle.path,request_signature(bundle,.14,.154,
-                    roof_mode='HEIGHT_ONLY',roof_planes=False))['reused_prepared'])
+                # Print scale reselects eligible buildings; unchanged scalar
+                # measurement batches still reuse their checkpoints.
+                result = worker.prepare(bundle.path,request_signature(bundle,.14,.154,
+                    roof_mode='HEIGHT_ONLY',roof_planes=False))
+                self.assertEqual(result['cache_stats']['checkpoint_batches'], 2)
                 self.assertEqual((read.call_count,fit.call_count),(4,11))
             stages = {p.get('stage') for p in progress}
             self.assertTrue({'Finding surveys','Reusing measurements','Reconstructing roofs','Complete'} <= stages)

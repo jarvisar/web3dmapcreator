@@ -15,13 +15,17 @@ from collections import Counter
 from pathlib import Path
 from ..external.lidar_records import ALGORITHM_VERSION, validate_records
 from ..external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, validate_download_workers
+from ..external.lidar_storage import DEFAULT_CACHE_GIB, DEFAULT_FREE_GIB
 from ..external.lidar_ranking import ACQUISITION_VERSION, FALLBACK_POLICY_VERSION, selection_thresholds
 from ..external.lidar_candidates import discovery_settings
+from ..external.lidar_footprint import DEFAULT_MINIMUM_FOOTPRINT_AREA_MM2, minimum_footprint_area_m2
 
 FORMAT_VERSION = 1
 
 
-def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None, roof_mode='FACETED', providers=None, stac_urls=(), vertical_units='', rock_surfaces=False):
+def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None, roof_mode='FACETED', providers=None, stac_urls=(), vertical_units='', rock_surfaces=False, min_footprint_area_mm2=DEFAULT_MINIMUM_FOOTPRINT_AREA_MM2, xy_area_scale=None):
+    footprint_area_m2 = minimum_footprint_area_m2(min_footprint_area_mm2,
+        xy_scale ** 2 if xy_area_scale is None else xy_area_scale)
     if roof_mode not in ('TERRACES', 'FACETED', 'HEIGHT_ONLY'):
         raise ValueError('Unknown LiDAR roof reconstruction mode')
     if vertical_units not in ('', 'm', 'ft', 'us-ft'):
@@ -33,7 +37,8 @@ def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0
         min_width_mm, min_step_mm = 0.1, 0.05
     if roof_mode == 'HEIGHT_ONLY':
         # Height sampling is in real metres, independent of print/roof detail.
-        # Keep its cache reusable when only the display scale changes.
+        # Measurements remain reusable; footprint admission above uses the
+        # actual print scale and still changes the public selection identity.
         xy_scale, z_scale = .07, .077
         roof_planes, rock_surfaces = False, False
     files = {}
@@ -53,6 +58,7 @@ def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0
             "min_step_mm": round(float(min_step_mm), 6), "source_url": source_url.strip(),
             'roof_planes': bool(roof_planes), 'prefer_lidar': bool(prefer_lidar),
             'roof_mode': roof_mode,
+            'min_footprint_area_m2': footprint_area_m2,
             'rock_surfaces': bool(rock_surfaces),
             'manifest_url': manifest_url.strip(), 'acquisition_thresholds': selection_thresholds(acquisition_thresholds),
             'fallback_policy': FALLBACK_POLICY_VERSION,
@@ -105,7 +111,7 @@ class LidarPreparation:
     individual HTTP requests still have a timeout. Cancel preserves completed
     tile and measurement checkpoints and the previous public result.
     """
-    def __init__(self, python_path, bundle, signature, refresh=False, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval=''):
+    def __init__(self, python_path, bundle, signature, refresh=False, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval='', cache_gib=DEFAULT_CACHE_GIB, free_gib=DEFAULT_FREE_GIB):
         download_workers = validate_download_workers(download_workers)
         self.bundle = bundle
         self.started = time.monotonic()
@@ -121,6 +127,7 @@ class LidarPreparation:
         command = [str(python_path), str(helper), '--bundle', str(bundle.path),
                    '--request', str(request), '--progress', str(self.progress_path),
                    '--download-workers', str(download_workers), '--parent-pid', str(os.getpid())]
+        command.extend(['--cache-gib', str(cache_gib), '--free-gib', str(free_gib)])
         if refresh:
             command.append('--refresh')
         if laz_approval:
@@ -186,5 +193,5 @@ class LidarPreparation:
         self.temporary.cleanup()
 
 
-def prepare_lidar(python_path, bundle, signature, refresh=False, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval=''):
-    return LidarPreparation(python_path, bundle, signature, refresh, download_workers, laz_approval).result()
+def prepare_lidar(python_path, bundle, signature, refresh=False, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval='', cache_gib=DEFAULT_CACHE_GIB, free_gib=DEFAULT_FREE_GIB):
+    return LidarPreparation(python_path, bundle, signature, refresh, download_workers, laz_approval, cache_gib, free_gib).result()

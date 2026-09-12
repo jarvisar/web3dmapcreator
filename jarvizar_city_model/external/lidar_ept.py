@@ -12,6 +12,7 @@ import json
 import math
 import time
 import threading
+from contextlib import nullcontext
 from concurrent.futures import CancelledError
 import urllib.request
 from pathlib import Path
@@ -54,6 +55,15 @@ class Fetcher:
         self._download_budget = threading.Lock()
         self.decoded_cache = DecodedPointCache()
         self.download_workers = 4
+        self.storage = None
+
+    def _write_cache(self, path, data):
+        if self.storage:
+            self.storage.write_bytes(path, data)
+        else:
+            temporary = path.with_suffix('.partial')
+            temporary.write_bytes(data)
+            temporary.replace(path)
 
     def get(self, url, limit=32 * 1024 * 1024, fresh=False, body=None,
             ttl=None, timeout=45, attempts=3, content_type='application/json'):
@@ -72,6 +82,8 @@ class Fetcher:
         if urlparse(url).scheme != "https":
             raise ValueError("LiDAR downloads require HTTPS")
         path = self.cache / hashlib.sha256(key.encode()).hexdigest()
+        if self.storage:
+            self.storage.touch(path)
         # Neighboring building batches share additive EPT ancestors. Count
         # each resource once per preparation, including with Refresh enabled.
         repeated = key in self.seen
@@ -100,9 +112,7 @@ class Fetcher:
                 self.requests += 1
             if len(data) > remaining:
                 raise BudgetExceeded("LiDAR response exceeds byte budget; select a smaller area")
-            temporary = path.with_suffix(".partial")
-            temporary.write_bytes(data)
-            temporary.replace(path)
+            self._write_cache(path, data)
         with self._download_state:
             if not repeated:
                 self.bytes += len(data)
@@ -149,6 +159,8 @@ class Fetcher:
             raise ValueError('LiDAR downloads require HTTPS')
         key = url + ('#revision='+str(revision) if revision else '')
         path = self.cache / hashlib.sha256(key.encode()).hexdigest()
+        if self.storage:
+            self.storage.touch(path)
         repeated = key in self.seen
         remaining = min(limit, self.max_bytes-self.bytes) if self.max_bytes is not None and not repeated else limit
         if path.is_file() and (not self.refresh or repeated):
@@ -157,10 +169,12 @@ class Fetcher:
                 raise BudgetExceeded('LiDAR tile exceeds byte budget')
         else:
             temporary = path.with_suffix('.partial')
-            size = stream_tile(url, temporary, remaining, self.progress, cancel, validate_prefix)
-            check_cancelled()
-            temporary.replace(path)
-            temporary.with_suffix('.partial.json').unlink(missing_ok=True)
+            with self.storage.writing(path) if self.storage else nullcontext(None) as ensure:
+                kwargs = {'ensure_space': ensure} if ensure else {}
+                size = stream_tile(url, temporary, remaining, self.progress, cancel, validate_prefix, **kwargs)
+                check_cancelled()
+                temporary.replace(path)
+                temporary.with_suffix('.partial.json').unlink(missing_ok=True)
             with self._download_state:
                 self.requests += 1
         with self._download_state:
@@ -175,6 +189,8 @@ class Fetcher:
             raise ValueError('Invalid LiDAR header range')
         key = f'{url}#range={start}:{size}'
         path = self.cache / hashlib.sha256(key.encode()).hexdigest()
+        if self.storage:
+            self.storage.touch(path)
         repeated = key in self.seen
         if self.max_bytes is not None and not repeated and self.bytes+size > self.max_bytes:
             raise BudgetExceeded('LiDAR header exceeds byte budget')
@@ -192,9 +208,7 @@ class Fetcher:
                 data = response.read(size+1)
                 if len(data) != size:
                     raise ValueError('Incomplete LAS header range')
-            temporary = path.with_suffix('.partial')
-            temporary.write_bytes(data)
-            temporary.replace(path)
+            self._write_cache(path, data)
             self.requests += 1
         if not repeated:
             self.bytes += len(data)

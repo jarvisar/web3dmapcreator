@@ -7,6 +7,7 @@ import hashlib
 import zipfile
 import zlib
 from pathlib import PurePosixPath
+from contextlib import nullcontext
 
 
 def fetch_tile(fetch, tile, *, cancel=None, validate_prefix=None):
@@ -29,6 +30,9 @@ def _fetch_tile(fetch, tile, *, cancel=None, validate_prefix=None):
     revision = tile.get('updated') or ''
     key = tile['url'] + '#extracted=' + str(revision)
     target = fetch.cache / hashlib.sha256(key.encode()).hexdigest()
+    storage = getattr(fetch, 'storage', None)
+    if storage:
+        storage.touch(target)
     if target.is_file() and not fetch.refresh:
         return target
     def zip_prefix(stream, limit):
@@ -38,7 +42,7 @@ def _fetch_tile(fetch, tile, *, cancel=None, validate_prefix=None):
         return prefix
     archive_path = fetch.download(tile['archive_url'], revision=revision, cancel=cancel,
                                   validate_prefix=zip_prefix)
-    with zipfile.ZipFile(archive_path) as archive:
+    with storage.writing(target) if storage else nullcontext(None) as ensure, zipfile.ZipFile(archive_path) as archive:
         if len(archive.infolist()) > 10000:
             raise ValueError('Point-cloud archive contains too many members')
         names = [info for info in archive.infolist()
@@ -48,6 +52,8 @@ def _fetch_tile(fetch, tile, *, cancel=None, validate_prefix=None):
         info = names[0]
         if not 227 <= info.file_size <= 4 * 1024**3:
             raise ValueError('Expanded point-cloud tile exceeds size budget')
+        if ensure:
+            ensure(info.file_size)
         temporary = target.with_suffix('.extracting')
         try:
             with archive.open(info) as src, temporary.open('wb') as out:

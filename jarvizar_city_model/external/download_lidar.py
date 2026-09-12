@@ -15,8 +15,10 @@ import sys
 from contextlib import ExitStack
 try:
     from .lidar_rock import rock_features
+    from .lidar_footprint import select_footprints
 except ImportError:
     from lidar_rock import rock_features
+    from lidar_footprint import select_footprints
 try:
     from .lidar_records import ALGORITHM_VERSION, validate_records, finite_number
     from .lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
@@ -25,6 +27,7 @@ try:
     from .lidar_offer import approved_offers, offer_token
     from .lidar_reuse import reusable_prepared, summarize_prepared, source_generation, batch_identity, atomic_json
     from .lidar_point_cache import PointBatchCache
+    from .lidar_storage import CacheStorage, DEFAULT_CACHE_GIB, DEFAULT_FREE_GIB
 except ImportError:
     from lidar_records import ALGORITHM_VERSION, validate_records, finite_number
     from lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
@@ -33,6 +36,7 @@ except ImportError:
     from lidar_offer import approved_offers, offer_token
     from lidar_reuse import reusable_prepared, summarize_prepared, source_generation, batch_identity, atomic_json
     from lidar_point_cache import PointBatchCache
+    from lidar_storage import CacheStorage, DEFAULT_CACHE_GIB, DEFAULT_FREE_GIB
 
 
 def valid_checkpoint(cached, identifiers, source_url):
@@ -65,13 +69,14 @@ def valid_checkpoint(cached, identifiers, source_url):
     return True
 
 
-def prepare(bundle, request, refresh=False, progress_path=None, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval=''):
+def prepare(bundle, request, refresh=False, progress_path=None, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval='', cache_gib=DEFAULT_CACHE_GIB, free_gib=DEFAULT_FREE_GIB):
     download_workers = validate_download_workers(download_workers)
     with cache_owner(bundle.parent), ExitStack() as resources:
-        return _prepare(bundle, request, refresh, progress_path, download_workers, laz_approval, resources)
+        storage = CacheStorage(bundle.parent, cache_gib, free_gib)
+        return _prepare(bundle, request, refresh, progress_path, download_workers, laz_approval, resources, storage)
 
 
-def _prepare(bundle, request, refresh, progress_path, download_workers, laz_approval='', resources=None):
+def _prepare(bundle, request, refresh, progress_path, download_workers, laz_approval='', resources=None, storage=None):
     reporter = ProgressReporter(progress_path)
     reporter('Checking prepared results and input settings', stage='Checking cache', completed=0, total=0, force=True)
     from pyproj import CRS, Transformer
@@ -125,7 +130,12 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     selected = map_geometry(to_metric, box(*bbox))
     halo = selected.buffer(75)
     query = map_geometry(to_geographic, halo).bounds
+    if storage:
+        storage.trim()
     fetch = Fetcher(bundle.parent / "lidar_tiles", refresh=refresh)
+    fetch.storage = storage
+    if storage:
+        fetch.decoded_cache.free_reserve = storage.reserve
     fetch.download_workers = download_workers
     if resources is not None:
         resources.callback(fetch.decoded_cache.close)
@@ -139,8 +149,15 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     geometries = {f['id']: map_geometry(to_metric, shape(f['geometry'])) for f in features}
     geometry_ids = list(geometries)
     tree = STRtree(list(geometries.values()))
+    # Keep every footprint in the neighbor index: skipped houses still exclude
+    # roof returns from ground fitting for an adjacent eligible building.
+    features = [f for f in features if shape(f['geometry']).intersects(box(*bbox))]
+    total_candidates = len(features)
+    features, footprint_rejected = select_footprints(
+        features, geometries, request.get('min_footprint_area_m2', 0.0))
     neighbors_by_id = {key:[geometries[geometry_ids[i]] for i in tree.query(geometry.buffer(7), predicate='intersects')
-                            if geometry_ids[i] != key] for key,geometry in geometries.items()}
+                            if geometry_ids[i] != key]
+                       for key, geometry in ((f['id'], geometries[f['id']]) for f in features)}
     parts_by_parent = {}
     source_parts_by_parent = {}
     for part in json.loads((bundle / 'building_part.geojson').read_text(encoding='utf-8'))['features']:
@@ -157,7 +174,9 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
             geometry_ids[i] for i in tree.query(domain, predicate='covers')
             if not geometry_ids[i].startswith('rock:') and
             all(domain.covers(g) for g in parts_by_parent.get(geometry_ids[i], ())))
-    measured, provenance, failures, counts, rejected = {}, [], [], Counter(), {}
+    measured, provenance, failures = {}, [], []
+    rejected = dict(footprint_rejected)
+    counts = Counter(rejected.values())
     alternatives, observations, resolved = {}, {}, set()
     geographic_geometries = {f['id']: shape(f['geometry']) for f in features}
     def collect(records, evidence, source, info):
@@ -177,16 +196,19 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                 resolved.add(identifier)
     checkpoints = bundle / 'lidar_jobs'
     checkpoints.mkdir(exist_ok=True)
-    total_candidates = sum(shape(f['geometry']).intersects(box(*bbox)) for f in features)
     cache_stats = {'checkpoint_batches': 0, 'cached_buildings': 0, 'point_batches': 0, 'measured_batches': 0}
     dependencies = []
     def progress(message, **fields):
         reporter(message, accepted=len(resolved), candidates=total_candidates, **cache_stats, **fields)
     fetch.progress = progress
-    progress('Finding available surveys and checking source metadata', stage='Finding surveys', completed=0, total=0, force=True)
-    sources, discovery_failures = discover_sources(fetch, query, request['source_url'],
-        request.get('manifest_url', ''), progress, thresholds=thresholds,
-        discovery=request.get('discovery'), vertical_units=request.get('vertical_units', ''))
+    progress(f'{len(features)}/{total_candidates} eligible; {len(footprint_rejected)} below minimum footprint',
+             stage='Selecting buildings', completed=0, total=0, force=True)
+    sources, discovery_failures = [], []
+    if features:
+        progress('Finding available surveys and checking source metadata', stage='Finding surveys', completed=0, total=0, force=True)
+        sources, discovery_failures = discover_sources(fetch, query, request['source_url'],
+            request.get('manifest_url', ''), progress, thresholds=thresholds,
+            discovery=request.get('discovery'), vertical_units=request.get('vertical_units', ''))
     failures.extend(discovery_failures)
     plan = AcquisitionPlan(sources, [f for f in features if geographic_geometries[f['id']].intersects(box(*bbox))],
                            geographic_geometries, thresholds,
@@ -311,6 +333,8 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
             trial['recovered_buildings'] += len(gained)
             progress(f"LAZ batch evaluated: {len(gained)}/{len(batch)} newly resolved buildings")
         while jobs:
+            if storage:
+                storage.release_inputs()
             batch, batch_query, checkpoint, cached = jobs.pop(0)
             attempted.update(f['id'] for f in batch)
             before = set(resolved)
@@ -337,7 +361,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                     progress(f"Selected LAZ tile {entry['url']}: {len(entry['footprints'])} footprints, "
                              f"{len(entry['ground_halos'])} ground halos; " + '; '.join(entry['reasons']))
             try:
-                point_cache = PointBatchCache(bundle.parent, selected_source, dependency, batch_query, ACQUISITION_VERSION)
+                point_cache = PointBatchCache(bundle.parent, selected_source, dependency, batch_query, ACQUISITION_VERSION, storage=storage)
                 decoded = point_cache.load() if not refresh else None
                 if decoded is not None:
                     points, info = decoded
@@ -399,10 +423,14 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
             rejected.update(rejected_features)
             info = {**info, "name": source["name"], "accepted": len(records), 'bbox': list(batch_query)}
             provenance.append(info)
-            temporary = checkpoint.with_suffix('.partial')
-            temporary.write_text(json.dumps({'records': records, 'reasons': reasons,
-                'rejected': rejected_features, 'info': info, 'observations':evidence}, allow_nan=False), encoding='utf-8')
-            temporary.replace(checkpoint)
+            checkpoint_data = json.dumps({'records': records, 'reasons': reasons,
+                'rejected': rejected_features, 'info': info, 'observations':evidence}, allow_nan=False).encode('utf-8')
+            if storage:
+                storage.write_bytes(checkpoint, checkpoint_data, managed=False)
+            else:
+                temporary = checkpoint.with_suffix('.partial')
+                temporary.write_bytes(checkpoint_data)
+                temporary.replace(checkpoint)
             del points
         source['acquired_buildings'] = len(attempted)
     for source in sources:
@@ -446,11 +474,15 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                'compared_sources':len({item['url'] for item in provenance}),
                'conflict_buildings':conflict_buildings,
                "bytes_read": fetch.bytes, "network_requests": fetch.requests}
-    payload['candidate_buildings'] = sum(shape(f['geometry']).intersects(box(*bbox)) for f in features)
+    payload['candidate_buildings'] = total_candidates
     destination = bundle / "lidar_buildings.json"
-    temporary = destination.with_suffix(".json.partial")
-    temporary.write_text(json.dumps(payload, allow_nan=False), encoding="utf-8")
-    temporary.replace(destination)
+    result_data = json.dumps(payload, allow_nan=False).encode('utf-8')
+    if storage:
+        storage.write_bytes(destination, result_data, managed=False)
+    else:
+        temporary = destination.with_suffix('.json.partial')
+        temporary.write_bytes(result_data)
+        temporary.replace(destination)
     progress(f'Prepared {len(measured)} buildings; cached work is ready to reuse', stage='Complete', completed=1, total=1, force=True)
     return {"ok": True, "buildings": len(measured), "tiered_buildings": sum(bool(r["tiers"]) for r in measured.values()),
             'cache_stats': cache_stats,
@@ -473,6 +505,8 @@ def main():
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument('--progress', type=Path)
     parser.add_argument('--parent-pid', type=int)
+    parser.add_argument('--cache-gib', type=int, default=DEFAULT_CACHE_GIB)
+    parser.add_argument('--free-gib', type=int, default=DEFAULT_FREE_GIB)
     parser.add_argument('--laz-approval', default='', help='Token from the reviewed gap offer; never enables unrestricted LAZ')
     parser.add_argument('--download-workers', type=int, choices=range(1, MAX_DOWNLOAD_WORKERS+1),
                         default=DEFAULT_DOWNLOAD_WORKERS, metavar=f'1-{MAX_DOWNLOAD_WORKERS}')
@@ -481,7 +515,7 @@ def main():
         if args.parent_pid:
             watch_parent(args.parent_pid)
         result = prepare(args.bundle, json.loads(args.request.read_text(encoding="utf-8")),
-                         args.refresh, args.progress, args.download_workers, args.laz_approval)
+                         args.refresh, args.progress, args.download_workers, args.laz_approval, args.cache_gib, args.free_gib)
     except ImportError as exc:
         result = {"ok": False, "detail": f"Install requirements-lidar.txt in the external downloader environment: {exc}"}
     except Exception as exc:

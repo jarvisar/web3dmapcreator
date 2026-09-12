@@ -12,7 +12,7 @@ class BudgetExceeded(ValueError):
     pass
 
 
-def stream_tile(url, temporary, limit, progress, cancel=None, validate_prefix=None):
+def stream_tile(url, temporary, limit, progress, cancel=None, validate_prefix=None, ensure_space=None):
     metadata = temporary.with_suffix('.partial.json')
     resumable = False
 
@@ -78,6 +78,8 @@ def stream_tile(url, temporary, limit, progress, cancel=None, validate_prefix=No
                         size = offset
                         if not offset and validate_prefix:
                             prefix = validate_prefix(response, limit)
+                            if ensure_space:
+                                ensure_space(len(prefix))
                             output.write(prefix)
                             size += len(prefix)
                         resumable = bool(total and etag.startswith('"') and etag.endswith('"'))
@@ -92,6 +94,8 @@ def stream_tile(url, temporary, limit, progress, cancel=None, validate_prefix=No
                             if size > limit or (total is not None and size > total):
                                 resumable = False
                                 raise BudgetExceeded('LiDAR tile exceeds byte budget or declared size')
+                            if ensure_space:
+                                ensure_space(size - offset)
                             output.write(data)
                             now = time.monotonic()
                             if now-last_progress >= 5:

@@ -8,6 +8,7 @@ Readers remain sequential; download threads never access these caches.
 from collections import OrderedDict
 from contextlib import closing
 import tempfile
+import shutil
 
 import laspy
 import numpy as np
@@ -17,6 +18,7 @@ class DecodedPointCache:
     def __init__(self, memory_limit=64 * 1024**2, disk_limit=1024**3,
                  tile_limit=512 * 1024**2):
         self.memory_limit, self.disk_limit, self.tile_limit = memory_limit, disk_limit, tile_limit
+        self.free_reserve = 0
         self.nodes, self.tiles = OrderedDict(), OrderedDict()
         self.memory_bytes = self.disk_bytes = 0
 
@@ -76,7 +78,8 @@ class DecodedPointCache:
             while self.tiles and self.disk_bytes + size > self.disk_limit:
                 self._drop_tile()
             try:
-                temporary = tempfile.TemporaryFile(buffering=0)
+                if shutil.disk_usage(tempfile.gettempdir()).free >= self.free_reserve + size:
+                    temporary = tempfile.TemporaryFile(buffering=0)
             except OSError:
                 pass
         try:
@@ -84,6 +87,8 @@ class DecodedPointCache:
                 if temporary is not None:
                     try:
                         raw = memoryview(chunk.array).cast('B')
+                        if shutil.disk_usage(tempfile.gettempdir()).free < self.free_reserve + len(raw):
+                            raise OSError('Preserving temporary disk space')
                         if temporary.write(raw) != len(raw):
                             raise OSError('Incomplete temporary point cache write')
                     except OSError:

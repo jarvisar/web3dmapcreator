@@ -1,5 +1,22 @@
 # Building heights and USGS LiDAR
 
+## Skip small building footprints
+
+**Minimum Building Footprint (mm²)** under LiDAR Buildings defaults to **0.7 mm²**,
+roughly a **0.84 × 0.84 mm square** on the print (about 143 m² at the default
+0.07 mm/metre scale). It uses actual mapped footprint area, subtracting courtyards
+and summing disconnected sections, independent of orientation or height. The
+whole mapped parent footprint is used even at the selection edge; small parts
+of a larger eligible building remain available for detail reconstruction.
+
+Buildings below the threshold keep their ordinary source geometry and skip
+LiDAR survey comparisons, point acquisition and measurement. The filter applies
+to both roof reconstruction and Correct Heights Only; mapped rock is unaffected.
+Shared point batches or tiles can still include nearby small buildings' returns.
+Set **0** to disable the filter, or increase it to focus on larger buildings.
+Run **Prepare LiDAR Buildings** again after changing the threshold or print scale,
+with Refresh off to reuse compatible cached work. Preparation reports the skip count.
+
 ## Height sanity correction
 
 Enable **Correct Heights Only** under LiDAR Buildings, run **Prepare LiDAR
@@ -19,7 +36,9 @@ This mode uses coarser roof sampling and skips reconstruction, infill and mapped
 rock preparation. Downloads and decoding still use the normal data path, so
 total speedup depends on how much time acquisition takes. Switching modes needs
 another Prepare; compatible downloaded and decoded data can be reused. Changing
-print scale or roof-detail settings alone does not invalidate height-only data.
+roof-detail settings alone does not invalidate height-only data. Print scale
+reselects buildings when the footprint filter is enabled; compatible scalar
+measurements remain reusable.
 
 ## Automatic LAZ offers and mapped relief (0.23.15)
 
@@ -1110,7 +1129,7 @@ and generation report restored main masses and corrected part heights.
 ### Chicago diagnosis before editing
 
 The cached selection `bbox_125c4fc8e7fc` covers
-`-87.64442,41.87627,-87.61906,41.89276` and contains 1,542 buildings.
+`-87.7442,41.87627,-87.61906,41.89276` and contains 1,542 buildings.
 
 * **THE MART** (`a4060d52-97e2-4092-9582-5fc23409ac56`) is present as an OSM
   footprint of about 19,807 m². Its nine mapped roof parts cover only **15.0%**
@@ -1617,6 +1636,32 @@ No network is used during generation. Turning the option off restores the
 corrected source-based building path. Changed bbox, footprint files, print
 scale, detail thresholds or source URL invalidate the measurements. Use
 **Refresh Existing Cache** to re-fetch data deliberately.
+
+Reusable LiDAR storage defaults to **30 GiB per cache folder**, with a **10 GiB
+free-space reserve**. Both settings are machine preferences, available beside
+the cache path and in the add-on preferences. Before acquisition and when a
+write needs space, the add-on removes older normalized point batches first,
+then older downloaded sources. Files used by the current batch are protected;
+completed batches become eligible again so a large preparation can reuse space.
+Recent resumable partial downloads are retained; abandoned partial files older
+than seven days are eligible for cleanup under the same worker lock.
+
+**Review LiDAR Cache Cleanup** shows current reusable storage, free space, and
+the proposed reclaim amount before applying manual cleanup. Merely opening
+Blender, installing the add-on, or generating from prepared data does not purge
+the cache. Cache eviction can make future preparation slower or require another
+download. Optional normalized-point caching is skipped when it cannot fit;
+required downloads stop only if eligible older cache files cannot make room.
+
+Prepared building results, measurement checkpoints, Overture/terrain bundles,
+and source-revision markers are preserved and excluded from this budget. These
+protected datasets can still grow as new areas are saved; review/archive them
+manually when no longer needed. The separate temporary decode cache remains
+bounded to 1 GiB and also checks free disk space. To explicitly protect reusable
+data, place an empty `.keep` file in `lidar_tiles` or in a survey's
+`lidar_derived/<source>/points` directory. Protected files may prevent satisfying
+the configured limit. Autosaves, saved scenes, exports, and development baselines
+are never part of automatic cache cleanup.
 
 The cache records source URLs, sampling, ground references, coverage, methods,
 rejection reasons by building ID, timestamps, source-file hashes and budgets.

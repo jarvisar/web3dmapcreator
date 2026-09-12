@@ -134,6 +134,11 @@ class JARVIZAR_PT_city_model(Panel):
         box = layout.box()
         box.label(text="Overture Cache", icon="IMPORT")
         box.prop(settings, "cache_directory")
+        addon = context.preferences.addons.get(__package__)
+        if addon:
+            box.prop(addon.preferences, 'lidar_cache_gib')
+            box.prop(addon.preferences, 'lidar_free_gib')
+        box.operator('jarvizar.cache_storage', icon='DISK_DRIVE')
         from .config import preferred_python_path
 
         stored = preferred_python_path().strip()
@@ -309,6 +314,7 @@ class JARVIZAR_PT_buildings(Panel):
         box = layout.box()
         box.label(text="LiDAR Buildings")
         box.prop(settings, "use_lidar_buildings")
+        box.prop(settings, "lidar_minimum_footprint_area_mm2")
         box.prop(settings, "lidar_height_only")
         box.prop(settings, "lidar_prefer_measured")
         rock_row = box.row()

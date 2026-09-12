@@ -36,7 +36,7 @@ from .external.lidar_reuse import reusable_prepared, summarize_prepared
 from .external.lidar_offer import approved_offers, offer_details
 from .data.geojson import load_feature_collection, polygon_features, first_osm_id, feature_id
 from .data.land import recessed_water_kind
-from .config import preferred_python_path
+from .config import preferred_python_path, storage_limits
 from .data.overture import (
     OvertureDownloadError,
     download_dem_to_cache,
@@ -328,6 +328,8 @@ def _lidar_signature(settings, bundle, transform=None):
         providers=None if settings.lidar_international else ('usgs',),
         stac_urls=settings.lidar_stac_urls.split(),
         rock_surfaces=settings.lidar_rock_surfaces and not settings.lidar_height_only,
+        min_footprint_area_mm2=settings.lidar_minimum_footprint_area_mm2,
+        xy_area_scale=transform.scale_x_mm_per_m * transform.scale_y_mm_per_m,
         vertical_units='' if settings.lidar_vertical_units == 'AUTO' else settings.lidar_vertical_units)
 
 
@@ -355,6 +357,9 @@ class JARVIZAR_OT_prepare_lidar(Operator):
         if not result.get('reused_prepared') and (reused.get('cached_buildings') or reused.get('point_batches')):
             message += f"; reused {reused.get('cached_buildings', 0)} building checks and {reused.get('point_batches', 0)} decoded point batches"
         settings.lidar_progress = 1.
+        footprint_skips = result.get('rejection_counts', {}).get('footprint_below_minimum', 0)
+        if footprint_skips:
+            message += f'; {footprint_skips} below minimum footprint (source buildings kept)'
         if result.get('infill_buildings') or result.get('part_heights'):
             message += f"; {result.get('infill_buildings', 0)} main masses restored, {result.get('part_heights', 0)} part heights"
         if result.get('compared_sources'):
@@ -472,13 +477,16 @@ class JARVIZAR_OT_prepare_lidar(Operator):
             settings.lidar_progress_source = settings.lidar_progress_reuse = ''
             settings.lidar_elapsed_seconds = settings.lidar_update_seconds = 0
             python_path = _resolve_downloader(context, settings)
+            cache_gib, free_gib = storage_limits()
             if bpy.app.background:
                 return self.finish(context, prepare_lidar(python_path, bundle, signature, settings.force_redownload and not laz_approval,
-                                   download_workers=settings.lidar_download_workers, laz_approval=laz_approval))
+                                   download_workers=settings.lidar_download_workers, laz_approval=laz_approval,
+                                   cache_gib=cache_gib, free_gib=free_gib))
             self._signature = signature
             self._settings, self._scene = settings, context.scene
             self._job = LidarPreparation(python_path, bundle, signature, settings.force_redownload and not laz_approval,
-                                         download_workers=settings.lidar_download_workers, laz_approval=laz_approval)
+                                         download_workers=settings.lidar_download_workers, laz_approval=laz_approval,
+                                         cache_gib=cache_gib, free_gib=free_gib)
             self._timer = context.window_manager.event_timer_add(0.5, window=context.window)
             context.window_manager.modal_handler_add(self)
             settings.lidar_preparing = True
@@ -1231,6 +1239,63 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
         return {"FINISHED"}
 
 
+class JARVIZAR_OT_cache_storage(Operator):
+    bl_idname = 'jarvizar.cache_storage'
+    bl_label = 'Review LiDAR Cache Cleanup'
+    bl_description = 'Preview trimming reusable LiDAR data to the storage limits; preserve prepared models and geographic bundles'
+
+    @classmethod
+    def poll(cls, context):
+        from .blender.generation_modal import is_generating
+        return not is_generating() and not JARVIZAR_OT_prepare_lidar._running
+
+    def invoke(self, context, event):
+        from .external.lidar_storage import CacheStorage
+        try:
+            self._root = Path(bpy.path.abspath(context.scene.jarvizar_city_model.cache_directory)).expanduser().resolve()
+            if not self._root.is_dir():
+                raise ValueError('Cache folder does not exist yet')
+            self._limits = storage_limits()
+            self._preview = CacheStorage(self._root, *self._limits).plan()
+        except (OSError, ValueError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        from .external.lidar_storage import GIB
+        layout = self.layout
+        p = self._preview
+        layout.label(text=f"Reusable data: {p['used']/GIB:.1f} GiB; limit: {self._limits[0]} GiB")
+        layout.label(text=f"Disk free: {p['free']/GIB:.1f} GiB; reserve: {self._limits[1]} GiB")
+        layout.label(text=f"Cleanup can reclaim approximately {p['reclaim']/GIB:.1f} GiB")
+        layout.label(text='Prepared models and geographic bundles are preserved.')
+        layout.label(text='Future preparation may need to download data again.')
+        if p['shortfall']:
+            layout.label(text='Protected data prevents meeting these limits.', icon='ERROR')
+        layout.label(text='OK applies cleanup; Cancel leaves files as they are.')
+
+    def execute(self, context):
+        from .external.lidar_storage import CacheStorage, StorageFull, GIB
+        from .external.lidar_worker import cache_owner
+        try:
+            if not hasattr(self, '_preview'):
+                raise ValueError('Review the cleanup preview first')
+            with cache_owner(self._root):
+                storage = CacheStorage(self._root, *self._limits)
+                # A changed cache needs a fresh preview, never broader deletion.
+                before = {str(e['path']): e['bytes'] for e in self._preview['remove']}
+                after = {str(e['path']): e['bytes'] for e in storage.plan()['remove']}
+                if before != after:
+                    raise ValueError('Cache changed; open the cleanup preview again')
+                removed = storage.trim()
+            self.report({'INFO'}, f'Reclaimed {removed/GIB:.1f} GiB of reusable LiDAR data')
+            return {'FINISHED'}
+        except (OSError, ValueError, StorageFull) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+
 class JARVIZAR_OT_clear_model(Operator):
     bl_idname = "jarvizar.clear_model"
     bl_label = "Clear Generated Model"
@@ -1251,6 +1316,7 @@ class JARVIZAR_OT_clear_model(Operator):
 
 
 CLASSES = (
+    JARVIZAR_OT_cache_storage,
     JARVIZAR_OT_cancel_lidar,
     JARVIZAR_OT_cancel_generation,
     JARVIZAR_OT_move_surface_priority,

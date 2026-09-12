@@ -33,6 +33,7 @@ retain explicitly stored values when defaults change.
 | Buildings | Height multiplier 1.1; minimum height 0.8 mm, gated by a 0.6 mm footprint setting |
 | Source building detail | Minimum effective width 0.08 mm; slenderness limit 30 below 0.45 mm width |
 | LiDAR | Opt-in; Prefer LiDAR on Conflicts enabled; automatic Roof Envelope; legacy Terraces width 0.1 mm / step 0.05 mm |
+| LiDAR building selection | Minimum printed footprint area 0.7 mm²; 0 disables this pre-acquisition filter |
 | Ponds / fountains | Recess enabled, depth 1.0 mm, water thickness 0.8 mm (0.2 mm below the lowest sampled bank) |
 | Trees | Trunkless three-tier solids, minimum width 1.1 mm / height 1.6 mm; 26 m forest spacing, 18% variation, 0.2 mm crown clearance |
 
@@ -377,6 +378,17 @@ colors, overwriting manual palette edits.
 and survey selection. `geometry/lidar_buildings.py` emits accepted measurements
 as a shared envelope cap or legacy prisms; raw points never become Blender meshes.
 
+- **Minimum Building Footprint (mm²)** defaults to 0.7 (about a 0.84 mm square,
+  or 143 m² at the default scale). `lidar_footprint.py` selects parent buildings
+  before survey planning, point acquisition and measurement, using full mapped
+  polygon area with holes excluded and disconnected components summed. Both
+  horizontal scale factors convert area; source height is irrelevant. Small
+  parts of admitted buildings remain eligible. Skipped buildings retain ordinary
+  source geometry and stay in neighboring-roof exclusions. Mapped rock is exempt.
+  Zero disables the filter. Empty selections publish reusable results without
+  discovery. Public signatures include the metric area threshold, including in
+  height-only mode; unaffected measurement checkpoints remain reusable.
+
 - `lidar_candidates.py` defines the common provider-neutral dataset contract and
   discovery settings. `lidar_acquisition.py` orchestrates adapters/ranking/readers;
   `lidar_usgs.py` retains EPT/TNM pagination, reports and manifest behavior.
@@ -532,8 +544,9 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   grounded undersides. It rescales only the corresponding mass when the discrepancy
   exceeds both 3 m and 20%. Print minimums and source roof shapes still apply.
   This does not restore missing source masses or reconstruct detail.
-  Print/roof-detail changes reuse scalar
-  measurements; switching modes requires Prepare again with Refresh off. Downloads
+  Roof-detail changes reuse scalar measurements. Print-scale changes require
+  Prepare to reselect footprints when the area filter is enabled, reusing
+  compatible scalar checkpoints; switching modes requires Prepare again with Refresh off. Downloads
   and point decoding are unchanged; savings come from coarser sampling and skipping
   reconstruction. Keep full-mode cache signatures/results unchanged.
   Missing returns alone are not proof that a building is absent.
@@ -650,7 +663,18 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   Scale/roof-setting changes can reconstruct from these normalized points.
   Source metadata, query/allowlists and acquisition versions enter their keys;
   Refresh advances source generations so older settings cannot revive stale
-  derived data. No arbitrary cross-bbox point stitching or automatic eviction.
+  derived data. No arbitrary cross-bbox point stitching. `lidar_storage.py`
+  limits reusable tiles/points to 30 GiB per cache root by default, reserving
+  10 GiB of disk space. Machine preferences adjust both. Preparation trims
+  older derived points before downloaded sources under the worker lock;
+  active inputs, recent resumable partials, bundles, checkpoints, published
+  results and source generation markers are protected. A `points/.keep` or
+  `lidar_tiles/.keep` marker protects that directory. Required writes reserve
+  space across download threads; optional point/decode caching can be skipped.
+  Storage exhaustion aborts without publishing partial survey results.
+  Sidebar **Review LiDAR Cache Cleanup** previews manual trimming; no cleanup
+  runs merely on registration or model generation. The budget excludes protected
+  bundles and the separate bounded 1 GiB temporary decode cache.
   `lidar_records.py` validates public results and checkpoints; damaged checkpoints
   are disposable. Publication uses a temporary file and replacement. Cancellation
   preserves previous published results and completed work; keep worker ownership
@@ -831,3 +855,14 @@ is a dated schema snapshot, not a guarantee about future releases.
 references, not runtime code. `scratchpad/`, `dist/`, local venvs, and downloaded
 caches are ignored, machine-local evidence, not reproducible checked-in fixtures.
 Do not make tests or runtime behavior depend on their incidental contents.
+
+For development storage, use `TemporaryDirectory` for disposable test scenes
+and outputs. Retain full `.blend` files only for requested inspection or a
+specific regression baseline, using `compress=True`. Avoid backup copies for
+disposable scripted scenes (set `save_version=0` only in isolated test processes,
+never in the user's preferences). Keep short reports/screenshots instead of
+whole experiment cache copies. Reuse immutable source downloads when safe;
+keep mutable Refresh tests isolated. Review obsolete scratchpad experiments
+after the investigation, preserving baselines explicitly; do not blanket-delete
+existing scratchpad, autosaves, user scenes, exports, or installation rollback
+copies. `.gitignore` does not limit disk use.

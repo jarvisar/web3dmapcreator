@@ -15,8 +15,9 @@ from jarvizar_city_model.operators import _lidar_signature
 addon.register()
 settings = bpy.context.scene.jarvizar_city_model
 assert not settings.lidar_height_only
+assert abs(settings.lidar_minimum_footprint_area_mm2 - .7) < 1e-6
 with tempfile.TemporaryDirectory() as directory:
-    bundle = CacheBundle(Path(directory), Bounds(-87.64,41.875,-87.63,41.885))
+    bundle = CacheBundle(Path(directory), Bounds(-87.7,41.875,-87.63,41.885))
     bundle.ensure_directory()
     for kind in ('building','building_part'):
         bundle.data_path(kind).write_text('{"features":[]}')
@@ -26,8 +27,11 @@ with tempfile.TemporaryDirectory() as directory:
     scalar = _lidar_signature(settings,bundle)
     assert scalar['roof_mode']=='HEIGHT_ONLY' and not scalar['rock_surfaces']
     assert not scalar['roof_planes'] and scalar != normal
+    settings.lidar_minimum_footprint_area_mm2 = 0
+    assert _lidar_signature(settings, bundle)['min_footprint_area_m2'] == 0
+    settings.lidar_minimum_footprint_area_mm2 = .7
 
-transform = create_fixed_scale_transform(-87.64,41.875,-87.63,41.885,.07)
+transform = create_fixed_scale_transform(-87.7,41.875,-87.63,41.885,.07)
 def geometry(size, hole=0):
     ring = lambda s: [transform.local_to_geographic(x,y)[:2] for x,y in
                      ((-s,-s),(s,-s),(s,s),(-s,s),(-s,-s))]

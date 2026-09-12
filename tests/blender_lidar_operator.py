@@ -74,6 +74,9 @@ issue_summary = {**summary, 'failures': [{'source': 'legacy', 'reason': 'LAS hea
 assert operator.finish(Driver(), context, issue_summary) == {'FINISHED'}
 assert 'source issues: LAS header lacks a supported horizontal CRS' in settings.lidar_preparation_status
 assert 'incomplete downloads' not in settings.lidar_preparation_status
+assert operator.finish(Driver(), context, {**summary, 'rejection_counts': {
+    **summary['rejection_counts'], 'footprint_below_minimum': 4}}) == {'FINISHED'}
+assert '4 below minimum footprint (source buildings kept)' in settings.lidar_preparation_status
 
 # A failed termination keeps the worker owned and polled until it exits.
 with patch.object(module,'bpy',fake_bpy),patch.object(module,'_cache_bundle',return_value=Mock()), \

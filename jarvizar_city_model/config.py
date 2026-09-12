@@ -17,6 +17,8 @@ from bpy.types import AddonPreferences, PropertyGroup
 
 from .data.land import DEFAULT_SURFACE_PRIORITY
 from .external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS
+from .external.lidar_footprint import DEFAULT_MINIMUM_FOOTPRINT_AREA_MM2
+from .external.lidar_storage import DEFAULT_CACHE_GIB, DEFAULT_FREE_GIB
 
 
 def _default_cache_directory() -> str:
@@ -39,6 +41,15 @@ class JARVIZAR_AP_preferences(AddonPreferences):
 
     bl_idname = __package__
 
+    lidar_cache_gib: IntProperty(
+        name="Reusable LiDAR Cache (GiB)", default=DEFAULT_CACHE_GIB, min=1, max=100000,
+        description="Per cache folder: evict older derived points before source downloads; preserve prepared models and geographic bundles",
+    )
+    lidar_free_gib: IntProperty(
+        name="Keep Disk Space Free (GiB)", default=DEFAULT_FREE_GIB, min=0, max=100000,
+        description="Reserve free space during LiDAR acquisition; stop safely if protected or active data prevents cleanup",
+    )
+
     overture_python_path: StringProperty(
         name="Overture Python",
         description=(
@@ -52,10 +63,19 @@ class JARVIZAR_AP_preferences(AddonPreferences):
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "overture_python_path")
+        layout.prop(self, "lidar_cache_gib")
+        layout.prop(self, "lidar_free_gib")
         layout.label(
             text="Scenes leave their own field blank to use this.",
             icon="INFO",
         )
+
+
+def storage_limits():
+    addon = bpy.context.preferences.addons.get(__package__)
+    if addon is None:
+        return DEFAULT_CACHE_GIB, DEFAULT_FREE_GIB
+    return addon.preferences.lidar_cache_gib, addon.preferences.lidar_free_gib
 
 
 def preferred_python_path() -> str:
@@ -272,6 +292,11 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         name="Prefer LiDAR on Conflicts", default=True,
         description="Prefer a usable measured building over conflicting source heights, dates or roof detail; disable for conservative source checks. Prepare again after changing",
     )
+    lidar_minimum_footprint_area_mm2: FloatProperty(
+        name="Minimum Building Footprint (mm²)", default=DEFAULT_MINIMUM_FOOTPRINT_AREA_MM2,
+        min=0.0, soft_max=5.0, precision=3,
+        description="Skip LiDAR acquisition and measurement below this printed footprint area (courtyards excluded). Keep source buildings. 0 disables this filter; prepare again after changing",
+    )
     lidar_roof_mode: EnumProperty(
         name="LiDAR Roof Reconstruction",
         items=(('FACETED', 'Roof Envelope', 'Drape a continuous upper surface over LiDAR returns, spanning narrow facade recesses'),
@@ -331,7 +356,7 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
             "Adjoining supported sections use their combined footprint width; "
             "isolated tiny details are still filtered"
         ),
-        default=0.08,
+        default=0.0,
         min=0.0,
         soft_max=1.0,
         precision=3,
@@ -343,7 +368,7 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
             "adjoining sections with compatible heights use their combined width. "
             "Higher values keep more detail. Set to 0 to disable"
         ),
-        default=30.0,
+        default=0.0,
         min=0.0,
         soft_max=60.0,
         precision=1,

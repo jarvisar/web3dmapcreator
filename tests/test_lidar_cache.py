@@ -26,12 +26,24 @@ class LidarCacheTests(unittest.TestCase):
     def test_height_only_cache_is_separate_and_ignores_unused_detail(self):
         scalar = request_signature(self.bundle, .07, .077, roof_mode='HEIGHT_ONLY')
         self.assertNotEqual(scalar, self.signature)
-        self.assertEqual(scalar, request_signature(self.bundle, .14, .154, roof_mode='HEIGHT_ONLY',
+        self.assertEqual(scalar, request_signature(self.bundle, .07, .154, roof_mode='HEIGHT_ONLY',
             roof_planes=False, min_width_mm=.8, min_step_mm=.2, rock_surfaces=True))
         self.assertFalse(scalar['rock_surfaces'])
         self.assertFalse(scalar['roof_planes'])
         self.write({'one':{'height_m':30,'tiers':[]}})
         self.assertIn('stale', load_measurements(self.bundle, scalar)[1])
+
+    def test_footprint_admission_tracks_scale_even_for_height_only(self):
+        for mode in ('FACETED', 'TERRACES', 'HEIGHT_ONLY'):
+            original = request_signature(self.bundle, .07, .077, roof_mode=mode)
+            scaled = request_signature(self.bundle, .14, .154, roof_mode=mode)
+            self.assertAlmostEqual(original['min_footprint_area_m2'], .7 / .07**2, places=6)
+            self.assertNotEqual(original, scaled)
+            stretched = request_signature(self.bundle, .07, .077, roof_mode=mode, xy_area_scale=.07*.14)
+            self.assertAlmostEqual(stretched['min_footprint_area_m2'], .7 / (.07*.14), places=6)
+        self.assertEqual(
+            request_signature(self.bundle, .07, .077, roof_mode='HEIGHT_ONLY', min_footprint_area_mm2=0),
+            request_signature(self.bundle, .14, .154, roof_mode='HEIGHT_ONLY', min_footprint_area_mm2=0))
 
     def test_missing_stale_and_corrupt_fall_back(self):
         self.assertFalse(load_measurements(self.bundle, self.signature)[0])

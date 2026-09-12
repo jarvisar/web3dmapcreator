@@ -510,6 +510,9 @@ def main():
             # minimum printed height each get their own pass.
             settings.building_height_scale = 1.0
             settings.minimum_building_height_mm = 0.0
+            # Exercise detail rejection explicitly, independent of scene defaults.
+            settings.minimum_building_width_mm = 0.08
+            settings.maximum_building_slenderness = 30.0
 
             result = bpy.ops.jarvizar.generate_model()
             if result != {"FINISHED"}:

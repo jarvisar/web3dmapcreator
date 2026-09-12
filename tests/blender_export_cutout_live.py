@@ -44,7 +44,7 @@ if not args.blend:
     s.terrain_source='DEM';s.terrain_resolution=192
     assert bpy.ops.jarvizar.generate_model()=={'FINISHED'},s.last_status
     if args.save_generated:
-        bpy.ops.wm.save_as_mainfile(filepath=str(Path(args.save_generated).resolve()))
+        bpy.ops.wm.save_as_mainfile(filepath=str(Path(args.save_generated).resolve()), compress=True)
 cutout=bpy.context.scene.objects.get('cutout')
 if cutout is None:
     vertices,faces=_prism_geometry([

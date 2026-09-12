@@ -1,6 +1,7 @@
 """Finite-depth pond/fountain geometry and UI settings, inside Blender."""
 
 import sys
+import tempfile
 from pathlib import Path
 
 import bpy
@@ -225,15 +226,16 @@ def test_settings_persist_and_water_toggle_keeps_recess():
     assert not _needs_water_data(settings)
     settings.pond_recess_depth_mm = 1.7
     settings.pond_water_thickness_mm = 1.1
-    path = ROOT/'scratchpad/pond-settings.blend'
-    bpy.ops.wm.save_as_mainfile(filepath=str(path))
-    settings.recess_ponds_and_fountains = True
-    settings.pond_recess_depth_mm = 1
-    bpy.ops.wm.open_mainfile(filepath=str(path))
-    settings = bpy.context.scene.jarvizar_city_model
-    assert not settings.recess_ponds_and_fountains
-    near(settings.pond_recess_depth_mm, 1.7)
-    near(settings.pond_water_thickness_mm, 1.1)
+    with tempfile.TemporaryDirectory(prefix='jcm_pond_settings_') as directory:
+        path = Path(directory)/'settings.blend'
+        bpy.ops.wm.save_as_mainfile(filepath=str(path), compress=True)
+        settings.recess_ponds_and_fountains = True
+        settings.pond_recess_depth_mm = 1
+        bpy.ops.wm.open_mainfile(filepath=str(path))
+        settings = bpy.context.scene.jarvizar_city_model
+        assert not settings.recess_ponds_and_fountains
+        near(settings.pond_recess_depth_mm, 1.7)
+        near(settings.pond_water_thickness_mm, 1.1)
 
 
 test_basins()
