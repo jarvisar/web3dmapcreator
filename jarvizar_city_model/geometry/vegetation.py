@@ -8,10 +8,10 @@ same selection always produces the same model.
 
 Trees are emitted as one merged ``TREES`` object by default: a dense selection
 places thousands of them, and one object each makes the outliner unusable and
-post-processing a chore.  Every tree is a scaled, turned copy of one solid
-with its own vertices, so the merged mesh stays a set of individually
-watertight shells.  The alternative, linked duplicates of one shared mesh
-datablock, is kept for inspecting single trees.
+post-processing a chore. Trees start as scaled, turned copies of one solid;
+road footprints trim conflicting crowns before batching. Each tree retains
+its own vertices and closed shells. Unmerged trees share their mesh unless
+trimming requires an individual shape.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ from ..data.land import (
 )
 from .planar import point_in_polygon, ring_bounds, signed_area
 from .tree_geometry import TreeClearance
+from .tree_road_cut import TreeRoadCutter, TREE_ROAD_CLEARANCE_MM
 
 
 @dataclass
@@ -166,11 +167,12 @@ def generate_trees(
     progress_callback=None,
     merge: bool = False,
     reuse_mesh: bool = True,
+    road_collection=None,
 ) -> Dict[str, Any]:
     """Place mapped trees and scattered forest trees.
 
-    With *merge* every tree goes into one ``TREES`` object; otherwise each is
-    its own object, a linked duplicate of one shared mesh.
+    With *merge* every tree goes into one ``TREES`` object; otherwise intact
+    trees share a mesh and road-trimmed trees have individual geometry.
     """
     settings = settings or TreeSettings()
     canopy_radius, tree_height, exaggeration = _tree_dimensions(
@@ -266,65 +268,70 @@ def generate_trees(
     # Trees grow directly from terrain, even beneath raised land/road slabs.
     ground_height = heightfield.height_mm
     shape_options = dict(sides=settings.sides, embed_mm=settings.embed_mm)
+    vertices, faces = tree_solid_geometry(canopy_radius, tree_height, **shape_options)
+    cutter = TreeRoadCutter(road_collection)
+    builder = MeshBuilder("TREES") if merge else None
+    mesh = None
+    trimmed = skipped_roads = kept_mapped = kept_scattered = 0
+    for index, (x, y, size) in enumerate(placements):
+        factor = _tree_scale(size, canopy_radius, tree_height, settings)
+        angle = size * math.tau
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        base = ground_height(x, y)
+        world = [(x + (vx*cos_a-vy*sin_a)*factor,
+                  y + (vx*sin_a+vy*cos_a)*factor, base+vz*factor)
+                 for vx, vy, vz in vertices]
+        world, tree_faces, changed = cutter.trim(
+            world, faces, min(0.4, settings.minimum_canopy_diameter_mm))
+        if not tree_faces:
+            skipped_roads += 1
+        else:
+            trimmed += int(changed)
+            if index < mapped_count:
+                kept_mapped += 1
+            else:
+                kept_scattered += 1
+            if merge:
+                builder.add_raw(world, tree_faces)
+            elif changed:
+                individual = MeshBuilder(f"TREE_{index:06d}")
+                individual.add_raw([(vx-x, vy-y, vz-base) for vx, vy, vz in world], tree_faces)
+                obj = individual.build(collection, material)
+                obj.location = (x, y, base)
+                obj["feature_type"] = "trees"
+                obj["tree_road_trimmed"] = True
+            else:
+                if mesh is None:
+                    mesh = tree_mesh_datablock("JCM_Tree", canopy_radius, tree_height,
+                                              reuse=reuse_mesh, **shape_options)
+                    if material is not None and not mesh.materials:
+                        mesh.materials.append(material)
+                obj = bpy.data.objects.new(f"TREE_{index:06d}", mesh)
+                collection.objects.link(obj)
+                obj["jarvizar_generated"] = True
+                obj["feature_type"] = "trees"
+                obj.location = (x, y, base)
+                obj.scale = (factor, factor, factor)
+                obj.rotation_euler = (0.0, 0.0, angle)
+        if progress_callback is not None and (index % 32 == 0 or index+1 == total):
+            progress_callback((index + 1) / total)
     if merge:
-        # Every tree is the one solid scaled, turned about Z, and moved onto
-        # the ground: the same transform the linked duplicates carry as
-        # object properties, baked into the vertices instead.
-        vertices, faces = tree_solid_geometry(
-            canopy_radius, tree_height, **shape_options
-        )
-        builder = MeshBuilder("TREES")
-        for index, (x, y, size) in enumerate(placements):
-            factor = _tree_scale(size, canopy_radius, tree_height, settings)
-            angle = size * math.tau
-            cos_a, sin_a = math.cos(angle), math.sin(angle)
-            base = ground_height(x, y)
-            builder.add_raw(
-                [
-                    (
-                        x + (vx * cos_a - vy * sin_a) * factor,
-                        y + (vx * sin_a + vy * cos_a) * factor,
-                        base + vz * factor,
-                    )
-                    for vx, vy, vz in vertices
-                ],
-                faces,
-            )
-            if progress_callback is not None and index % 256 == 0:
-                progress_callback((index + 1) / total)
         obj = builder.build(collection, material)
         if obj is not None:
             obj["feature_type"] = "trees"
             obj["source"] = "Overture base/land tree points and forest scatter"
             obj["tree_size_exaggeration"] = round(exaggeration, 3)
-    elif placements:
-        mesh = tree_mesh_datablock(
-            "JCM_Tree",
-            canopy_radius,
-            tree_height,
-            reuse=reuse_mesh,
-            **shape_options,
-        )
-        if material is not None and not mesh.materials:
-            mesh.materials.append(material)
-        for index, (x, y, size) in enumerate(placements):
-            obj = bpy.data.objects.new(f"TREE_{index:06d}", mesh)
-            collection.objects.link(obj)
-            obj["jarvizar_generated"] = True
-            obj["feature_type"] = "trees"
-            obj.location = (x, y, ground_height(x, y))
-            factor = _tree_scale(size, canopy_radius, tree_height, settings)
-            obj.scale = (factor, factor, factor)
-            obj.rotation_euler = (0.0, 0.0, size * math.tau)
-            if progress_callback is not None and index % 256 == 0:
-                progress_callback((index + 1) / total)
+            obj["trees_road_trimmed"] = trimmed
 
     if progress_callback is not None:
         progress_callback(1.0)
     return {
-        "trees": len(placements),
-        "trees_mapped": min(mapped_count, len(placements)),
-        "trees_scattered": max(0, len(placements) - mapped_count),
+        "trees": kept_mapped + kept_scattered,
+        "trees_mapped": kept_mapped,
+        "trees_scattered": kept_scattered,
+        "trees_road_trimmed": trimmed,
+        "trees_skipped_roads": skipped_roads,
+        "tree_road_clearance_mm": TREE_ROAD_CLEARANCE_MM,
         "tree_size_exaggeration": round(exaggeration, 3),
         "tree_minimum_height_mm": settings.minimum_height_mm,
         "tree_minimum_canopy_width_mm": settings.minimum_canopy_diameter_mm,

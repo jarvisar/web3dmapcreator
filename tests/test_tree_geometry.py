@@ -6,7 +6,10 @@ import unittest
 from collections import Counter
 
 from jarvizar_city_model.geometry.planar import faces_are_consistent, shell_volume
-from jarvizar_city_model.geometry.tree_geometry import TreeClearance, tree_solid_geometry
+from jarvizar_city_model.geometry.tree_geometry import (
+    TreeClearance, tree_solid_geometry, tree_base_width, merge_convex_footprints,
+)
+from jarvizar_city_model.geometry.footprint_cut import area_xy
 
 
 class TreeGeometryTests(unittest.TestCase):
@@ -29,6 +32,27 @@ class TreeGeometryTests(unittest.TestCase):
                             self.assertGreater(z1, z0)
                             self.assertLessEqual(r1 - r0, z1 - z0 + 1e-9)
                         self.assertLessEqual(len(vertices), 6 * sides + 1)
+
+    def test_cut_base_width_ignores_rotation_and_degenerate_contacts(self):
+        for points in ([], [(1, 1)], [(0, 0), (1, 0), (2, 0)]):
+            self.assertEqual(tree_base_width(points), 0)
+        for angle in (0, .17, 1.2):
+            for width in (.1, .399, .4, 1.1):
+                points = [(x*math.cos(angle)-y*math.sin(angle),
+                           x*math.sin(angle)+y*math.cos(angle))
+                          for x, y in [(0, 0), (2, 0), (2, width), (0, width), (1, 0)]]
+                self.assertAlmostEqual(tree_base_width(points), width)
+
+    def test_cutter_coalescing_preserves_concave_corners_and_gaps(self):
+        a = [(0, 0), (2, 0), (2, 1), (0, 1)]
+        b = [(1, 0), (3, 0), (3, 1), (1, 1)]
+        merged = merge_convex_footprints([a, b, a])
+        self.assertEqual(len(merged), 1)
+        self.assertAlmostEqual(area_xy(merged[0]), 3)
+        corner = [(1, 0), (2, 0), (2, 2), (1, 2)]
+        self.assertEqual(len(merge_convex_footprints([a, corner])), 2)
+        distant = [(4, 0), (5, 0), (5, 1), (4, 1)]
+        self.assertEqual(len(merge_convex_footprints([a, distant])), 2)
 
     def test_three_readable_tiers_at_default_size(self):
         vertices, _ = tree_solid_geometry(1.1 / (2 * math.cos(math.pi / 6)), 1.6)

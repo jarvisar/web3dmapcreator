@@ -311,6 +311,17 @@ colors, overwriting manual palette edits.
   are single closed solids with sloped undersides. Size floors apply independently
   to height and width. A shared spatial clearance check uses varied crown radii
   across mapped points and all forest sources, giving mapped points priority.
+  Built ground-road footprints (including paths/rail and demoted decks) trim
+  trees through their full height with 0.005 mm XY clearance. Roads remain
+  unchanged; high decks do not cut trees beneath them. Only affected trees use
+  capped plane cuts when the retained footprint is convex, with bounded Exact
+  Booleans for concave/split remnants and failed plane caps, before batching.
+  Redundant cutter triangles coalesce only when their union remains convex;
+  Booleans use temporary isolated scenes to avoid reevaluating the city.
+  Keep grounded remnants whose base caliper width reaches 0.4 mm (or a smaller
+  configured tree width); discard
+  wholly covered trees, floating tiers and narrower remnants. Intact unmerged
+  trees still share their mesh; trimmed trees have individual meshes.
 
 ### Roads and bridges
 
@@ -665,7 +676,7 @@ Select focused checks based on the change:
 | Water / supports | `blender_water_cut.py`, `blender_ground_support.py`, `blender_pond_basins.py`, `blender_basin_support.py`, `blender_water_surfaces.py`, `blender_visible_supports.py`, `blender_paved_supports.py`; cached `blender_water_cut_live.py`, `blender_coastline_live.py`, `blender_pond_basins_live.py` |
 | Roads / surface ownership | `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
 | Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_envelope.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
-| Export / trees / clipboard | `blender_export_cutout.py` and its live counterpart; `blender_tree_printability.py`; `test_projection.py` and windowed `blender_gui_paste.py` |
+| Export / trees / clipboard | `blender_export_cutout.py` and its live counterpart; `blender_tree_printability.py`, `blender_tree_road_clearance.py`; `test_projection.py` and windowed `blender_gui_paste.py` |
 
 For geometry work, compare identical inputs/settings, check closure **and winding**,
 then inspect focused renders and seating/overlap probes. `render_preview.py`
