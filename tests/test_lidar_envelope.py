@@ -5,6 +5,7 @@ from unittest.mock import patch
 try:
     import numpy as np
     from shapely import contains_xy
+    from shapely.affinity import rotate
     from shapely.geometry import box, Polygon, MultiPolygon, shape
     from shapely.ops import unary_union
     from jarvizar_city_model.external.lidar_envelope import fit_roof_envelope
@@ -87,6 +88,19 @@ class UpperEnvelopeTests(unittest.TestCase):
         self.assertLess(np.mean(np.diff(profiles, axis=1)/.25 < .1), .05)
         trend = np.polyval(np.polyfit(np.tile(xs, 3), profiles.ravel(), 1), np.tile(xs, 3))
         self.assertLess(np.std(profiles.ravel()-trend), .16)
+
+    def test_roof_wall_on_rotated_building_is_not_ribbed(self):
+        angle = np.radians(30)
+        footprint = rotate(box(0, 0, 60, 24), 30, origin=(0, 0))
+        across = lambda x, y: -x*np.sin(angle)+y*np.cos(angle)
+        record = self.fit(footprint, self.cloud(footprint, lambda x, y: np.where(across(x, y) < 12, 40., 25.)))
+        # On a grid laid across the building the wall is a staircase of cells,
+        # which the cap shows as a row of vertical ribs.
+        riser = height_contour(record, 32.5).boundary.difference(footprint.exterior.buffer(1.5))
+        offsets = [across(x, y) for line in getattr(riser, 'geoms', [riser]) for x, y in line.coords]
+        self.assertTrue(offsets)
+        self.assertLess(max(offsets)-min(offsets), .05)
+        self.assertAlmostEqual(float(np.mean(offsets)), 12, delta=1)
 
     def test_reconstruction_never_calls_legacy_architectural_region_fitting(self):
         footprint = box(0, 0, 30, 24)

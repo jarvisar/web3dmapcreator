@@ -18,9 +18,27 @@ The per-building face budget is back to 16,384 (it had been lowered to 8,192),
 so large resorts, arenas and domes keep the 1 m plan grid instead of being
 rebuilt at 1.5 m or coarser. Very steep facades can still show vertical ribs:
 there each 1 m cell captures the survey's stripe pattern, and smoothing does not
-remove that. Aligning the raster to each footprint was tried and rejected; a
-mapped edge nearly parallel to the grid produced clipping slivers that failed
-the cap join.
+remove that.
+
+The raster is now laid along each footprint's long axis (the longer side of its
+minimum rotated rectangle). Before, a roof wall running diagonally across the
+north-aligned grid was sampled as a staircase of cells and the cap showed it as
+a row of vertical ribs; Mickey's PhilharMagic was the clear case. Walls parallel
+to that axis are now straight. Walls at other angles still meet the grid at an
+angle. Clipped pieces are no longer discarded for being tiny: an outline running
+close beside a grid line clips into thin slivers, and dropping one left a hole
+that rejected the whole cap.
+
+Merged flat blocks must now be within 5 mm of their plane (was 15 mm). Blender
+takes every corner height from each face's fitted plane, so two neighbouring
+blocks could disagree at a shared corner by more than the cap join allows, and
+the building silently fell back to its source box. On the Magic Kingdom cache
+this took envelope fallbacks from 17 of 369 buildings (including Peter Pan's
+Flight, the Haunted Mansion and the Contemporary) to none.
+
+The 1 m plan grid is 0.07 mm on the print at the default scale, well below a
+0.4 mm nozzle, so a finer grid would change the viewport more than the print
+and would push large buildings past the face budget.
 
 ## Skip small building footprints
 

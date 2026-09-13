@@ -18,6 +18,7 @@ import math
 
 import numpy as np
 from shapely import contains_xy
+from shapely.affinity import rotate
 from shapely.errors import GEOSException
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
@@ -184,7 +185,9 @@ def _clip_to(polygon, shape, corners):
              else [clipped])
     rings = []
     for part in parts:
-        if part.geom_type != 'Polygon' or part.area <= 1e-7 or part.interiors:
+        # Keep slivers however thin: an outline running close beside a grid
+        # line clips into them, and dropping one leaves a hole in the cap.
+        if part.geom_type != 'Polygon' or part.area <= 0 or part.interiors:
             continue
         ring = []
         for x, y in part.exterior.coords:
@@ -268,11 +271,14 @@ def _levels(heights, tolerance, limit=6):
     return sorted(blocks), level_of
 
 
-def _coplanar(ring, tolerance=.015):
+def _coplanar(ring, tolerance=.005):
     """Is one block flat enough to publish as a single face?
 
-    The reader fits a plane through each published face and rejects anything
-    that misses it by more than two centimetres, so this bound stays under it.
+    The reader fits a plane through each published face and takes every corner
+    height from it. Two neighbouring faces can err in opposite directions at a
+    shared corner, and the joined cap rejects a corner whose heights differ by
+    about 2.6 cm at the default vertical scale, so each face stays well inside
+    half of that, with room for coordinate rounding on a steep block.
     """
     origin = ring[0]
     far = max(ring, key=lambda v: (v[0]-origin[0])**2+(v[1]-origin[1])**2)
@@ -374,6 +380,18 @@ def _envelope(components, footprint, observed, secondary, pitch, window,
     return surfaces, area, cells, admitted, residuals
 
 
+def _turn(points, angle, origin):
+    """Rotate the XY columns of an Nx3 array about `origin`."""
+    if not len(points):
+        return points
+    cosine, sine = math.cos(angle), math.sin(angle)
+    x, y = points[:, 0]-origin[0], points[:, 1]-origin[1]
+    turned = np.array(points, dtype=float)
+    turned[:, 0] = origin[0]+x*cosine-y*sine
+    turned[:, 1] = origin[1]+x*sine+y*cosine
+    return turned
+
+
 def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samples=(),
                       secondary_samples=()):
     """Return a complete continuous envelope, or an explicit fallback reason.
@@ -399,6 +417,18 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
     observed = returns if len(returns) >= len(samples) else samples
     footprint = unary_union(pieces(footprint))
     try:
+        # Lay the raster along the building's long axis. A roof wall crossing
+        # the grid at an angle is sampled as a staircase of cells, which the
+        # cap shows as a row of vertical ribs. The grid is unchanged by a
+        # quarter turn, so an outline already on it is not rotated at all.
+        corners = list(footprint.minimum_rotated_rectangle.exterior.coords)
+        start, end = max(zip(corners, corners[1:]), key=lambda edge: math.dist(*edge))
+        angle = (math.atan2(end[1]-start[1], end[0]-start[0])+math.pi/4) % (math.pi/2)-math.pi/4
+        angle = 0. if abs(angle) < 1e-9 else angle
+        origin = footprint.centroid.coords[0]
+        if angle:
+            footprint = rotate(footprint, -angle, origin=origin, use_radians=True)
+            observed, secondary = _turn(observed, -angle, origin), _turn(secondary, -angle, origin)
         components = pieces(footprint)
         base = pitch
         for attempt in range(4):
@@ -420,8 +450,12 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
         # Publication rounds heights to the millimetre-scale precision this
         # model can use. Round before choosing the base, so no vertex can end
         # up under the base the record declares.
+        cosine, sine = math.cos(angle), math.sin(angle)
         for ring in surfaces:
             for vertex in ring:
+                if angle:
+                    x, y = vertex[0]-origin[0], vertex[1]-origin[1]
+                    vertex[0], vertex[1] = origin[0]+x*cosine-y*sine, origin[1]+x*sine+y*cosine
                 vertex[2] = round(vertex[2], 4)
         elevations = np.array([vertex[2] for ring in surfaces for vertex in ring])
         low = float(elevations.min())

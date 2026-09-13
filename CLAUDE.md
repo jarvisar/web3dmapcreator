@@ -615,6 +615,13 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   plateaus a median leaves on curved or noisy slopes (terraced domes); it keeps
   flat and planar roofs exact, so block merging is unaffected. It does not
   remove ribs down very steep facades, which come from the scan pattern.
+  The raster is laid along the footprint's minimum-rotated-rectangle long axis
+  (reduced to ±45°, no rotation at 0) so roof walls parallel to it do not
+  staircase into ribs; cap vertices rotate back before publication. `_clip_to`
+  keeps clipped slivers of any positive area: dropping them opened cap holes.
+  `_coplanar` admits a merged block only within 5 mm of its plane: the Blender
+  side takes corner heights from each face's fitted plane, and looser blocks
+  made neighbours disagree past the join's shared-corner tolerance.
   **The rank filter is not interchangeable with morphology.** On a near-vertical
   facade an opening or closing by any flat element is the identity, because the
   slope dominates every neighbourhood, so dilation, erosion and relaxation
