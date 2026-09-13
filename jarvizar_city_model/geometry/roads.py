@@ -56,6 +56,7 @@ from .planar import (
     oriented_ring,
     parametric_ribbon,
 )
+from .support import CUT_WATER_DROP_MM
 
 
 # Flags that mean the feature is not a visible surface in a printed miniature.
@@ -584,10 +585,12 @@ def generate_roads(
 
     def foundation_height(x: float, y: float) -> float:
         height = heightfield.height_mm(x, y)
-        # Over cut water the printed causeway is below the sampled field.
-        # Even a deck resting at field height still has that gap beneath it.
+        # Over cut water the printed causeway is below the sampled field, sunk
+        # under the water surface. Even a deck resting at field height still
+        # has that gap beneath it; a pier on a taller pedestal is buried in it.
         if ground_support is not None and heightfield.in_cut_water(x, y):
-            return max(height - ground_support.top_offset_mm, ground_support.bottom_z + 0.05)
+            return max(height - ground_support.top_offset_mm - CUT_WATER_DROP_MM,
+                       ground_support.bottom_z + 0.05)
         if ground_support is not None:
             physical = ground_support.heightfield.height_mm(x, y)
             if physical < height - 1e-6:

@@ -512,9 +512,14 @@ about 1,900 trees to hillsides no mapped forest polygon covers.
 a noisy near-flat plateau; over the sample river that noise was about 2 m tall
 and left 7% of the channel standing above the water surface. Where a source
 polygon says "this is water", the terrain beneath it is carved down to the
-solved level. Only lowering is applied, so a polygon that slightly overlaps a
-bank does not flood it. The number of grid nodes changed is reported as
-`terrain_nodes_flattened_to_water`.
+solved level. For ordinary water only lowering is applied, so a polygon that
+slightly overlaps a bank does not flood it. Water cut out of the terrain is
+set to its level both ways: some elevation data carries bathymetry (San
+Francisco Bay's median is its seabed, about 20 m below the piers), so a cut
+body is never solved below the lowest tenth of its connected shoreline, and
+its grid nodes are raised to that level. The shoreline then stays at the bank
+instead of interpolating down into the seabed. The number of grid nodes
+changed is reported as `terrain_nodes_flattened_to_water`.
 
 **Open water is cut out of the terrain, not covered over.** A body larger than
 the cut threshold (0.5 ha by default) is removed from the terrain solid, so the
@@ -554,9 +559,12 @@ is enabled; it is cut away when supports are disabled. Natural land-cover surfac
 never receive these supports.
 
 Non-bridge foundations rise at least 0.2 mm above retained water, and buildings,
-roads and paving sit on the same raised grade. Bridge causeways retain their
-existing height beneath the water, so bridges still look like crossings and
-keep their foundations when the water fill is hidden.
+roads and paving sit on the same raised grade. Cut water sits 0.25 mm below the
+bank it is flattened to, so over a cut that grade is the bank itself: structures
+at the shore sit on the terrain rather than on pedestals raised above it, and
+ground already kept for a pier or boathouse needs no second solid. Bridge
+causeways over cut water are lowered just under its surface, so bridges still
+look like crossings and keep their foundations when the water fill is hidden.
 
 **Ground is kept under anything the cut leaves standing over the opening.**
 Removing the river also removes the ground under every bridge that crosses it,

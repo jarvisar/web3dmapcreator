@@ -60,7 +60,12 @@ preserved; water outside the supported footprints stays recessed. This also
 works with the Water fill hidden or ordinary through-cuts disabled.
 Non-bridge foundations have a minimum top 0.2 mm above retained water. Structures
 use the corresponding raised grade without changing their heights or thickness.
-Bridge causeways keep their existing field-relative height beneath the water.
+Cut water is solved no lower than the lowest tenth of its connected shoreline
+(bathymetric elevation data otherwise puts it on the seabed), its grid nodes
+are set to that bank level, and its surface sits `CUT_WATER_DROP_MM` (0.25 mm)
+below it. The foundation grade over cut water is therefore the bank: shore
+structures sit on terrain, not on pedestals standing proud of it. Bridge
+causeways over cut water are lowered by the same drop and stay beneath the water.
 `tests/blender_visible_supports.py` verifies that exception and structure contact;
 `tests/blender_paved_supports.py` checks paving, natural cover, holes and toggles.
 `tests/blender_untyped_water.py` checks generic small water, cropped large water,

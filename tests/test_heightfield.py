@@ -13,6 +13,7 @@ from jarvizar_city_model.geometry.deck_profile import (
     support_stations,
 )
 from jarvizar_city_model.geometry.heightfield import ModelHeightField
+from jarvizar_city_model.geometry.planar import point_in_polygon
 
 
 class RampTerrain(TerrainSampler):
@@ -88,35 +89,47 @@ class HeightFieldTests(unittest.TestCase):
         self.assertEqual(len(rows), self.field.rows)
         self.assertEqual(len(rows[0]), self.field.columns)
 
-    def test_lower_inside_carves_only_within_the_polygon(self):
+    def test_flatten_inside_carves_only_within_the_polygon(self):
         field = ModelHeightField(
             0.0, 0.0, 10.0, 10.0, 11, 11, [5.0] * 121
         )
-        square = [(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0)]
-        lowered = field.lower_inside([square], 1.0)
-        self.assertGreater(lowered, 0)
+        square = [(1.5, 1.5), (8.5, 1.5), (8.5, 8.5), (1.5, 8.5)]
+        lowered = field.flatten_inside([square], 1.0)
+        self.assertEqual(lowered, 49)
         self.assertAlmostEqual(field.height_mm(5.0, 5.0), 1.0, places=6)
         self.assertAlmostEqual(field.height_mm(0.5, 0.5), 5.0, places=6)
 
-    def test_lower_inside_never_raises_terrain(self):
+    def test_flatten_inside_only_raises_when_asked(self):
         # A polygon that overlaps a bank must not flood it.
         field = ModelHeightField(0.0, 0.0, 10.0, 10.0, 11, 11, [1.0] * 121)
-        square = [(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0)]
-        self.assertEqual(field.lower_inside([square], 5.0), 0)
+        square = [(1.5, 1.5), (8.5, 1.5), (8.5, 8.5), (1.5, 8.5)]
+        self.assertEqual(field.flatten_inside([square], 5.0), 0)
         self.assertAlmostEqual(field.height_mm(5.0, 5.0), 1.0, places=6)
+        # Cut water raises a seabed to its level.
+        self.assertEqual(field.flatten_inside([square], 5.0, raise_nodes=True), 49)
+        self.assertAlmostEqual(field.height_mm(5.0, 5.0), 5.0, places=6)
+        self.assertAlmostEqual(field.height_mm(0.5, 0.5), 1.0, places=6)
 
-    def test_lower_inside_respects_holes(self):
+    def test_flatten_inside_respects_holes(self):
         field = ModelHeightField(0.0, 0.0, 10.0, 10.0, 21, 21, [5.0] * 441)
         outer = [(1.0, 1.0), (9.0, 1.0), (9.0, 9.0), (1.0, 9.0)]
         hole = [(4.0, 4.0), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0)]
-        field.lower_inside([outer, hole], 0.0)
+        field.flatten_inside([outer, hole], 0.0)
         self.assertAlmostEqual(field.height_mm(2.0, 2.0), 0.0, places=6)
         self.assertAlmostEqual(field.height_mm(5.0, 5.0), 5.0, places=6)
 
-    def test_lower_inside_ignores_a_degenerate_polygon(self):
+    def test_nodes_inside_matches_point_in_polygon_away_from_edges(self):
+        field = ModelHeightField(0.0, 0.0, 10.0, 10.0, 21, 21, [0.0] * 441)
+        rings = [[(0.71, 1.23), (8.83, 0.37), (9.61, 7.13), (5.27, 9.71), (1.13, 6.37)],
+                 [(3.33, 3.21), (3.43, 5.61), (6.13, 5.43), (5.83, 3.17)]]
+        expected = [row * 21 + column for row in range(21) for column in range(21)
+                    if point_in_polygon((column * 0.5, row * 0.5), rings)]
+        self.assertEqual(field.nodes_inside(rings), expected)
+
+    def test_flatten_inside_ignores_a_degenerate_polygon(self):
         field = ModelHeightField(0.0, 0.0, 10.0, 10.0, 11, 11, [5.0] * 121)
-        self.assertEqual(field.lower_inside([], 1.0), 0)
-        self.assertEqual(field.lower_inside([[(0.0, 0.0), (1.0, 1.0)]], 1.0), 0)
+        self.assertEqual(field.flatten_inside([], 1.0), 0)
+        self.assertEqual(field.flatten_inside([[(0.0, 0.0), (1.0, 1.0)]], 1.0), 0)
 
     def test_rejects_a_malformed_grid(self):
         with self.assertRaises(ValueError):

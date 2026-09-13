@@ -14,10 +14,12 @@ a causeway -- and under a building it is a pedestal of the footprint itself.
 Overlaps with the surviving bank are fine: every generated solid is
 individually watertight and a slicer unions them.
 
-Bridge causeways keep their field-relative height. Other foundations use a
-minimum grade that exposes 0.2 mm of terrain above retained water, with the
-structure seated on the same grade. Only paved land-cover slabs retain ground;
-natural land cover is cleared from the water footprint.
+Other foundations use a minimum grade that exposes 0.2 mm of terrain above
+retained water, with the structure seated on the same grade. Over cut water
+that grade is the bank level the terrain is flattened to, so these supports
+blend into the shore rather than standing proud of it. Bridge causeways over
+cut water sit just below its surface. Only paved land-cover slabs retain
+ground; natural land cover is cleared from the water footprint.
 """
 
 from __future__ import annotations
@@ -50,6 +52,11 @@ Ring = Sequence[Point]
 SUPPORT_TOP_OFFSET_MM = 0.05
 # One default FDM layer of visible terrain above a retained water fill.
 SUPPORT_WATER_CLEARANCE_MM = 0.2
+# Cut water is set this far below the bank level its terrain is flattened to,
+# so the foundation grade over it is the bank itself: structures standing in
+# the water sit on the same surface as the shore around them.  Bridge
+# causeways sink by the same amount and stay just under the water.
+CUT_WATER_DROP_MM = SUPPORT_WATER_CLEARANCE_MM + SUPPORT_TOP_OFFSET_MM
 
 
 class _FoundationHeightField:
@@ -221,10 +228,10 @@ class SupportBuilder:
         return any(field.over_open_water(x, y)
                    for x, y in interior_grid_points(rings, spacing, limit=600))
 
-    def _levels(self, x: float, y: float, minimum_ground=None):
+    def _levels(self, x: float, y: float, minimum_ground=None, drop=0.0):
         """Shared outline and cap sampling, keeping the flat model underside."""
         top = max(
-            self.structure_heightfield.height_mm(x, y) - self.top_offset_mm,
+            self.structure_heightfield.height_mm(x, y) - self.top_offset_mm - drop,
             self.bottom_z + 0.05,
         )
         if minimum_ground is not None:
@@ -255,7 +262,7 @@ class SupportBuilder:
         # footprint must not appear unsupported along its own outline.
         needs_lift = (minimum_ground is not None and self.structure_heightfield.minimum_over(
             point for ring in rings for point in densify_ring(ring, self.drape_spacing_mm)
-        ) < minimum_ground)
+        ) < minimum_ground - 1.0e-6)
         if known or not (needs_lift or self._needs_support(rings)):
             # Even without another solid, this footprint is usable ground.
             # Bridge piers use has_ground(), whose conservative shoreline-cell
@@ -265,7 +272,13 @@ class SupportBuilder:
                 self._grounded_footprints.add(footprint_key)
             self.already_grounded += 1
             return False
-        levels = lambda x, y: self._levels(x, y, minimum_ground)
+        # A causeway across cut water is lowered as a whole, not per vertex:
+        # switching at the shoreline would ramp its top up out of the water.
+        # The part on land stays buried under the bank.
+        mask = self.heightfield.void_mask
+        drop = (CUT_WATER_DROP_MM if kind == 'bridge_causeway' and mask is not None
+                and mask.touches_water(rings) else 0.0)
+        levels = lambda x, y: self._levels(x, y, minimum_ground, drop)
         outer = self._draped(rings[0], levels)
         if outer is None:
             self.rejected += 1

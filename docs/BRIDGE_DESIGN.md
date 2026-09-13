@@ -164,9 +164,9 @@ that crosses it. The deck is not extended down to the plate -- that would print
 a bridge as a tall wall of terrain-coloured plastic and defeat the point of the
 opening. Instead the terrain is built back under the deck only: a **causeway**,
 the deck's corridor buffered by half its width plus a small margin, from the
-terrain's own underside up to the ground surface the height field describes
-(the flattened water level inside the river, rising onto the bank where the
-strip overlaps it). The corridor is the run of the deck centerline over open
+terrain's own underside to just under the water surface: the height field
+(the bank level cut water is flattened to) less `CUT_WATER_DROP_MM`, so the
+part overlapping the bank stays buried and the part in the river stays wet. The corridor is the run of the deck centerline over open
 water, found on a finely sampled copy of the centerline and extended onto the
 land at both ends so it overlaps the bank solidly, then simplified at its own
 half-width so a sidewalk's metre-scale jog cannot fold the offset ring.
@@ -198,8 +198,8 @@ The implemented placement is the derived fallback:
    not move existing piers. Without an available foundation the run remains
    open; neither floating piers nor walls across a road are substituted.
 
-Over cut water the foundation height is the printed causeway top, including
-its existing 0.05 mm offset below the terrain field. This prevents a level deck
+Over cut water the foundation height is the printed causeway top, 0.05 mm plus
+`CUT_WATER_DROP_MM` below the terrain field. This prevents a level deck
 from being treated as grounded when there is still a gap to that causeway.
 Building-footprint rejection and connector-based intersection rules remain
 unimplemented. Placement and ground contacts are sampled along the centerline;

@@ -117,7 +117,8 @@ independently:
 2. Retain the previous generated hierarchy and build owned staging collections
    with copies of shared materials; record source/transform metadata. Solve and
    validate water polygons and their reusable prism topology before altering terrain.
-3. Lower terrain under ordinary water to solved water levels; construct the
+3. Flatten terrain under ordinary water to solved levels (cut water both ways,
+   other water down only); construct the
    through-cut mask from the exact water outlines, then keep mapped deck and
    building footprints that touch the water. Ponds/fountains use a separate finite-depth path.
 4. Build terrain and obtain its actual `bottom_z`. Apply basin recesses,
@@ -334,8 +335,12 @@ colors, overwriting manual palette edits.
   physical field retains its floors; basin islands and courtyards remain open.
   Non-bridge foundations have a footprint-wide minimum grade that puts their
   tops at least 0.2 mm above retained water; buildings and roads use that same
-  grade, preserving their thickness/heights. Bridge causeways keep the existing
-  field-relative top. Paving alone among land-cover categories retains supports:
+  grade, preserving their thickness/heights. Cut water is solved no lower than
+  the low tenth of its connected shoreline (bathymetric DEMs put the median on
+  the seabed), its nodes are set to that bank level, and its top sits
+  `CUT_WATER_DROP_MM` below, so the grade over a cut is the bank and shore
+  structures need no pedestals above the terrain. Bridge causeways touching
+  cut water sink by that drop, whole, and stay under the water. Paving alone among land-cover categories retains supports:
   build these from surviving caps after category priority, and share their grade
   with later roads/buildings. Never restore forest, green, sand, or rock footprints.
 - `cut_water_land_surfaces` removes every validated water footprint from all

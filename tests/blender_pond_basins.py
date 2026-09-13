@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / 'tests'))
 from jarvizar_city_model.geometry.basins import recess_terrain_basins, cut_water_land_surfaces, _closed
 from jarvizar_city_model.geometry.dem_terrain import generate_terrain_solid
 from jarvizar_city_model.geometry.heightfield import ModelHeightField
+from jarvizar_city_model.geometry.support import CUT_WATER_DROP_MM
 from jarvizar_city_model.geometry.surfaces import (
     SurfaceSettings, solve_water_bodies, flatten_terrain_under_water,
     cut_water_from_terrain, generate_water, generate_land_surfaces,
@@ -94,7 +95,8 @@ def test_basins():
     assert _closed(ordinary.data)
     for point in ((2.5,2.5), (7.5,2.5), (1,8)):
         near(hits(water_obj, *point).z, -.2)
-    near(hits(ordinary, 14,10).z, .18)
+    # Cut water sits below its bank; the bank (and bed) is the flat 0 grade.
+    near(hits(ordinary, 14,10).z, -CUT_WATER_DROP_MM)
     assert hits(water_obj, 14,10) is None
     assert hits(ordinary, 2.5,2.5) is None
     assert hits(water_obj, 3.5,3.5) is None

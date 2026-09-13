@@ -759,8 +759,9 @@ def main():
                 )
 
             # --- ground kept under structures over the opening --------------
-            # Every deck over the river gets a causeway, the boathouse a
-            # pedestal, and piers may stand in the river only on that ground.
+            # Every deck over the river gets a causeway, and piers may stand in
+            # the river only on that ground. The boathouse keeps its terrain at
+            # the bank grade, so it needs no second solid.
             body = bodies[0]
             ground = bpy.data.collections["TERRAIN_SUPPORTS"].objects
             if len(ground) != 1:
@@ -772,9 +773,9 @@ def main():
                     f"Expected a causeway under each of the three decks over the "
                     f"river, got {counts.get('bridge_causeways')}"
                 )
-            if counts.get("buildings_grounded_over_water", 0) != 1:
+            if counts.get("buildings_grounded_over_water", 0) != 0:
                 raise AssertionError(
-                    "The boathouse in the river did not get a pedestal: "
+                    "The boathouse on kept terrain gained a redundant pedestal: "
                     f"{counts.get('buildings_grounded_over_water')}"
                 )
             support_points = [
@@ -789,19 +790,31 @@ def main():
                     f"Supports start at {support_bottom:.4f} but the terrain's "
                     f"underside is at {bottom:.4f}; they must share one base"
                 )
-            # Away from the shore cells, where the surface still slopes from the
-            # bank node down to the flattened bed, a support must stop at the
-            # water level so the water stays open around it.
+            # Away from the shore cells, bridge causeways stay under the water
+            # so it remains open around them.
             interior = [
                 p for p in in_river if _distance_to_ring((p.x, p.y), body.rings[0]) > 1.5
             ]
             if not interior:
                 raise AssertionError("No support geometry reaches the middle of the river")
+            from mathutils.bvhtree import BVHTree
             from jarvizar_city_model.geometry.support import SUPPORT_WATER_CLEARANCE_MM
             water_top = object_z_range(water)[1]
-            assert max(p.z for p in interior) >= water_top + SUPPORT_WATER_CLEARANCE_MM - 1e-4
-            assert any(bottom + .05 < p.z < water_top for p in interior), \
-                'Bridge causeways must still have submerged tops'
+            assert all(p.z < water_top for p in interior), \
+                'Bridge causeways must have submerged tops'
+            assert any(bottom + .05 < p.z for p in interior), 'Causeways have no top'
+            # The boathouse stands on terrain kept at the bank, above the water.
+            boathouse = next(obj for obj in generated if obj.get("overture_id") == "boathouse")
+            house = [boathouse.matrix_world @ v.co for v in boathouse.data.vertices]
+            centre = (sum(p.x for p in house) / len(house), sum(p.y for p in house) / len(house))
+            terrain_tree = BVHTree.FromPolygons(
+                [(terrain.matrix_world @ v.co)[:] for v in terrain.data.vertices],
+                [f.vertices[:] for f in terrain.data.polygons])
+            kept = terrain_tree.ray_cast((centre[0], centre[1], 1000.0), (0.0, 0.0, -1.0))[0]
+            if kept is None or kept.z < water_top + SUPPORT_WATER_CLEARANCE_MM - 1e-4:
+                raise AssertionError(f"The boathouse lost the bank-grade terrain under it: {kept}")
+            if min(p.z for p in house) > kept.z - 1e-4:
+                raise AssertionError("The boathouse floats over the ground kept under it")
             supports = bpy.data.collections["BRIDGE_SUPPORTS"].objects
             piers_in_river = 0
             for obj in supports:
@@ -825,10 +838,6 @@ def main():
                     "No pier stands on the causeway; the decks over the river are "
                     "unsupported"
                 )
-            boathouse = next(obj for obj in generated if obj.get("overture_id") == "boathouse")
-            house_low, _house_high = object_z_range(boathouse)
-            if house_low < support_bottom:
-                raise AssertionError("The boathouse hangs below the ground kept under it")
 
             # A park that ran out over the water was cleared from it.
             if counts.get("land_surface_water_cuts", 0) < 1:

@@ -12,10 +12,13 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'tests'))
 
 from blender_ground_support import collection, rectangle, tree, top, assert_closed, FixtureTransform
+from blender_ground_support import feature as feature_polygon
 from jarvizar_city_model.geometry.heightfield import ModelHeightField
 from jarvizar_city_model.geometry.roads import generate_roads, RoadSettings
-from jarvizar_city_model.geometry.support import SupportBuilder
-from jarvizar_city_model.geometry.surfaces import solve_water_bodies, cut_water_from_terrain
+from jarvizar_city_model.geometry.support import CUT_WATER_DROP_MM, SupportBuilder
+from jarvizar_city_model.geometry.surfaces import (
+    cut_water_from_terrain, flatten_terrain_under_water, solve_water_bodies,
+)
 
 
 class Transform(FixtureTransform):
@@ -59,6 +62,8 @@ def test_road_crossing_irregular_shore_has_no_height_steps_or_support_gaps():
     water = {'type': 'Feature', 'properties': {'class': 'lake'},
              'geometry': {'type': 'Polygon', 'coordinates': [shore+[shore[0]]]}}
     bodies, _ = solve_water_bodies([water], Transform(), field)
+    # As generation does: the low bed is raised to the bank before roads read it.
+    flatten_terrain_under_water(field, bodies)
     cut_water_from_terrain(field, bodies)
     support = SupportBuilder(field, -1.3, water_bodies=bodies)
     points = [(10.5, 2), (10.5, 4), (10.5, 18)]
@@ -102,6 +107,45 @@ def test_cut_ground_gets_support_without_an_explicit_water_minimum():
     assert abs(top(tree(obj), 10.45, 10)-top(tree(foundation), 10.45, 10)-.65) < 1e-4
 
 
+def test_bathymetric_water_is_levelled_to_its_shore():
+    # Land west of x=9 at about 3 mm; a seabed falling away to the east, as
+    # elevation data with bathymetry reports a bay. Two touching bodies with no
+    # shore of their own apart from the land must share one level.
+    field = ModelHeightField(0, 0, 20, 20, 21, 21,
+                             [3+.01*y if x <= 9 else 1-.1*x for y in range(21) for x in range(21)])
+    water = [feature_polygon('lake', rectangle(9.5, -1, 15, 21)),
+             feature_polygon('lake', rectangle(15, -1, 21, 21))]
+    bodies, _ = solve_water_bodies(water, Transform(), field)
+    assert len(bodies) == 2 and all(body.cut for body in bodies)
+    for body in bodies:
+        # The low tenth of the interior shore nodes (3.01 .. 3.19 mm), not the
+        # seabed, and not the cropped seabed along the frame edge.
+        assert abs(body.bed_mm-3.02) < 1e-9, body.bed_mm
+        assert abs(body.top_mm-(3.02-CUT_WATER_DROP_MM)) < 1e-9, body.top_mm
+    flatten_terrain_under_water(field, bodies)
+    pier = feature_polygon('pier', rectangle(12, 7.5, 14, 9.5))
+    cut_water_from_terrain(field, bodies, transform=Transform(), footprints=[pier])
+    assert abs(field.height_mm(12.5, 3)-3.02) < 1e-9, 'Seabed left under the cut'
+    assert min(field.height_mm(9+i*.05, 3) for i in range(21)) >= 3.02-1e-9, 'Shore wedge'
+
+    support = SupportBuilder(field, -1.3, water_bodies=bodies)
+    # Kept ground already stands at the foundation grade: no second solid.
+    assert abs(support.minimum_ground([rectangle(12, 7.5, 14, 9.5)], 'building')-3.02) < 1e-9
+    assert not support.footprint([rectangle(12, 7.5, 14, 9.5)], 'building')
+    assert support.footprint([rectangle(16, 4, 17, 6)], 'bridge_causeway')
+    obj = make_roads(field, [(6, 12), (14, 12)], support)
+    road_tree = tree(obj)
+    for x in (7, 9.3, 10, 12):
+        assert abs(top(road_tree, x, 12)-(field.height_mm(x, 12)+.6)) < .015, ('Road lifted', x)
+    foundation = support.build(collection('bay_foundation'))
+    assert_closed(foundation)
+    support_tree = tree(foundation)
+    assert abs(top(support_tree, 12, 12)-(bodies[0].top_mm+.2)) < 1e-4
+    assert abs(top(support_tree, 16.5, 5)-(bodies[1].top_mm-.05)) < 1e-4, 'Causeway not submerged'
+    assert top(support_tree, 13, 8.5) is None
+
+
 test_road_crossing_irregular_shore_has_no_height_steps_or_support_gaps()
 test_cut_ground_gets_support_without_an_explicit_water_minimum()
+test_bathymetric_water_is_levelled_to_its_shore()
 print('JARVIZAR_SHORE_ROADS_OK')

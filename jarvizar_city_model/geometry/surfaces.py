@@ -35,8 +35,13 @@ from ..data.land import (
     surface_priority,
 )
 from .planar import EPSILON, clean_ring, densify_ring, interior_grid_points, ring_bounds, signed_area
+from .support import CUT_WATER_DROP_MM
 from .surface_priority import _lattice, _solid, _triangulate, cut_surface_overlaps
 from .water_geometry import projected_water_polygons, valid_water_polygon
+
+# Cut water is never solved below the lowest tenth of its shoreline.  Nine in
+# ten shore nodes then stand at or above the water level.
+SHORE_LEVEL_PERCENTILE = 0.1
 
 
 @dataclass
@@ -58,9 +63,11 @@ class SurfaceSettings:
     # of interior samples is the surface itself rather than a bank height.
     water_level_percentile: float = 0.5
     water_sample_spacing_mm: float = 1.0
-    # Water must sit slightly *above* the solved level, exactly like a land
-    # slab. The terrain mesh is a closed solid, so a surface placed below
-    # the ground is simply hidden inside it rather than looking sunken.
+    # Uncut water must sit slightly *above* the solved level, exactly like a
+    # land slab. The terrain mesh is a closed solid, so a surface placed below
+    # the ground is simply hidden inside it rather than looking sunken. Cut
+    # water has no terrain under it and sits below its bank instead; see
+    # support.CUT_WATER_DROP_MM.
     water_surface_offset_mm: float = 0.18
     minimum_area_mm2: float = 0.25
     drape_spacing_mm: float = 1.5
@@ -275,11 +282,16 @@ def solve_water_bodies(
 ) -> Tuple[List[WaterBody], Dict[str, int]]:
     """Clip water polygons and solve a level surface for each one.
 
-    A lake or river is level, and the elevation dataset already reports open
+    A lake or river is level, and the elevation dataset usually reports open
     water as a flat plateau.  The median of samples taken *inside* the polygon
     therefore recovers the true water surface, and is robust to the noisy cells
     near the banks.  The outline is only used for a channel too narrow to
     contain any interior sample point, since ring vertices sit on the shore.
+    Cut water is also kept from sitting below its shoreline, where a dataset
+    carrying bathymetry would otherwise put it.
+
+    ``bed_mm`` is the level the terrain under a body is flattened to. Cut
+    water's ``top_mm`` sits below it so the bank shows; other water sits on it.
     """
     settings = settings or SurfaceSettings()
     bodies: List[WaterBody] = []
@@ -346,18 +358,18 @@ def solve_water_bodies(
                 bed = bank - settings.pond_recess_depth_mm
                 seen_basins.add(key)
             area_m2 = model_area / area_scale
+            cut = (not basin_kind and settings.cut_from_terrain
+                   and area_m2 >= settings.minimum_cut_area_m2)
             bodies.append(
                 WaterBody(
                     rings=[list(ring) for ring in rings],
                     bed_mm=bed,
                     top_mm=bed + (settings.pond_water_thickness_mm if basin_kind
+                                  else -CUT_WATER_DROP_MM if cut
                                   else settings.water_surface_offset_mm),
                     geometry=geometry,
                     area_m2=area_m2,
-                    cut=(
-                        not basin_kind and settings.cut_from_terrain
-                        and area_m2 >= settings.minimum_cut_area_m2
-                    ),
+                    cut=cut,
                     basin_kind=basin_kind or "",
                 )
             )
@@ -365,6 +377,7 @@ def solve_water_bodies(
         if not added:
             rejected += 1
 
+    _raise_cut_water_to_shore(heightfield, bodies)
     return bodies, {
         "water_bodies": len(bodies),
         "water_rejected": rejected,
@@ -376,13 +389,74 @@ def solve_water_bodies(
     }
 
 
+def _raise_cut_water_to_shore(heightfield, bodies: Sequence[WaterBody]) -> None:
+    """Keep cut water from being solved below its own shoreline.
+
+    Most elevation data reports water as a plateau at its surface, and the
+    interior median is that surface.  Some also carries bathymetry: San
+    Francisco Bay's median is its seabed, twenty metres below the piers, and
+    every shore cell then interpolated down into a wedge that roads, supports
+    and buildings along the waterfront followed or floated over.  Water cannot
+    stand below the land holding it in, so a cut body's level is raised to the
+    low end of the dry nodes bordering its connected water.  Connected bodies
+    share one shoreline; a plateau already at its shore is left unchanged.
+    """
+    ordinary = [body for body in bodies if not body.basin_kind]
+    if not any(body.cut for body in ordinary):
+        return
+    columns, rows = heightfield.columns, heightfield.rows
+    inside = [heightfield.nodes_inside(body.rings) for body in ordinary]
+    wet = set().union(*inside)
+    component: Dict[int, int] = {}
+    shores: List[List[float]] = []
+    for start in wet:
+        if start in component:
+            continue
+        label, shore, stack = len(shores), set(), [start]
+        component[start] = label
+        while stack:
+            row, column = divmod(stack.pop(), columns)
+            for r, c in ((row - 1, column), (row + 1, column), (row, column - 1), (row, column + 1)):
+                if not (0 <= r < rows and 0 <= c < columns):
+                    continue
+                node = r * columns + c
+                if node not in wet:
+                    # The frame is not a shore: water cropped to it leaves
+                    # its edge nodes outside the polygon, seabed and all.
+                    if 0 < r < rows - 1 and 0 < c < columns - 1:
+                        shore.add(node)
+                elif node not in component:
+                    component[node] = label
+                    stack.append(node)
+        shores.append([heightfield.values[node] for node in shore])
+    for body, nodes in zip(ordinary, inside):
+        if not body.cut:
+            continue
+        heights = sorted(height for label in {component[node] for node in nodes}
+                         for height in shores[label])
+        if heights:
+            level = heights[int(SHORE_LEVEL_PERCENTILE * (len(heights) - 1))]
+            if level > body.bed_mm:
+                body.bed_mm = level
+                body.top_mm = level - CUT_WATER_DROP_MM
+
+
 def flatten_terrain_under_water(heightfield, bodies: Sequence[WaterBody]) -> int:
-    """Carve the terrain down to each solved water surface. Returns node count."""
-    lowered = 0
-    for body in bodies:
-        if not body.basin_kind:
-            lowered += heightfield.lower_inside(body.rings, body.bed_mm)
-    return lowered
+    """Flatten the terrain under water to each solved level. Returns node count.
+
+    Water cut out of the terrain is set to its level both ways, lowest level
+    winning where bodies overlap; its nodes only shape the shoreline and the
+    ground under structures, and both should be the bank.  Other water is
+    carved down only, so a slab over it cannot be pierced.
+    """
+    ordinary = [body for body in bodies if not body.basin_kind]
+    changed = 0
+    for body in sorted((body for body in ordinary if body.cut), key=lambda body: -body.bed_mm):
+        changed += heightfield.flatten_inside(body.rings, body.bed_mm, raise_nodes=True)
+    for body in ordinary:
+        if not body.cut:
+            changed += heightfield.flatten_inside(body.rings, body.bed_mm)
+    return changed
 
 
 def cut_water_from_terrain(

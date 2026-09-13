@@ -14,11 +14,12 @@ code path with a constant zero grid, so no generator needs a special case.
 
 from __future__ import annotations
 
+import math
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from ..data.terrain import TerrainSampler
 from .planar import point_in_polygon, ring_bounds
-from .watermask import WaterMask
+from .watermask import WaterMask, _line_crossings
 
 Ring = Sequence[Tuple[float, float]]
 
@@ -398,10 +399,32 @@ class ModelHeightField:
         index = int(max(0.0, min(1.0, fraction)) * (len(samples) - 1))
         return samples[index]
 
-    def lower_inside(
-        self, rings: Sequence[Sequence[Tuple[float, float]]], level_mm: float
+    def nodes_inside(self, rings: Sequence[Ring]) -> List[int]:
+        """Indices of the grid nodes inside a polygon (outer ring, then holes).
+
+        Nodes are found by scanline, as the water mask marks them, so a long
+        coastline costs one pass per row rather than one per node.
+        """
+        if not rings or len(rings[0]) < 3:
+            return []
+        _min_x, min_y, _max_x, max_y = ring_bounds(rings[0])
+        first_row = max(0, int(math.floor((min_y - self.min_y) / self.step_y)))
+        last_row = min(self.rows - 1, int(math.ceil((max_y - self.min_y) / self.step_y)))
+        nodes: List[int] = []
+        for row in range(first_row, last_row + 1):
+            crossings = _line_crossings(rings, self.min_y + self.step_y * row)
+            offset = row * self.columns
+            for index in range(0, len(crossings) - 1, 2):
+                first = max(0, int(math.ceil((crossings[index] - self.min_x) / self.step_x)))
+                last = min(self.columns - 1,
+                           int(math.floor((crossings[index + 1] - self.min_x) / self.step_x)))
+                nodes.extend(range(offset + first, offset + last + 1))
+        return nodes
+
+    def flatten_inside(
+        self, rings: Sequence[Ring], level_mm: float, raise_nodes: bool = False
     ) -> int:
-        """Clamp every grid node inside a polygon down to *level_mm*.
+        """Clamp every grid node inside a polygon to *level_mm*. Returns nodes changed.
 
         This is hydro-flattening.  An elevation dataset reports open water as a
         noisy near-flat plateau, and over a river that noise is metres tall: it
@@ -410,34 +433,19 @@ class ModelHeightField:
         source polygon says "this is water", the terrain beneath it is carved
         down to the solved surface instead of being trusted.
 
-        Only lowering is applied, never raising, so a bank that the polygon
-        overlaps slightly is left alone rather than being flooded.
+        By default only lowering is applied, so a bank that the polygon
+        overlaps slightly is left alone rather than being flooded.  Water cut
+        out of the terrain also raises its nodes (*raise_nodes*): they are not
+        printed, and a seabed left below the level would drag every shoreline
+        cell down into a wedge.
         """
-        from .planar import point_in_polygon, ring_bounds
-
-        if not rings or len(rings[0]) < 3:
-            return 0
-        min_x, min_y, max_x, max_y = ring_bounds(rings[0])
-        step_x = (self.max_x - self.min_x) / (self.columns - 1)
-        step_y = (self.max_y - self.min_y) / (self.rows - 1)
-        first_column = max(0, int((min_x - self.min_x) / step_x))
-        last_column = min(self.columns - 1, int((max_x - self.min_x) / step_x) + 1)
-        first_row = max(0, int((min_y - self.min_y) / step_y))
-        last_row = min(self.rows - 1, int((max_y - self.min_y) / step_y) + 1)
-
-        lowered = 0
-        for row in range(first_row, last_row + 1):
-            y = self.min_y + step_y * row
-            offset = row * self.columns
-            for column in range(first_column, last_column + 1):
-                index = offset + column
-                if self.values[index] <= level_mm:
-                    continue
-                x = self.min_x + step_x * column
-                if point_in_polygon((x, y), rings):
-                    self.values[index] = level_mm
-                    lowered += 1
-        return lowered
+        changed = 0
+        values = self.values
+        for index in self.nodes_inside(rings):
+            if values[index] > level_mm or (raise_nodes and values[index] < level_mm):
+                values[index] = level_mm
+                changed += 1
+        return changed
 
     def rows_2d(self) -> List[List[float]]:
         """Return the grid as row-major nested lists for mesh construction."""
