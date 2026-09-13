@@ -11,9 +11,9 @@ import bpy
 from mathutils.bvhtree import BVHTree
 
 from ..blender.mesh_utils import MeshBuilder
-from .footprint_cut import FootprintIndex, area_xy, fragment_solid
+from .footprint_cut import FootprintIndex, area_xy
 from .planar import EPSILON, ring_bounds
-from .surface_priority import _top_triangles
+from .surface_priority import _cutter, _rebuild_surface
 
 
 def _caps(body):
@@ -177,43 +177,14 @@ def cut_water_land_surfaces(collection, bodies, thickness, *, preserve_paved=Fal
     """
     if not bodies:
         return {"land_surface_water_cuts": 0}
-    mask = FootprintIndex(clearance=EPSILON)
-    bounds = [ring_bounds(body.rings[0]) for body in bodies]
-    for body in bodies:
-        for cap in _caps(body):
-            mask.add(cap)
+    cutters = [_cutter(ring, EPSILON, hole=index > 0)
+               for body in bodies for index, ring in enumerate(body.rings)]
     changed = 0
     for obj in list(collection.objects):
         if obj.type != 'MESH' or obj.get('feature_type') != 'land_surface':
             continue
         if preserve_paved and obj.get('surface_category') == 'paved':
             continue
-        left, low, right, high = ring_bounds([(p[0], p[1]) for p in obj.bound_box])
-        if not any(left < b[2] and b[0] < right and low < b[3] and b[1] < high for b in bounds):
-            continue
-        builder = MeshBuilder(obj.name)
-        removed = 0.0
-        for triangle in _top_triangles(obj.data):
-            pieces = mask.difference(triangle)
-            removed += max(0.0, area_xy(triangle) - sum(area_xy(p) for p in pieces))
-            for piece in pieces:
-                builder.add_raw(*fragment_solid(piece, thickness))
-        if removed <= 1e-8:
-            continue
-        changed += 1
-        old = obj.data
-        if builder.is_empty:
-            bpy.data.objects.remove(obj, do_unlink=True)
-        else:
-            mesh = bpy.data.meshes.new(old.name + '_WATER_CUT')
-            mesh.from_pydata(builder.vertices, [], builder.faces)
-            for material in old.materials:
-                mesh.materials.append(material)
-            mesh['jarvizar_generated'] = True
-            mesh.validate(clean_customdata=False)
-            mesh.update(calc_edges=True)
-            obj.data = mesh
-            obj['solid_count'] = builder.solids
-        if old.users == 0:
-            bpy.data.meshes.remove(old)
+        removed, _shells = _rebuild_surface(obj, cutters, thickness)
+        changed += removed > 1e-8
     return {"land_surface_water_cuts": changed}

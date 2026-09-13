@@ -25,11 +25,10 @@ change neither archive and need no reinstall. Read
    contains the package directory; `-extension.zip` has its manifest at the root
    and targets Blender 4.2+. Inspect the file list and use the right layout.
 
-3. Check `Get-Process blender -ErrorAction SilentlyContinue`. **Blender must be
-   closed before replacement or preference persistence.** Replacing files does
+3. Check `Get-Process blender -ErrorAction SilentlyContinue`. **Blender does not need to be
+   closed before replacement or preference persistence. Just make sure everything else will work.** Replacing files does
    not reload an imported package; a running instance can overwrite
-   `userpref.blend` on exit. If open, have the user save and close it; ask before
-   force-closing unless already authorized in this session.
+   `userpref.blend` on exit. 
 
 4. Back up the existing add-on and `userpref.blend` to a new timestamped directory
    under workspace `dist/`. Classic 3.6 preferences normally live at

@@ -1,11 +1,8 @@
-"""Geometric difference, preserved slopes and closed printable fragments."""
+"""Geometric difference, overlap queries and preserved slopes."""
 
 import unittest
 
-from jarvizar_city_model.geometry.footprint_cut import (
-    FootprintIndex, area_xy, fragment_solid,
-)
-from jarvizar_city_model.geometry.planar import faces_are_consistent, shell_volume
+from jarvizar_city_model.geometry.footprint_cut import FootprintIndex, area_xy
 
 
 def square(x0, y0, x1, y1):
@@ -37,9 +34,6 @@ class FootprintCutTests(unittest.TestCase):
         for piece in pieces:
             for x, y, z in piece:
                 self.assertAlmostEqual(z, 3+x*.1+y*.2)
-            vertices, faces = fragment_solid(piece, .55)
-            self.assertTrue(faces_are_consistent(faces))
-            self.assertAlmostEqual(shell_volume(vertices, faces), area_xy(piece)*.55)
 
     def test_junction_union_and_overlapping_cutters(self):
         mask = FootprintIndex(clearance=0)

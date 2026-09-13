@@ -206,6 +206,8 @@ FDM geometry/defaults. Download cancellation is a separate outstanding task.
   wastes material/color changes and does not fix their cause.
 
 Buildings/parts and trees merge by default; roads and slabs batch by category.
+Cut slabs are the exception to independent shells: overlapping same-category
+outlines are unioned in 2D, with pinch vertices split, never welded by coordinate.
 Use `merge_buildings_and_trees=False` for per-building source IDs, height/roof
 decisions, and foundation metadata; merged buildings retain material slots but
 no per-building metadata. Generation updates shared `JCM_*` viewport and shader
@@ -330,10 +332,17 @@ colors, overwriting manual palette edits.
   Water-fill visibility does not control these exclusions. Structure supports
   and road/building geometry keep their separate ownership.
 - Surface priority defaults to **paved > sand > rock > green > forest** and is
-  scene configurable. `surface_priority.py` and pure `footprint_cut.py` remove
-  full-thickness footprints while preserving slopes, holes, and materials.
-  Ground-road cuts use 0.005 mm XY clearance and built road outlines to avoid
-  huge cutter sets from refined caps. Elevated bridges retain land beneath them.
+  scene configurable. Priority, water and ground-road cuts all use
+  `surface_priority._rebuild_surface`: slab wall outlines, cutter rings and a
+  fixed 1.5 mm interior lattice go into one Blender CDT, triangles are kept by
+  directed-edge winding numbers (slab > 0, cutters ≤ 0), and each category is
+  re-emitted as welded top/bottom sheets with walls on boundary edges only.
+  Outline heights are exact; other heights interpolate the previous top.
+  Do not return to per-triangle convex fragments extruded as separate shells:
+  each pass compounded them into ~10× vertices and ~100× shells. CDT face-id
+  flood fill leaks on degenerate rings; keep the winding walk. Ground-road cuts
+  use 0.005 mm XY clearance and built road outlines to avoid huge cutter sets
+  from refined caps. Elevated bridges retain land beneath them.
 - Trees combine mapped `land` points and deterministic forest scatter, including
   satellite forest by default. They avoid open water and embed their broad bases
   directly in the terrain, not raised land/road caps. Trunkless three-tier crowns

@@ -1,15 +1,12 @@
-"""Planar footprint subtraction; no Blender or optional dependencies.
+"""Planar footprint overlap and subtraction; no Blender or optional dependencies.
 
-Convex cap fragments are cut by convex road footprints and remain convex.
-Z is interpolated on every new edge, preserving the original draped surface.
-Each surviving fragment can be extruded as its own closed shell, avoiding
-T-junctions between separately clipped triangles.
+Convex polygons are cut by convex footprints and remain convex, with Z
+interpolated on every new edge. Supports and trees use these exact overlap
+queries; land-cover slabs are rebuilt by ``surface_priority`` instead.
 """
 
 import math
 from collections import defaultdict
-
-from .planar import EPSILON
 
 
 def area_xy(points):
@@ -162,23 +159,3 @@ class FootprintIndex:
             if not pieces:
                 break
         return pieces
-
-
-def fragment_solid(poly, thickness):
-    """Extrude one convex XYZ cap down, with outward winding and closed walls."""
-    clean = []
-    for p in poly:
-        if not clean or math.dist(p[:2], clean[-1][:2]) > EPSILON:
-            clean.append(p)
-    if len(clean) > 1 and math.dist(clean[0][:2], clean[-1][:2]) <= EPSILON:
-        clean.pop()
-    if len(clean) < 3 or area_xy(clean) <= EPSILON*EPSILON:
-        return [], []
-    vertices = [(p[0], p[1], z) for p in clean for z in (p[2]-thickness, p[2])]
-    faces = []
-    for i in range(1, len(clean)-1):
-        faces.extend(((1, 2*i+1, 2*i+3), (0, 2*i+2, 2*i)))
-    for a in range(len(clean)):
-        b = (a+1) % len(clean)
-        faces.append((2*a, 2*b, 2*b+1, 2*a+1))
-    return vertices, faces
