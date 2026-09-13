@@ -291,8 +291,26 @@ cut-area setting is unchanged. No coordinates or feature identifiers are used
 by the production fix. Coastline reconstruction, shared polygon projection,
 and mesh construction have not been replaced.
 
-The terrain still has finite grid resolution: multiple shore turns or narrow
-openings inside one cell can be approximated. The shared non-water polygon
-projector still drops holes crossing the crop boundary; water now uses the
-complete-area clip described above. Water is not inferred where the input
-lacks a usable polygon.
+The shared non-water polygon projector still drops holes crossing the crop
+boundary; water now uses the complete-area clip described above. Water is not
+inferred where the input lacks a usable polygon.
+
+## Exact terrain cut (2026-09-13)
+
+The grid cut described above joined two edge crossings with a straight chord
+per cell, and marked water only at grid nodes. At the default resolution a
+cell is about 26 m, so water narrower than that was mostly missed while its
+full-depth fill still followed the exact polygon. On the cached Magic Kingdom
+selection (`-81.60576,28.39744,-81.55542,28.42994`, buildings and trees off)
+the Jungle Cruise channel and castle moat were left standing inside their
+water fills, single wet nodes opened diamond holes with islands missing, and
+convex shores showed see-through wedges. Ray samples at 0.2 mm found 526 mm²
+of terrain inside cut water outlines and 81 mm² of gaps.
+
+`WaterMask` now keeps the outlines it rasterises and answers `contains`
+exactly, and the terrain is cut along them in one constrained triangulation
+of the grid nodes and outlines. Kept-ground footprints (decks, buildings in
+the water) are removed from the cut exactly as well. The same samples found
+no gaps; the remaining 24 mm² is ground intentionally kept under mapped docks
+below their water fill. Land slabs are draped whole and cleared from the exact
+water footprints rather than grid clipped.

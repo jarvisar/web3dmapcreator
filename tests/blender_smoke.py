@@ -743,13 +743,8 @@ def main():
                     f"cut too: {counts.get('water_cut_bodies')} bodies cut"
                 )
             terrain = bpy.data.objects["TERRAIN_SURFACE"]
-            if terrain["cells_removed_for_water"] < 1:
-                raise AssertionError("The cut removed no terrain cells")
-            if terrain["cells_clipped_at_shoreline"] < 1:
-                raise AssertionError(
-                    "No cell was clipped at the shoreline; the bank is following "
-                    "the grid rather than the river"
-                )
+            if terrain["water_cut_area_mm2"] <= 0.0:
+                raise AssertionError("The cut removed no terrain")
 
             # The base is measured against the land that survives, not against
             # the channel bed the cut took away.
@@ -835,9 +830,9 @@ def main():
             if house_low < support_bottom:
                 raise AssertionError("The boathouse hangs below the ground kept under it")
 
-            # A park that ran out over the water was clipped to the land.
-            if counts.get("land_surfaces_clipped_to_land", 0) < 1:
-                raise AssertionError("The riverside park was not clipped to the land")
+            # A park that ran out over the water was cleared from it.
+            if counts.get("land_surface_water_cuts", 0) < 1:
+                raise AssertionError("The riverside park was not cleared from the water")
             for obj in bpy.data.collections["LAND_SURFACES"].objects:
                 for vertex in obj.data.vertices:
                     world = obj.matrix_world @ vertex.co

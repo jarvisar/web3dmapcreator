@@ -34,10 +34,8 @@ from ..data.land import (
     recessed_water_kind,
     surface_priority,
 )
-from .planar import EPSILON, clean_ring, densify_ring, interior_grid_points
-from .surface_priority import cut_surface_overlaps
-from .terrain_mesh import terrain_solid_geometry
-from .watermask import WaterMask
+from .planar import EPSILON, clean_ring, densify_ring, interior_grid_points, ring_bounds, signed_area
+from .surface_priority import _lattice, _solid, _triangulate, cut_surface_overlaps
 from .water_geometry import projected_water_polygons, valid_water_polygon
 
 
@@ -90,107 +88,47 @@ def _densified(ring: Sequence[Tuple[float, float]], spacing: float):
     float32 mesh coordinates can distinguish, and any such pair degenerates a
     cap triangle.  A dropped triangle leaves a hole, and the "watertight" solid
     silently stops being watertight -- so the ring is cleaned in the frame it
-    will actually be built in.  Winding is preserved, because the caller has
-    already oriented outer rings and holes opposite ways.
+    will actually be built in.
     """
     cleaned = clean_ring(densify_ring(ring, spacing), EPSILON)
     return cleaned if len(cleaned) >= 3 else None
 
 
-def _draped_prism(
-    ring: Sequence[Tuple[float, float]],
-    heightfield,
-    rise: float,
-    embed: float,
-    spacing: float,
-) -> List[Tuple[float, float, float, float]] | None:
-    dense = _densified(ring, spacing)
-    if dense is None:
+def _draped_slab(rings, draped, thickness: float, spacing: float):
+    """Build one slab over a polygon, draped at its outline and a fixed lattice.
+
+    The outline and holes are densified to the drape spacing and triangulated
+    together with the surface-priority lattice, so the cap follows the ground
+    across its interior with evenly sized triangles. Refining an outline fan
+    instead split its long slivers into hundreds of thousands of faces on a
+    large park. Later cuts find the same lattice points already on the surface.
+    Returns ``(vertices, faces)`` or ``None``.
+    """
+    points, loops = [], []
+    for index, ring in enumerate(rings):
+        dense = _densified(ring, spacing)
+        if dense is None:
+            if index == 0:
+                return None
+            continue
+        if (signed_area(dense) < 0) != (index > 0):
+            dense.reverse()
+        loops.append((0, list(range(len(points), len(points) + len(dense)))))
+        points.extend(dense)
+    points.extend(_lattice(points, ring_bounds(points[:len(loops[0][1])]), spacing))
+    out_points, out_faces, _origins, winding = _triangulate(points, loops, 1)
+    kept = [tuple(face) for face, (inside,) in zip(out_faces, winding) if inside > 0]
+    if not kept:
         return None
-    return [
-        (x, y, height - embed, height + rise)
-        for x, y, height in heightfield.sample_ring(dense)
-    ]
+    vertices, faces, _shells = _solid(
+        out_points, kept, lambda index: draped(*out_points[index])[1], thickness)
+    return vertices, faces
 
 
 def _ring_area(ring: Sequence[Tuple[float, float]]) -> float:
     from .planar import signed_area
 
     return abs(signed_area(ring))
-
-
-def _reaches_open_water(rings, heightfield, spacing: float) -> bool:
-    """Whether a slab polygon runs out over cut water anywhere, edge or interior."""
-    mask = getattr(heightfield, "void_mask", None)
-    if mask is None or not hasattr(heightfield, "over_open_water"):
-        return False
-    # The mask's window test is cheap and conservative: a polygon whose rows
-    # and columns hold no wet node cannot have cut water anywhere inside it.
-    if not mask.touches_water(rings):
-        return False
-    if any(heightfield.over_open_water(x, y) for x, y in densify_ring(rings[0], spacing)):
-        return True
-    # A lake cut out of the middle of a park never meets the park's outline.
-    cell = getattr(heightfield, "cell_size_mm", spacing)
-    return any(
-        heightfield.over_open_water(x, y)
-        for x, y in interior_grid_points(rings, max(cell, spacing), limit=600)
-    )
-
-
-def _slab_clipped_to_land(heightfield, rings, rise: float, embed: float):
-    """Build a slab over only the dry part of a polygon, on the terrain grid.
-
-    A polygon that runs out over a cut river cannot simply be draped: the
-    height field under the water is a flattened bed that is no longer printed,
-    and the slab would hang there as a sheet at water level.  Clipping one
-    polygon against another exactly is not something this project carries, but
-    clipping a polygon against the water on the terrain grid is exactly what
-    the terrain solid already does.  The slab starts from an all-wet mask,
-    takes its own outline back out, has the water cut through it again, and is
-    then built by the same closed-by-construction routine as the terrain, with
-    a bottom that follows the ground instead of a flat base.
-
-    The outline follows grid-line crossings rather than the polygon's own
-    vertices, which is the resolution of the riverbank itself.  Only polygons
-    that actually reach the water pay that price.
-
-    Where the slab's outline and the shoreline cross the same grid edge, the
-    transition must be the crossing nearest the *dry* node: from dry ground
-    inside the slab, the first outline met -- the slab's or the water's --
-    ends the slab either way.  Taking the far crossing, as the terrain's own
-    mask does, stretched the slab a cell out over the water wherever the
-    polygon overlapped the river.
-    """
-    mask = WaterMask(
-        heightfield.columns,
-        heightfield.rows,
-        heightfield.min_x,
-        heightfield.min_y,
-        heightfield.step_x,
-        heightfield.step_y,
-        prefer_dry_end=True,
-    )
-    mask.fill_wet()
-    if mask.remove_polygon(rings) <= 0:
-        return None
-    for water in heightfield.void_rings:
-        mask.add_polygon(water)
-    samples = [[value + rise for value in row] for row in heightfield.rows_2d()]
-    try:
-        vertices, faces, _statistics = terrain_solid_geometry(
-            samples,
-            heightfield.min_x,
-            heightfield.min_y,
-            heightfield.max_x,
-            heightfield.max_y,
-            rise + embed,
-            mask,
-            draped_bottom=True,
-        )
-    except ValueError:
-        return None
-    return vertices, faces
 
 
 def generate_land_surfaces(
@@ -221,7 +159,6 @@ def generate_land_surfaces(
     counts: Dict[str, int] = {}
     rejected = 0
     regional = 0
-    clipped = 0
 
     classified: List[Tuple[int, str, Dict[str, Any], str]] = []
     for feature_type, features in typed_features:
@@ -259,25 +196,12 @@ def generate_land_surfaces(
             if _ring_area(rings[0]) < settings.minimum_area_mm2:
                 continue
             keep_paving = category == 'paved' and ground_support is not None
+            # Slabs are draped whole; cut_water_land_surfaces later removes
+            # the exact water footprints, including any over a cut river.
             surface_field = (ground_support.foundation_field(ground_support.minimum_ground(rings,'paved'))
                              if keep_paving else heightfield)
-            if not keep_paving and _reaches_open_water(rings, heightfield, spacing):
-                built = _slab_clipped_to_land(heightfield, rings, rise, embed)
-                if built is not None and builder.add_raw(*built):
-                    added = True
-                    clipped += 1
-                continue
-            outer = _draped_prism(rings[0], surface_field, rise, embed, spacing)
-            if outer is None:
-                continue
-            prism_rings = [outer]
-            for hole in rings[1:]:
-                draped_hole = _draped_prism(hole, surface_field, rise, embed, spacing)
-                if draped_hole is not None:
-                    prism_rings.append(draped_hole)
-            # The caps are refined to the drape spacing so the slab follows
-            # the ground across its interior, not just along its outline.
-            if builder.add_prism(prism_rings, refine=(spacing, draped)):
+            built = _draped_slab(rings, draped, rise + embed, spacing)
+            if built is not None and builder.add_raw(*built):
                 added = True
         if added:
             counts[category] = counts.get(category, 0) + 1
@@ -305,7 +229,6 @@ def generate_land_surfaces(
         "land_surface_categories": dict(sorted(counts.items())),
         "land_surfaces_rejected": rejected,
         "land_surfaces_regional_skipped": regional,
-        "land_surfaces_clipped_to_land": clipped,
         **overlap_counts,
     }
 
@@ -478,21 +401,19 @@ def cut_water_from_terrain(
     floating restaurant is mapped inside the river, and cutting the river from
     under it would leave it hanging over the opening.
 
-    The grid can only take back what it can resolve: a dock narrower than a
-    terrain cell contains no node to un-mark.  So the cut outlines are kept on
-    the height field for exact tests, and every mapped deck that touches the
-    water is remembered so a pedestal can be built under it afterwards.
+    The mask keeps the exact outlines, so the terrain is cut along them and
+    ground is kept under a footprint of any width, even a dock narrower than a
+    terrain cell.  Every mapped deck that touches the water is remembered so a
+    raised pedestal can be built under it afterwards.
     """
     cuttable = [body for body in bodies if body.cut]
     if not cuttable:
-        heightfield.void_rings = []
         heightfield.restored_footprints = []
         return {"water_cut_bodies": 0}
 
     mask = heightfield.new_void_mask()
     for body in cuttable:
         mask.add_polygon(body.rings)
-    heightfield.void_rings = [[list(ring) for ring in body.rings] for body in cuttable]
     heightfield.restored_footprints = []
 
     decks = 0
@@ -519,9 +440,8 @@ def cut_water_from_terrain(
                 if mask.remove_polygon(rings):
                     grounded += 1
 
-    if not mask.any_wet:
+    if not mask.water_polygons:
         heightfield.void_mask = None
-        heightfield.void_rings = []
         heightfield.restored_footprints = []
         return {"water_cut_bodies": 0}
 

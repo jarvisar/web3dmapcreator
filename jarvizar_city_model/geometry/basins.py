@@ -10,10 +10,10 @@ from collections import Counter
 import bpy
 from mathutils.bvhtree import BVHTree
 
-from ..blender.mesh_utils import MeshBuilder
+from ..blender.mesh_utils import MeshBuilder, _prism_geometry
 from .footprint_cut import FootprintIndex, area_xy
 from .planar import EPSILON, ring_bounds
-from .surface_priority import _cutter, _rebuild_surface
+from .surface_priority import _cutter, _grow, _rebuild_surface
 
 
 def _caps(body):
@@ -87,6 +87,49 @@ def _align_overlapping_basins(basins):
     return len(floors)
 
 
+def _recessed_mesh(terrain, basins, collection, original_bottom, bottom, upper, clearance):
+    """Return the terrain mesh with basins subtracted, or None if it is not valid."""
+    cutter_builder = MeshBuilder("_BASIN_CUTTER")
+    for body in basins:
+        vertices, faces = body.geometry
+        if clearance:
+            vertices, faces = _prism_geometry([
+                [(x, y, 0.0, 1.0) for x, y in _grow(ring if (area_xy(ring) < 0) == (index > 0) else ring[::-1],
+                                                    clearance)]
+                for index, ring in enumerate(body.rings)])
+            if not faces:
+                return None
+        cutter_builder.add_raw([(x, y, upper if z else body.bed_mm) for x, y, z in vertices], faces)
+    cutter = cutter_builder.build(collection)
+    work = terrain.copy()
+    work.data = terrain.data.copy()
+    collection.objects.link(work)
+    result = None
+    try:
+        # The add-on promises base_thickness beneath the lowest built surface,
+        # including the new basin floor. Do not turn a deep setting into a hole.
+        for vertex in work.data.vertices:
+            if abs(vertex.co.z - original_bottom) < 1e-6:
+                vertex.co.z = bottom
+        modifier = work.modifiers.new("Pond and fountain recesses", "BOOLEAN")
+        modifier.operation = "DIFFERENCE"
+        modifier.solver = "EXACT"
+        modifier.use_self = True
+        modifier.object = cutter
+        bpy.context.view_layer.update()
+        evaluated = work.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        result = bpy.data.meshes.new_from_object(evaluated)
+        result.validate(clean_customdata=False)
+        result.update(calc_edges=True)
+        if not _closed(result) or not _floors_match(result, basins, upper):
+            bpy.data.meshes.remove(result)
+            result = None
+        return result
+    finally:
+        _discard_object(work)
+        _discard_object(cutter)
+
+
 def recess_terrain_basins(heightfield, bodies, collection, base_thickness_mm):
     """Cut closed basins transactionally; retain a solid base beneath floors.
 
@@ -118,44 +161,23 @@ def recess_terrain_basins(heightfield, bodies, collection, base_thickness_mm):
     original_bottom = min(v.co.z for v in terrain.data.vertices)
     bottom = min(original_bottom, min(body.bed_mm for body in basins) - base_thickness_mm)
     upper = max(v.co.z for v in terrain.data.vertices) + 1.0
-    cutter_builder = MeshBuilder("_BASIN_CUTTER")
-    for body in basins:
-        vertices, faces = body.geometry
-        cutter_builder.add_raw([(x, y, upper if z else body.bed_mm) for x, y, z in vertices], faces)
-    cutter = cutter_builder.build(collection)
-    work = terrain.copy()
-    work.data = terrain.data.copy()
-    collection.objects.link(work)
-    result = None
-    try:
-        # The add-on promises base_thickness beneath the lowest built surface,
-        # including the new basin floor. Do not turn a deep setting into a hole.
-        for vertex in work.data.vertices:
-            if abs(vertex.co.z - original_bottom) < 1e-6:
-                vertex.co.z = bottom
-        modifier = work.modifiers.new("Pond and fountain recesses", "BOOLEAN")
-        modifier.operation = "DIFFERENCE"
-        modifier.solver = "EXACT"
-        modifier.use_self = True
-        modifier.object = cutter
-        bpy.context.view_layer.update()
-        evaluated = work.evaluated_get(bpy.context.evaluated_depsgraph_get())
-        result = bpy.data.meshes.new_from_object(evaluated)
-        result.validate(clean_customdata=False)
-        result.update(calc_edges=True)
-        if not _closed(result) or not _floors_match(result, basins, upper):
-            raise ValueError("Pond/fountain recess could not produce closed terrain with the requested floors")
-        old_mesh = terrain.data
-        terrain.data = result
-        result["jarvizar_generated"] = True
-        result = None
-        if old_mesh.users == 0:
-            bpy.data.meshes.remove(old_mesh)
-    finally:
+    # The terrain is cut along exact water outlines, so a basin mapped against
+    # cut water can share that edge within float32 rounding. The Boolean then
+    # welds the nearly coincident walls; clearing them by the geometry epsilon
+    # keeps the recess exact to within that epsilon.
+    for clearance in (0.0, EPSILON):
+        result = _recessed_mesh(terrain, basins, collection, original_bottom, bottom, upper, clearance)
         if result is not None:
-            bpy.data.meshes.remove(result)
-        _discard_object(work)
-        _discard_object(cutter)
+            break
+    else:
+        raise ValueError("Pond/fountain recess could not produce closed terrain with the requested floors")
+    old_mesh = terrain.data
+    terrain.data = result
+    result["jarvizar_generated"] = True
+    if old_mesh.users == 0:
+        bpy.data.meshes.remove(old_mesh)
+    if clearance:
+        counts["water_basin_recess_clearance_mm"] = clearance
     for body in basins:
         heightfield.register_basin(body.rings, body.bed_mm)
     terrain["bottom_z_mm"] = round(bottom, 4)

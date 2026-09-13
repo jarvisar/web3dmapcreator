@@ -18,6 +18,7 @@ from mathutils.bvhtree import BVHTree
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from jarvizar_city_model.data.projection import ModelBounds
+from jarvizar_city_model.geometry.basins import cut_water_land_surfaces
 from jarvizar_city_model.geometry.dem_terrain import generate_terrain_solid
 from jarvizar_city_model.geometry.heightfield import ModelHeightField
 from jarvizar_city_model.geometry.planar import faces_are_consistent
@@ -89,6 +90,8 @@ def solve(field, water):
     bodies, counts = solve_water_bodies(water, FixtureTransform(), field)
     assert counts["water_rejected"] == 0, counts
     assert len(bodies) == len(water) and all(body.cut for body in bodies)
+    # Land slabs are draped whole and then cleared from these exact footprints.
+    field.test_bodies = bodies
     return bodies
 
 
@@ -106,7 +109,8 @@ def build_park(field, name):
         [("land_use", [feature("park", rectangle(0.6, 0.6, 19.4, 19.4))])],
         FixtureTransform(), field, target, {}, SurfaceSettings(),
     )
-    assert counts["land_surfaces_clipped_to_land"] == 1, counts
+    assert counts["land_surfaces"] == 1, counts
+    cut_water_land_surfaces(target, field.test_bodies, SurfaceSettings().surface_rise_mm + SurfaceSettings().surface_embed_mm)
     assert len(target.objects) == 1
     assert_closed(target.objects[0])
     return target.objects[0]
@@ -120,8 +124,8 @@ def test_marina_does_not_refill_the_harbor():
     )
     # A marina is an area of use containing open water and individual decks.
     marina = feature("marina", rectangle(11.2, 4.2, 17.2, 15.8))
-    # These actual structures are narrower than the 0.5 mm terrain grid;
-    # their pedestals must survive even when no grid node can be restored.
+    # These actual structures are narrower than the 0.5 mm terrain grid; the
+    # exact cut must keep their ground even though no grid node lies on them.
     pier = feature("pier", rectangle(12.3, 1.5, 12.45, 7.5))
     breakwater = feature("breakwater", rectangle(15.3, 10.5, 15.45, 18.5))
     bodies = solve(field, [lake])
@@ -135,26 +139,26 @@ def test_marina_does_not_refill_the_harbor():
     terrain, bottom = build_terrain(field, "marina_terrain")
     supports = SupportBuilder(field, bottom)
     for rings in field.restored_footprints:
-        assert supports.footprint(rings, "mapped_deck")
+        supports.footprint(rings, "mapped_deck")
+    # The terrain keeps the decks' ground itself; any pedestal only overlaps it.
     support_obj = supports.build(collection("marina_supports"))
-    assert support_obj is not None
-    terrain_tree, support_tree = mesh_tree(terrain), mesh_tree(support_obj)
+    trees = [mesh_tree(terrain)] + ([mesh_tree(support_obj)] if support_obj is not None else [])
+    terrain_tree = trees[0]
 
     # Probe a grid through the harbor interior, clear of both narrow decks.
     harbor = [(x, y) for x in (11.6, 13.1, 14.2, 16.4)
               for y in (4.7, 8.3, 11.7, 15.1)]
     for point in harbor:
-        assert not hits(terrain_tree, point), ("Terrain refilled marina water", point)
-        assert not hits(support_tree, point), ("Support refilled marina water", point)
+        assert not any(hits(tree, point) for tree in trees), ("Ground refilled marina water", point)
         assert field.over_open_water(*point), point
-    assert supports.summary()["terrain_supports"] == 2, supports.summary()
     assert counts["water_cut_decks_over_water"] == 2, counts
-    assert counts["water_cut_decks_restored"] == 0, counts
-    assert_closed(support_obj)
+    assert counts["water_cut_decks_restored"] == 2, counts
     for point in ((12.4, 5.3), (15.4, 13.3)):
-        assert hits(support_tree, point), ("Mapped structure lost its support", point)
+        assert hits(terrain_tree, point), ("Mapped structure lost its ground", point)
         assert field.is_supported(*point), point
         assert not field.over_open_water(*point), point
+    for point in ((12.2, 5.3), (12.55, 5.3), (15.2, 13.3), (15.55, 13.3)):
+        assert not hits(terrain_tree, point), ("Ground kept beyond a narrow deck", point)
     for point in ((8.2, 8.1), (1.2, 8.3), (18.4, 8.3)):
         assert hits(terrain_tree, point), ("Island or bank was removed", point)
         assert not field.in_cut_water(*point), point
@@ -202,6 +206,41 @@ def test_cropped_islands_and_water_mesh_share_the_solved_area():
         assert not hits(terrain_tree, point) and hits(water_tree, point), ('Water missing', point)
 
 
+def test_narrow_water_is_cut_exactly_where_its_fill_is():
+    """A channel and an island smaller than a terrain cell, as Jungle Cruise has.
+
+    The grid's 0.5 mm cells hold no node in the channel. The terrain opening
+    and the full-depth water plug must still be the same polygon: no terrain
+    left under the water, and no see-through gap between them.
+    """
+    field = flat_field()
+    field.values = [0.02 * (i % 41) + 0.03 * (i // 41) for i in range(41 * 41)]
+    # A lake with a sub-cell island, draining through a channel 0.4 mm wide
+    # that runs between the grid lines for its whole length.
+    lake = feature("lake", [
+        (3.1, 11.1), (6.55, 11.1), (6.55, 2.05), (17.9, 2.2), (17.9, 2.45), (6.95, 2.4), (6.95, 11.1),
+        (9.9, 11.1), (9.9, 17.2), (3.1, 17.2),
+    ], [(6.1, 13.15), (6.1, 13.45), (6.35, 13.45), (6.35, 13.15)])
+    bodies = solve(field, [lake])
+    cut_water_from_terrain(field, bodies)
+    terrain, bottom = build_terrain(field, "narrow_terrain")
+    target = collection("narrow_water")
+    generate_water(bodies, target, None, terrain_bottom_mm=bottom)
+    terrain_tree, water_tree = mesh_tree(terrain), mesh_tree(target.objects[0])
+    for point in ((12.0, 2.3), (6.75, 7.3)):
+        assert hits(water_tree, point) and not hits(terrain_tree, point), ("Channel not cut", point)
+    assert hits(terrain_tree, (6.22, 13.3)) and not hits(water_tree, (6.22, 13.3)), "Island removed"
+    gaps = buried = 0
+    for i in range(200):
+        for j in range(200):
+            point = (0.0371 + i * 0.1, 0.0371 + j * 0.1)
+            terrain_hit, water_hit = hits(terrain_tree, point), hits(water_tree, point)
+            gaps += not terrain_hit and not water_hit
+            buried += terrain_hit and water_hit
+            assert terrain_hit != field.in_cut_water(*point), ("Query disagrees with the terrain", point)
+    assert gaps == 0 and buried == 0, (gaps, buried)
+
+
 def test_unusable_water_cannot_flatten_or_cut_terrain():
     water = feature('lake', rectangle(1, 1, 19, 19))
     field = flat_field()
@@ -231,6 +270,7 @@ def main():
     test_marina_does_not_refill_the_harbor()
     test_overlapping_water_uses_the_complete_union()
     test_cropped_islands_and_water_mesh_share_the_solved_area()
+    test_narrow_water_is_cut_exactly_where_its_fill_is()
     test_unusable_water_cannot_flatten_or_cut_terrain()
     test_cut_threshold_uses_water_area_excluding_islands()
     print("JARVIZAR_WATER_CUT_OK")

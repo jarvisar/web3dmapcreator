@@ -7,8 +7,8 @@ opening up under a valley.
 
 Open water is removed from the solid rather than covered over.  A river printed
 as a void reads at a glance, needs no second material to be legible, and
-matches how a terrain model is normally cut for display.  The mesh work itself
-lives in :mod:`jarvizar_city_model.geometry.terrain_mesh`.
+matches how a terrain model is normally cut for display.  The uncut grid lives
+in :mod:`jarvizar_city_model.geometry.terrain_mesh`.
 
 An optional rim raises a wall around the selection edge.  It is purely a
 presentation choice for a display piece, so it is generated as its own object
@@ -20,7 +20,68 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from ..blender.mesh_utils import MeshBuilder
+from .footprint_cut import area_xy
+from .planar import clean_ring, densify_ring
+from .surface_priority import CUT_EDGE_SPACING_MM, _solid, _triangulate
 from .terrain_mesh import terrain_solid_geometry
+
+
+def _cut_terrain_geometry(heightfield, thickness_mm: float):
+    """Terrain solid with the void mask's exact outlines cut out of its top.
+
+    Cutting along grid cells cannot follow water narrower than a cell: a
+    channel between two rows of nodes was left standing, and a single wet
+    node opened a diamond. Instead every grid node, the water outlines and the
+    kept-ground footprints go into one constrained triangulation. A triangle
+    is removed where the water's winding is positive and the footprints' is
+    not, so the opening is exactly the polygon the water fill is built from.
+    Grid nodes keep their heights; outline vertices take the height field's.
+
+    Returns ``(vertices, faces, bottom_z, cut_area_mm2)``.
+    """
+    mask = heightfield.void_mask
+    columns, rows = heightfield.columns, heightfield.rows
+    left, low, right, high = heightfield.min_x, heightfield.min_y, heightfield.max_x, heightfield.max_y
+    points = [(left + heightfield.step_x * column, low + heightfield.step_y * row)
+              for row in range(rows) for column in range(columns)]
+    grid = len(points)
+    # The outline follows the ground between nodes rather than bridging it.
+    spacing = min(CUT_EDGE_SPACING_MM, heightfield.cell_size_mm * 0.5)
+    loops = []
+    for group, polygons in ((0, mask.water_polygons), (1, mask.ground_polygons)):
+        for rings in polygons:
+            for index, ring in enumerate(rings):
+                ring = clean_ring([(min(max(x, left), right), min(max(y, low), high)) for x, y in ring])
+                if len(ring) < 3 or area_xy(ring) == 0:
+                    continue
+                if (area_xy(ring) < 0) != (index > 0):
+                    ring.reverse()
+                ring = densify_ring(ring, spacing)
+                loops.append((group, list(range(len(points), len(points) + len(ring)))))
+                points.extend(ring)
+
+    out_points, out_faces, out_origins, winding = _triangulate(points, loops, 2)
+    kept = []
+    cut_area = 0.0
+    for face, (water, ground) in zip(out_faces, winding):
+        if water > 0 and ground <= 0:
+            cut_area += abs(area_xy([out_points[i] for i in face]))
+        else:
+            kept.append(tuple(face))
+    if not kept:
+        raise ValueError("Terrain solid has no dry land left to build")
+
+    values = heightfield.values
+
+    def height(index):
+        for origin in out_origins[index]:
+            if origin < grid:
+                return values[origin]
+        x, y = out_points[index]
+        return heightfield.height_mm(x, y)
+
+    vertices, faces, _shells = _solid(out_points, kept, height, float(thickness_mm), flat=True)
+    return vertices, faces, vertices[0][2], cut_area
 
 
 def generate_terrain_solid(
@@ -31,16 +92,19 @@ def generate_terrain_solid(
     name: str = "TERRAIN_SURFACE",
 ) -> Dict[str, Any]:
     """Create the terrain solid and return its descriptive metadata."""
-    vertices, faces, statistics = terrain_solid_geometry(
-        heightfield.rows_2d(),
-        heightfield.min_x,
-        heightfield.min_y,
-        heightfield.max_x,
-        heightfield.max_y,
-        float(thickness_mm),
-        heightfield.void_mask,
-    )
-    bottom_z = statistics["bottom_z"]
+    cut_area = 0.0
+    if heightfield.void_mask is None:
+        vertices, faces, statistics = terrain_solid_geometry(
+            heightfield.rows_2d(),
+            heightfield.min_x,
+            heightfield.min_y,
+            heightfield.max_x,
+            heightfield.max_y,
+            float(thickness_mm),
+        )
+        bottom_z = statistics["bottom_z"]
+    else:
+        vertices, faces, bottom_z, cut_area = _cut_terrain_geometry(heightfield, thickness_mm)
     builder = MeshBuilder(name)
     builder.add_raw(vertices, faces)
     obj = builder.build(collection, material)
@@ -54,8 +118,7 @@ def generate_terrain_solid(
     obj["grid_rows"] = heightfield.rows
     obj["relief_mm"] = round(heightfield.maximum_mm - heightfield.minimum_mm, 4)
     obj["bottom_z_mm"] = round(bottom_z, 4)
-    obj["cells_removed_for_water"] = statistics["cells_removed"]
-    obj["cells_clipped_at_shoreline"] = statistics["cells_clipped"]
+    obj["water_cut_area_mm2"] = round(cut_area, 4)
     summary = {
         "terrain_bottom_z_mm": bottom_z,
         "terrain_mode": obj["terrain_mode"],
@@ -63,13 +126,9 @@ def generate_terrain_solid(
         "terrain_relief_mm": obj["relief_mm"],
         "terrain_bottom_mm": obj["bottom_z_mm"],
     }
-    if statistics["cells_removed"] or statistics["cells_clipped"]:
-        removed = statistics["cells_removed"] + statistics["cells_clipped"]
-        summary["terrain_water_cut_percent"] = round(
-            100.0 * removed / max(1, statistics["cells_total"]), 1
-        )
-    if statistics["duplicate_edges"]:
-        summary["terrain_duplicate_edges"] = statistics["duplicate_edges"]
+    if cut_area:
+        frame = (heightfield.max_x - heightfield.min_x) * (heightfield.max_y - heightfield.min_y)
+        summary["terrain_water_cut_percent"] = round(100.0 * cut_area / frame, 1)
     return summary
 
 

@@ -272,6 +272,144 @@ def _lattice(anchors, bounds, spacing=CUT_EDGE_SPACING_MM):
             if (i, j) not in blocked]
 
 
+def _triangulate(points, loops, groups, epsilon=_CDT_EPSILON):
+    """Triangulate points and closed rings, with a winding number per ring group.
+
+    *loops* pairs a group index below *groups* with a ring of point indices,
+    each ring with its filled area on its left. Returns the output points,
+    triangles and point origins of Blender's constrained Delaunay
+    triangulation, plus one tuple of *groups* winding numbers per triangle.
+    They are walked in from the hull: entering the left side of a ring edge
+    adds one. Rings that collapse under the epsilon cancel out instead of
+    leaking, and holes need no special case.
+    """
+    points = [Vector(p) for p in points]
+    edges, owners = [], []
+    for group, ring in loops:
+        edges.extend(zip(ring, ring[1:] + ring[:1]))
+        owners.extend([group] * len(ring))
+    out_points, out_edges, out_faces, out_origins, edge_origins, _faces = delaunay_2d_cdt(
+        points, edges, [], 0, epsilon, True)
+    zero = (0,) * groups
+    # Direct each ring edge's output pieces by walking them from the output
+    # vertex of its start to that of its end. Reading the direction from the
+    # coordinates instead fails on the tiny pieces left where the
+    # triangulation splits an edge beside a nearly coincident vertex.
+    vertex_of = {}
+    for index, origins in enumerate(out_origins):
+        for i in origins:
+            vertex_of[i] = index
+    pieces = defaultdict(list)
+    for (u, v), origins in zip(out_edges, edge_origins):
+        for i in origins:
+            pieces[i].append((u, v))
+    counts = defaultdict(lambda: [0] * groups)
+    for i, chain in pieces.items():
+        a, b = edges[i]
+        start, end = vertex_of.get(a), vertex_of.get(b)
+        following = defaultdict(list)
+        for u, v in chain:
+            following[u].append(v)
+            following[v].append(u)
+        steps = []
+        previous, current = None, start
+        while current != end and current is not None and len(steps) < len(chain):
+            ahead = [w for w in following[current] if w != previous]
+            if len(ahead) != 1:
+                break
+            steps.append((current, ahead[0]))
+            previous, current = current, ahead[0]
+        if current != end or len(steps) != len(chain):
+            direction = points[b] - points[a]
+            steps = [(u, v) if (out_points[v] - out_points[u]).dot(direction) > 0 else (v, u) for u, v in chain]
+        for u, v in steps:
+            counts[u, v][owners[i]] += 1
+            counts[v, u][owners[i]] -= 1
+    crossing = {edge: tuple(n) for edge, n in counts.items() if any(n)}
+    owner = {}
+    for t, (a, b, c) in enumerate(out_faces):
+        owner[a, b] = owner[b, c] = owner[c, a] = t
+    winding = [None] * len(out_faces)
+    queue = []
+    for (a, b), t in owner.items():
+        if (b, a) not in owner and winding[t] is None:
+            winding[t] = crossing.get((a, b), zero)
+            queue.append(t)
+    while queue:
+        t = queue.pop()
+        a, b, c = out_faces[t]
+        for edge in ((a, b), (b, c), (c, a)):
+            u = owner.get(edge[::-1])
+            if u is not None and winding[u] is None:
+                winding[u] = tuple(w + d for w, d in zip(winding[t], crossing.get(edge[::-1], zero)))
+                queue.append(u)
+    return out_points, out_faces, out_origins, winding
+
+
+def _solid(out_points, kept, height, thickness, flat=False):
+    """Weld kept triangles into one closed solid, returning ``(vertices, faces, shells)``.
+
+    The top follows *height* at each output point. The underside is
+    *thickness* below it, or with *flat* that far below the lowest top vertex.
+    Walls stand only on boundary edges. Corners join across interior edges
+    only, so outlines pinched at a vertex get separate vertices and every
+    wall edge stays manifold. Those vertices are also moved apart by the
+    geometry epsilon, into their own triangles: Blender's Exact Boolean, like
+    a slicer, welds coincident vertices and would pinch the solid again.
+    """
+    corner_sets = list(range(3*len(kept)))
+    shells = list(range(len(kept)))
+    adjacent = defaultdict(list)
+    for t, face in enumerate(kept):
+        for c in range(3):
+            a, b = face[c], face[(c+1) % 3]
+            adjacent[(a, b) if a < b else (b, a)].append((t, c))
+    for uses in adjacent.values():
+        if len(uses) == 2:
+            (t, c), (u, d) = uses
+            same = kept[t][c] == kept[u][d]
+            corner_sets[_find(corner_sets, 3*t + c)] = _find(corner_sets, 3*u + (d if same else (d+1) % 3))
+            corner_sets[_find(corner_sets, 3*t + (c+1) % 3)] = _find(corner_sets, 3*u + ((d+1) % 3 if same else d))
+            shells[_find(shells, t)] = _find(shells, u)
+
+    corner_vertex = {}
+    tops = []
+    splits = defaultdict(list)
+    for t, face in enumerate(kept):
+        for c in range(3):
+            key = _find(corner_sets, 3*t + c)
+            if key not in corner_vertex:
+                corner_vertex[key] = len(tops)
+                splits[face[c]].append((len(tops), t))
+                x, y = out_points[face[c]]
+                tops.append((x, y, height(face[c])))
+    for point, copies in splits.items():
+        if len(copies) < 2:
+            continue
+        x, y = out_points[point]
+        for index, t in copies:
+            dx = sum(out_points[i][0] for i in kept[t]) / 3 - x
+            dy = sum(out_points[i][1] for i in kept[t]) / 3 - y
+            length = math.hypot(dx, dy) or 1.0
+            tops[index] = (x + dx / length * EPSILON, y + dy / length * EPSILON, tops[index][2])
+    corners = [[corner_vertex[_find(corner_sets, 3*t + c)] for c in range(3)] for t in range(len(kept))]
+
+    base = min(z for _x, _y, z in tops) - thickness if flat else None
+    vertices = []
+    for x, y, z in tops:
+        vertices.extend(((x, y, z-thickness if base is None else base), (x, y, z)))
+    polygons = []
+    for a, b, c in corners:
+        polygons.append((2*a+1, 2*b+1, 2*c+1))
+        polygons.append((2*c, 2*b, 2*a))
+    for uses in adjacent.values():
+        if len(uses) == 1:
+            t, c = uses[0]
+            a, b = corners[t][c], corners[t][(c+1) % 3]
+            polygons.append((2*a, 2*b, 2*b+1, 2*a+1))
+    return vertices, polygons, len({_find(shells, t) for t in range(len(kept))})
+
+
 def _rebuild_surface(obj, cutters, thickness, outline=None, progress_callback=None):
     """Subtract cutter rings from a slab and rebuild it as welded shells.
 
@@ -309,57 +447,15 @@ def _rebuild_surface(obj, cutters, thickness, outline=None, progress_callback=No
             tops[x, y] = z
     keys = list({p for ring in outline for p in ring})
     lookup = {key: index for index, key in enumerate(keys)}
-    points = [Vector(key) for key in keys]
-    edges = []
-    for ring in outline:
-        indices = [lookup[p] for p in ring]
-        edges.extend(zip(indices, indices[1:] + indices[:1]))
-    slab_edges = len(edges)
+    points = list(keys)
+    loops = [(0, [lookup[p] for p in ring]) for ring in outline]
     for ring in cutters:
-        indices = list(range(len(points), len(points)+len(ring)))
-        points.extend(Vector(p) for p in ring)
-        edges.extend(zip(indices, indices[1:] + indices[:1]))
-    points.extend(Vector(p) for p in _lattice(points, (left, low, right, high)))
+        loops.append((1, list(range(len(points), len(points)+len(ring)))))
+        points.extend(ring)
+    points.extend(_lattice(points, (left, low, right, high)))
 
-    out_points, out_edges, out_faces, out_origins, edge_origins, _faces = delaunay_2d_cdt(
-        points, edges, [], 0, _CDT_EPSILON, True)
+    out_points, out_faces, out_origins, winding = _triangulate(points, loops, 2)
     report(.6)
-    # Winding numbers, walked in from the hull: entering the left side of a
-    # directed ring edge adds one. Rings that collapse under the epsilon
-    # cancel out instead of leaking, and holes need no special handling.
-    crossing = {}
-    for (u, v), origins in zip(out_edges, edge_origins):
-        slab = cut = 0
-        direction = out_points[v] - out_points[u]
-        for i in origins:
-            a, b = edges[i]
-            sign = 1 if (points[b] - points[a]).dot(direction) > 0 else -1
-            if i < slab_edges:
-                slab += sign
-            else:
-                cut += sign
-        if slab or cut:
-            crossing[u, v] = (slab, cut)
-            crossing[v, u] = (-slab, -cut)
-    owner = {}
-    for t, (a, b, c) in enumerate(out_faces):
-        owner[a, b] = owner[b, c] = owner[c, a] = t
-    winding = [None] * len(out_faces)
-    queue = []
-    for (a, b), t in owner.items():
-        if (b, a) not in owner and winding[t] is None:
-            winding[t] = crossing.get((a, b), (0, 0))
-            queue.append(t)
-    while queue:
-        t = queue.pop()
-        slab, cut = winding[t]
-        a, b, c = out_faces[t]
-        for edge in ((a, b), (b, c), (c, a)):
-            u = owner.get(edge[::-1])
-            if u is not None and winding[u] is None:
-                ds, dc = crossing.get(edge[::-1], (0, 0))
-                winding[u] = (slab + ds, cut + dc)
-                queue.append(u)
     kept = []
     removed = 0.0
     for face, (slab, cut) in zip(out_faces, winding):
@@ -399,45 +495,7 @@ def _rebuild_surface(obj, cutters, thickness, outline=None, progress_callback=No
         return barycentric_transform(location, flat[a], flat[b], flat[c],
                                      Vector(coords[a]), Vector(coords[b]), Vector(coords[c])).z
 
-    # Corners join across interior edges only, so outlines pinched at a vertex
-    # get separate vertices and every wall edge stays manifold.
-    corner_sets = list(range(3*len(kept)))
-    shells = list(range(len(kept)))
-    adjacent = defaultdict(list)
-    for t, face in enumerate(kept):
-        for c in range(3):
-            a, b = face[c], face[(c+1) % 3]
-            adjacent[(a, b) if a < b else (b, a)].append((t, c))
-    for uses in adjacent.values():
-        if len(uses) == 2:
-            (t, c), (u, d) = uses
-            same = kept[t][c] == kept[u][d]
-            corner_sets[_find(corner_sets, 3*t + c)] = _find(corner_sets, 3*u + (d if same else (d+1) % 3))
-            corner_sets[_find(corner_sets, 3*t + (c+1) % 3)] = _find(corner_sets, 3*u + ((d+1) % 3 if same else d))
-            shells[_find(shells, t)] = _find(shells, u)
-
-    corner_vertex = {}
-    vertices = []
-    for t, face in enumerate(kept):
-        for c in range(3):
-            key = _find(corner_sets, 3*t + c)
-            if key not in corner_vertex:
-                corner_vertex[key] = len(vertices) // 2
-                z = height(face[c])
-                x, y = out_points[face[c]]
-                vertices.extend(((x, y, z-thickness), (x, y, z)))
-    corners = [[corner_vertex[_find(corner_sets, 3*t + c)] for c in range(3)] for t in range(len(kept))]
-
-    polygons = []
-    for a, b, c in corners:
-        polygons.append((2*a+1, 2*b+1, 2*c+1))
-        polygons.append((2*c, 2*b, 2*a))
-    for uses in adjacent.values():
-        if len(uses) == 1:
-            t, c = uses[0]
-            a, b = corners[t][c], corners[t][(c+1) % 3]
-            polygons.append((2*a, 2*b, 2*b+1, 2*a+1))
-
+    vertices, polygons, count = _solid(out_points, kept, height, thickness)
     replacement = bpy.data.meshes.new(mesh.name + '_CUT')
     replacement['jarvizar_generated'] = True
     replacement.from_pydata(vertices, [], polygons)
@@ -446,7 +504,6 @@ def _rebuild_surface(obj, cutters, thickness, outline=None, progress_callback=No
     replacement.validate(clean_customdata=False)
     replacement.update(calc_edges=True)
     obj.data = replacement
-    count = len({_find(shells, t) for t in range(len(kept))})
     obj['solid_count'] = count
     if mesh.users == 0:
         bpy.data.meshes.remove(mesh)

@@ -118,8 +118,8 @@ independently:
    with copies of shared materials; record source/transform metadata. Solve and
    validate water polygons and their reusable prism topology before altering terrain.
 3. Lower terrain under ordinary water to solved water levels; construct the
-   through-cut mask. Restore mapped deck and building footprints where the
-   grid can resolve them. Ponds/fountains use a separate finite-depth path.
+   through-cut mask from the exact water outlines, then keep mapped deck and
+   building footprints that touch the water. Ponds/fountains use a separate finite-depth path.
 4. Build terrain and obtain its actual `bottom_z`. Apply basin recesses,
    extending the underside if necessary; register their floors on the field.
    Then build the optional rim and initialize `SupportBuilder` with that bottom.
@@ -132,8 +132,9 @@ independently:
    coordinates/placement, then publish the replacement and scene status/units.
 
 Every generator samples the shared height field, **not the DEM directly**.
-`is_void` conservatively marks whole shore cells; `in_cut_water` follows the
-terrain cell's actual dry polygon. `over_open_water` additionally excludes
+`is_void` conservatively marks whole cells with a wet corner or a water outline
+crossing them; `in_cut_water` is the exact outline test the terrain is cut
+along, including channels narrower than a cell. `over_open_water` additionally excludes
 registered supports. Use exact queries for classification; `has_ground` is the
 conservative foundation query. `ground_height_mm` uses surviving bank heights
 over cuts for deck anchors and roads without ground supports. Supported surface
@@ -203,11 +204,16 @@ FDM geometry/defaults. Download cancellation is a separate outstanding task.
   channels or create T-junctions. Normal-based probes should skip zero-area faces.
 - Draped slab/road caps and flat building undersides need interior refinement,
   not only perimeter samples. Increasing embed to hide interpolation errors
-  wastes material/color changes and does not fix their cause.
+  wastes material/color changes and does not fix their cause. Land slabs drape
+  their outline plus the fixed 1.5 mm lattice through `surfaces._draped_slab`;
+  refining an outline fan with `refine_triangles` turned large lakeside parks
+  into hundreds of thousands of faces.
 
 Buildings/parts and trees merge by default; roads and slabs batch by category.
-Cut slabs are the exception to independent shells: overlapping same-category
-outlines are unioned in 2D, with pinch vertices split, never welded by coordinate.
+Cut slabs and the cut terrain are the exception to independent shells: overlapping
+same-category outlines are unioned in 2D, with pinch vertices split and moved
+`EPSILON` apart into their own triangles, never welded by coordinate (Exact
+Boolean basin recesses weld coincident vertices).
 Use `merge_buildings_and_trees=False` for per-building source IDs, height/roof
 decisions, and foundation metadata; merged buildings retain material slots but
 no per-building metadata. Generation updates shared `JCM_*` viewport and shader
@@ -302,14 +308,22 @@ colors, overwriting manual palette edits.
   bank reference; overlaps with other water types are skipped/counted. Floors
   enter height queries, not `void_mask`. Slabs drape on original ground before
   basin subtraction. Disabling basin mode restores ordinary water handling.
-- `WaterMask` composes scanline unions/differences before choosing grid-edge
-  crossings. Terrain is closed from its built top boundary and matching bottom.
-  Only slabs reaching open water use grid clipping, with `prefer_dry_end=True`;
-  routing all slabs through the grid would erase small gardens and pitches.
+  A basin mapped against cut water can share its edge within float32 rounding;
+  a failed Boolean retries once with cutters grown by `EPSILON`.
+- `WaterMask` marks grid nodes by scanline and files every water and kept-ground
+  outline edge by grid row, so `contains` is exact at any point: water polygons
+  are united, then footprints added afterwards keep their ground. The cut terrain
+  (`dem_terrain._cut_terrain_geometry`) puts all grid nodes and those outlines
+  into one CDT, removes triangles with water winding > 0 and ground winding ≤ 0,
+  and closes the top with a flat bottom. Cutting along grid cells cannot follow
+  water narrower than a cell: it left channels standing under their water fills,
+  opened diamonds at single wet nodes and gaps at convex shores. Land slabs are
+  not grid clipped; `cut_water_land_surfaces` clears them from exact footprints.
 - `data/land.py` uses category allowlists and rejects regional land/scatter
   polygons whose uncut extent-area exceeds 8× the selection. A marina is a
   facility extent, not a deck: only physical pier/quay/dam/etc. footprints restore
-  ground. Sub-cell structures need exact support solids, not wider water masks.
+  ground. The exact cut keeps sub-cell structure footprints; supports still lift
+  those under retained water. Never widen water masks to reach them.
 - `SupportBuilder` emits terrain-colored pedestals/causeways from terrain bottom
   to 0.05 mm below the field. It checks outline/interior, deduplicates footprints,
   and registers usable ground even without a new solid; pier queries need that.
@@ -340,7 +354,10 @@ colors, overwriting manual palette edits.
   Outline heights are exact; other heights interpolate the previous top.
   Do not return to per-triangle convex fragments extruded as separate shells:
   each pass compounded them into ~10× vertices and ~100× shells. CDT face-id
-  flood fill leaks on degenerate rings; keep the winding walk. Ground-road cuts
+  flood fill leaks on degenerate rings; keep the winding walk. `_triangulate`
+  directs each ring edge's output pieces by walking them from start to end
+  vertex: signs read from float32 piece directions flip on tiny pieces beside
+  nearly coincident vertices, and the walk then spreads ±2 errors. Ground-road cuts
   use 0.005 mm XY clearance and built road outlines to avoid huge cutter sets
   from refined caps. Elevated bridges retain land beneath them.
 - Trees combine mapped `land` points and deterministic forest scatter, including
@@ -818,8 +835,8 @@ For geometry work, compare identical inputs/settings, check closure **and windin
 then inspect focused renders and seating/overlap probes. `render_preview.py`
 supports `--water 0`, `--target x,y`, `--span mm`; `blender_embed_probe.py` is
 diagnostic, not a correctness verdict. Regressions cover Cincinnati roofs/bridges,
-Chicago massing/water, Clearwater/San Francisco coastlines, and large surface-cut
-workloads. These are fixtures, never reasons for location-specific code.
+Chicago massing/water, Clearwater/San Francisco coastlines, Magic Kingdom
+sub-cell attraction channels, and large surface-cut workloads. These are fixtures, never reasons for location-specific code.
 
 Live scripts need existing caches and sometimes fixed fixture bounds or output
 folders; inspect their arguments before running. `blender_live_full.py` accepts

@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from ..data.terrain import TerrainSampler
-from .planar import point_in_polygon, point_in_ring, ring_bounds
+from .planar import point_in_polygon, ring_bounds
 from .watermask import WaterMask
 
 Ring = Sequence[Tuple[float, float]]
@@ -55,17 +55,13 @@ class ModelHeightField:
         # the height field is already what every generator asks about the
         # ground, and geometry founded over a hole has no ground to stand on.
         self.void_mask: Optional[WaterMask] = None
-        # The cut outlines themselves, for the exact answer where the mask's
-        # whole-cell answer is too coarse: a road running along a bank sits in
-        # shore cells for its whole length without ever being over the water.
-        self.void_rings: List[List[Ring]] = []
         # Footprints under which ground is kept inside the cut -- a causeway
         # under a bridge, a pedestal under a boathouse.  A pier stands on these
         # exactly as it stands on the bank.
         self._support_rings: List[Tuple[Tuple[float, float, float, float], List[Ring]]] = []
         # Mapped decks (piers, quays) that took their footprint back out of the
-        # mask.  They are remembered so a pedestal can be built under the part
-        # of them the grid could not resolve.
+        # mask.  They are remembered so a raised pedestal can be built under
+        # them where retained water would otherwise cover the kept ground.
         self.restored_footprints: List[List[Ring]] = []
         # Exact shallow basins retain solid ground and never enter void_mask.
         self.basins = []
@@ -200,9 +196,9 @@ class ModelHeightField:
 
         Once a river is cut away, the lowest grid value belongs to a bed that
         is no longer there, and founding the base on it would silently make the
-        model thicker than asked.  A node under water still counts when it
-        borders dry land, because the shoreline vertices interpolate towards it
-        and the base has to stay below them.
+        model thicker than asked.  A node under water still counts when any
+        node of a cell it shares is dry, because shoreline vertices in that cell
+        interpolate towards it and the base has to stay below them.
         """
         mask = self.void_mask
         if mask is None or not mask.any_wet:
@@ -223,7 +219,7 @@ class ModelHeightField:
         mask = self.void_mask
         if mask is None:
             return True
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
             x, y = column + dx, row + dy
             if 0 <= x < self.columns and 0 <= y < self.rows and not mask.is_wet(x, y):
                 return True
@@ -267,24 +263,12 @@ class ModelHeightField:
     def in_cut_water(self, x: float, y: float) -> bool:
         """Whether the printed terrain has no surface at all under this point.
 
-        A cell whose four corners are all wet is removed outright, and one with
-        none is kept whole, so both answer immediately.  A shore cell is judged
-        against the very polygon the terrain solid builds for it -- its dry
-        corners and the shoreline crossings between them -- so the answer
-        agrees with the printed surface exactly, and costs a handful of edge
-        tests rather than a walk around the whole river for every vertex of
-        every riverside road.
+        The terrain solid is cut along the water outlines themselves, and this
+        is judged against the same outlines, so the answer agrees with the
+        printed surface exactly -- including channels narrower than a cell.
         """
         mask = self.void_mask
-        if mask is None:
-            return False
-        wet = mask.cell_wet_corners(x, y)
-        if wet == 0:
-            return False
-        if wet == 4:
-            return True
-        polygon = mask.cell_dry_polygon(*mask.cell_of(x, y))
-        return len(polygon) < 3 or not point_in_ring((x, y), polygon)
+        return mask is not None and mask.contains(x, y)
 
     def add_support(self, rings: Sequence[Ring]) -> None:
         """Register a footprint that keeps its ground inside the cut."""

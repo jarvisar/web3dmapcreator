@@ -1,17 +1,22 @@
-"""Which parts of the terrain grid are open water, and where the shore crosses it.
+"""Which parts of the terrain are cut away as open water.
 
-Cutting a river out of the terrain solid needs two things the height field on
-its own does not carry: which grid nodes lie under water, and where exactly the
-bank crosses each grid line.  Without the second, the cut can only follow whole
-cells and the riverbank comes out as a staircase with steps the size of a
-terrain cell -- roughly two millimetres on a city selection, which is glaring
-next to a 0.45 mm road.
+The terrain is cut along the water outlines themselves, so the questions asked
+about the cut have to be answered against those outlines too: a channel
+narrower than a terrain cell is still a hole in the print, even though no grid
+node lies in it.  Two answers are kept.
 
-Testing every node against every polygon edge would be quadratic.  Instead each
-polygon is rasterised by scanline: once across the rows and once down the
-columns.  That costs one pass over the edges per grid line, and the exact
-crossing positions fall out of the same pass, so the shoreline can be placed
-where it really is at no extra cost.
+* Every grid node is marked wet or dry by scanline, once across the rows.  The
+  flattened river bed, the base thickness and the nearest-bank height all read
+  these node bits.
+* Every outline edge is filed under the grid rows it spans, and every cell it
+  passes through is flagged.  A point in a cell no outline crosses has the
+  state of that cell's corners; anywhere else it is tested against only the
+  edges filed under its own row.  That keeps the exact test to a handful of
+  edge checks rather than a walk around the whole river for every vertex of
+  every riverside road.
+
+Water polygons are united.  Footprints removed afterwards -- a pier, a quay, a
+boathouse -- keep their ground inside that union.
 
 All functions here are pure and Blender-free.
 """
@@ -23,24 +28,30 @@ from typing import Dict, List, Sequence, Tuple
 
 Point = Tuple[float, float]
 Ring = Sequence[Point]
-Interval = Tuple[float, float]
 
-# A shoreline crossing is pulled this far away from the grid node it lands on,
-# as a fraction of the cell.  A crossing exactly on a node would produce two
-# vertices at the same position and a zero-area face between them, which is
-# precisely the kind of degenerate the terrain solid must never contain.
-SHORE_INSET = 0.02
+# Outline extents are widened by this fraction of a cell before flagging cells,
+# so an edge lying exactly on a grid line flags the cells on both sides of it.
+_CELL_MARGIN = 1.0e-6
+_WATER_EDGE = 1
+_GROUND_EDGE = 2
+# A point this close to a kept-ground edge lies on it: far below float32 mesh
+# precision, far above the rounding of a point interpolated along the edge.
+_ON_EDGE = 1.0e-9
 
 
-def _line_crossings(rings: Sequence[Ring], value: float, axis: int) -> List[float]:
-    """Return where the horizontal or vertical line at *value* meets *rings*.
+def _on_segment(x: float, y: float, ax: float, ay: float, bx: float, by: float) -> bool:
+    if not (min(ax, bx) - _ON_EDGE <= x <= max(ax, bx) + _ON_EDGE
+            and min(ay, by) - _ON_EDGE <= y <= max(ay, by) + _ON_EDGE):
+        return False
+    return abs((bx - ax) * (y - ay) - (by - ay) * (x - ax)) <= _ON_EDGE * math.hypot(bx - ax, by - ay)
 
-    *axis* 1 scans a horizontal line (constant y) and returns x positions;
-    axis 0 scans a vertical line (constant x) and returns y positions.  The
-    half-open comparison counts a vertex exactly on the line once rather than
-    twice, so parity stays correct where an edge ends on the scanline.
+
+def _line_crossings(rings: Sequence[Ring], value: float) -> List[float]:
+    """Return where the horizontal line ``y = value`` meets *rings*, sorted.
+
+    The half-open comparison counts a vertex exactly on the line once rather
+    than twice, so parity stays correct where an edge ends on the scanline.
     """
-    other = 1 - axis
     crossings: List[float] = []
     for ring in rings:
         count = len(ring)
@@ -49,59 +60,18 @@ def _line_crossings(rings: Sequence[Ring], value: float, axis: int) -> List[floa
         previous = ring[-1]
         for index in range(count):
             current = ring[index]
-            a = previous[axis]
-            b = current[axis]
+            a = previous[1]
+            b = current[1]
             if (a <= value) != (b <= value):
-                span = b - a
-                if span != 0.0:
-                    t = (value - a) / span
-                    crossings.append(previous[other] + t * (current[other] - previous[other]))
+                t = (value - a) / (b - a)
+                crossings.append(previous[0] + t * (current[0] - previous[0]))
             previous = current
     crossings.sort()
     return crossings
 
 
-def _combine_intervals(
-    current: Sequence[Interval], incoming: Sequence[Interval], wet: bool
-) -> List[Interval]:
-    """Union water spans, or subtract dry spans, along one grid line.
-
-    A polygon edge inside another water polygon is not a shoreline. Keeping
-    the composed intervals removes those internal edges, including edges of
-    overlapping restored decks, before a terrain cell chooses its crossing.
-    """
-    if wet:
-        result: List[Interval] = []
-        for low, high in sorted(list(current) + list(incoming)):
-            if result and low <= result[-1][1]:
-                result[-1] = (result[-1][0], max(result[-1][1], high))
-            else:
-                result.append((low, high))
-        return result
-
-    result = []
-    first = 0
-    for low, high in current:
-        while first < len(incoming) and incoming[first][1] <= low:
-            first += 1
-        cursor = low
-        for cut_low, cut_high in incoming[first:]:
-            if cut_low >= high:
-                break
-            if cut_high <= cursor:
-                continue
-            if cut_low > cursor:
-                result.append((cursor, cut_low))
-            cursor = max(cursor, cut_high)
-            if cursor >= high:
-                break
-        if cursor < high:
-            result.append((cursor, high))
-    return result
-
-
 class WaterMask:
-    """Grid nodes under water, plus the shoreline's exact grid-line crossings."""
+    """Grid nodes under water, plus the exact outlines of the cut."""
 
     def __init__(
         self,
@@ -111,7 +81,6 @@ class WaterMask:
         min_y: float,
         step_x: float,
         step_y: float,
-        prefer_dry_end: bool = False,
     ) -> None:
         if columns < 2 or rows < 2:
             raise ValueError("Water mask needs at least a 2x2 grid")
@@ -123,92 +92,69 @@ class WaterMask:
         self.min_y = float(min_y)
         self.step_x = float(step_x)
         self.step_y = float(step_y)
+        self.max_x = self.min_x + self.step_x * (self.columns - 1)
+        self.max_y = self.min_y + self.step_y * (self.rows - 1)
         self.wet = bytearray(self.columns * self.rows)
         self.polygons = 0
-        # When several genuine transitions share a mixed grid edge, retain
-        # the existing resolution policy: terrain keeps the most land (the
-        # crossing nearest the wet node), while a clipped slab stops at the
-        # first boundary from its dry node. Internal operand edges have
-        # already been removed by composing the scanline intervals.
-        self.prefer_dry_end = bool(prefer_dry_end)
-        # Crossings bucketed by the grid edge they land on.  A horizontal key
-        # is the edge between nodes (row, column) and (row, column + 1).
-        self._row_crossings: Dict[Tuple[int, int], List[float]] = {}
-        self._column_crossings: Dict[Tuple[int, int], List[float]] = {}
-        self._row_intervals: Dict[int, List[Interval]] = {}
-        self._column_intervals: Dict[int, List[Interval]] = {}
-        self._initial_wet = False
-        self._dry_polygons: Dict[Tuple[int, int], List[Point]] = {}
+        # The polygons that define the cut, exactly as the terrain solid uses them.
+        self.water_polygons: List[List[List[Point]]] = []
+        self.ground_polygons: List[List[List[Point]]] = []
+        self._is_water: List[bool] = []
+        # Row band -> (polygon, ax, ay, bx, by) for every edge spanning it.
+        self._bands: Dict[int, List[Tuple[int, float, float, float, float]]] = {}
+        # Cell index -> which kinds of outline pass through the cell.
+        self._outline_cells: Dict[int, int] = {}
 
     # ------------------------------------------------------------------ build
 
     def add_polygon(self, rings: Sequence[Ring]) -> int:
-        """Mark one polygon-with-holes as water. Returns nodes newly marked."""
-        return self._rasterise(rings, wet=True)
+        """Unite one polygon-with-holes with the water. Returns nodes newly marked."""
+        if self.ground_polygons:
+            raise ValueError("Water must be added before ground is restored")
+        return self._add(rings, water=True)
 
-    def fill_wet(self) -> None:
-        """Mark every node wet, recording no shoreline.
-
-        A slab that must be clipped to dry land starts from an all-wet mask,
-        takes its own outline back out, and then has the water cut through it
-        again.  Starting from a rectangle polygon instead would put crossings
-        exactly on the frame's edge nodes, which is the one place a crossing
-        must never sit.
-        """
-        self.wet = bytearray(b"\x01") * (self.columns * self.rows)
-        self._initial_wet = True
-        self._row_intervals.clear()
-        self._column_intervals.clear()
-        self._row_crossings.clear()
-        self._column_crossings.clear()
-        self._dry_polygons.clear()
-
-    def remove_polygon(self, rings: Sequence[Ring]) -> int:
-        """Mark one polygon-with-holes back as dry land. Returns nodes cleared.
+    def remove_polygon(self, rings: Sequence[Ring]) -> bool:
+        """Keep the ground under one polygon-with-holes. Returns whether it met water.
 
         Some mapped surfaces are ground even though they sit out over water --
         a pier, a quay, a river dam.  The source maps the bank along the shore
         and the structure separately, so without this the cut runs straight
         under the pier and everything standing on it is left over a hole.
+        A footprint clear of the water is ignored, so dry buildings add no
+        outline edges to the queries.
         """
-        return self._rasterise(rings, wet=False)
+        return self._add(rings, water=False) > 0
 
-    def _rasterise(self, rings: Sequence[Ring], wet: bool) -> int:
+    def _add(self, rings: Sequence[Ring], water: bool) -> int:
         if not rings or len(rings[0]) < 3:
             return 0
-        usable = [ring for ring in rings if len(ring) >= 3]
-        if not usable:
-            return 0
+        usable = [[(float(x), float(y)) for x, y in ring] for ring in rings if len(ring) >= 3]
         window = self._window(usable[0])
         if window is None:
             return 0
-        if not wet and not self._window_has_water(window):
-            # Nothing to take back, and recording this polygon's crossings would
-            # only add candidate shorelines on edges that belong to the river.
+        if not water and not self._window_has_water(window):
             return 0
+        polygon = len(self._is_water)
+        self._is_water.append(water)
+        (self.water_polygons if water else self.ground_polygons).append(usable)
         self.polygons += 1
-        self._dry_polygons.clear()
-        changed = self._scan_rows(usable, window, wet)
-        self._scan_columns(usable, window, wet)
-        return changed
+        changed = self._scan_rows(usable, window, 1 if water else 0)
+        self._file_edges(usable, polygon, _WATER_EDGE if water else _GROUND_EDGE)
+        return changed if water else max(changed, 1)
 
     def _window(self, ring: Ring):
         """Return the grid rows and columns a ring can possibly touch.
 
         Scanning the whole grid for every feature would make a few hundred
         small ponds cost as much as the river.  One extra line of margin keeps
-        the crossing on a boundary cell inside the window.
+        a boundary cell inside the window.
         """
         xs = [point[0] for point in ring]
         ys = [point[1] for point in ring]
-        first_row = int(math.floor((min(ys) - self.min_y) / self.step_y)) - 1
-        last_row = int(math.ceil((max(ys) - self.min_y) / self.step_y)) + 1
-        first_column = int(math.floor((min(xs) - self.min_x) / self.step_x)) - 1
-        last_column = int(math.ceil((max(xs) - self.min_x) / self.step_x)) + 1
-        first_row = max(0, first_row)
-        last_row = min(self.rows - 1, last_row)
-        first_column = max(0, first_column)
-        last_column = min(self.columns - 1, last_column)
+        first_row = max(0, int(math.floor((min(ys) - self.min_y) / self.step_y)) - 1)
+        last_row = min(self.rows - 1, int(math.ceil((max(ys) - self.min_y) / self.step_y)) + 1)
+        first_column = max(0, int(math.floor((min(xs) - self.min_x) / self.step_x)) - 1)
+        last_column = min(self.columns - 1, int(math.ceil((max(xs) - self.min_x) / self.step_x)) + 1)
         if first_row > last_row or first_column > last_column:
             return None
         return first_row, last_row, first_column, last_column
@@ -219,77 +165,58 @@ class WaterMask:
             offset = row * self.columns
             if 1 in self.wet[offset + first_column : offset + last_column + 1]:
                 return True
+        cells = self.columns - 1
+        for row in range(first_row, min(last_row, self.rows - 2) + 1):
+            for column in range(first_column, min(last_column, self.columns - 2) + 1):
+                if self._outline_cells.get(row * cells + column, 0) & _WATER_EDGE:
+                    return True
         return False
 
-    def _scan_rows(self, rings: Sequence[Ring], window, wet: bool) -> int:
+    def _scan_rows(self, rings: Sequence[Ring], window, target: int) -> int:
         first_row, last_row, first_column, last_column = window
-        target = 1 if wet else 0
         changed = 0
         for row in range(first_row, last_row + 1):
-            y = self.min_y + self.step_y * row
-            crossings = _line_crossings(rings, y, axis=1)
-            if not crossings:
-                continue
-            self._compose_line(row, crossings, wet, axis=1)
+            crossings = _line_crossings(rings, self.min_y + self.step_y * row)
             offset = row * self.columns
             for index in range(0, len(crossings) - 1, 2):
-                left, right = crossings[index], crossings[index + 1]
-                first = int(math.ceil((left - self.min_x) / self.step_x))
-                last = int(math.floor((right - self.min_x) / self.step_x))
-                for column in range(
-                    max(first_column, first), min(last_column, last) + 1
-                ):
+                first = int(math.ceil((crossings[index] - self.min_x) / self.step_x))
+                last = int(math.floor((crossings[index + 1] - self.min_x) / self.step_x))
+                for column in range(max(first_column, first), min(last_column, last) + 1):
                     if self.wet[offset + column] != target:
                         self.wet[offset + column] = target
                         changed += 1
         return changed
 
-    def _scan_columns(self, rings: Sequence[Ring], window, wet: bool) -> None:
-        """Record crossings on vertical grid lines. Wetness is already known."""
-        _first_row, _last_row, first_column, last_column = window
-        for column in range(first_column, last_column + 1):
-            x = self.min_x + self.step_x * column
-            crossings = _line_crossings(rings, x, axis=0)
-            if crossings:
-                self._compose_line(column, crossings, wet, axis=0)
-
-    def _compose_line(self, line: int, crossings: List[float], wet: bool, axis: int) -> None:
-        """Replace a line's crossing buckets with the final wet/dry boundaries."""
-        if axis == 1:
-            intervals, buckets = self._row_intervals, self._row_crossings
-            minimum, step, count = self.min_x, self.step_x, self.columns
-        else:
-            intervals, buckets = self._column_intervals, self._column_crossings
-            minimum, step, count = self.min_y, self.step_y, self.rows
-        current = intervals.get(line, [(-math.inf, math.inf)] if self._initial_wet else [])
-        incoming = [
-            (low, high)
-            for low, high in zip(crossings[::2], crossings[1::2])
-            if low < high
-        ]
-        combined = _combine_intervals(current, incoming, wet)
-        if combined == current:
-            return
-
-        def key(position):
-            if not math.isfinite(position):
-                return None
-            edge = int(math.floor((position - minimum) / step))
-            if 0 <= edge < count - 1:
-                return (line, edge) if axis == 1 else (edge, line)
-            return None
-
-        for interval in current:
-            for position in interval:
-                bucket = key(position)
-                if bucket is not None:
-                    buckets.pop(bucket, None)
-        for interval in combined:
-            for position in interval:
-                bucket = key(position)
-                if bucket is not None:
-                    buckets.setdefault(bucket, []).append(position)
-        intervals[line] = combined
+    def _file_edges(self, rings: Sequence[Ring], polygon: int, flag: int) -> None:
+        """File each edge under the row bands it spans and flag the cells it crosses."""
+        cells = self.columns - 1
+        last_band = self.rows - 2
+        last_column = self.columns - 2
+        for ring in rings:
+            previous = ring[-1]
+            for current in ring:
+                (ax, ay), (bx, by) = previous, current
+                previous = current
+                low = (min(ay, by) - self.min_y) / self.step_y
+                high = (max(ay, by) - self.min_y) / self.step_y
+                first = max(0, int(math.floor(low - _CELL_MARGIN)))
+                last = min(last_band, int(math.floor(high + _CELL_MARGIN)))
+                for band in range(first, last + 1):
+                    self._bands.setdefault(band, []).append((polygon, ax, ay, bx, by))
+                    if ay == by:
+                        left, right = min(ax, bx), max(ax, bx)
+                    else:
+                        bottom = self.min_y + self.step_y * band
+                        t0 = min(max((bottom - ay) / (by - ay), 0.0), 1.0)
+                        t1 = min(max((bottom + self.step_y - ay) / (by - ay), 0.0), 1.0)
+                        x0 = ax + t0 * (bx - ax)
+                        x1 = ax + t1 * (bx - ax)
+                        left, right = min(x0, x1), max(x0, x1)
+                    start = max(0, int(math.floor((left - self.min_x) / self.step_x - _CELL_MARGIN)))
+                    end = min(last_column, int(math.floor((right - self.min_x) / self.step_x + _CELL_MARGIN)))
+                    offset = band * cells
+                    for column in range(start, end + 1):
+                        self._outline_cells[offset + column] = self._outline_cells.get(offset + column, 0) | flag
 
     # ------------------------------------------------------------------ query
 
@@ -312,56 +239,34 @@ class WaterMask:
         row = int(math.floor((y - self.min_y) / self.step_y))
         return min(max(column, 0), self.columns - 2), min(max(row, 0), self.rows - 2)
 
-    def cell_dry_polygon(self, column: int, row: int) -> List[Point]:
-        """Return the dry part of one cell, exactly as the terrain solid builds it.
+    def contains(self, x: float, y: float) -> bool:
+        """Whether a point is cut away: inside the water and not on kept ground.
 
-        The corners are walked counter-clockwise, a dry corner is kept, and
-        the recorded shoreline crossing is inserted wherever the state changes
-        -- the same Sutherland-Hodgman walk the terrain mesh performs, using
-        the same crossings.  A point judged against this polygon is therefore
-        judged against the printed surface itself.  A whole cell returns its
-        four corners and a removed cell returns nothing.
+        This is the exact answer, judged against the same outlines the
+        terrain solid is cut along.  Points beyond the frame are clamped to it.
         """
-        key = (column, row)
-        polygon = self._dry_polygons.get(key)
-        if polygon is not None:
-            return polygon
-        corners = (
-            (row, column),
-            (row, column + 1),
-            (row + 1, column + 1),
-            (row + 1, column),
-        )
-        flags = [self.is_wet(c, r) for r, c in corners]
-        polygon = []
-        for index in range(4):
-            following = (index + 1) % 4
-            r, c = corners[index]
-            if not flags[index]:
-                polygon.append((self.min_x + self.step_x * c, self.min_y + self.step_y * r))
-            if flags[index] != flags[following]:
-                polygon.append(
-                    self._crossing_point(corners[index], corners[following], flags[index])
-                )
-        self._dry_polygons[key] = polygon
-        return polygon
-
-    def _crossing_point(self, corner, other, corner_wet: bool) -> Point:
-        """The shoreline vertex on the grid edge between two nodes, as ``(x, y)``."""
-        (row_a, column_a), (row_b, column_b) = corner, other
-        if row_a == row_b:
-            column = min(column_a, column_b)
-            wet_on_left = corner_wet if column_a < column_b else not corner_wet
-            return (
-                self.row_crossing(row_a, column, wet_on_left),
-                self.min_y + self.step_y * row_a,
-            )
-        row = min(row_a, row_b)
-        wet_below = corner_wet if row_a < row_b else not corner_wet
-        return (
-            self.min_x + self.step_x * column_a,
-            self.column_crossing(row, column_a, wet_below),
-        )
+        x = min(max(x, self.min_x), self.max_x)
+        y = min(max(y, self.min_y), self.max_y)
+        column, row = self.cell_of(x, y)
+        if not self._outline_cells.get(row * (self.columns - 1) + column):
+            # Nothing crosses this cell, so its corners all share its state.
+            return self.is_wet(column, row)
+        inside: Dict[int, bool] = {}
+        for polygon, ax, ay, bx, by in self._bands.get(row, ()):
+            if not self._is_water[polygon] and _on_segment(x, y, ax, ay, bx, by):
+                # Kept ground includes its own outline, so a footprint sampled
+                # along its edges is not judged partly over the water.
+                return False
+            if (ay <= y) != (by <= y) and ax + (y - ay) * (bx - ax) / (by - ay) > x:
+                inside[polygon] = not inside.get(polygon, False)
+        water = ground = False
+        for polygon, odd in inside.items():
+            if odd:
+                if self._is_water[polygon]:
+                    water = True
+                else:
+                    ground = True
+        return water and not ground
 
     def cell_wet_corners(self, x: float, y: float) -> int:
         """Return how many corners of the cell containing ``(x, y)`` are wet."""
@@ -374,54 +279,24 @@ class WaterMask:
         )
 
     def cell_touches_water(self, x: float, y: float) -> bool:
-        """Whether the grid cell containing ``(x, y)`` has any wet corner.
+        """Whether the grid cell containing ``(x, y)`` has any water in it.
 
         Used to keep bridge piers and other ground-founded geometry out of a
         region that has been cut away.  It errs towards reporting water at the
         bank, because a pier that stops one cell short of the shore is merely
-        missing whereas one standing in the void is visibly wrong.
+        missing whereas one standing in the void is visibly wrong.  A wet
+        corner or a water outline crossing the cell both count, so a channel
+        narrower than a cell is seen as well.
         """
+        column, row = self.cell_of(x, y)
+        if self._outline_cells.get(row * (self.columns - 1) + column, 0) & _WATER_EDGE:
+            return True
         return self.cell_wet_corners(x, y) > 0
 
     def touches_water(self, rings: Sequence[Ring]) -> bool:
-        """Whether any node inside a polygon's grid window is currently wet."""
+        """Whether any water lies inside a polygon's grid window."""
         usable = [ring for ring in rings if len(ring) >= 3]
         if not usable:
             return False
         window = self._window(usable[0])
         return window is not None and self._window_has_water(window)
-
-    def row_crossing(self, row: int, column: int, wet_on_left: bool) -> float:
-        """Return the shore's x on the horizontal edge right of ``(row, column)``.
-
-        The edge is known to be mixed, so the transition sits at the recorded
-        crossing nearest the wet end.  A mixed edge with no recorded crossing
-        can only come from a rounding disagreement between the scan and the
-        caller's own wetness bits, and the cell midpoint is the honest answer.
-        """
-        low = self.min_x + self.step_x * column
-        values = self._row_crossings.get((row, column))
-        if not values:
-            position = low + self.step_x * 0.5
-        elif wet_on_left != self.prefer_dry_end:
-            position = min(values)
-        else:
-            position = max(values)
-        return _inset(position, low, self.step_x)
-
-    def column_crossing(self, row: int, column: int, wet_below: bool) -> float:
-        """Return the shore's y on the vertical edge above ``(row, column)``."""
-        low = self.min_y + self.step_y * row
-        values = self._column_crossings.get((row, column))
-        if not values:
-            position = low + self.step_y * 0.5
-        elif wet_below != self.prefer_dry_end:
-            position = min(values)
-        else:
-            position = max(values)
-        return _inset(position, low, self.step_y)
-
-
-def _inset(position: float, low: float, step: float) -> float:
-    """Clamp a crossing into the cell, held clear of both grid nodes."""
-    return min(max(position, low + step * SHORE_INSET), low + step * (1.0 - SHORE_INSET))
