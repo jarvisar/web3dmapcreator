@@ -75,6 +75,19 @@ class UpperEnvelopeTests(unittest.TestCase):
         self.assertAlmostEqual(height_at(record, 22, 12), 32.2, delta=.3)
         self.assertLess(height_contour(record, 1).intersection(box(8, 8, 16, 16)).area, 1e-8)
 
+    def test_noisy_slope_is_not_terraced(self):
+        footprint = box(0, 0, 40, 30)
+        noise = np.random.default_rng(3)
+        record = self.fit(footprint, self.cloud(
+            footprint, lambda x, y: 20+.4*x+noise.uniform(-2, 2, len(x))))
+        xs = np.arange(4, 36, .25)
+        profiles = np.array([[height_at(record, x, y) for x in xs] for y in (7.3, 15.1, 22.7)])
+        # A median alone settles into small plateaus here, which the cap
+        # shows as terraces across the slope.
+        self.assertLess(np.mean(np.diff(profiles, axis=1)/.25 < .1), .05)
+        trend = np.polyval(np.polyfit(np.tile(xs, 3), profiles.ravel(), 1), np.tile(xs, 3))
+        self.assertLess(np.std(profiles.ravel()-trend), .16)
+
     def test_reconstruction_never_calls_legacy_architectural_region_fitting(self):
         footprint = box(0, 0, 30, 24)
         xyz = self.cloud(footprint, lambda x, y: 30+5*np.sin(x/10))

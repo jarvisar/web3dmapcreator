@@ -608,9 +608,13 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
 - Roof Envelope (`FACETED`) calls `external/lidar_envelope.py` before any
   terrace reconstruction. It builds one height raster per footprint component:
   a high upper quantile of the returns in each cell, then a moving median over
-  a print-scale window, then propagation across unobserved cells. Unobserved
-  cells never vote in the median, so a courtyard or the gap between separate
-  components cannot drag a roof edge across it.
+  a print-scale window, a light mean over each observed cell and its observed
+  edge neighbours, then propagation across unobserved cells. Unobserved
+  cells never vote in the median or the mean, so a courtyard or the gap between separate
+  components cannot drag a roof edge across it. The mean removes the small
+  plateaus a median leaves on curved or noisy slopes (terraced domes); it keeps
+  flat and planar roofs exact, so block merging is unaffected. It does not
+  remove ribs down very steep facades, which come from the scan pattern.
   **The rank filter is not interchangeable with morphology.** On a near-vertical
   facade an opening or closing by any flat element is the identity, because the
   slope dominates every neighbourhood, so dilation, erosion and relaxation
@@ -655,7 +659,7 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   verify area, closure and winding before adoption. A join failure must retain
   source geometry rather than extruding thousands of independent fragments.
 - The saved `FACETED` enum now displays **Roof Envelope**. Legacy width/step
-  sliders remain Terraces-only. Algorithm 17 requires Prepare again with
+  sliders remain Terraces-only. Algorithm 18 requires Prepare again with
   Refresh off; it reuses cached tiles and normalized points, because the
   acquisition version is unchanged, and re-runs measurement only. Acquisition version 5 reads every octree level the survey
   actually has (`resolution_m` 0.35, which for the Cook County EPT is its

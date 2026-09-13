@@ -1,5 +1,27 @@
 # Building heights and USGS LiDAR
 
+## Smoother envelope slopes
+
+Reconstruction algorithm 18. Run **Prepare LiDAR Buildings** with Refresh off,
+then **Generate Model**; cached tiles and normalized points are reused and only
+measurement re-runs.
+
+A rank (median) filter removes facade ribs but, on a curved or noisy roof,
+settles into small plateaus, which the cap showed as terraces. Space Mountain's
+dome was the clearest case. The envelope now averages each observed cell with
+its observed edge neighbours after the median. Flat and planar roofs are
+unchanged, step edges move by less than one cell, and ordinary buildings usually
+need fewer faces because smoother areas merge into larger blocks. On a noisy
+synthetic slope the share of flat terrace segments fell from 10% to about 1%.
+
+The per-building face budget is back to 16,384 (it had been lowered to 8,192),
+so large resorts, arenas and domes keep the 1 m plan grid instead of being
+rebuilt at 1.5 m or coarser. Very steep facades can still show vertical ribs:
+there each 1 m cell captures the survey's stripe pattern, and smoothing does not
+remove that. Aligning the raster to each footprint was tried and rejected; a
+mapped edge nearly parallel to the grid produced clipping slivers that failed
+the cap join.
+
 ## Skip small building footprints
 
 **Minimum Building Footprint (mm²)** under LiDAR Buildings defaults to **0.7 mm²**,
@@ -42,7 +64,7 @@ measurements remain reusable.
 
 ## Automatic LAZ offers and mapped relief (0.23.15)
 
-Reconstruction algorithm 17; acquisition remains 5; fallback policy is 8. Run **Prepare LiDAR
+Reconstruction algorithm 17 (now 18, see above); acquisition remains 5; fallback policy is 8. Run **Prepare LiDAR
 Buildings** with Refresh off after updating. Existing downloaded tiles and
 compatible normalized points remain reusable.
 

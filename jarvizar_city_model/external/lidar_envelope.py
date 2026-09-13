@@ -7,7 +7,8 @@ morphology cannot repair that: on a steep ramp an opening or closing by any flat
 element is the identity, so dilation, erosion and relaxation passes leave
 cross-slope detail exactly as they found it. A rank filter is unaffected by
 slope, so one moving median over a print-scale window removes those ribs while
-leaving ramps, steps and roof edges where the returns put them.
+leaving ramps, steps and roof edges where the returns put them. A light mean
+afterwards removes the small plateaus a median leaves on curved roofs.
 
 The result is a height raster triangulated on its own grid and clipped to the
 footprint, so the cap covers the outline exactly and has no long slivers.
@@ -124,6 +125,22 @@ def _fill(heights, observed):
     return filled
 
 
+def _soften(heights, observed):
+    """Average each observed cell with its observed edge neighbours.
+
+    A median of noisy returns on a curved or sloping roof settles into small
+    plateaus, and a cap triangulated on the raster shows them as terraces. The
+    ribs are already gone at this point, so a linear pass is safe: it keeps
+    flat roofs flat and planar slopes planar, which leaves block merging
+    intact, and moves a step edge by less than one cell.
+    """
+    offsets = ((0, 0),)+CROSS
+    weight = observed.astype(float)
+    total = sum(np.roll(np.where(observed, heights, 0.), offset, axis=(0, 1)) for offset in offsets)
+    count = sum(np.roll(weight, offset, axis=(0, 1)) for offset in offsets)
+    return np.where(observed, total/np.maximum(count, 1.), heights)
+
+
 def _rank(grid, pitch, window):
     """Moving median of the cell values; unobserved cells never vote.
 
@@ -134,7 +151,8 @@ def _rank(grid, pitch, window):
     with np.errstate(invalid='ignore'):
         heights = np.nanmedian(_stack(data, _disc(window, pitch)), axis=0)
     observed = np.isfinite(heights)
-    return _fill(np.where(observed, heights, 0.), observed), observed
+    heights = _soften(np.where(observed, heights, 0.), observed)
+    return _fill(heights, observed), observed
 
 
 def _component_surface(polygon, samples, pitch, window):
