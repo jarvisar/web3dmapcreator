@@ -102,6 +102,30 @@ class UpperEnvelopeTests(unittest.TestCase):
         self.assertLess(max(offsets)-min(offsets), .05)
         self.assertAlmostEqual(float(np.mean(offsets)), 12, delta=1)
 
+    def test_diagonal_tower_wall_is_not_ribbed(self):
+        footprint = box(0, 0, 40, 40)
+        record = self.fit(footprint, self.cloud(footprint, lambda x, y: np.where(x+y < 40.5, 60., 20.)))
+        # A fixed cell diagonal folds each cell the wall cuts into a notch, and
+        # smoothing across the wall smears it into a ramp of uneven heights.
+        riser = height_contour(record, 40).boundary.difference(footprint.exterior.buffer(2))
+        offsets = [(x+y)/np.sqrt(2) for line in getattr(riser, 'geoms', [riser]) for x, y in line.coords]
+        self.assertTrue(offsets)
+        self.assertLess(max(offsets)-min(offsets), .05)
+
+    def test_grid_follows_print_scale_and_survey_density(self):
+        from jarvizar_city_model.external.lidar_envelope import envelope_parameters, facet_budget
+        self.assertAlmostEqual(envelope_parameters((.07, .077))[0], 1.)
+        self.assertAlmostEqual(envelope_parameters((.28, .308))[0], .8)
+        # A larger print on a dense survey keeps its detail, down to 0.5 m...
+        self.assertAlmostEqual(envelope_parameters((.28, .308), 20.)[0], .5)
+        self.assertAlmostEqual(envelope_parameters((.28, .308), 9.)[0], 2/3)
+        # ...but a sparse survey is never gridded coarser than before.
+        self.assertAlmostEqual(envelope_parameters((.28, .308), 1.)[0], .8)
+        self.assertAlmostEqual(envelope_parameters((.07, .077), 50.)[0], 1.)
+        self.assertEqual(facet_budget(1.), 16384)
+        self.assertEqual(facet_budget(2.), 16384)
+        self.assertEqual(facet_budget(.5), 65536)
+
     def test_reconstruction_never_calls_legacy_architectural_region_fitting(self):
         footprint = box(0, 0, 30, 24)
         xyz = self.cloud(footprint, lambda x, y: 30+5*np.sin(x/10))

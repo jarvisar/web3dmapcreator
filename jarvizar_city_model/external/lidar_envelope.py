@@ -15,6 +15,7 @@ footprint, so the cap covers the outline exactly and has no long slivers.
 Native dependencies stay in the preparation worker.
 """
 import math
+import warnings
 
 import numpy as np
 from shapely import contains_xy
@@ -25,28 +26,41 @@ from shapely.ops import unary_union
 
 try:
     from .lidar_facets import UnsupportedFit, pieces
-    from .lidar_records import MAX_ENVELOPE_FACETS
+    from .lidar_records import ENVELOPE_FACETS_AT_1M, MAX_ENVELOPE_FACETS
 except ImportError:
     from lidar_facets import UnsupportedFit, pieces
-    from lidar_records import MAX_ENVELOPE_FACETS
+    from lidar_records import ENVELOPE_FACETS_AT_1M, MAX_ENVELOPE_FACETS
 
 CROSS = ((-1, 0), (1, 0), (0, -1), (0, 1))
 # The upper order statistic taken in each cell before the rank filter.
 UPPER_QUANTILE = .9
 
 
-def envelope_parameters(scale):
+def envelope_parameters(scale, density=None):
     """Raster pitch, rank window, mesh tolerance and secondary admission band.
 
     Every value is a printed length converted back to ground distance, so a
     coarser or finer output scale moves them together and no length is tied to
     any particular survey, city or building. The mesh tolerance is well under
     one printed layer, so simplifying to it cannot move a printed surface.
+
+    The pitch follows the print scale down to 0.8 m. With a known return
+    `density` (per m²) it may go finer, to 0.5 m, while a cell still averages
+    about four returns: a larger print keeps the detail the survey measured,
+    and a sparse survey is never gridded finer than it can support.
     """
     if len(scale) != 2 or not all(math.isfinite(s) and s > 0 for s in scale):
         raise ValueError('Invalid LiDAR reconstruction scale')
-    pitch = min(3., max(.8, .07/scale[0]))
+    floor = .8
+    if density is not None and math.isfinite(density) and density > 0:
+        floor = min(floor, max(.5, 2/math.sqrt(density)))
+    pitch = min(3., max(floor, .07/scale[0]))
     return pitch, pitch*2, max(.05, .015/scale[1]), max(3., .28/scale[0])
+
+
+def facet_budget(pitch):
+    """Faces one cap may use: the 1 m budget, grown with a finer grid."""
+    return min(MAX_ENVELOPE_FACETS, int(ENVELOPE_FACETS_AT_1M/min(1., pitch)**2))
 
 
 def _disc(radius, pitch):
@@ -126,20 +140,27 @@ def _fill(heights, observed):
     return filled
 
 
-def _soften(heights, observed):
+def _soften(heights, observed, steep):
     """Average each observed cell with its observed edge neighbours.
 
     A median of noisy returns on a curved or sloping roof settles into small
     plateaus, and a cap triangulated on the raster shows them as terraces. The
     ribs are already gone at this point, so a linear pass is safe: it keeps
     flat roofs flat and planar slopes planar, which leaves block merging
-    intact, and moves a step edge by less than one cell.
+    intact. A cell beside a wall, where its neighbours differ by more than
+    `steep`, keeps its value: averaging there smears a tower edge into a ramp
+    of uneven heights, which the cap shows as ribs down the facade.
     """
     offsets = ((0, 0),)+CROSS
     weight = observed.astype(float)
     total = sum(np.roll(np.where(observed, heights, 0.), offset, axis=(0, 1)) for offset in offsets)
     count = sum(np.roll(weight, offset, axis=(0, 1)) for offset in offsets)
-    return np.where(observed, total/np.maximum(count, 1.), heights)
+    near = _stack(np.where(observed, heights, np.nan), offsets)
+    with np.errstate(invalid='ignore'), warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        relief = np.nanmax(near, axis=0)-np.nanmin(near, axis=0)
+    wall = relief > steep
+    return np.where(observed & ~wall, total/np.maximum(count, 1.), heights)
 
 
 def _rank(grid, pitch, window):
@@ -152,7 +173,7 @@ def _rank(grid, pitch, window):
     with np.errstate(invalid='ignore'):
         heights = np.nanmedian(_stack(data, _disc(window, pitch)), axis=0)
     observed = np.isfinite(heights)
-    heights = _soften(np.where(observed, heights, 0.), observed)
+    heights = _soften(np.where(observed, heights, 0.), observed, pitch*2)
     return _fill(heights, observed), observed
 
 
@@ -330,7 +351,14 @@ def _surfaces(polygon, heights, raster, tolerance):
                 rings.append([list(v) for v in ring]+[list(ring[0])])
                 area += side*side
                 continue
-        if span == 1:
+        if span == 1 and (abs(heights[i+1, j]-heights[i, j+1])
+                          < abs(heights[i, j]-heights[i+1, j+1])):
+            # Split along the diagonal whose corners are closest in height. A
+            # fixed diagonal folds every cell a diagonal wall cuts into a
+            # V-shaped notch, and a row of notches reads as ribs.
+            fans = [(node(i, j), node(i+1, j), node(i, j+1)),
+                    (node(i+1, j), node(i+1, j+1), node(i, j+1))]
+        elif span == 1:
             fans = [(node(i, j), node(i+1, j), node(i+1, j+1)),
                     (node(i, j), node(i+1, j+1), node(i, j+1))]
         else:
@@ -351,7 +379,7 @@ def _surfaces(polygon, heights, raster, tolerance):
 
 
 def _envelope(components, footprint, observed, secondary, pitch, window,
-              mesh_tolerance, tolerance):
+              mesh_tolerance, tolerance, budget):
     """One whole-outline attempt, or None when it exceeds the record budget."""
     surfaces, area, cells, admitted, residuals = [], 0., 0, 0, []
     for polygon in components:
@@ -375,9 +403,27 @@ def _envelope(components, footprint, observed, secondary, pitch, window,
         rings, piece = _surfaces(polygon, heights, raster, mesh_tolerance)
         surfaces.extend(rings)
         area += piece
-        if len(surfaces) > MAX_ENVELOPE_FACETS:
+        if len(surfaces) > budget:
             return None
     return surfaces, area, cells, admitted, residuals
+
+
+def _surface_density(footprint, returns):
+    """Upper-surface returns per m²: the median 1 m cell, counting its top 0.5 m.
+
+    A facade stacks many returns over a small plan area, so a plain count per
+    footprint area says how much wall was scanned, not how densely the roof
+    was sampled.
+    """
+    inside = returns[contains_xy(footprint, returns[:, 0], returns[:, 1])]
+    if len(inside) < 4:
+        return None
+    raster = _Raster(footprint.bounds, 1., 0.)
+    top = raster.upper(inside)
+    ix, iy = raster.cells(inside)
+    near_top = inside[:, 2] >= top[ix, iy]-.5
+    counts = np.bincount(ix[near_top]*raster.ny+iy[near_top], minlength=raster.nx*raster.ny)
+    return float(np.median(counts[counts > 0]))
 
 
 def _turn(points, angle, origin):
@@ -403,7 +449,6 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
     that level, so a canopy can never lift a roof while a facade misfiled as
     vegetation is still used.
     """
-    pitch, window, mesh_tolerance, tolerance = envelope_parameters(scale)
     samples = np.asarray(samples, dtype=float)
     returns = np.asarray(boundary_samples, dtype=float)
     secondary = np.asarray(secondary_samples, dtype=float)
@@ -416,6 +461,8 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
         return None, 'insufficient upper surface samples'
     observed = returns if len(returns) >= len(samples) else samples
     footprint = unary_union(pieces(footprint))
+    density = _surface_density(footprint, observed)
+    pitch, window, mesh_tolerance, tolerance = envelope_parameters(scale, density)
     try:
         # Lay the raster along the building's long axis. A roof wall crossing
         # the grid at an angle is sampled as a staircase of cells, which the
@@ -430,14 +477,14 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
             footprint = rotate(footprint, -angle, origin=origin, use_radians=True)
             observed, secondary = _turn(observed, -angle, origin), _turn(secondary, -angle, origin)
         components = pieces(footprint)
-        base = pitch
+        base, budget = pitch, facet_budget(pitch)
         for attempt in range(4):
             # The pitch fixes how well the cap can follow the building in plan,
             # so coarsening it turns a drum or a curved facade into blocks: it
             # is the last resort, for an outline too large to describe at print
             # scale within the record budget at all, not the ordinary path.
             result = _envelope(components, footprint, observed, secondary, pitch,
-                               max(window, pitch*2), mesh_tolerance, tolerance)
+                               max(window, pitch*2), mesh_tolerance, tolerance, budget)
             if result is not None:
                 break
             pitch *= 1.5
@@ -475,11 +522,12 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
                     'envelope_cells': cells, 'envelope_pitch_m': pitch,
                     'envelope_window_m': window,
                     'envelope_components': len(components),
+                    'envelope_return_density_m2': round(density or 0., 2),
                     'surface_retained_samples': int(len(samples)),
                     'envelope_fit_error_basis': 'mesh_versus_height_raster',
                     'envelope_residual_basis': 'rank_filter_versus_raw_upper_envelope',
                     'envelope_fit_max_m': 0.,
                     'envelope_smoothing_p95_m': residual,
-                    'envelope_budget_limited': bool(pitch > envelope_parameters(scale)[0]+1e-9)}}, None
+                    'envelope_budget_limited': bool(pitch > base+1e-9)}}, None
     except (UnsupportedFit, np.linalg.LinAlgError, GEOSException) as exc:
         return None, str(exc)

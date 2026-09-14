@@ -5,14 +5,17 @@ never turn a missing upper roof into an apparently valid podium-only model.
 """
 import math
 
-ALGORITHM_VERSION = 18
+ALGORITHM_VERSION = 19
 MAX_ROOF_FACETS = 1024
 # A roof envelope costs about one face per print-scale cell, so a downtown
 # outline needs several times the earlier budget to keep its plan resolution
 # instead of having its whole surface coarsened into blocks. That is affordable
 # because an envelope publishes one shared vertex table rather than repeating
-# every corner in every face: see `envelope_mesh`.
-MAX_ENVELOPE_FACETS = 16384
+# every corner in every face: see `envelope_mesh`. The budget is set for a 1 m
+# grid and grows with a finer one (a larger print on a dense survey), up to the
+# hard limit the reader accepts.
+ENVELOPE_FACETS_AT_1M = 16384
+MAX_ENVELOPE_FACETS = 65536
 MAX_ENVELOPE_VERTICES = MAX_ENVELOPE_FACETS*3
 
 

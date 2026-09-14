@@ -1,10 +1,34 @@
 # Building heights and USGS LiDAR
 
+## Straight tower walls and scale-aware detail
+
+Reconstruction algorithm 19. Run **Prepare LiDAR Buildings** with Refresh off,
+then **Generate Model**; only measurement re-runs.
+
+A tower rising from a lower part of the same footprint is a step of tens of
+metres inside the cap. Along a wall that is diagonal or curved against the grid
+(the triangular Macy's tower, the curved Hyatt Regency in Cincinnati) that step
+was ribbed for two reasons. Every grid cell was split along the same diagonal,
+so each cell the wall cut folded into a V-shaped notch; and the smoothing pass
+averaged across the wall, turning it into a ramp of uneven heights. Each cell is
+now split along the diagonal whose corners are closest in height, and the
+smoothing leaves any cell whose neighbours differ by more than two grid cells in
+height. A 45° wall becomes a straight line of faces; curved walls become flat
+vertical facets. Domes and gentle roofs are still smoothed.
+
+The grid still follows the print scale (0.07 mm printed per cell), and at the
+default scale it stays 1 m. Previously it could never go below 0.8 m, so a larger
+print lost detail the survey had. It can now go down to 0.5 m wherever a cell
+would still average about four upper-surface returns (measured as the median
+1 m cell's returns within 0.5 m of its top, so facade returns don't count). It
+is never coarser than before. The face budget grows with a finer grid, from
+16,384 at 1 m to 65,536 at 0.5 m, so a detailed building is not pushed back onto
+a coarser grid. At twice the default scale, Space Mountain uses a 0.76 m grid
+and the Hyatt a 0.63 m grid.
+
 ## Smoother envelope slopes
 
-Reconstruction algorithm 18. Run **Prepare LiDAR Buildings** with Refresh off,
-then **Generate Model**; cached tiles and normalized points are reused and only
-measurement re-runs.
+Reconstruction algorithm 18.
 
 A rank (median) filter removes facade ribs but, on a curved or noisy roof,
 settles into small plateaus, which the cap showed as terraces. Space Mountain's
@@ -36,9 +60,6 @@ the building silently fell back to its source box. On the Magic Kingdom cache
 this took envelope fallbacks from 17 of 369 buildings (including Peter Pan's
 Flight, the Haunted Mansion and the Contemporary) to none.
 
-The 1 m plan grid is 0.07 mm on the print at the default scale, well below a
-0.4 mm nozzle, so a finer grid would change the viewport more than the print
-and would push large buildings past the face budget.
 
 ## Skip small building footprints
 

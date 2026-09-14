@@ -613,8 +613,17 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   cells never vote in the median or the mean, so a courtyard or the gap between separate
   components cannot drag a roof edge across it. The mean removes the small
   plateaus a median leaves on curved or noisy slopes (terraced domes); it keeps
-  flat and planar roofs exact, so block merging is unaffected. It does not
-  remove ribs down very steep facades, which come from the scan pattern.
+  flat and planar roofs exact, so block merging is unaffected. It skips any
+  cell whose neighbours differ by more than two pitches in height, so a tower
+  wall inside the footprint stays a sharp step instead of a ribbed ramp, and
+  each grid cell is split along its diagonal of most similar corner heights
+  (a fixed diagonal notched every cell a diagonal wall crosses).
+  Pitch follows print scale (0.07 mm per cell, never above 3 m). Its floor is
+  0.8 m, lowered to at most 0.5 m while a grid cell still averages about four
+  upper-surface returns (`_surface_density`: the median 1 m cell, counting
+  returns within 0.5 m of its top, so facades don't inflate it); the face budget is
+  `ENVELOPE_FACETS_AT_1M` scaled by (1 m / pitch)², capped at
+  `MAX_ENVELOPE_FACETS`, so a finer grid is not coarsened back.
   The raster is laid along the footprint's minimum-rotated-rectangle long axis
   (reduced to ±45°, no rotation at 0) so roof walls parallel to it do not
   staircase into ribs; cap vertices rotate back before publication. `_clip_to`
@@ -647,7 +656,7 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   partial roof. Terraces and disabled roof generation retain their existing path.
 - An envelope publishes `roof_mesh`, one shared vertex table plus integer
   faces, tagged `surface_reconstruction=roof_envelope`, with up to 16,384
-  faces. Its faces meet at common corners, so a polygon per face repeated
+  faces on a 1 m grid and 65,536 on the finest. Its faces meet at common corners, so a polygon per face repeated
   every corner about six times and the GeoJSON wrapper once per face: measured
   on downtown buildings that was 238 bytes a face against 42, on disk and again
   in the reader's memory. `lidar_records.envelope_mesh`/`envelope_rings` pack
@@ -666,7 +675,7 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   verify area, closure and winding before adoption. A join failure must retain
   source geometry rather than extruding thousands of independent fragments.
 - The saved `FACETED` enum now displays **Roof Envelope**. Legacy width/step
-  sliders remain Terraces-only. Algorithm 18 requires Prepare again with
+  sliders remain Terraces-only. Algorithm 19 requires Prepare again with
   Refresh off; it reuses cached tiles and normalized points, because the
   acquisition version is unchanged, and re-runs measurement only. Acquisition version 5 reads every octree level the survey
   actually has (`resolution_m` 0.35, which for the Cook County EPT is its
