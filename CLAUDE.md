@@ -933,13 +933,13 @@ version and `__init__.py`'s `bl_info` tuple synchronized. The builder overwrites
 same-version archives, so preserve needed baselines first. It packages files
 under the add-on directory only, excluding bytecode; keep experiments elsewhere.
 
-Do not install into Blender on your own: the [install-addon](.claude/commands/install-addon.md)
-workflow is token-expensive, so run it only when the user explicitly asks for an
-install in the current session. Otherwise report test results and that the
-installed copy is unchanged. A documentation-only change outside
+After add-on changes and relevant passing checks, run `scripts/install_addon.ps1`
+as described in [install-addon](.claude/commands/install-addon.md) and report its
+three summary lines only; no file listings, tree diffs, or extra Blender sessions.
+Blender may stay open. A documentation-only change outside
 the packaged add-on does not require rebuilding/reinstalling identical code.
-Blender must be closed before replacing loaded files or saving preferences in
-another process. Never force-close an unsaved user session without permission.
+A running Blender keeps its imported copy until restarted. Never force-close an
+unsaved user session.
 
 The classic install is normally under
 `%APPDATA%\Blender Foundation\Blender\3.6\scripts\addons\jarvizar_city_model`.
