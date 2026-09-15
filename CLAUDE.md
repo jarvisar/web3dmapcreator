@@ -587,7 +587,11 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   Missing returns alone are not proof that a building is absent.
 - Planar ground fits retain their original result. When the plane fails,
   `lidar_ground.py` can retain a low ground-cell anchor with its actual location:
-  at least eight 4 m cells, three returns per cell, enclosing the full footprint.
+  at least eight 4 m cells, three returns per cell, whose hull covers the
+  footprint's representative point and `ANCHOR_COVERAGE` (nine tenths) of its
+  area. Full enclosure rejected a stadium flush with a riverbank for the two
+  per cent of its footprint on the water side; ground on one side or half of
+  a footprint is still rejected.
   Cell medians and the lower decile resist density imbalance and isolated low
   returns. `ground_anchor` stores WGS84 XY plus a datum offset; the Blender
   builder aligns that location to its existing heightfield. It never interprets

@@ -63,6 +63,22 @@ class ReliefTests(unittest.TestCase):
         self.assertIsNone(ground_anchor(box(0,0,20,20), PointIndex(one_side)))
         self.assertEqual(measure_building(box(0,0,20,20), PointIndex(one_side),1.4,.65)[1], 'insufficient_ground')
 
+    def test_anchor_accepts_ground_missing_along_one_edge_but_not_half(self):
+        # A stadium flush with a riverbank has ground cells on every side but
+        # the water's; their hull still covers nearly all of the footprint.
+        # Ground over half of the footprint only is still one-sided.
+        points = self.cloud()
+        self.assertIsNone(ground_reference(box(0, 0, 20, 20), PointIndex(points)))
+        riverbank = points[(points[:, 3] != 2) | (points[:, 1] >= 3)]
+        anchor = ground_anchor(box(0, 0, 20, 20), PointIndex(riverbank))
+        self.assertIsNotNone(anchor)
+        record, reason = measure_building(box(0, 0, 20, 20), PointIndex(riverbank), 1.4, .65, roof_mode='FACETED')
+        self.assertEqual(reason, 'faceted_roof')
+        self.assertEqual(record['ground_reference'], 'surrounding_ground_anchor')
+        half = points[(points[:, 3] != 2) | (points[:, 1] >= 10)]
+        self.assertIsNone(ground_anchor(box(0, 0, 20, 20), PointIndex(half)))
+        self.assertEqual(measure_building(box(0, 0, 20, 20), PointIndex(half), 1.4, .65)[1], 'insufficient_ground')
+
     def test_ground_class_rock_is_relief_and_vegetation_cannot_lift_it(self):
         points = self.cloud('rock')
         footprint = box(0,0,20,20)

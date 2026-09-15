@@ -89,6 +89,23 @@ generated 942 LiDAR buildings with 608 K roof faces in 104 s, against 991
 buildings with 2.88 M faces for algorithm 20; its 66 fallbacks were those
 stale records plus two ordinary width rejections, none from the envelope.
 
+### A stadium on the riverbank (algorithm 22, 0.24.1)
+
+Paycor Stadium in Cincinnati kept its source box. Both Kentucky surveys
+rejected it with `insufficient_ground`, and the Ohio statewide tiles never
+covered its ground halo across the river. Replaying the ground tests on the
+cached points showed why: the ground around it spans 146–155 m (river bank,
+elevated plaza and ramps), so the planar fit's residual is 2 m against a
+1 m limit, and the anchor fallback required the hull of the surrounding
+ground cells to enclose the whole footprint, while 2.3% of the stadium lies
+beyond it on the water side. The 946 ground cells sat in all eight
+directions around the building. With that ground accepted, the open field
+did not trip the ground-in-footprint check and the envelope fitted with
+5,538 faces up to 60 m above its base. The anchor now requires the hull to
+cover the representative point and nine tenths of the footprint area
+(`ANCHOR_COVERAGE`); ground on one side, or over half of a footprint, is
+still rejected. The algorithm version is 22 so Prepare re-measures.
+
 ### Rim teeth and scan shadows
 
 The podium of 71 South Wacker showed vertical "teeth" along its outline
