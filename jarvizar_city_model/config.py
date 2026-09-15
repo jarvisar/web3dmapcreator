@@ -519,6 +519,31 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         description="Generate transportation segments with subtype rail",
         default=True,
     )
+    tidy_road_network: BoolProperty(
+        name="Tidy Road Network",
+        description=(
+            "Clean the centerline network before roads are widened: a road "
+            "running alongside a more important one closer than the gap is "
+            "dropped, so both carriageways of a divided street print as one "
+            "ribbon; a path that stops just short of a street is joined to it; "
+            "and short stubs that lead nowhere are removed. Streets are kept "
+            "or dropped whole, never broken in the middle"
+        ),
+        default=True,
+    )
+    road_gap_mm: FloatProperty(
+        name="Minimum Road Gap (mm)",
+        description=(
+            "Narrowest strip of ground allowed between two printed ribbons that "
+            "run alongside each other, measured between their edges. One nozzle "
+            "line: anything thinner cannot print as terrain between them. A "
+            "loose road end this close to a street is joined to it"
+        ),
+        default=0.4,
+        min=0.0,
+        soft_max=2.0,
+        precision=2,
+    )
 
     # ---------------------------------------------------------------- bridges
     bridge_deck_thickness_mm: FloatProperty(

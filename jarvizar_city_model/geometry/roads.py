@@ -56,6 +56,7 @@ from .planar import (
     oriented_ring,
     parametric_ribbon,
 )
+from .road_network import NetworkSettings, tidy_network
 from .support import CUT_WATER_DROP_MM
 
 
@@ -92,6 +93,15 @@ class RoadSettings:
     # footbridges are footways too and stay.
     skip_sidepaths: bool = True
     include_rail: bool = True
+    # Weld, cull, snap and prune the centerline network before buffering:
+    # both carriageways of a divided street print as one ribbon, a path
+    # that stopped at a dropped sidewalk reaches the street, and kerb stubs
+    # go.  See :mod:`road_network`.
+    tidy_network: bool = True
+    # The narrowest strip of ground allowed between two ribbons running
+    # alongside each other, edge to edge: one nozzle line.
+    network_gap_mm: float = 0.4
+    network_stub_length_mm: float = 0.7
     include_bridges: bool = True
     # A deck is as thick as a road, so a bridge continues the road it carries
     # with the same number of printed layers.
@@ -149,6 +159,7 @@ class RoadCounts:
     rejected_geometry: int = 0
     classes: Dict[str, int] = field(default_factory=dict)
     evidence: Dict[str, int] = field(default_factory=dict)
+    network: Dict[str, Any] = field(default_factory=dict)
     # Which flagged pieces were built as roads because they could not rise a
     # printed layer, keyed by class and evidence: the honest record of what
     # the print does not show as a bridge.
@@ -178,6 +189,7 @@ class RoadCounts:
             "decomposed_ribbons": self.decomposed_ribbons,
             "roads_rejected_geometry": self.rejected_geometry,
             "classes": dict(sorted(self.classes.items())),
+            **self.network,
         }
 
 
@@ -532,6 +544,30 @@ def generate_roads(
     ground_height = getattr(heightfield, "ground_height_mm", heightfield.height_mm)
 
     pieces = list(_subsegments(segment_features, transform, settings, counts))
+    if settings.tidy_network:
+        # Before crossings are recovered: a culled carriageway must not first
+        # earn a deck, and a snapped end must be where the water test runs.
+        metric_bounds = transform.metric_bounds
+        pieces, network_counts = tidy_network(
+            pieces,
+            transform.scale_x_mm_per_m,
+            (
+                metric_bounds.min_east_m,
+                metric_bounds.min_north_m,
+                metric_bounds.max_east_m,
+                metric_bounds.max_north_m,
+            ),
+            lambda piece: _half_width_m(piece, transform, settings),
+            lambda piece: _is_deck(piece, settings),
+            NetworkSettings(
+                gap_mm=settings.network_gap_mm,
+                # A path that ended on a boulevard's sidewalk can be a dozen
+                # metres from the centerline; reaching twice the gap joins it.
+                snap_gap_mm=2.0 * settings.network_gap_mm,
+                stub_length_mm=settings.network_stub_length_mm,
+            ),
+        )
+        counts.network = network_counts.as_dict()
     pieces = _recover_crossings(pieces, transform, heightfield, settings, counts)
 
     decks: List[Tuple[SubSegment, List[Tuple[float, float]]]] = []

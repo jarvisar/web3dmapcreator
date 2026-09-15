@@ -886,6 +886,8 @@ class JARVIZAR_OT_generate_model(Operator):
                     include_minor_roads=settings.include_minor_roads,
                     skip_sidepaths=settings.skip_sidepaths,
                     include_rail=settings.include_rail,
+                    tidy_network=settings.tidy_road_network,
+                    network_gap_mm=settings.road_gap_mm,
                     include_bridges=settings.generate_bridges,
                     bridge_deck_thickness_mm=settings.bridge_deck_thickness_mm,
                     bridge_clearance_mm=settings.bridge_clearance_mm,

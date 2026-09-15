@@ -280,6 +280,10 @@ class JARVIZAR_PT_transport(Panel):
         row.enabled = settings.include_minor_roads
         row.prop(settings, "skip_sidepaths")
         layout.prop(settings, "include_rail")
+        layout.prop(settings, "tidy_road_network")
+        row = layout.row()
+        row.enabled = settings.tidy_road_network
+        row.prop(settings, "road_gap_mm")
         layout.separator()
         column = layout.column(align=True)
         column.enabled = settings.generate_bridges

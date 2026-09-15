@@ -448,8 +448,36 @@ cycleways of their own, carrying `subclass` `sidewalk`, `crosswalk`, or
 street without adding a route that was not already there. **Skip Sidewalks and
 Crossings** drops exactly those; footways with no such subclass -- park paths,
 trails, footbridges -- stay, and steps are untouched. The count is
-`skipped_sidepaths`. Nothing is repaired afterwards: a park path that used to
-join a sidewalk now ends at the kerb, which at this scale is invisible.
+`skipped_sidepaths`. The network tidy below then repairs what that leaves: a
+park path that used to join a sidewalk is pulled onto the street instead.
+
+**The road network is tidied before it is widened.** Overture hands over both
+carriageways of a divided street, the cycle track laid along it, footways that
+are sidewalks in all but tag, and every fragment of a street that was split at
+a tag change. Buffered one by one those print as a double-wide ribbon with a
+lens-shaped seam where the two overlap, and as ribbons too close together for
+a strip of terrain to print between them. **Tidy Road Network** (on by
+default) ranks every piece by class -- motorway down to footway, rail between
+the streets and the service roads -- welds pieces that meet end to end into
+routes, and drops a route that runs close to *and* parallel with a more
+important route already kept. "Close" is measured between the printed edges:
+**Minimum Road Gap** (0.4 mm, one nozzle line) is the narrowest strip of ground
+allowed between two ribbons running alongside each other. A street loses only
+what is actually doubled, and only where the road carries on through what
+doubled it: the losing carriageway of a divided street goes block by block
+while the stem through each intersection stays, so the street prints straight
+and connected. Footways, cycleways, paths and tracks lose only their shadowed
+sections, so a cycle track that follows a street and then turns into a park
+keeps the park. A loose end
+whose ribbon would stop within twice the gap of a street's edge is pulled onto
+the street's centerline (a path onto a street, never a street onto a path, and
+never an end running parallel to the line), and short fragments that lead
+nowhere -- the kerb stubs left when crossings are dropped -- are removed.
+Bridge decks and the ground under them never shadow each other, and deck ends
+are never moved. The counts are `network_culled_pieces`,
+`network_trimmed_pieces`, `network_culled_length_mm`, `network_snapped_ends`,
+`network_pruned_stubs` and `network_welded_joins`. Turning the toggle off
+restores the untidied network exactly.
 
 **Roads are widened to stay printable.** Below **Minimum Road Width**, a class
 is widened to that floor. At the default 0.07 mm/m that floor is 6.4 m of real

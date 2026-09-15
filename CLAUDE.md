@@ -386,6 +386,29 @@ colors, overwriting manual palette edits.
   sidewalk/crosswalk/cycle-crossing subclasses; ordinary footways remain.
   Buffer in metres, constrain printed width, and clean in millimetres. Tight
   turns fall back to overlapping convex pieces.
+- `geometry/road_network.py` (pure) tidies the clipped pieces before crossing
+  recovery when **Tidy Road Network** is on (default): rank by class (rail
+  between residential and service), weld pieces of one class into routes for
+  decisions only (pieces keep their attributes): at 2-valent nodes always, and
+  through junctions along the single continuation within 25° of the heading,
+  unambiguous from both sides, so each carriageway of a divided street is
+  judged whole and the survivor never hops sides at cross streets. Cull
+  against kept routes within 28° of parallel whose printed edges would be
+  closer than **Minimum Road Gap** (0.4 mm); a sample counts only beside the
+  interior of a neighbour, never past its end, or the stem through an
+  intersection reads as doubled by the carriageway it continues. A route
+  ≥ 68% shadowed loses its doubled pieces (≥ 30%) and keeps undoubled
+  remnants only where they link kept geometry at both ends (the stems of a
+  divided street); a surviving route still drops a run of doubled pieces
+  (≥ 60%) whose ends both land on kept ribbons. `MINOR_ROAD_CLASSES` are
+  trimmed at sample resolution with remnants shorter than a stub dropped.
+  Decks and surface pieces never shadow each other; deck ends never move.
+  Snapping pulls a
+  loose end within twice the gap onto an equal-or-higher-ranked surface
+  road it approaches at an angle; ends inside the other ribbon already touch.
+  Stub pruning (0.7 mm) removes routes free at one end, mid-span support and
+  crop-boundary anchoring included. Dense-cluster, tangle and loop passes of
+  the laser reference were deliberately not ported. Counts are `network_*`.
 - `roads.py` orchestrates one `deck_graph.py` height solve for the whole network;
   `deck_profile.py` interpolates that solution, it is not a separate height solver.
   Joints share heights. Anchors meet ground plus road thickness; unconnected
@@ -538,7 +561,13 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   roofs and a ground halo. Per-group limits can subdivide work; normal preparation
   has no whole-map byte/point/time cap, though per-request/file/group guards remain.
   EPT node and LAZ tile transfers use `lidar_downloads.py` (default 4, allowed
-  1–16; 1 is serial) while decoding and measurement stay sequential. EPT
+  1–16; 1 is serial) while decoding stays sequential. Per-building
+  reconstruction in `measure_features` runs in a reusable spawn process pool
+  (automatic: CPU count − 1, capped at 8; `--measure-workers` or
+  `JARVIZAR_LIDAR_MEASURE_WORKERS`, 1 is serial). Cropping, epoch checks and
+  publication stay in the parent; results, counts and their order match serial
+  exactly, and a broken pool finishes the batch serially. Direct `prepare()`
+  calls default to serial. EPT
   lookahead retains at most that many futures and consumes the original node
   order; futures keep no response payloads. Prefetch is limited to the current batch;
   evaluate it before admitting the next. Approved staged offers finish their

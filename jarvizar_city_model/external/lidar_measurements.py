@@ -6,7 +6,11 @@ clean planar surface polygons and ground-relative heights, never raw points.
 from __future__ import annotations
 
 import math
+import multiprocessing
+import os
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 
 import numpy as np
 from shapely import contains_xy
@@ -671,32 +675,117 @@ def _ring_area(ring):
     return abs(sum((a[0]-x)*(b[1]-y)-(b[0]-x)*(a[1]-y) for a, b in zip(ring, ring[1:])))
 
 
-def measure_features(features, points, to_metric, to_geographic, min_width_m, min_step_m, roi, roof_planes=True, parts_by_parent=None, observations_out=None, neighbors_by_id=None, source_parts_by_parent=None, prefer_lidar=False, roof_mode='TERRACES', surface_scale=None, progress_callback=None):
-    """One survey at a time; return measurements keyed by original feature ID."""
+MAX_MEASURE_WORKERS = 16
+DEFAULT_MEASURE_WORKER_CAP = 8
+_pool = None
+_pool_size = 0
+
+
+def validate_measure_workers(value):
+    if type(value) is not int or not 1 <= value <= MAX_MEASURE_WORKERS:
+        raise ValueError(f'Measurement workers must be an integer from 1 to {MAX_MEASURE_WORKERS}')
+    return value
+
+
+def default_measure_workers():
+    """Reconstruction processes: leave one core for downloads and decoding.
+
+    Capped at eight by default: each process imports NumPy/Shapely and holds a
+    building's cropped points and rasters. ``JARVIZAR_LIDAR_MEASURE_WORKERS``
+    overrides the count (1 to 16); 1 is serial.
+    """
+    override = os.environ.get('JARVIZAR_LIDAR_MEASURE_WORKERS', '').strip()
+    if override:
+        try:
+            return validate_measure_workers(int(override))
+        except ValueError:
+            pass
+    return max(1, min(DEFAULT_MEASURE_WORKER_CAP, (os.cpu_count() or 1) - 1))
+
+
+def _measurement_pool(workers):
+    """One reusable spawn pool per preparation; imports cost seconds per worker."""
+    global _pool, _pool_size
+    if _pool is None or _pool_size != workers:
+        close_measurement_pool()
+        _pool = ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context('spawn'))
+        _pool_size = workers
+    return _pool
+
+
+def close_measurement_pool():
+    global _pool, _pool_size
+    if _pool is not None:
+        _pool.shutdown(wait=False, cancel_futures=True)
+    _pool, _pool_size = None, 0
+
+
+def _reconstruct(feature, footprint, local, reason, min_width_m, min_step_m, roof_planes, roof_mode,
+                 surface_scale, part_footprints, neighboring_footprints, source_parts, prefer_lidar):
+    """CPU-bound part of one building's measurement; pure, so it may run in a worker process."""
+    props = feature.get("properties") or {}
+    measured = None
+    if reason is None and props.get('lidar_surface_kind') == 'rock':
+        try:
+            from .lidar_rock import measure_rock_surface
+        except ImportError:
+            from lidar_rock import measure_rock_surface
+        measured, reason = measure_rock_surface(footprint, PointIndex(local), surface_scale or (.07, .077))
+    elif reason is None:
+        measured, reason = measure_building(footprint, PointIndex(local), min_width_m, min_step_m,
+            roof_planes=roof_planes, roof_mode=roof_mode, surface_scale=surface_scale, part_footprints=part_footprints,
+            neighboring_footprints=neighboring_footprints,
+            height_targets=(feature, source_parts) if roof_mode=='HEIGHT_ONLY' else None,
+            prefer_lidar=prefer_lidar)
+    # Source-shaped roofs remain useful even when a whole-envelope fit is
+    # too complex. Footprint/epoch contradictions never enter this fallback.
+    if roof_mode != 'HEIGHT_ONLY' and source_parts and props.get('has_parts') is True and reason in ('tiers', 'height_only', 'roof_planes', 'faceted_roof',
+            'complex_unclassified_roof', 'unclassified_nonplanar_roof',
+            'unresolved_upper_roof', 'unprintable_major_tier'):
+        shaped = any((p.get('properties') or {}).get('roof_shape') not in (None, '', 'flat') for p,_ in source_parts)
+        incomplete = unary_union([g for _,g in source_parts]).intersection(footprint).area < footprint.area*.85
+        if (incomplete or shaped) and (not prefer_lidar or measured is None):
+            supplement, supplement_reason = measure_source_parts(feature, source_parts, footprint,
+                PointIndex(local), min_width_m, min_step_m, roof_planes=roof_planes, prefer_lidar=prefer_lidar)
+            if supplement or supplement_reason == 'source_height_conflict':
+                measured, reason = supplement, supplement_reason
+    return measured, reason
+
+
+def measure_features(features, points, to_metric, to_geographic, min_width_m, min_step_m, roi, roof_planes=True, parts_by_parent=None, observations_out=None, neighbors_by_id=None, source_parts_by_parent=None, prefer_lidar=False, roof_mode='TERRACES', surface_scale=None, progress_callback=None, workers=1):
+    """One survey at a time; return measurements keyed by original feature ID.
+
+    ``workers`` above 1 reconstructs buildings in spawned processes. Cropping,
+    epoch checks and publication stay here; each building's work is a pure
+    function of its own cropped points, so results, counts and their order are
+    identical to a serial run. A bounded window of buildings is in flight, so
+    memory holds a few cropped halos, not every building's points at once.
+    """
     index = PointIndex(points)
     results, counts, rejected = {}, Counter(), {}
-    for position, feature in enumerate(features):
+    total = len(features)
+    executor = _measurement_pool(workers) if validate_measure_workers(workers) > 1 and total > 1 else None
+    window = 2 * workers if executor else 1
+    inflight = []
+
+    def stage(position, feature):
         identifier = str(feature.get("id") or feature.get("properties", {}).get("id") or "")
-        if progress_callback:
-            names = (feature.get('properties') or {}).get('names')
-            name = (names.get('primary') if isinstance(names, dict) else None) or identifier
-            progress_callback(position, len(features), str(name))
-        footprint = map_geometry(to_metric, shape(feature["geometry"]))
+        entry = {'position': position, 'feature': feature, 'identifier': identifier,
+                 'dated': {'capture_year': None, 'date_basis': 'unknown'}, 'predates': False, 'task': None}
+        footprint = entry['footprint'] = map_geometry(to_metric, shape(feature["geometry"]))
         # Avoid lowering an entire building based on a clipped corner of its
         # roof. The halo permits buildings just outside the selected boundary.
         if not roi.covers(footprint.buffer(25)):
-            counts["incomplete_footprint_or_ground_halo"] += 1
-            rejected[identifier] = "incomplete_footprint_or_ground_halo"
-            continue
+            entry['early'] = "incomplete_footprint_or_ground_halo"
+            return entry
         props = feature.get("properties") or {}
         if props.get("is_underground") or (props.get("min_height") or props.get("min_floor")):
-            counts["elevated_or_underground"] += 1
-            rejected[identifier] = "elevated_or_underground"
-            continue
+            entry['early'] = "elevated_or_underground"
+            return entry
         local = index.query(footprint.buffer(25).bounds)
         local = local[contains_xy(footprint.buffer(25), local[:,0], local[:,1])]
-        dated = {'capture_year':None, 'date_basis':'unknown'}
-        reason, measured = None, None
+        dated = entry['dated']
+        reason = None
         if local.shape[1] >= 7 and len(local) and np.any(local[:,5] > 0):
             known = local[local[:,5] > 0]
             years, numbers = np.unique(known[:,5], return_counts=True)
@@ -711,35 +800,60 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
             else:
                 dated['capture_year'] = int(significant[0])
                 local = local[local[:,5] == significant[0]]
+            entry['dated'] = dated
         built = construction_year(props)
-        predates = bool(built and dated['capture_year'] and dated['capture_year'] < built)
-        if predates and not prefer_lidar:
+        entry['predates'] = bool(built and dated['capture_year'] and dated['capture_year'] < built)
+        if entry['predates'] and not prefer_lidar:
             reason = 'predates_building'
-        if reason is None and props.get('lidar_surface_kind') == 'rock':
+        entry['args'] = (feature, footprint, local, reason, min_width_m, min_step_m, roof_planes, roof_mode,
+                         surface_scale, (parts_by_parent or {}).get(identifier, ()),
+                         (neighbors_by_id or {}).get(identifier, ()),
+                         (source_parts_by_parent or {}).get(identifier, ()), prefer_lidar)
+        return entry
+
+    def submit(entry):
+        nonlocal executor, window
+        if 'early' in entry or executor is None:
+            return
+        try:
+            entry['task'] = executor.submit(_reconstruct, *entry['args'])
+        except Exception:
+            close_measurement_pool()
+            executor, window = None, 1
+
+    def outcome(entry):
+        nonlocal executor, window
+        if 'early' in entry:
+            return None, entry['early']
+        task = entry['task']
+        if task is not None:
             try:
-                from .lidar_rock import measure_rock_surface
-            except ImportError:
-                from lidar_rock import measure_rock_surface
-            measured, reason = measure_rock_surface(footprint, PointIndex(local), surface_scale or (.07, .077))
-        elif reason is None:
-            measured, reason = measure_building(footprint, PointIndex(local), min_width_m, min_step_m,
-                roof_planes=roof_planes, roof_mode=roof_mode, surface_scale=surface_scale, part_footprints=(parts_by_parent or {}).get(identifier, ()),
-                neighboring_footprints=(neighbors_by_id or {}).get(identifier, ()),
-                height_targets=(feature, (source_parts_by_parent or {}).get(identifier, ())) if roof_mode=='HEIGHT_ONLY' else None,
-                prefer_lidar=prefer_lidar)
+                return task.result()
+            except Exception as exc:
+                # Transport failures lose nothing: this process still holds the
+                # arguments and repeats the building here. A genuine measurement
+                # error repeats too, and then raises exactly as a serial run.
+                if isinstance(exc, BrokenProcessPool):
+                    close_measurement_pool()
+                    executor, window = None, 1
+        return _reconstruct(*entry['args'])
+
+    def complete(entry):
+        feature, identifier, position = entry['feature'], entry['identifier'], entry['position']
+        if progress_callback:
+            names = (feature.get('properties') or {}).get('names')
+            name = (names.get('primary') if isinstance(names, dict) else None) or identifier
+            progress_callback(position, total, str(name))
+        measured, reason = outcome(entry)
+        entry.pop('args', None)
+        if 'early' in entry:
+            counts[reason] += 1
+            rejected[identifier] = reason
+            return
+        footprint = entry['footprint']
+        props = feature.get("properties") or {}
+        dated, predates = entry['dated'], entry['predates']
         source_parts = (source_parts_by_parent or {}).get(identifier, ())
-        # Source-shaped roofs remain useful even when a whole-envelope fit is
-        # too complex. Footprint/epoch contradictions never enter this fallback.
-        if roof_mode != 'HEIGHT_ONLY' and source_parts and props.get('has_parts') is True and reason in ('tiers', 'height_only', 'roof_planes', 'faceted_roof',
-                'complex_unclassified_roof', 'unclassified_nonplanar_roof',
-                'unresolved_upper_roof', 'unprintable_major_tier'):
-            shaped = any((p.get('properties') or {}).get('roof_shape') not in (None, '', 'flat') for p,_ in source_parts)
-            incomplete = unary_union([g for _,g in source_parts]).intersection(footprint).area < footprint.area*.85
-            if (incomplete or shaped) and (not prefer_lidar or measured is None):
-                supplement, supplement_reason = measure_source_parts(feature, source_parts, footprint,
-                    PointIndex(local), min_width_m, min_step_m, roof_planes=roof_planes, prefer_lidar=prefer_lidar)
-                if supplement or supplement_reason == 'source_height_conflict':
-                    measured, reason = supplement, supplement_reason
         if measured:
             try:
                 from .lidar_source import check_source
@@ -804,6 +918,15 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
             results[identifier] = measured
         else:
             rejected[identifier] = reason
+
+    for position, feature in enumerate(features):
+        entry = stage(position, feature)
+        submit(entry)
+        inflight.append(entry)
+        while len(inflight) >= window:
+            complete(inflight.pop(0))
+    while inflight:
+        complete(inflight.pop(0))
     if progress_callback:
-        progress_callback(len(features), len(features), '')
+        progress_callback(total, total, '')
     return results, dict(counts), rejected

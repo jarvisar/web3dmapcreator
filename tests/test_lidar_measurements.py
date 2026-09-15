@@ -105,6 +105,36 @@ class MeasurementsTests(unittest.TestCase):
         self.assertFalse(records)
         self.assertEqual(counts, {'source_height_conflict':1})
 
+    def test_parallel_workers_match_serial_results_and_order(self):
+        from jarvizar_city_model.external import lidar_measurements
+        from jarvizar_city_model.external.lidar_measurements import measure_features
+        from shapely.geometry import mapping
+        cloud = self.cloud(lambda x,y: 90 if 20<x<40 and 20<y<40 else 30)
+        features = [
+            {'id':'tower', 'properties':{}, 'geometry':mapping(box(0,0,60,60))},
+            {'id':'clipped', 'properties':{}, 'geometry':mapping(box(60,60,120,120))},
+            {'id':'cellar', 'properties':{'is_underground':True}, 'geometry':mapping(box(0,0,60,60))},
+            {'id':'low', 'properties':{'height':19}, 'geometry':mapping(box(0,0,60,60))},
+        ]
+        roi = box(-100,-100,100,100)
+        progress = {1:[], 2:[]}
+        outputs = {}
+        for workers in (1, 2):
+            observations = {}
+            outputs[workers] = measure_features(features, cloud, lambda x,y:(x,y), lambda x,y:(x,y), 6, 3, roi,
+                observations_out=observations, workers=workers,
+                progress_callback=lambda position, total, name, w=workers: progress[w].append((position, total, name)))
+            outputs[workers] += (observations,)
+        lidar_measurements.close_measurement_pool()
+        self.assertEqual(outputs[1], outputs[2])
+        self.assertEqual(progress[1], progress[2])
+        self.assertEqual([p for p,_,_ in progress[2]], [0,1,2,3,4])
+        records, counts, rejected, _ = outputs[2]
+        self.assertEqual(list(records), ['tower'])
+        self.assertEqual(list(rejected), ['clipped', 'cellar', 'low'])
+        self.assertEqual(list(counts), ['tiers', 'incomplete_footprint_or_ground_halo',
+                                        'elevated_or_underground', 'source_height_conflict'])
+
     def test_new_tall_lidar_building_does_not_morph_old_short_source(self):
         from jarvizar_city_model.external.lidar_measurements import measure_features
         from shapely.geometry import mapping

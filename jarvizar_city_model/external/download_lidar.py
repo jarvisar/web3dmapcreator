@@ -69,14 +69,15 @@ def valid_checkpoint(cached, identifiers, source_url):
     return True
 
 
-def prepare(bundle, request, refresh=False, progress_path=None, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval='', cache_gib=DEFAULT_CACHE_GIB, free_gib=DEFAULT_FREE_GIB):
+def prepare(bundle, request, refresh=False, progress_path=None, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval='', cache_gib=DEFAULT_CACHE_GIB, free_gib=DEFAULT_FREE_GIB, measure_workers=1):
     download_workers = validate_download_workers(download_workers)
     with cache_owner(bundle.parent), ExitStack() as resources:
         storage = CacheStorage(bundle.parent, cache_gib, free_gib)
-        return _prepare(bundle, request, refresh, progress_path, download_workers, laz_approval, resources, storage)
+        return _prepare(bundle, request, refresh, progress_path, download_workers, laz_approval, resources, storage,
+                        measure_workers=measure_workers)
 
 
-def _prepare(bundle, request, refresh, progress_path, download_workers, laz_approval='', resources=None, storage=None):
+def _prepare(bundle, request, refresh, progress_path, download_workers, laz_approval='', resources=None, storage=None, measure_workers=1):
     reporter = ProgressReporter(progress_path)
     reporter('Checking prepared results and input settings', stage='Checking cache', completed=0, total=0, force=True)
     from pyproj import CRS, Transformer
@@ -88,7 +89,13 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     from lidar_ranking import AcquisitionPlan, ACQUISITION_VERSION, FALLBACK_POLICY_VERSION, selection_thresholds
     from lidar_tiles import shared_tile_features
     from lidar_batches import building_batches, batch_bounds, split_batch
-    from lidar_measurements import measure_features
+    from lidar_measurements import (measure_features, default_measure_workers, validate_measure_workers,
+                                    close_measurement_pool)
+    # None means automatic: reconstruction is CPU-bound Python, so the worker
+    # process spreads buildings over spare cores. Results are order-identical.
+    measure_workers = default_measure_workers() if measure_workers is None else validate_measure_workers(measure_workers)
+    if resources is not None:
+        resources.callback(close_measurement_pool)
     from lidar_selection import choose_measurement, project_year, POLICY, CONTRADICTIONS
     from shapely import STRtree
     from lidar_candidates import staged, SOURCE_FIELDS, discovery_settings
@@ -407,7 +414,8 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                                if request.get('roof_mode') == 'FACETED' else None),
                 source_parts_by_parent=source_parts_by_parent,
                 observations_out=evidence, neighbors_by_id=neighbors_by_id,
-                prefer_lidar=request.get('prefer_lidar', True), progress_callback=building_progress)
+                prefer_lidar=request.get('prefer_lidar', True), progress_callback=building_progress,
+                workers=measure_workers)
             grid_recovered = sum('coverage_grid_offset' in record for record in records.values())
             if grid_recovered:
                 progress(f"Recovered {grid_recovered} roof measurements with shifted sampling grids; "
@@ -510,12 +518,15 @@ def main():
     parser.add_argument('--laz-approval', default='', help='Token from the reviewed gap offer; never enables unrestricted LAZ')
     parser.add_argument('--download-workers', type=int, choices=range(1, MAX_DOWNLOAD_WORKERS+1),
                         default=DEFAULT_DOWNLOAD_WORKERS, metavar=f'1-{MAX_DOWNLOAD_WORKERS}')
+    parser.add_argument('--measure-workers', type=int, default=None, metavar='N',
+                        help='Reconstruction processes; default uses spare cores (JARVIZAR_LIDAR_MEASURE_WORKERS overrides), 1 is serial')
     args = parser.parse_args()
     try:
         if args.parent_pid:
             watch_parent(args.parent_pid)
         result = prepare(args.bundle, json.loads(args.request.read_text(encoding="utf-8")),
-                         args.refresh, args.progress, args.download_workers, args.laz_approval, args.cache_gib, args.free_gib)
+                         args.refresh, args.progress, args.download_workers, args.laz_approval, args.cache_gib, args.free_gib,
+                         measure_workers=args.measure_workers)
     except ImportError as exc:
         result = {"ok": False, "detail": f"Install requirements-lidar.txt in the external downloader environment: {exc}"}
     except Exception as exc:
