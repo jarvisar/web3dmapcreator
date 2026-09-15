@@ -791,24 +791,36 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
 
 ## Export
 
-`jarvizar.export_3mf` requires separately installed/enabled `io_mesh_3mf`. It
-parents temporary copies under one holder and compensates for the writer's
-scene/display-unit scaling. Preserve **one build item with material-bearing
-parts**, world placement, selection, and active object; Bambu can rearrange
-independent build items. For STL, export with **Scene Unit unchecked** and
-import at 100% to retain model millimetres.
+`jarvizar.export_3mf` writes a native, unsliced Bambu Studio project directly
+from mesh data; no external 3MF add-on is involved and scene units are
+irrelevant. `data/export_plates.py` streams each plate's parts into the model
+XML as they arrive, so memory is bounded by the largest part, then adds
+`Metadata/model_settings.config`, `Metadata/project_settings.config`, content
+types and relationships. Every part is a named `normal_part` whose `extruder`
+metadata assigns its filament: one filament per distinct colour in order of
+first use, taken from each material's Principled base colour (else viewport
+colour) as raw linear bytes. A part mixing materials takes the filament of
+its most common one; only its other triangles carry Bambu `paint_color`
+states. Coordinates are model millimetres at six decimals. The `BambuStudio-`
+Application prefix is required: Bambu gates project loading on it and
+otherwise imports plain geometry, discarding printer, palette and part
+filaments. Part names come from generated `feature_type`, `surface_category`
+and `road_class` tags (`data/export_3mf.py`), with repeated types numbered.
 
-Export annotation maps each writer mesh's exact `Title` to the source's semantic
-tags, then writes core object names and Bambu `Metadata/model_settings.config`
-names keyed by assembly/component resource IDs. The result is `Map` with named
-normal Parts, preserving existing batches, transforms and standard material
-conversion. Base-material colors are also mirrored into Materials-extension
-`m:colorgroup` resources, with property references retargeted and face indices
-preserved, because Bambu reads color groups rather than base-material colors.
-Do not use a Bambu application identity or assign extruders merely
-to label standard single-plate parts. Publication is atomic after annotation succeeds. See
-[3MF naming and verification](docs/EXPORT_3MF.md); `tests/bambu_export_names.py`
-optionally verifies import/save/reopen through installed Bambu Studio.
+Bambu treats every top-level build item as its own object (re-centred,
+dropped, possibly rotated onto another plate), so each plate is one multipart
+object with relative heights intact. Without Multi-Plate Export the whole
+cropped model is one plate named `Map`, centred on the bed. All plates share
+one Z datum: the model's lowest point rests on the bed.
+
+**Bambu Printer** selects the bed (A1 mini 180; A1, P1P, P1S, P2S, X1C, X1E
+and X2D 256; A2L and H2C 330×320; H2S 340×320; H2D and H2D Pro 350×320) and
+the starting printer, process and Bambu PLA Basic filament preset names as
+bundled with Bambu Studio 2.8; P1S is the default. Changing it clamps the
+section maxima to the bed, and export rejects maxima above it. Users pick
+their actual filaments and recalculate the 280 mm³ default flushing matrix
+before slicing. Bed exclusion zones (18×28 mm front-left on P1/X1) are not
+modelled; the default 210 mm sections clear them.
 
 If the scene contains a mesh named exactly `cutout`,
 `blender/export_cutout.py` derives its evaluated inner through-opening and crops
@@ -834,26 +846,31 @@ indices at coincident points; its degenerate-triangle tests must bound the
 segment rather than treating an entire infinite line as part of the triangle.
 
 `multi_plate_export` is off by default and used only by this export operator.
-It requires a cutout, runs the unchanged final crop first, then uses
-`data/export_sections.py` and `export_cutout.export_section` to partition in
-world X/Y (east/north), with shared edges and one common float32 tolerance.
-The 210 mm width/height maxima are configurable up to 256 mm. A grid exceeding
-Bambu's 36-plate limit fails; empty cells are omitted. Section evaluation is
-baked into temporary world-space meshes and processed one section at a time
-through the same shell cutter, writer, and semantic naming path. Only this
-partition pass discards zero-volume tangent remnants.
+It requires a cutout, runs the unchanged final crop first, then partitions
+with `data/export_sections.py` and `export_cutout.export_sections`. The grid
+follows the opening's dominant edge direction (`grid_angle`: length-weighted
+headings modulo 90°, folded to ±45°, world axes when nothing dominates,
+exactly 0 when axis-aligned), so a frame rotated to a street grid yields
+rectangles aligned with it whether the rotation is on the object or applied
+to its mesh. Rows run along the frame's north-south side and columns west to
+east; each section is written axis-aligned on its plate. Shared edges and one
+common float32 tolerance keep seams exact. Each source is baked once into grid
+coordinates and its shells walked once (`partition_mesh`): whole shells go to
+the cell containing them and shells straddling a seam are cut in isolation
+against each cell they reach, with the crop's own cutter; only this pass
+discards zero-volume tangent remnants. Cost no longer grows with the plate
+count. Empty cells are omitted; a grid over Bambu's 36-plate limit fails.
+The maxima are configurable up to the largest bed.
 
-`data/export_plates.py` combines those staged archives into a native unsliced
-Bambu project, with one multipart assembly per plate, row/column names, the
-256 mm bed/20% spacing layout, and a common Z datum. This mode requires Bambu's
-Application prefix to retain project settings; generator metadata identifies
-Jarvizar. Native part extruders, face paint, and a shared filament palette
-replace standard color-group import. The small project config starts with
-P1S 0.4 mm / Generic PLA and Bambu's default purge matrix; users choose their
-actual printer/materials before slicing. It does not copy the example project's
-personal settings. Verify with `blender_export_plates.py`,
-`test_export_sections.py`, and installed Bambu `bambu_export_plates.py`;
-the live crop script accepts `--multi-plate` and section size options.
+Plates follow Bambu's PartPlateList: ceil(sqrt(count)) columns, 20% bed
+spacing, rows downward, each section centred by its cell bounds. Names
+`Section R1 C1`… identify pieces; no connectors, seam clearance or underside
+labels are added. Verify with `test_export_3mf.py`, `test_export_sections.py`,
+`blender_export_cutout.py`, `blender_export_plates.py` and installed Bambu
+`bambu_export_plates.py` (import/save/reopen of single-plate, multi-plate,
+rotated and other-bed fixtures). The live crop script accepts
+`--multi-plate`, `--printer` and section size options. See
+[3MF format and verification](docs/EXPORT_3MF.md).
 
 ## Development and verification
 
@@ -883,7 +900,7 @@ Select focused checks based on the change:
 | Roads / surface ownership | `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_shore_roads.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
 | Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_envelope.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
 | Anchored LiDAR / mapped rock | `test_lidar_relief.py`, `test_lidar_offer.py`, `blender_lidar_relief.py`; verify anchor alignment, class/coverage rejection, transactional fallback, source suppression, and unchanged disabled-LiDAR mesh fingerprints |
-| Export / trees / clipboard | `blender_export_cutout.py` and its live counterpart; `blender_tree_printability.py`, `blender_tree_road_clearance.py`; `test_projection.py` and windowed `blender_gui_paste.py` |
+| Export / trees / clipboard | `test_export_3mf.py`, `test_export_sections.py`, `blender_export_cutout.py`, `blender_export_plates.py`, installed Bambu `bambu_export_plates.py` and the live crop script; `blender_tree_printability.py`, `blender_tree_road_clearance.py`; `test_projection.py` and windowed `blender_gui_paste.py` |
 
 For geometry work, compare identical inputs/settings, check closure **and winding**,
 then inspect focused renders and seating/overlap probes. `render_preview.py`
@@ -916,9 +933,10 @@ version and `__init__.py`'s `bl_info` tuple synchronized. The builder overwrites
 same-version archives, so preserve needed baselines first. It packages files
 under the add-on directory only, excluding bytecode; keep experiments elsewhere.
 
-After add-on changes and relevant passing checks, follow
-[install-addon](.claude/commands/install-addon.md) to update Blender's installed
-copy and verify it against the built archive. A documentation-only change outside
+Do not install into Blender on your own: the [install-addon](.claude/commands/install-addon.md)
+workflow is token-expensive, so run it only when the user explicitly asks for an
+install in the current session. Otherwise report test results and that the
+installed copy is unchanged. A documentation-only change outside
 the packaged add-on does not require rebuilding/reinstalling identical code.
 Blender must be closed before replacing loaded files or saving preferences in
 another process. Never force-close an unsaved user session without permission.

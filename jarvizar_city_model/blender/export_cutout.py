@@ -6,6 +6,7 @@ or filled together. Concave openings use an opening prism, one crossing shell
 at a time, with Boolean self intersection disabled.
 """
 
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from itertools import product
@@ -14,8 +15,11 @@ import time
 
 import bpy
 import bmesh
+from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
 from mathutils import Matrix, Vector
+import numpy as np
 
+from ..data.export_plates import DEFAULT_COLOR
 from ..geometry.planar import ear_clip, point_in_ring, signed_area
 from .mesh_utils import _prism_geometry
 
@@ -509,6 +513,53 @@ def _zero_volume(bm):
     return abs(math.fsum(terms)) <= math.fsum(abs(v) for v in terms) * 1e-14
 
 
+def _shell_copy(vertices, faces):
+    work = bmesh.new()
+    copied = {v: work.verts.new(v.co) for v in vertices}
+    for face in faces:
+        copy = work.faces.new([copied[v] for v in face.verts])
+        copy.material_index = face.material_index
+        copy.smooth = face.smooth
+    return work
+
+
+def _clip_shell(vertices, edges, faces, opening, transform, collection, materials, stats, *,
+                discard_tangent):
+    """Cut one crossing shell in isolation; return its retained mesh or None.
+
+    BMesh operator setup scans its entire mesh, even when geom names only one
+    shell. Isolating crossing shells first keeps many tiny cuts/deletions from
+    becoming quadratic on merged city objects.
+    """
+    if any(not e.is_manifold or not e.is_contiguous for e in edges):
+        raise CutoutError("Boundary-crossing source geometry is not a closed, consistently wound solid")
+    work = _shell_copy(vertices, faces)
+    try:
+        if opening.convex:
+            try:
+                _clip_convex(work, _geometry(work), opening, transform)
+            except CutoutError:
+                # At an exact contact even a connected short-edge collapse can
+                # pinch the wall topology. Rebuild from the untouched source
+                # shell and preserve every contour index on this retry,
+                # including coincident coordinates. No whole-map boolean or
+                # mesh weld.
+                work.free()
+                work = _shell_copy(vertices, faces)
+                stats['retried_shells'] += 1
+                _clip_convex(work, _geometry(work), opening, transform, preserve_contour=True)
+        else:
+            _clip_concave(work, list(work.verts), list(work.edges), list(work.faces),
+                          opening, transform, collection, materials)
+        if not work.faces or (discard_tangent and _zero_volume(work)):
+            return None
+        result = bpy.data.meshes.new('_CUTOUT_RESULT')
+        work.to_mesh(result)
+        return result
+    finally:
+        work.free()
+
+
 def clip_mesh(mesh, matrix_world, opening, collection, stats, *, discard_tangent=False):
     transform = opening.inverse @ matrix_world
     bm = bmesh.new()
@@ -524,44 +575,10 @@ def clip_mesh(mesh, matrix_world, opening, collection, stats, *, discard_tangent
             if state == 'OUTSIDE':
                 removed.extend(vertices)
             elif state == 'CROSSING':
-                if any(not e.is_manifold or not e.is_contiguous for e in edges):
-                    raise CutoutError("Boundary-crossing source geometry is not a closed, consistently wound solid")
-                # BMesh operator setup scans its entire mesh, even when geom
-                # names only one shell. Isolate crossing shells first or many
-                # tiny cuts/deletions become quadratic on merged city objects.
-                work = bmesh.new()
-                try:
-                    copied = {v: work.verts.new(v.co) for v in vertices}
-                    for face in faces:
-                        copy = work.faces.new([copied[v] for v in face.verts])
-                        copy.material_index = face.material_index
-                        copy.smooth = face.smooth
-                    if opening.convex:
-                        try:
-                            _clip_convex(work, _geometry(work), opening, transform)
-                        except CutoutError:
-                            # At an exact contact even a connected short-edge
-                            # collapse can pinch the wall topology. Rebuild from
-                            # the untouched source shell and preserve every
-                            # contour index on this retry, including coincident
-                            # coordinates. No whole-map boolean or mesh weld.
-                            work.clear()
-                            copied = {v: work.verts.new(v.co) for v in vertices}
-                            for face in faces:
-                                copy = work.faces.new([copied[v] for v in face.verts])
-                                copy.material_index = face.material_index
-                                copy.smooth = face.smooth
-                            stats['retried_shells'] += 1
-                            _clip_convex(work, _geometry(work), opening, transform, preserve_contour=True)
-                    else:
-                        _clip_concave(work, list(work.verts), list(work.edges), list(work.faces),
-                                      opening, transform, collection, mesh.materials)
-                    if work.faces and not (discard_tangent and _zero_volume(work)):
-                        addition = bpy.data.meshes.new('_CUTOUT_RESULT')
-                        additions.append(addition)
-                        work.to_mesh(addition)
-                finally:
-                    work.free()
+                addition = _clip_shell(vertices, edges, faces, opening, transform, collection,
+                                       mesh.materials, stats, discard_tangent=discard_tangent)
+                if addition is not None:
+                    additions.append(addition)
                 removed.extend(vertices)
         if removed:
             bmesh.ops.delete(bm, geom=removed, context='VERTS')
@@ -628,19 +645,25 @@ def export_geometry(context, sources):
                 bpy.data.meshes.remove(mesh)
 
 
-def export_grid(context, parts, opening, max_width, max_height):
+def export_grid(context, parts, opening, max_width, max_height, printer):
     """Measure the authoritative opening only after the normal crop succeeds.
 
-    Grid axes are world X/Y (east/north), in printed millimetres. For tilted
-    through-openings the finite cropped solids determine their XY projection.
+    The grid follows the opening's dominant edge direction in world XY, so a
+    frame rotated to follow a street grid divides into rectangles aligned with
+    it. Rows run along the frame's north-south side and columns along its
+    east-west side, in printed millimetres. For tilted through-openings the
+    finite cropped solids determine their XY projection.
     """
-    from ..data.export_sections import section_grid
+    from ..data.export_sections import grid_angle, section_grid
 
     if opening is None:
         raise CutoutError("Multi-Plate Export needs a cutout frame defining the final boundary")
+    ring = [opening.matrix_world @ Vector((x, y, 0)) for x, y in opening.ring]
+    angle = grid_angle([(p.x, p.y) for p in ring])
+    rotation = Matrix.Rotation(-angle, 4, 'Z') if angle else Matrix.Identity(4)
     axis = opening.matrix_world.to_3x3() @ Vector((0, 0, 1))
     if math.hypot(axis.x, axis.y) <= abs(axis.z) * 1e-6:
-        points = [opening.matrix_world @ Vector((x, y, 0)) for x, y in opening.ring]
+        points = [rotation @ p for p in ring]
     else:
         points = []
         depsgraph = context.evaluated_depsgraph_get()
@@ -648,62 +671,209 @@ def export_grid(context, parts, opening, max_width, max_height):
             evaluated = part.evaluated_get(depsgraph)
             mesh = evaluated.to_mesh()
             try:
-                points.extend(evaluated.matrix_world @ v.co for v in mesh.vertices)
+                world = rotation @ evaluated.matrix_world
+                points.extend(world @ v.co for v in mesh.vertices)
             finally:
                 evaluated.to_mesh_clear()
     bounds = (min(p.x for p in points), min(p.y for p in points),
               max(p.x for p in points), max(p.y for p in points))
-    return section_grid(bounds, max_width, max_height)
+    return section_grid(bounds, max_width, max_height,
+                        plate_width=printer.width, plate_depth=printer.depth, angle=angle)
+
+
+def _assemble_piece(faces, additions, materials):
+    """One cell's mesh: whole shells by index, then the clipped remnants."""
+    index = {}
+    coordinates = []
+    polygons = []
+    material_indices = []
+    for face in faces:
+        polygon = []
+        for vertex in face.verts:
+            position = index.get(vertex)
+            if position is None:
+                position = index[vertex] = len(coordinates)
+                coordinates.append(vertex.co[:])
+            polygon.append(position)
+        polygons.append(polygon)
+        material_indices.append(face.material_index)
+    for addition in additions:
+        offset = len(coordinates)
+        flat = [0.0] * (len(addition.vertices) * 3)
+        addition.vertices.foreach_get('co', flat)
+        coordinates.extend(zip(flat[0::3], flat[1::3], flat[2::3]))
+        for polygon in addition.polygons:
+            polygons.append([offset + i for i in polygon.vertices])
+            material_indices.append(polygon.material_index)
+    piece = bpy.data.meshes.new('_SECTION_PIECE')
+    try:
+        piece.from_pydata(coordinates, [], polygons)
+        for material in materials:
+            piece.materials.append(material)
+        piece.polygons.foreach_set('material_index', material_indices)
+        piece.update()
+    except BaseException:
+        bpy.data.meshes.remove(piece)
+        raise
+    return piece
+
+
+def partition_mesh(mesh, grid, collection, stats):
+    """Split one grid-space mesh into per-cell meshes in a single shell walk.
+
+    Whole shells inside a cell are copied to it unchanged; a shell straddling
+    a seam is cut against each cell it reaches, in isolation, exactly as the
+    first crop cuts crossing shells. Returns [(section, mesh)] for the cells
+    that received geometry.
+    """
+    if not grid:
+        return []
+    identity = Matrix.Identity(4)
+    openings = {}
+    for section in grid:
+        west, south, east, north = section.bounds
+        openings[section] = Opening([(west, south), (east, south), (east, north), (west, north)],
+                                    identity, section.tolerance)
+    cells = {(section.row, section.column): section for section in grid}
+    columns = sorted({(section.bounds[0], section.bounds[2], section.column) for section in grid})
+    rows = sorted({(section.bounds[1], section.bounds[3], section.row) for section in grid})
+    wests, easts = [c[0] for c in columns], [c[1] for c in columns]
+    souths, norths = [r[0] for r in rows], [r[1] for r in rows]
+    kept = {section: ([], []) for section in grid}
+    bm = bmesh.new()
+    pieces = []
+    try:
+        bm.from_mesh(mesh)
+        for vertices, edges, faces in _shells(bm):
+            if not faces:
+                stats['outside_shells'] += 1
+                continue
+            corners = _corners(vertices)
+            (x0, y0, _), (x1, y1, _) = corners[0], corners[-1]
+            # Cells whose open interior overlaps the shell's box. A shell that
+            # only touches a seam from outside has no volume in that cell and
+            # must not duplicate its wall there.
+            first_column, last_column = bisect_right(easts, x0), bisect_left(wests, x1) - 1
+            first_row, last_row = bisect_right(norths, y0), bisect_left(souths, y1) - 1
+            for column in range(first_column, last_column + 1):
+                for row in range(first_row, last_row + 1):
+                    section = cells[(rows[row][2], columns[column][2])]
+                    opening = openings[section]
+                    state = opening.classify(corners, identity)
+                    stats[state.lower() + '_shells'] += 1
+                    if state == 'INSIDE':
+                        kept[section][0].extend(faces)
+                    elif state == 'CROSSING':
+                        addition = _clip_shell(vertices, edges, faces, opening, identity, collection,
+                                               mesh.materials, stats, discard_tangent=True)
+                        if addition is not None:
+                            kept[section][1].append(addition)
+        for section in grid:
+            faces, additions = kept[section]
+            if faces or additions:
+                pieces.append((section, _assemble_piece(faces, additions, mesh.materials)))
+        return pieces
+    except BaseException:
+        for _, piece in pieces:
+            bpy.data.meshes.remove(piece)
+        raise
+    finally:
+        bm.free()
+        for _, additions in kept.values():
+            for addition in additions:
+                bpy.data.meshes.remove(addition)
 
 
 @contextmanager
-def export_section(context, sources, section):
-    """Clip already cropped copies, one section at a time, using the same cutter.
+def export_sections(context, sources, grid):
+    """Partition the cropped copies across every grid cell in one pass per source.
 
-    Bake evaluation into world coordinates before cutting: all layers then use
-    the identical axis-aligned planes, without object-local round-trip offsets.
-    Original meshes and the first crop remain untouched.
+    Bake evaluation into grid coordinates (world XY rotated by the grid angle)
+    before cutting: all layers then use the identical axis-aligned planes,
+    without object-local round-trip offsets. Yields [(section, [objects])] in
+    grid order for the cells that received geometry; every object sits at the
+    identity with its cell's geometry in its own mesh. Original meshes and
+    the first crop remain untouched.
     """
-    west, south, east, north = section.bounds
-    # BMesh stores float32 coordinates. Use the same scale-relative tolerance
-    # as crop extraction so repeated cap cuts can merge numerical duplicates.
-    opening = Opening([(west, south), (east, south), (east, north), (west, north)],
-                      Matrix.Identity(4), section.tolerance)
+    angle = grid[0].angle if grid else 0.0
+    rotation = Matrix.Rotation(-angle, 4, 'Z') if angle else Matrix.Identity(4)
     temporary, meshes = [], []
     stats = defaultdict(int)
+    results = {section: [] for section in grid}
     try:
         depsgraph = context.evaluated_depsgraph_get()
         for source in sources:
+            started = time.perf_counter()
             evaluated = source.evaluated_get(depsgraph)
-            corners = [evaluated.matrix_world @ Vector(p) for p in evaluated.bound_box]
-            # Tangency has no volume and must not produce a duplicated wall.
-            if (max(p.x for p in corners) <= west or min(p.x for p in corners) >= east
-                    or max(p.y for p in corners) <= south or min(p.y for p in corners) >= north):
-                continue
-            obj = source.copy()
-            temporary.append(obj)
             mesh = bpy.data.meshes.new_from_object(evaluated, depsgraph=depsgraph)
-            meshes.append(mesh)
-            obj.data = mesh
-            obj.modifiers.clear()
-            mesh.transform(evaluated.matrix_world)
-            if evaluated.matrix_world.to_3x3().determinant() < 0:
-                mesh.flip_normals()
-            obj.matrix_world = Matrix.Identity(4)
             try:
-                clip_mesh(mesh, obj.matrix_world, opening, context.scene.collection, stats,
-                          discard_tangent=True)
-            except CutoutError as exc:
-                raise CutoutError(f"{section.name}, {source.name}: {exc}") from exc
-            if not mesh.polygons:
-                bpy.data.objects.remove(obj, do_unlink=True)
-                temporary.pop()
-                continue
-            context.scene.collection.objects.link(obj)
-        yield temporary
+                world = rotation @ evaluated.matrix_world
+                mesh.transform(world)
+                if world.to_3x3().determinant() < 0:
+                    mesh.flip_normals()
+                try:
+                    pieces = partition_mesh(mesh, grid, context.scene.collection, stats)
+                except CutoutError as exc:
+                    raise CutoutError(f"{source.name}: {exc}") from exc
+            finally:
+                bpy.data.meshes.remove(mesh)
+            for section, piece in pieces:
+                meshes.append(piece)
+                obj = source.copy()
+                temporary.append(obj)
+                obj.data = piece
+                obj.parent = None
+                obj.modifiers.clear()
+                obj.animation_data_clear()
+                obj.constraints.clear()
+                obj.matrix_world = Matrix.Identity(4)
+                context.scene.collection.objects.link(obj)
+                results[section].append(obj)
+            print(f"3MF sections {source.name}: {len(pieces)} cells, "
+                  f"{time.perf_counter() - started:.2f} s", flush=True)
+        yield [(section, results[section]) for section in grid if results[section]]
     finally:
         for obj in reversed(temporary):
             bpy.data.objects.remove(obj, do_unlink=True)
         for mesh in meshes:
             if mesh.users == 0:
                 bpy.data.meshes.remove(mesh)
+
+
+def material_color(material):
+    """A material's #RRGGBB filament colour: its Principled base colour, else its viewport colour.
+
+    Values are the material's stored linear components scaled to bytes, the
+    convention every previous export used, so palettes stay comparable.
+    """
+    if material is None:
+        return DEFAULT_COLOR
+    color = PrincipledBSDFWrapper(material, is_readonly=True).base_color
+    return "#%02X%02X%02X" % tuple(min(255, max(0, round(c * 255))) for c in color[:3])
+
+
+def part_arrays(obj, depsgraph):
+    """One export copy as writer arrays: world-space vertex rows, triangles, materials, colours."""
+    evaluated = obj.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh()
+    try:
+        mesh.calc_loop_triangles()
+        matrix = np.array(evaluated.matrix_world, dtype=np.float64)
+        coordinates = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+        mesh.vertices.foreach_get('co', coordinates)
+        points = coordinates.reshape(-1, 3).astype(np.float64)
+        if not np.array_equal(matrix, np.identity(4)):
+            points = points @ matrix[:3, :3].T + matrix[:3, 3]
+        triangles = np.empty(len(mesh.loop_triangles) * 3, dtype=np.int32)
+        mesh.loop_triangles.foreach_get('vertices', triangles)
+        triangles = triangles.reshape(-1, 3)
+        if np.linalg.det(matrix[:3, :3]) < 0:
+            triangles = triangles[:, [0, 2, 1]]
+        materials = np.empty(len(mesh.loop_triangles), dtype=np.int32)
+        mesh.loop_triangles.foreach_get('material_index', materials)
+    finally:
+        evaluated.to_mesh_clear()
+    colors = [material_color(slot.material) for slot in obj.material_slots] or [DEFAULT_COLOR]
+    materials = np.where((materials >= 0) & (materials < len(colors)), materials, 0)
+    return (list(zip(*points.T.tolist())), list(zip(*triangles.T.tolist())),
+            materials.tolist(), colors)

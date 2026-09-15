@@ -1,4 +1,5 @@
-"""Archive contract tests, independent of Blender and the external writer."""
+"""Archive contract tests for the native Bambu project writer, independent of Blender."""
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -6,13 +7,24 @@ import unittest
 import xml.etree.ElementTree as ET
 import zipfile
 
-from jarvizar_city_model.data.export_3mf import CORE, MATERIALS, MODEL, NS, SETTINGS, name_3mf, semantic_part_name
+from jarvizar_city_model.data.export_3mf import MODEL, NS, SETTINGS, part_name_map, semantic_part_name
+from jarvizar_city_model.data.export_plates import PRINTERS, PROJECT, PlateWriter
 
 
 class Object(dict):
     name = 'User mesh & café'
     users_collection = ()
     material_slots = ()
+
+
+def box(x, y, z, width, depth, height):
+    """A closed, outward-wound box: (vertices, triangles)."""
+    corners = [(x, y, z), (x + width, y, z), (x + width, y + depth, z), (x, y + depth, z),
+               (x, y, z + height), (x + width, y, z + height),
+               (x + width, y + depth, z + height), (x, y + depth, z + height)]
+    triangles = [(0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7), (0, 1, 5), (0, 5, 4),
+                 (1, 2, 6), (1, 6, 5), (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7)]
+    return corners, triangles
 
 
 class ExportNamesTests(unittest.TestCase):
@@ -45,90 +57,132 @@ class ExportNamesTests(unittest.TestCase):
         legacy_tree['surface_category'] = 'forest'
         self.assertEqual(semantic_part_name(legacy_tree), 'Forest')
 
-    def archive(self, path):
-        # IDs, resource order, component order, and the name-map order differ.
-        root = ET.Element(f'{{{CORE}}}model', unit='millimeter')
-        ET.SubElement(root, f'{{{CORE}}}metadata', name='Application').text = 'Blender'
-        resources = ET.SubElement(root, f'{{{CORE}}}resources')
-        mats = ET.SubElement(resources, f'{{{CORE}}}basematerials', id='9')
-        ET.SubElement(mats, f'{{{CORE}}}base', name='White', displaycolor='#FFFFFF')
-        ET.SubElement(mats, f'{{{CORE}}}base', name='Black', displaycolor='#000000')
-        for object_id, title in [('42', 'copy B'), ('7', 'copy A')]:
-            obj = ET.SubElement(resources, f'{{{CORE}}}object', id=object_id, pid='9', pindex='0')
-            mesh = ET.SubElement(obj, f'{{{CORE}}}mesh')
-            vertices = ET.SubElement(mesh, f'{{{CORE}}}vertices')
-            for x, y, z in [('0', '0', '0'), ('1', '0', '0'), ('0', '1', '0')]:
-                ET.SubElement(vertices, f'{{{CORE}}}vertex', x=x, y=y, z=z)
-            triangles = ET.SubElement(mesh, f'{{{CORE}}}triangles')
-            ET.SubElement(triangles, f'{{{CORE}}}triangle', v1='0', v2='1', v3='2', pid='9', p1='1')
-            group = ET.SubElement(obj, f'{{{CORE}}}metadatagroup')
-            ET.SubElement(group, f'{{{CORE}}}metadata', name='Title').text = title
-        assembly = ET.SubElement(resources, f'{{{CORE}}}object', id='21')
-        components = ET.SubElement(assembly, f'{{{CORE}}}components')
-        for object_id in ['7', '42']:
-            ET.SubElement(components, f'{{{CORE}}}component', objectid=object_id,
-                          transform='0 1 0 -1 0 0 0 0 1 17 23 4')
-        build = ET.SubElement(root, f'{{{CORE}}}build')
-        ET.SubElement(build, f'{{{CORE}}}item', objectid='21', transform='1 0 0 0 1 0 0 0 1 2 3 0')
-        with zipfile.ZipFile(path, 'w') as archive:
-            archive.writestr(MODEL, ET.tostring(root))
-            archive.writestr('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
-            archive.writestr('_rels/.rels', b'unchanged relationships')
-            archive.writestr('Metadata/thumbnail.png', b'unchanged thumbnail')
-        return root
+    def test_repeated_types_are_numbered_by_blender_name(self):
+        parts = []
+        for name, kind in [('c', 'buildings'), ('a', 'terrain'), ('b', 'buildings')]:
+            obj = Object({'feature_type': kind})
+            obj.name = name
+            parts.append(obj)
+        self.assertEqual(part_name_map(parts), {'c': 'Buildings 1', 'a': 'Terrain', 'b': 'Buildings 2'})
 
-    def test_resource_ids_names_and_preserved_geometry_materials_transforms(self):
+
+class PlateWriterTests(unittest.TestCase):
+    def write(self, printer, plates):
         with tempfile.TemporaryDirectory() as folder:
-            source, output = Path(folder)/'raw.3mf', Path(folder)/'named.3mf'
-            before = self.archive(source)
-            name_3mf(source, output, {'copy B': 'Labels & café "West"', 'copy A': 'Terrain'})
+            output = Path(folder) / 'project.3mf'
+            with PlateWriter(Path(folder) / 'model.xml', PRINTERS[printer]) as writer:
+                for name, parts, bounds in plates:
+                    writer.add_plate(name, parts, bounds)
+                writer.close(output)
             with zipfile.ZipFile(output) as archive:
-                self.assertEqual(len(archive.namelist()), len(set(archive.namelist())))
-                self.assertEqual(archive.read('Metadata/thumbnail.png'), b'unchanged thumbnail')
-                self.assertEqual(archive.read('_rels/.rels'), b'unchanged relationships')
-                root = ET.fromstring(archive.read(MODEL))
-                config = ET.fromstring(archive.read(SETTINGS))
-            self.assertEqual(config.find('object').get('id'), '21')
-            self.assertEqual(config.find('object/metadata').attrib, {'key': 'name', 'value': 'Map'})
-            parts = config.findall('object/part')
-            self.assertEqual([(p.get('id'), p.get('subtype'), p.find('metadata').get('value')) for p in parts],
-                             [('7', 'normal_part', 'Terrain'), ('42', 'normal_part', 'Labels & café "West"')])
-            for part in parts:
-                obj = root.find(f"m:resources/m:object[@id='{part.get('id')}']", NS)
-                self.assertEqual(obj.get('name'), part.find('metadata').get('value'))
-            resources = root.find('m:resources', NS)
-            groups = resources.findall(f'{{{MATERIALS}}}colorgroup')
-            self.assertEqual(len(groups), 1)
-            palette = [c.get('color') for c in groups[0]]
-            self.assertEqual(palette, ['#FFFFFF', '#000000'])
-            self.assertIn(b'<m:colorgroup', ET.tostring(root))
-            for obj in root.findall('m:resources/m:object', NS):
-                if obj.find('m:mesh', NS) is None:
-                    continue
-                self.assertEqual(obj.get('pid'), groups[0].get('id'))
-                self.assertEqual(palette[int(obj.get('pindex'))], '#FFFFFF')
-                triangle = obj.find('.//m:triangle', NS)
-                self.assertEqual(triangle.get('pid'), groups[0].get('id'))
-                self.assertEqual(palette[int(triangle.get('p1'))], '#000000')
-            # Undo only the intended property-resource retargeting.
-            for element in root.iter():
-                if element.get('pid') == groups[0].get('id'):
-                    element.set('pid', '9')
-            resources.remove(groups[0])
-            # Removing exactly the intended name edits restores the entire model.
-            for old, new in zip(before.findall('m:resources/m:object', NS), root.findall('m:resources/m:object', NS)):
-                new.attrib.pop('name')
-                old_title = old.find("m:metadatagroup/m:metadata[@name='Title']", NS)
-                if old_title is not None:
-                    new.find("m:metadatagroup/m:metadata[@name='Title']", NS).text = old_title.text
-            self.assertEqual(ET.tostring(before), ET.tostring(root))
+                return (ET.fromstring(archive.read(MODEL)), ET.fromstring(archive.read(SETTINGS)),
+                        json.loads(archive.read(PROJECT)), sorted(archive.namelist()),
+                        archive.read('[Content_Types].xml').decode(), archive.read('_rels/.rels').decode())
 
-    def test_missing_identity_fails_without_writing_destination(self):
+    def test_two_plates_filaments_paint_placement_and_package(self):
+        terrain = box(-100, -50, -3, 200, 100, 3)
+        building = box(-10, -10, 0, 20, 20, 30)
+        plate_one = [('Terrain', *terrain, [0] * 12, ['#5C6161']),
+                     ('Buildings', *building, [0] * 4 + [1] * 4 + [2] * 4, ['#FFFFFF', '#FF0000', '#5C6161'])]
+        plate_two = [('Terrain', *box(0, 0, -1, 100, 100, 1), [0] * 12, ['#5C6161'])]
+        model, config, project, names, types, rels = self.write(
+            'P1S', [('Map', plate_one, None), ('Section R1 C2', plate_two, (0, 0, 100, 100))])
+
+        objects = model.findall('m:resources/m:object', NS)
+        self.assertEqual([(o.get('id'), o.get('name')) for o in objects],
+                         [('1', 'Terrain'), ('2', 'Buildings'), ('3', 'Map'), ('4', 'Terrain'), ('5', 'Section R1 C2')])
+        # Parts precede the assembly that references them, as 3MF requires.
+        self.assertEqual([[c.get('objectid') for c in o.findall('m:components/m:component', NS)] for o in objects],
+                         [[], [], ['1', '2'], [], ['4']])
+        self.assertTrue(model.find("m:metadata[@name='Application']", NS).text.startswith('BambuStudio-'))
+        first = objects[0].find('m:mesh/m:vertices/m:vertex', NS)
+        self.assertEqual((first.get('x'), first.get('y'), first.get('z')), ('-100.000000', '-50.000000', '-3.000000'))
+        self.assertEqual(len(objects[0].findall('m:mesh/m:triangles/m:triangle', NS)), 12)
+
+        # Plate one is centred by its contents on the 256 mm bed and plate two
+        # by its section on the second virtual plate; both share the datum of
+        # the lowest point in the project.
+        items = model.findall('m:build/m:item', NS)
+        self.assertEqual([i.get('objectid') for i in items], ['3', '5'])
+        transforms = [[float(v) for v in i.get('transform').split()] for i in items]
+        self.assertEqual(transforms[0], [1, 0, 0, 0, 1, 0, 0, 0, 1, 128, 128, 3])
+        self.assertEqual(transforms[1][9:], [307.2 + 128 - 50, 128 - 50, 3])
+
+        # Filaments are one per colour in order of first use. A mixed part
+        # takes the filament of its most common material, lowest slot on a
+        # tie, and its other triangles carry Bambu's paint state.
+        self.assertEqual(project['filament_colour'], ['#5C6161', '#FFFFFF', '#FF0000'])
+        triangles = objects[1].findall('m:mesh/m:triangles/m:triangle', NS)
+        self.assertEqual([t.get('paint_color') for t in triangles], [None] * 4 + ['0C'] * 4 + ['4'] * 4)
+        self.assertFalse(objects[0].findall('m:mesh/m:triangles/m:triangle[@paint_color]', NS))
+        settings = [(o.get('id'), o.find("metadata[@key='name']").get('value'),
+                     o.find("metadata[@key='extruder']").get('value'),
+                     [(p.get('id'), p.get('subtype'), p.find("metadata[@key='name']").get('value'),
+                       p.find("metadata[@key='extruder']").get('value')) for p in o.findall('part')])
+                    for o in config.findall('object')]
+        self.assertEqual(settings, [
+            ('3', 'Map', '1', [('1', 'normal_part', 'Terrain', '1'), ('2', 'normal_part', 'Buildings', '2')]),
+            ('5', 'Section R1 C2', '1', [('4', 'normal_part', 'Terrain', '1')])])
+        plates = [(p.find("metadata[@key='plater_id']").get('value'), p.find("metadata[@key='plater_name']").get('value'),
+                   p.find("model_instance/metadata[@key='object_id']").get('value'))
+                  for p in config.findall('plate')]
+        self.assertEqual(plates, [('1', 'Map', '3'), ('2', 'Section R1 C2', '5')])
+
+        self.assertEqual(project['printer_model'], 'Bambu Lab P1S')
+        self.assertEqual(project['printer_settings_id'], 'Bambu Lab P1S 0.4 nozzle')
+        self.assertEqual(project['printable_area'], ['0x0', '256x0', '256x256', '0x256'])
+        self.assertEqual(project['filament_settings_id'], ['Bambu PLA Basic @BBL P1S 0.4 nozzle'] * 3)
+        self.assertEqual(project['filament_type'], ['PLA'] * 3)
+        self.assertEqual(len(project['flush_volumes_matrix']), 9)
+        self.assertEqual(names, sorted([MODEL, SETTINGS, PROJECT, '[Content_Types].xml', '_rels/.rels']))
+        self.assertIn(f'PartName="/{PROJECT}"', types)
+        self.assertIn(f'Target="/{MODEL}"', rels)
+
+    def test_bed_presets_change_layout_and_starting_profiles(self):
+        part = [('Terrain', *box(0, 0, 0, 100, 100, 2), [0] * 12, ['#5C6161'])]
+        model, config, project, *_ = self.write(
+            'A1M', [('Section R1 C1', part, (0, 0, 100, 100)), ('Section R1 C2', part, (100, 0, 200, 100))])
+        transforms = [[float(v) for v in i.get('transform').split()][9:] for i in model.findall('m:build/m:item', NS)]
+        self.assertEqual(transforms, [[90 - 50, 90 - 50, 0], [216 + 90 - 150, 90 - 50, 0]])
+        self.assertEqual(project['printable_area'], ['0x0', '180x0', '180x180', '0x180'])
+        self.assertEqual(project['printable_height'], '180')
+        self.assertEqual(project['printer_model'], 'Bambu Lab A1 mini')
+        self.assertEqual(project['print_settings_id'], '0.20mm Standard @BBL A1M')
+        self.assertEqual(project['filament_settings_id'], ['Bambu PLA Basic @BBL A1M'])
+        model, config, project, *_ = self.write('H2D', [('Map', part, None)])
+        self.assertEqual(project['printable_area'], ['0x0', '350x0', '350x320', '0x320'])
+        self.assertEqual([float(v) for v in model.find('m:build/m:item', NS).get('transform').split()][9:],
+                         [175 - 50, 160 - 50, 0])
+        self.assertTrue(part_name_map)
+
+    def test_rejects_invalid_parts_and_leaves_no_project(self):
+        vertices, triangles = box(0, 0, 0, 1, 1, 1)
+        good = ('Terrain', vertices, triangles, [0] * 12, ['#5C6161'])
+        bad_parts = [
+            ('Terrain', vertices[:-1] + [(0, 0, float('nan'))], triangles, [0] * 12, ['#5C6161']),
+            ('Terrain', vertices, triangles, [0] * 11 + [1], ['#5C6161']),
+            ('Terrain', vertices, triangles, [0] * 11, ['#5C6161']),
+            ('Terrain', vertices, [], [], ['#5C6161']),
+            ('Terrain', vertices, triangles + [(0, 1, 8)], [0] * 13, ['#5C6161']),
+            ('Terrain', vertices, triangles, [0] * 12, ['#fff']),
+            ('Terrain', vertices, triangles, [0] * 12, []),
+        ]
         with tempfile.TemporaryDirectory() as folder:
-            source, output = Path(folder)/'raw.3mf', Path(folder)/'named.3mf'
-            self.archive(source)
-            with self.assertRaisesRegex(ValueError, 'source semantic name'):
-                name_3mf(source, output, {'wrong': 'Terrain'})
+            output = Path(folder) / 'project.3mf'
+            for part in bad_parts:
+                with self.subTest(part=part[1:] if part[1] is not vertices else part[2:]):
+                    with PlateWriter(Path(folder) / 'model.xml', PRINTERS['P1S']) as writer:
+                        with self.assertRaises(ValueError):
+                            writer.add_plate('Map', [part])
+            with PlateWriter(Path(folder) / 'model.xml', PRINTERS['P1S']) as writer:
+                with self.assertRaises(ValueError):
+                    writer.add_plate('Map', [])
+                with self.assertRaises(ValueError):
+                    writer.close(output)
+                for index in range(36):
+                    writer.add_plate(f'Section R1 C{index + 1}', [good])
+                with self.assertRaises(ValueError):
+                    writer.add_plate('Section R1 C37', [good])
             self.assertFalse(output.exists())
 
 

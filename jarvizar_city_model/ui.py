@@ -157,6 +157,7 @@ class JARVIZAR_PT_city_model(Panel):
 
         layout.operator("jarvizar.generate_model", icon="MESH_CUBE")
         box = layout.box()
+        box.prop(settings, "bambu_printer")
         box.prop(settings, "multi_plate_export")
         if settings.multi_plate_export:
             box.prop(settings, "section_width_mm")

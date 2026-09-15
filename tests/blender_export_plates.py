@@ -18,12 +18,18 @@ from mathutils import Matrix
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_export_cutout import addon, mesh_object, rectangle, fingerprint, audit
 from jarvizar_city_model.blender.collections import create_city_hierarchy, GENERATED_KEY
-from jarvizar_city_model.blender.export_cutout import export_geometry, export_grid, export_section
+from jarvizar_city_model.blender.export_cutout import export_geometry, export_grid, export_sections
 from jarvizar_city_model.data.export_3mf import MODEL, NS, SETTINGS
-from jarvizar_city_model.data.export_plates import PROJECT
+from jarvizar_city_model.data.export_plates import PRINTERS, PROJECT
+from jarvizar_city_model.data.export_sections import plate_origin
 
 
 FOLDER = Path(__file__).resolve().parents[1] / 'scratchpad' / 'multi-plate'
+
+
+def transform(point, text):
+    m = [float(v) for v in text.split()]
+    return tuple(sum(m[i + j * 3] * point[j] for j in range(3)) + m[9 + i] for i in range(3))
 
 
 class PlateTests(unittest.TestCase):
@@ -34,10 +40,10 @@ class PlateTests(unittest.TestCase):
             bpy.data.collections.remove(col)
         self.collections = create_city_hierarchy(bpy.context.scene)
         self.settings = bpy.context.scene.jarvizar_city_model
+        self.settings.bambu_printer = 'P1S'
         self.settings.multi_plate_export = True
         self.settings.section_width_mm = 210
         self.settings.section_height_mm = 210
-        bpy.ops.preferences.addon_enable(module='io_mesh_3mf')
         FOLDER.mkdir(parents=True, exist_ok=True)
 
     def source(self, name, ring, bottom=-1, top=2):
@@ -63,27 +69,28 @@ class PlateTests(unittest.TestCase):
         self.assertEqual(bpy.context.view_layer.objects.active, active)
         self.assertEqual({o: fingerprint(o) for o in fingerprints}, fingerprints)
 
-    def partition(self, sources, expected_cells):
+    def partition(self, sources, expected_cells, angle=0.0):
         before = self.snapshot()
         with export_geometry(bpy.context, sources) as (parts, stats, opening):
             volumes = sum(audit(p.data) * abs(p.matrix_world.to_3x3().determinant()) for p in parts)
             grid = export_grid(bpy.context, parts, opening, self.settings.section_width_mm,
-                               self.settings.section_height_mm)
-            volume = 0
-            occupied = 0
-            for section in grid:
-                with export_section(bpy.context, parts, section) as meshes:
-                    occupied += bool(meshes)
-                    for obj in meshes:
+                               self.settings.section_height_mm, PRINTERS[self.settings.bambu_printer])
+            self.assertAlmostEqual(grid[0].angle, angle, places=6)
+            with export_sections(bpy.context, parts, grid) as sections:
+                self.assertEqual(len(sections), expected_cells)
+                volume = 0
+                for section, objects in sections:
+                    self.assertTrue(objects)
+                    w, s, e, n = section.bounds
+                    for obj in objects:
                         volume += audit(obj.data)
-                        w, s, e, n = section.bounds
                         self.assertTrue(all(w - 2e-5 <= v.co.x <= e + 2e-5 and
                                             s - 2e-5 <= v.co.y <= n + 2e-5
                                             for v in obj.data.vertices))
                         self.assertEqual(obj.matrix_world, Matrix.Identity(4))
-            self.assertEqual(occupied, expected_cells)
-            self.assertAlmostEqual(volume, volumes, delta=volumes * 2e-6)
+                self.assertAlmostEqual(volume, volumes, delta=volumes * 2e-6)
         self.check_snapshot(before)
+        return grid
 
     def export(self, name):
         before = self.snapshot()
@@ -92,7 +99,34 @@ class PlateTests(unittest.TestCase):
         self.check_snapshot(before)
         with zipfile.ZipFile(path) as archive:
             return (ET.fromstring(archive.read(MODEL)), ET.fromstring(archive.read(SETTINGS)),
-                    json.loads(archive.read(PROJECT)) if PROJECT in archive.namelist() else None)
+                    json.loads(archive.read(PROJECT)))
+
+    def plate_points(self, model, config, project):
+        """Placed points of every plate, relative to its own virtual bed origin."""
+        width, depth = (float(v) for v in project['printable_area'][2].split('x'))
+        plates = config.findall('plate')
+        result = {}
+        for index, plate in enumerate(plates):
+            object_id = plate.find("model_instance/metadata[@key='object_id']").get('value')
+            item = model.find(f"m:build/m:item[@objectid='{object_id}']", NS)
+            assembly = model.find(f"m:resources/m:object[@id='{object_id}']", NS)
+            ox, oy = plate_origin(index, len(plates), width, depth)
+            points = []
+            for component in assembly.findall('m:components/m:component', NS):
+                mesh = model.find(f"m:resources/m:object[@id='{component.get('objectid')}']/m:mesh", NS)
+                for vertex in mesh.findall('m:vertices/m:vertex', NS):
+                    x, y, z = transform(tuple(float(vertex.get(a)) for a in 'xyz'), item.get('transform'))
+                    points.append((x - ox, y - oy, z))
+            result[plate.find("metadata[@key='plater_name']").get('value')] = points
+        return result, width, depth
+
+    def assert_on_beds(self, model, config, project):
+        points, width, depth = self.plate_points(model, config, project)
+        for name, plate in points.items():
+            self.assertTrue(all(-1e-4 <= x <= width + 1e-4 and -1e-4 <= y <= depth + 1e-4 and z >= -1e-4
+                                for x, y, z in plate), name)
+        self.assertAlmostEqual(min(z for plate in points.values() for _, _, z in plate), 0, places=4)
+        return points
 
     def test_six_plates_materials_layers_units_and_exact_seams(self):
         self.frame(rectangle(450, 260))
@@ -123,7 +157,13 @@ class PlateTests(unittest.TestCase):
             self.assertEqual([p.find("metadata[@key='plater_name']").get('value') for p in config.findall('plate')],
                              [f'Section R{r} C{c}' for r in (1, 2) for c in (1, 2, 3)])
             self.assertEqual(len(project['filament_colour']), 6)
+            self.assertEqual(project['printer_model'], 'Bambu Lab P1S')
             self.assertTrue(model.findall('.//m:triangle[@paint_color]', NS))
+            # Every part carries its filament; the assembly takes its first part's.
+            for obj in config.findall('object'):
+                extruders = [p.find("metadata[@key='extruder']").get('value') for p in obj.findall('part')]
+                self.assertTrue(extruders and all(1 <= int(e) <= 6 for e in extruders))
+                self.assertEqual(obj.find("metadata[@key='extruder']").get('value'), extruders[0])
             terrain_parts = [p for p in config.findall('object/part')
                              if p.find("metadata[@key='name']").get('value') == 'Terrain']
             xs = []
@@ -134,6 +174,7 @@ class PlateTests(unittest.TestCase):
             self.assertEqual(xs[:3], [(-225, -75), (-75, 75), (75, 225)])
             self.assertEqual(xs[:3], xs[3:])
             self.assertFalse(any('cutout' in str(e.attrib) for e in model.iter()))
+            self.assert_on_beds(model, config, project)
 
     def test_concave_empty_cell_and_small_single_plate(self):
         cutout = self.frame([(-200, -200), (200, -200), (200, 0), (0, 0), (0, 200), (-200, 200)])
@@ -148,11 +189,15 @@ class PlateTests(unittest.TestCase):
         model, config, _ = self.export('fits')
         self.assertEqual(len(config.findall('plate')), 1)
         self.assertEqual(len(model.findall('m:build/m:item', NS)), 1)
+        # Without sections the whole map is one plate, still a native project
+        # with a filament per part.
         self.settings.multi_plate_export = False
         model, config, project = self.export('disabled')
-        self.assertIsNone(project)
-        self.assertFalse(config.findall('plate'))
+        self.assertEqual([p.find("metadata[@key='plater_name']").get('value') for p in config.findall('plate')], ['Map'])
         self.assertEqual(config.find('object/metadata').get('value'), 'Map')
+        self.assertEqual([p.find("metadata[@key='extruder']").get('value') for p in config.findall('object/part')], ['1'])
+        self.assertEqual(project['printer_settings_id'], 'Bambu Lab P1S 0.4 nozzle')
+        self.assert_on_beds(model, config, project)
 
     def test_rotated_frame_transformed_layers_and_boundary_tangency(self):
         cutout = self.frame(rectangle(310, 240))
@@ -163,7 +208,15 @@ class PlateTests(unittest.TestCase):
         bevel = other.modifiers.new('bevel', 'BEVEL')
         bevel.width = .15
         # Separate overlapping shells are deliberately retained by the cutter.
-        self.partition([terrain, other], 4)
+        # The grid follows the rotated frame: its cells are rectangles aligned
+        # with the frame that together span exactly the 310 x 240 opening.
+        grid = self.partition([terrain, other], 4, angle=.25)
+        self.assertAlmostEqual(max(c.bounds[2] for c in grid) - min(c.bounds[0] for c in grid), 310, places=3)
+        self.assertAlmostEqual(max(c.bounds[3] for c in grid) - min(c.bounds[1] for c in grid), 240, places=3)
+        self.assertTrue(all(c.bounds[2] - c.bounds[0] <= 210 and c.bounds[3] - c.bounds[1] <= 210 for c in grid))
+        model, config, project = self.export('rotated')
+        self.assertEqual(len(config.findall('plate')), 4)
+        self.assert_on_beds(model, config, project)
 
     def test_curved_opening_holes_and_solids_exactly_on_a_seam(self):
         ring=[(180*math.cos(i*math.tau/24), 140*math.sin(i*math.tau/24)) for i in range(24)]
@@ -188,6 +241,30 @@ class PlateTests(unittest.TestCase):
         tube.data.transform(Matrix.Rotation(math.pi/2,4,'Y'))
         self.partition([left,right,tube],2)
 
+    def test_printer_presets_clamp_sections_and_lay_out_their_beds(self):
+        self.frame(rectangle(450, 260))
+        terrain = self.source('terrain', rectangle(600, 400))
+        self.settings.bambu_printer = 'A1M'
+        self.assertEqual((self.settings.section_width_mm, self.settings.section_height_mm), (180, 180))
+        self.partition([terrain], 6)
+        model, config, project = self.export('mini')
+        self.assertEqual(project['printable_area'], ['0x0', '180x0', '180x180', '0x180'])
+        self.assertEqual(project['printer_settings_id'], 'Bambu Lab A1 mini 0.4 nozzle')
+        self.assertEqual(project['print_settings_id'], '0.20mm Standard @BBL A1M')
+        self.assertEqual(project['filament_settings_id'], ['Bambu PLA Basic @BBL A1M'])
+        points = self.assert_on_beds(model, config, project)
+        self.assertEqual(len(points), 6)
+        # A larger bed admits larger sections; two H2D plates hold the same map.
+        self.settings.bambu_printer = 'H2D'
+        self.settings.section_width_mm = 350
+        self.settings.section_height_mm = 320
+        model, config, project = self.export('h2d')
+        self.assertEqual(len(config.findall('plate')), 2)
+        self.assertEqual(project['printer_model'], 'Bambu Lab H2D')
+        self.assert_on_beds(model, config, project)
+        self.settings.bambu_printer = 'P1S'
+        self.assertEqual((self.settings.section_width_mm, self.settings.section_height_mm), (256, 256))
+
     def test_failure_preserves_destination_and_scene(self):
         self.frame(rectangle(400, 300))
         terrain = self.source('terrain', rectangle(600, 600))
@@ -195,8 +272,8 @@ class PlateTests(unittest.TestCase):
         bpy.context.view_layer.objects.active = terrain
         path = FOLDER / 'failure.3mf'
         path.write_bytes(b'previous destination')
-        for target in ('jarvizar_city_model.data.export_plates.combine_plates',
-                       'jarvizar_city_model.blender.export_cutout.export_section'):
+        for target in ('jarvizar_city_model.data.export_plates.PlateWriter.close',
+                       'jarvizar_city_model.blender.export_cutout.export_sections'):
             before = self.snapshot()
             with patch(target, side_effect=ValueError('injected section failure')):
                 with self.assertRaisesRegex(RuntimeError, 'injected section failure'):

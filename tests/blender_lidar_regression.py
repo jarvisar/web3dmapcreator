@@ -1,7 +1,7 @@
 """Compare complete cached map fingerprints with LiDAR off/on and export.
 
 --bundle <bbox-dir> --output <json> [--addon-root <package-parent>] [--lidar]
---export <3mf> optionally exercises the existing installed 3MF exporter.
+--export <3mf> optionally exercises the Bambu project exporter.
 """
 import argparse
 import hashlib
@@ -58,7 +58,6 @@ if args.lidar:
     assert counts['lidar_buildings']>0,counts
     assert 'Used LiDAR' in s.lidar_generation_status,s.lidar_generation_status
 if args.export:
-    bpy.ops.preferences.addon_enable(module='io_mesh_3mf')
     assert bpy.ops.jarvizar.export_3mf(filepath=str(args.export.resolve()))=={'FINISHED'}
 args.output.write_text(json.dumps({'addon':addon.__file__,'counts':counts,'meshes':meshes},indent=2),encoding='utf-8')
 print('LIDAR_FULL_REGRESSION_OK',len(meshes),'meshes',sum(v['faces'] for v in meshes.values()),'faces')

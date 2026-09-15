@@ -15,6 +15,7 @@ from bpy.props import (
 )
 from bpy.types import AddonPreferences, PropertyGroup
 
+from .data.export_plates import DEFAULT_PRINTER, MAX_BED_DIMENSION, PRINTERS
 from .data.land import DEFAULT_SURFACE_PRIORITY
 from .external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS
 from .external.lidar_footprint import DEFAULT_MINIMUM_FOOTPRINT_AREA_MM2
@@ -174,6 +175,13 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     )
 
     # These settings are consumed only by Export 3MF for Bambu.
+    bambu_printer: EnumProperty(
+        name="Bambu Printer",
+        description="Bed size, virtual plate layout and starting presets of the exported project",
+        items=[(printer.key, printer.model, f"{printer.bed} bed") for printer in PRINTERS.values()],
+        default=DEFAULT_PRINTER,
+        update=lambda self, context: self.clamp_sections_to_bed(),
+    )
     multi_plate_export: BoolProperty(
         name="Multi-Plate Export",
         description="Split the final cutout into matching sections, one per Bambu Studio plate",
@@ -181,14 +189,22 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     )
     section_width_mm: FloatProperty(
         name="Max Section Width (mm)",
-        description="Maximum section size east to west; does not change the map scale",
-        default=210.0, min=1.0, max=256.0, precision=2,
+        description="Maximum section size along the cutout's east-west side, at most the bed width; does not change the map scale",
+        default=210.0, min=1.0, max=MAX_BED_DIMENSION, precision=2,
     )
     section_height_mm: FloatProperty(
         name="Max Section Height (mm)",
-        description="Maximum section size north to south; does not change the map scale",
-        default=210.0, min=1.0, max=256.0, precision=2,
+        description="Maximum section size along the cutout's north-south side, at most the bed depth; does not change the map scale",
+        default=210.0, min=1.0, max=MAX_BED_DIMENSION, precision=2,
     )
+
+    def clamp_sections_to_bed(self):
+        """Keep the section maxima printable on the selected bed."""
+        printer = PRINTERS[self.bambu_printer]
+        if self.section_width_mm > printer.width:
+            self.section_width_mm = printer.width
+        if self.section_height_mm > printer.depth:
+            self.section_height_mm = printer.depth
 
     # ---------------------------------------------------------------- terrain
     terrain_source: EnumProperty(

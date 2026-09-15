@@ -2,9 +2,9 @@
 
 First run blender_export_plates.py. Uses an isolated data directory, with no
 slicing, network access, printer connection, or user preference changes.
+Covers single-plate and multi-plate projects on several bed sizes.
 """
 import argparse
-from collections import Counter
 import ctypes
 import json
 from pathlib import Path
@@ -17,6 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from jarvizar_city_model.data.export_3mf import MODEL, NS, SETTINGS
 from jarvizar_city_model.data.export_plates import PROJECT
 from jarvizar_city_model.data.export_sections import plate_origin
+
+
+FIXTURES = ('six-NONE', 'six-METRIC', 'concave', 'fits', 'disabled', 'rotated', 'mini', 'h2d')
 
 
 def metadata(element, key):
@@ -45,6 +48,7 @@ def inspect(path):
         config = ET.fromstring(archive.read(SETTINGS))
         project = json.loads(archive.read(PROJECT))
     palette = project['filament_colour']
+    width, depth = (float(v) for v in project['printable_area'][2].split('x'))
     count = len(config.findall('plate'))
     result = {}
     root = roots[MODEL]
@@ -59,7 +63,7 @@ def inspect(path):
         obj_settings = config.find(f"object[@id='{object_id}']")
         name = metadata(obj_settings, 'name')
         assert name == metadata(plate, 'plater_name')
-        origin = plate_origin(index, count)
+        origin = plate_origin(index, count, width, depth)
         parts = {}
         for component in assembly.findall('m:components/m:component', NS):
             part_id = component.get('objectid')
@@ -71,30 +75,38 @@ def inspect(path):
             points = [tuple(float(v.get(a)) for a in ('x', 'y', 'z')) for v in mesh.find('m:vertices', NS)]
             points = [transform(transform(p, component.get('transform')), item.get('transform')) for p in points]
             points = [(x - origin[0], y - origin[1], z) for x, y, z in points]
-            assert all(-1e-4 <= x <= 256.0001 and -1e-4 <= y <= 256.0001 and z >= -1e-4 for x, y, z in points)
+            assert all(-1e-4 <= x <= width + 1e-4 and -1e-4 <= y <= depth + 1e-4 and z >= -1e-4 for x, y, z in points)
             triangles = []
             for triangle in mesh.find('m:triangles', NS):
                 color = palette[paint_id(triangle.get('paint_color'), default) - 1]
                 triangles.append((tuple(points[int(triangle.get(v))] for v in ('v1', 'v2', 'v3')), color))
             parts[part_name] = triangles
         result[name] = parts
-    return result, palette
+    return result, palette, project['printer_settings_id']
 
 
 def compare(before, after):
     assert before[1] == after[1], (before[1], after[1])
+    assert before[2] == after[2], (before[2], after[2])
     assert list(before[0]) == list(after[0])
     for name, parts in before[0].items():
         assert parts.keys() == after[0][name].keys()
         for part_name, triangles in parts.items():
             other = after[0][name][part_name]
             assert len(triangles) == len(other), (name, part_name)
-            # Bambu can reorder faces, but must preserve geometry and colors.
-            def key(face):
-                points, color = face
-                center = tuple(round(sum(p[i] for p in points) / 3, 3) for i in range(3))
-                return center, color
-            assert Counter(map(key, triangles)) == Counter(map(key, other)), (name, part_name, 'faces/colors')
+            # Bambu can reorder faces and re-round coordinates to float32, but
+            # must preserve every triangle's position and colour.
+            def center(points):
+                return tuple(sum(p[i] for p in points) / 3 for i in range(3))
+            remaining = [(center(points), color) for points, color in other]
+            for points, color in triangles:
+                expected = center(points)
+                for index, (candidate, candidate_color) in enumerate(remaining):
+                    if candidate_color == color and all(abs(candidate[i] - expected[i]) < 1e-3 for i in range(3)):
+                        del remaining[index]
+                        break
+                else:
+                    raise AssertionError((name, part_name, 'faces/colors', expected, color))
             a = sorted(p for points, color in triangles for p in points)
             b = sorted(p for points, color in other for p in points)
             # Compare bounds independently: re-centering uses float32 internally.
@@ -118,17 +130,17 @@ def main():
             subprocess.run([str(args.bambu.resolve()), '--datadir', str(folder / 'bambu-profile'),
                             '--arrange', '0', '--orient', '0', '--export-3mf', destination.name,
                             '--outputdir', str(folder), str(source)], cwd=folder,
-                           stdout=log, stderr=subprocess.STDOUT, timeout=60, check=True,
+                           stdout=log, stderr=subprocess.STDOUT, timeout=120, check=True,
                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         return destination
-    for name in ('six-NONE', 'six-METRIC', 'concave', 'fits'):
+    for name in FIXTURES:
         source = folder / (name + '.3mf')
         expected = inspect(source)
         saved = reopen(source, name + '-saved')
         compare(expected, inspect(saved))
         reopened = reopen(saved, name + '-reopened')
         compare(expected, inspect(reopened))
-        print('BAMBU_PLATES_ROUNDTRIP', name, len(expected[0]), len(expected[1]), flush=True)
+        print('BAMBU_PLATES_ROUNDTRIP', name, len(expected[0]), len(expected[1]), expected[2], flush=True)
     print('BAMBU_EXPORT_PLATES_OK')
 
 

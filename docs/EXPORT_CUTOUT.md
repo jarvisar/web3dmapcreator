@@ -1,8 +1,8 @@
 # 3MF export boundary
 
-`JARVIZAR_OT_export_3mf` keeps the existing `io_mesh_3mf` writer, millimetre
-compensation, selected material-bearing parts, and single assembly holder.
-`blender/export_cutout.py` prepares temporary objects before the writer runs.
+`JARVIZAR_OT_export_3mf` writes a native Bambu project from temporary export
+copies (see [EXPORT_3MF.md](EXPORT_3MF.md)); `blender/export_cutout.py` prepares
+those copies before the writer reads their evaluated meshes.
 Only objects returned by `generated_objects(scene)` qualify; the scene object
 named exactly `cutout` is excluded even if it has the generated tag.
 
@@ -61,8 +61,7 @@ The export context owns every temporary object and mesh and releases them on
 success, an empty crop, clipping failure, and writer failure. Original objects
 are never reparented. Object copies retain current world placement while their
 parent/constraints are cleared. Crossing meshes bake current evaluation before
-clipping. The operator restores selection and the active object, and treats a
-writer `CANCELLED` result as an export failure.
+clipping. The operator leaves selection and the active object untouched.
 
 Without `cutout`, full-model export remains unchanged. An invalid existing
 `cutout` is an error, never a reason to export an uncropped model.
@@ -74,7 +73,7 @@ Run `tests/blender_export_cutout.py` in Blender 3.6 with `--background
 paths, independent overlapping shells, hollow caps, convex and concave shapes,
 notches crossing faces whose corners are all inside, bevels, unwelded imports,
 applied and object/parent transforms, modifiers, materials, failure cleanup,
-and actual `io_mesh_3mf` archives with both factory and millimetre scene units.
+and real project archives with both factory and millimetre scene units.
 
 `tests/blender_export_cutout_live.py` generates a cached map or opens a generated
 blend, checks every cropped mesh for manifold edges, consistent winding and

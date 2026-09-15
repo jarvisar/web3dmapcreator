@@ -18,7 +18,8 @@ from mathutils import Vector
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import jarvizar_city_model as addon
 from jarvizar_city_model.blender.collections import generated_objects
-from jarvizar_city_model.blender.export_cutout import export_geometry, export_grid, export_section
+from jarvizar_city_model.blender.export_cutout import export_geometry, export_grid, export_sections
+from jarvizar_city_model.data.export_plates import PRINTERS
 from jarvizar_city_model.blender.mesh_utils import _prism_geometry
 
 parser=argparse.ArgumentParser()
@@ -33,6 +34,7 @@ parser.add_argument('--multi-plate',action='store_true')
 parser.add_argument('--section-width',type=float,default=210)
 parser.add_argument('--section-height',type=float,default=210)
 parser.add_argument('--output',type=Path)
+parser.add_argument('--printer',default='P1S')
 args=parser.parse_args(sys.argv[sys.argv.index('--')+1:])
 if args.blend:
     bpy.ops.wm.open_mainfile(filepath=str(Path(args.blend).resolve()))
@@ -72,7 +74,8 @@ with export_geometry(bpy.context,sources) as (parts,stats,opening):
         bm.free()
     print('LIVE_CROP_AUDIT',json.dumps(counts),flush=True)
     if args.multi_plate:
-        grid=export_grid(bpy.context,parts,opening,args.section_width,args.section_height)
+        grid=export_grid(bpy.context,parts,opening,args.section_width,args.section_height,PRINTERS[args.printer])
+        print('LIVE_GRID',len(grid),grid[0].angle,flush=True)
         occupied=0
         faces=0
         expected_volume=0
@@ -81,9 +84,9 @@ with export_geometry(bpy.context,sources) as (parts,stats,opening):
             bm=bmesh.new();bm.from_mesh(part.data)
             expected_volume+=bm.calc_volume(signed=True)*part.matrix_world.to_3x3().determinant()
             bm.free()
-        for section in grid:
-            with export_section(bpy.context,parts,section) as section_parts:
-                occupied+=bool(section_parts)
+        with export_sections(bpy.context,parts,grid) as sections:
+            for section,section_parts in sections:
+                occupied+=1
                 for part in section_parts:
                     bm=bmesh.new();bm.from_mesh(part.data)
                     assert all(e.is_manifold and e.is_contiguous for e in bm.edges),(section.name,part.name)
@@ -117,8 +120,8 @@ with export_geometry(bpy.context,sources) as (parts,stats,opening):
         bpy.ops.render.render(write_still=True)
 assert before==[(o.data.as_pointer(),len(o.data.vertices),len(o.data.polygons),o.matrix_world.copy()) for o in sources]
 if args.export:
-    bpy.ops.preferences.addon_enable(module='io_mesh_3mf')
     settings=bpy.context.scene.jarvizar_city_model
+    settings.bambu_printer=args.printer
     settings.multi_plate_export=args.multi_plate
     settings.section_width_mm=args.section_width
     settings.section_height_mm=args.section_height

@@ -9,7 +9,6 @@ import tempfile
 from pathlib import Path
 
 import bpy
-import mathutils
 from bpy.types import Operator
 from bpy.props import IntProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
@@ -1066,87 +1065,12 @@ class JARVIZAR_OT_generate_model(Operator):
         return {"FINISHED"}
 
 
-# io_mesh_3mf multiplies the scene's ``scale_length`` by the metre value of the
-# *display* unit as well, so a scene set to millimetres at 0.001 exports a
-# thousandth of the model.  Mirroring its own table lets the export ask for
-# exactly the compensating factor instead of hard-coding one that only holds
-# for one unit setting.
-_BLENDER_TO_METRE = {
-    "THOU": 0.0000254,
-    "INCHES": 0.0254,
-    "FEET": 0.3048,
-    "YARDS": 0.9144,
-    "CHAINS": 20.1168,
-    "FURLONGS": 201.168,
-    "MILES": 1609.344,
-    "MICROMETERS": 0.000001,
-    "MILLIMETERS": 0.001,
-    "CENTIMETERS": 0.01,
-    "DECIMETERS": 0.1,
-    "METERS": 1.0,
-    "ADAPTIVE": 1.0,
-    "DEKAMETERS": 10.0,
-    "HECTOMETERS": 100.0,
-    "KILOMETERS": 1000.0,
-}
-
-
-def _millimetre_export_scale(scene) -> float:
-    """The ``Scale`` io_mesh_3mf needs so one Blender unit lands as one mm.
-
-    The add-on builds its geometry in model millimetres, so the exported file
-    must carry the vertex coordinates unchanged.  The exporter applies
-    ``scale_length / 0.001 * blender_to_metre[length_unit]``; this returns its
-    reciprocal, reading the table from the exporter itself when it is
-    importable so the two cannot drift apart.
-    """
-    try:
-        from io_mesh_3mf.unit_conversions import blender_to_metre
-    except Exception:
-        blender_to_metre = _BLENDER_TO_METRE
-    units = scene.unit_settings
-    scale_length = units.scale_length or 1.0
-    display = blender_to_metre.get(units.length_unit, 1.0) or 1.0
-    return 0.001 / (scale_length * display)
-
-
-def _write_3mf_parts(context, parts, raw, named, scale, *, section=False):
-    """The same writer/semantic annotation path for a map or one section."""
-    from .data.export_3mf import name_3mf, part_name_map
-
-    holder = bpy.data.objects.new("CITY_MODEL_EXPORT", None)
-    try:
-        context.scene.collection.objects.link(holder)
-        holder.matrix_world = mathutils.Matrix.Identity(4)
-        for obj in parts:
-            world = obj.matrix_world.copy()
-            obj.parent = holder
-            obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
-            obj.matrix_world = world
-        for obj in context.view_layer.objects:
-            obj.select_set(False)
-        # Children are recursive, but materials are selection-only.
-        for obj in parts:
-            obj.select_set(True)
-        holder.select_set(True)
-        context.view_layer.objects.active = holder
-        context.view_layer.update()
-        options = {"coordinate_precision": 9} if section else {}
-        result = bpy.ops.export_mesh.threemf(
-            filepath=str(raw), use_selection=True, global_scale=scale, **options)
-        if 'FINISHED' not in result:
-            raise RuntimeError("The 3MF writer cancelled the export")
-        name_3mf(raw, named, part_name_map(parts))
-    finally:
-        bpy.data.objects.remove(holder, do_unlink=True)
-
-
 class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
     bl_idname = "jarvizar.export_3mf"
     bl_label = "Export 3MF for Bambu"
     bl_description = (
-        "Export generated geometry inside cutout's inner opening at true millimetres, "
-        "optionally divided across Bambu plates. Needs the io_mesh_3mf add-on"
+        "Export generated geometry inside cutout's inner opening as a Bambu Studio project "
+        "at true millimetres, one filament per colour, optionally divided across plates"
     )
     bl_options = {"REGISTER"}
 
@@ -1161,13 +1085,6 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
     def execute(self, context):
         scene = context.scene
         settings = scene.jarvizar_city_model
-        if not hasattr(bpy.ops.export_mesh, "threemf"):
-            settings.last_status = (
-                "3MF export needs the io_mesh_3mf add-on enabled"
-            )
-            self.report({"ERROR"}, settings.last_status)
-            return {"CANCELLED"}
-
         objects = generated_objects(scene)
         if not objects:
             settings.last_status = "Nothing to export: generate a model first"
@@ -1176,46 +1093,48 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
 
         # Bambu Studio treats every top-level 3MF build item as its own
         # printable object: it re-centres each one on its own bounding box,
-        # drops it to the bed and may rotate it onto another plate.  Parenting
-        # the lot to one empty makes the exporter write them as components of a
-        # single object instead, with every relative height intact.
-        from .blender.export_cutout import export_geometry, export_grid, export_section
+        # drops it to the bed and may rotate it onto another plate. Each plate
+        # is therefore one multipart object with every relative height intact,
+        # and each part carries its filament as Bambu's own extruder setting
+        # rather than a colour left for the importer to map.
+        from .blender.export_cutout import export_geometry, export_grid, export_sections, part_arrays
+        from .data.export_3mf import part_name_map
+        from .data.export_plates import PRINTERS, PlateWriter
 
-        previous_selection = [obj for obj in context.view_layer.objects if obj.select_get()]
-        previous_active = context.view_layer.objects.active
-        scale = _millimetre_export_scale(scene)
+        printer = PRINTERS[settings.bambu_printer]
         try:
             with export_geometry(context, objects) as (parts, stats, opening):
                 if not parts:
                     raise ValueError("Nothing to export inside cutout's inner opening")
-                # Publish only after the writer and Bambu naming both succeed.
-                # Staging alongside the destination keeps replacement atomic.
+                # Publish only after the whole project is written. Staging
+                # alongside the destination keeps replacement atomic.
                 destination = Path(self.filepath)
                 with tempfile.TemporaryDirectory(prefix=".jcm-3mf-", dir=destination.parent) as folder:
-                    raw = Path(folder) / "raw.3mf"
-                    named = Path(folder) / "named.3mf"
-                    if settings.multi_plate_export:
-                        from .data.export_plates import combine_plates
-
-                        grid = export_grid(context, parts, opening, settings.section_width_mm,
-                                           settings.section_height_mm)
-                        section_files = []
-                        part_count = 0
-                        for section in grid:
-                            with export_section(context, parts, section) as section_parts:
-                                if not section_parts:
-                                    continue
-                                path = Path(folder) / f"r{section.row}-c{section.column}.3mf"
-                                _write_3mf_parts(context, section_parts, raw, path, scale, section=True)
-                                section_files.append((section, path))
-                                part_count += len(section_parts)
-                        combine_plates(section_files, named)
-                        export_status = f"{len(section_files)} Bambu plates"
-                    else:
-                        _write_3mf_parts(context, parts, raw, named, scale)
-                        part_count = len(parts)
-                        export_status = "one 3MF object"
-                    named.replace(destination)
+                    staged = Path(folder) / "project.3mf"
+                    with PlateWriter(Path(folder) / "3dmodel.model", printer) as writer:
+                        if settings.multi_plate_export:
+                            grid = export_grid(context, parts, opening, settings.section_width_mm,
+                                               settings.section_height_mm, printer)
+                            with export_sections(context, parts, grid) as sections:
+                                if not sections:
+                                    raise ValueError("No section received geometry inside cutout's inner opening")
+                                depsgraph = context.evaluated_depsgraph_get()
+                                part_count = 0
+                                for section, section_parts in sections:
+                                    names = part_name_map(section_parts)
+                                    writer.add_plate(section.name, ((names[obj.name], *part_arrays(obj, depsgraph))
+                                                                    for obj in section_parts), section.bounds)
+                                    part_count += len(section_parts)
+                            export_status = f"{writer.plate_count} Bambu plates"
+                        else:
+                            depsgraph = context.evaluated_depsgraph_get()
+                            names = part_name_map(parts)
+                            writer.add_plate("Map", ((names[obj.name], *part_arrays(obj, depsgraph))
+                                                     for obj in parts))
+                            part_count = len(parts)
+                            export_status = "one Bambu plate"
+                        writer.close(staged)
+                    staged.replace(destination)
                 crop_status = ""
                 if opening:
                     crop_status = (f"; cutout: {stats['inside_objects']} inside objects, "
@@ -1226,14 +1145,10 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
             settings.last_status = f"3MF export failed: {exc}"
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        finally:
-            for obj in context.view_layer.objects:
-                obj.select_set(obj in previous_selection)
-            context.view_layer.objects.active = previous_active
 
         settings.last_status = (
-            f"Exported {part_count} parts as {export_status} "
-            f"(scale {scale:g}) to {Path(self.filepath).name}{crop_status}"
+            f"Exported {part_count} parts as {export_status} for {printer.model} "
+            f"with {len(writer.palette)} filaments to {destination.name}{crop_status}"
         )
         self.report({"INFO"}, settings.last_status)
         return {"FINISHED"}

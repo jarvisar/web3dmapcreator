@@ -148,34 +148,36 @@ slicer would read it as a sixth of a millimetre.
 #### 3MF: use **Export 3MF for Bambu**, not File ▸ Export
 
 A generated city is dozens of objects, one per road class and surface
-category, so that each can carry its own colour. A 3MF file records each
+category, so that each can carry its own colour. A plain 3MF records each
 top-level object as its own *build item*, and Bambu Studio treats a build item
 as a separate printable object: it re-centres each one on its own bounding
 box, drops it onto the bed, and will rotate it and move it to another plate to
 make things fit. The parts all arrive, but every one of them has lost its
 height relative to the others.
 
-Measured on the sample bbox, exported through the `io_mesh_3mf` add-on and
-read back out of Bambu Studio: 42 build items became **4 plates**, 13 objects
-were **rotated**, and the per-object Z offsets spanned **7.49 mm** on a model
-only 16.7 mm tall — the terrain rose while the bridges sank under it.
+The **Export 3MF for Bambu** button in the sidebar instead writes a native
+Bambu Studio project: one object named `Map` with one named part per
+collection (`Terrain`, `Roads (Residential)`, `Greenery`, …), every relative
+height intact, at true millimetres whatever the scene's unit settings. Each
+part is assigned its own filament rather than a colour left for the import
+dialog to map: the project starts with one filament per distinct colour, in
+order of first use, so the Filament list shows charcoal for roads, white for
+buildings, and so on, and every part already points at one of them. Parts
+that mix materials keep the filament of their main material and carry the
+others as painted faces. Open the file **as a project** (File ▸ Open Project,
+or drag it in and choose to open the project) so Bambu keeps the plates, part
+names, and filaments; importing it as geometry only discards them.
 
-The **Export 3MF for Bambu** button in the sidebar writes the same geometry as
-one object with one part per collection. The same round trip then reports one
-build item, 42 parts, one plate, no rotation and a single shared Z offset, and
-Bambu's own mesh repair finds nothing to fix. Each part keeps its material, so
-multi-material assignment still works per road class.
+Pick your **Bambu Printer** above the button first. It sets the bed size,
+the plate layout, and the starting printer, process, and Bambu PLA Basic
+presets (P1S by default; A1 mini, A1, P1P, P2S, X1 Carbon, X1E, X2D, A2L,
+H2C, H2S, H2D, and H2D Pro are available). Select your real filaments in
+Bambu and recalculate flushing volumes before slicing; the project starts
+with Bambu's 280 mm³ default purge for every pair.
 
-The button also fixes the scale. `io_mesh_3mf` multiplies the scene's metric
-scale by the *display* unit as well, so with **Set Scene Units** on (metric
-0.001, display millimetres) a plain File ▸ Export ▸ 3MF writes the model a
-thousand times too small. The button passes the compensating factor, and the
-file comes out at true millimetres — 364.2 × 201.4 × 16.7 mm for the sample,
-terrain plus the 2 mm border rim. Exporting by hand instead needs **Scale
-1000** typed into the export panel.
-
-It needs the `io_mesh_3mf` add-on enabled, and only exports what the add-on
-generated, so a leftover default cube in the scene is left out.
+The export needs nothing beyond Blender; the earlier dependency on the
+`io_mesh_3mf` add-on is gone. Only what the add-on generated is exported, so
+a leftover default cube in the scene is left out.
 
 To crop the export, name a mesh frame **`cutout`**. Its **inner closed opening**
 defines the export boundary; the frame itself is excluded. Move, rotate, scale,
@@ -201,21 +203,20 @@ existing full-model export remains available. See [export crop details](docs/EXP
 
 Enable **Multi-Plate Export** above the export button to divide the final
 cutout into sections in one Bambu Studio project. **Max Section Width (mm)**
-and **Max Section Height (mm)** both default to **210**. The export first crops
-to the same cutout opening, then splits crossing solids into closed sections;
-the scene and map scale stay unchanged. A cutout is required in this mode.
+and **Max Section Height (mm)** both default to **210** and are clamped to the
+selected printer's bed. The export first crops to the cutout opening, then
+splits crossing solids into closed sections; the scene and map scale stay
+unchanged. A cutout is required in this mode.
 
-Sections form an evenly divided grid in map X/Y coordinates, ordered north
-to south and west to east: `Section R1 C1`, `Section R1 C2`, and so on. Empty
-cells are omitted; a miniature that fits produces just one section. Open the
-3MF **as a project** in Bambu Studio to retain the separate plates, aligned
-parts, and colors. Each section is centered on a 256 mm plate. The project
-starts with a P1S 0.4 mm / Generic PLA profile; select your actual X1/P1 printer
-and filaments and recalculate flushing volumes in Bambu before slicing.
-The maximum configurable section dimension is 256 mm; the 210 mm default
-leaves room around the model. Bambu's 36-plate project limit is checked before
-partitioning. No connectors or seam clearance are added. See
-[multi-plate format and verification](docs/EXPORT_3MF.md#multi-plate-projects).
+Sections form an evenly divided grid aligned with the cutout frame: rotate
+the frame to follow a street grid and the sections rotate with it, so each
+piece is a true rectangle that sits square on its plate. Rows run along the
+frame's north-south side and columns along its east-west side: `Section R1
+C1`, `Section R1 C2`, and so on. Empty cells are omitted; a miniature that
+fits produces just one section. Each section is centred on its own plate and
+all sections share one bed level. Bambu's 36-plate project limit is checked
+before partitioning. No connectors or seam clearance are added. See
+[multi-plate format and verification](docs/EXPORT_3MF.md#plates-and-sections).
 
 ## Generate a model
 
