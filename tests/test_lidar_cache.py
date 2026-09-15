@@ -148,11 +148,11 @@ class LidarCacheTests(unittest.TestCase):
         self.assertIn('stale', load_measurements(self.bundle,self.signature)[1])
 
     def test_previous_surface_reconstruction_requires_new_preparation(self):
-        self.assertEqual(self.signature['algorithm'], 19)
+        self.assertEqual(self.signature['algorithm'], 21)
         self.write({'one': {'height_m': 30, 'tiers': []}})
         path = self.bundle.path/'lidar_buildings.json'
         payload = json.loads(path.read_text())
-        payload['request']['algorithm'] = 18
+        payload['request']['algorithm'] = 19
         path.write_text(json.dumps(payload))
         self.assertIn('stale', load_measurements(self.bundle, self.signature)[1])
 
@@ -244,3 +244,17 @@ class LidarCacheTests(unittest.TestCase):
         stray = {'height_m': 20, 'tiers': [], 'method': 'faceted_roof', 'roof_mesh': mesh}
         self.write({'one': stray})
         self.assertFalse(load_measurements(self.bundle, self.signature)[0])
+
+    def test_pinched_ring_packs_as_simple_faces(self):
+        from jarvizar_city_model.external.lidar_records import envelope_mesh
+        low = [[-87.8, 41.2, 20], [-87.7, 41.2, 20], [-87.7, 41.3, 20], [-87.8, 41.2, 20]]
+        high = [[-87.8, 41.2, 60], [-87.7, 41.3, 60], [-87.8, 41.3, 60], [-87.8, 41.2, 60]]
+        mesh = envelope_mesh([low, high])
+        # A ring rounded onto one of its own corners leaves as two simple faces.
+        pinched = [[0, 0, 1], [2, 0, 1], [1, 1, 1], [0, 0, 1], [-1, 1, 1], [-2, 0, 1], [0, 0, 1]]
+        split = envelope_mesh([pinched])
+        self.assertEqual(sorted(map(sorted, split['faces'])), [[0, 1, 2], [0, 3, 4]])
+        record = {'height_m': 20, 'tiers': [], 'method': 'faceted_roof',
+                  'surface_reconstruction': 'roof_envelope', 'roof_mesh': mesh}
+        self.write({'one': record})
+        self.assertTrue(load_measurements(self.bundle, self.signature)[0])

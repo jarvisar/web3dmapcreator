@@ -7,20 +7,53 @@ import math
 import struct
 from collections import Counter, defaultdict
 
-from .planar import ear_clip, faces_are_consistent, signed_area
+from .planar import clip_ring_to_rectangle, ear_clip, faces_are_consistent, signed_area
 
 
 def _float32(value):
     return struct.unpack('f', struct.pack('f', value))[0]
 
 
-def envelope_solid(polygons, bottom, outlines):
+def clip_cap(ring, bounds):
+    """Clip one XYZ cap face to the output frame, carrying its heights along.
+
+    A cap face is a clipped piece of a planar triangle and every vertex holds
+    its own height, so no plane is refitted through its published, rounded
+    corners: on a wall facet a few decimetres wide and a hundred metres tall
+    that refit missed the planarity tolerance and lost the whole building.
+    A kept corner is an original vertex or lies on an original edge; its
+    height is that vertex's, or interpolated along that edge.
+    """
+    clipped = clip_ring_to_rectangle([(x, y) for x, y, _z in ring], bounds.min_x_mm, bounds.min_y_mm,
+                                     bounds.max_x_mm, bounds.max_y_mm, epsilon=1e-10)
+    if not clipped:
+        return []
+    if len(clipped) == len(ring) and all(c == (x, y) for c, (x, y, _z) in zip(clipped, ring)):
+        return list(ring)
+    result = []
+    for x, y in clipped:
+        best = None
+        for (ax, ay, az), (bx, by, bz) in zip(ring, (*ring[1:], ring[0])):
+            dx, dy = bx-ax, by-ay
+            length2 = dx*dx+dy*dy
+            t = 0. if length2 == 0 else max(0., min(1., ((x-ax)*dx+(y-ay)*dy)/length2))
+            distance2 = (x-ax-t*dx)**2+(y-ay-t*dy)**2
+            if best is None or distance2 < best[0]:
+                best = (distance2, az+t*(bz-az))
+        result.append((x, y, best[1]))
+    return result
+
+
+def envelope_solid(polygons, bottom, outlines, precision=0.):
     """Return indexed roof, underside and exterior walls, or None on conflict.
 
     Polygons are simple planar XYZ rings already clipped to the output frame.
     Match Blender's XY precision before constructing adjacency. A cap's shared
     edges have no internal walls; clipping-induced edge splits are conformed
-    before closure, winding, area, and exterior-boundary checks.
+    before closure, winding, area, and exterior-boundary checks. `precision`
+    is how far a cap corner may sit off the outline it was clipped to: the
+    published record rounds its coordinates, and near the model centre that
+    is more than float32 rounding.
     """
     if not math.isfinite(bottom):
         return None
@@ -115,6 +148,7 @@ def envelope_solid(polygons, bottom, outlines):
     # never on a missing interior triangle that would create an internal wall.
     outline_edges = [(a, b) for rings in outlines for ring in rings
                      for a, b in zip(ring, (*ring[1:], ring[0]))]
+    tolerance = max(epsilon*3, precision)
     def on_outline(point):
         x, y = point
         for a, b in outline_edges:
@@ -122,7 +156,7 @@ def envelope_solid(polygons, bottom, outlines):
             if not length2:
                 continue
             t = max(0., min(1., ((x-a[0])*(b[0]-a[0])+(y-a[1])*(b[1]-a[1]))/length2))
-            if math.hypot(x-a[0]-t*(b[0]-a[0]), y-a[1]-t*(b[1]-a[1])) <= epsilon*3:
+            if math.hypot(x-a[0]-t*(b[0]-a[0]), y-a[1]-t*(b[1]-a[1])) <= tolerance:
                 return True
         return False
     if any(not on_outline(((vertices[a][0]+vertices[b][0])/2,

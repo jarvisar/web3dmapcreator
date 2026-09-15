@@ -799,8 +799,7 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
                     except ImportError:
                         from lidar_records import envelope_mesh
                     measured['roof_mesh'] = envelope_mesh(
-                        [ring for surface in retained
-                         for ring in surface['geometry']['coordinates']])
+                        [ring for surface in retained for ring in surface['geometry']['coordinates']])
                     measured.pop('roof_surfaces')
             results[identifier] = measured
         else:

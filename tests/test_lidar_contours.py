@@ -123,7 +123,8 @@ class GridContourTests(unittest.TestCase):
         detailed, why = measure_building(footprint, index, roof_mode='FACETED', **settings)
         self.assertIsNotNone(detailed, why)
         self.assertEqual(why, 'faceted_roof')
-        self.assertAlmostEqual(detailed['height_m'], 20)
+        # The base is the lowest collapsed vertex, placed to numerical precision.
+        self.assertAlmostEqual(detailed['height_m'], 20, places=2)
         self.assertEqual([tier['top_m'] for tier in classic['tiers']], [50, 80])
 
         surfaces = detailed['roof_surfaces']

@@ -1,9 +1,170 @@
 # Building heights and USGS LiDAR
 
+## Edge collapse: walls from the returns alone (algorithm 21, 0.24.0)
+
+Run **Prepare LiDAR Buildings** with Refresh off, then **Generate Model**;
+only measurement re-runs (cached tiles and normalized points are reused).
+
+The goal was the look of a decimated survey model (Micropolitan's Chicago):
+large flat walls, a curved tower as a coherent fan of facets, a flared base
+as a smooth slope, crisp roof rims, rooftop plant kept, no vertical ribs. The
+tiers of algorithm 20, a facade-tracing experiment and a plain
+DSM-plus-Blender-Decimate test all fell short; the record of those is in
+`scratchpad/lidar_wall_tracing/HANDOFF.md` (git-ignored).
+
+What works is simpler. The height raster is built as before (upper quantile
+per cell, disc median, light mean away from walls) but unobserved cells now
+copy their nearest observed neighbour instead of being relaxed across: the
+band beside a facade, where a cell holds returns from the whole height of
+the wall, becomes a step rather than a ramp of uneven heights. Returns are
+**not** filtered: a "shadow" rule (drop a return with a return 3 m higher
+within 1 m) removed Chase Tower's flared base (a 7:1 to 15:1 slope) and kept
+only a fifth of some towers' returns, and no threshold separated a flare
+from a facade. The raster is triangulated on its grid, each cell split along
+the diagonal of most similar corner heights, and then
+`external/lidar_simplify.py` collapses edges by quadric error until every
+remaining edge would cost more than `COLLAPSE_TOLERANCE` × pitch² (32 cells²,
+8 m² at 0.5 m), and beyond that while the cap exceeds its face budget. The
+error is memoryless (priced against the current local faces, Lindstrom &
+Turk): with accumulated quadrics a straight facet remembers every stair it
+replaced and its cost grows with the cube of the stairs it spans, so walls
+stopped merging at about a metre at every threshold, which is why Blender's
+Decimate never straightened them. Ties in flat regions break by edge length,
+a collapse never flips or flattens a face in plan, never brings two vertices
+within a centimetre in plan, never moves the mesh rim, and never leaves a
+vertex further than two cells from any face it replaces (without that bound
+a small plant room is lowered corner by corner once its top is one face).
+The collapsed faces are clipped to the footprint and published as one cap;
+Blender joins it into one solid with walls along the footprint.
+
+Measured on the Chicago towers at the 0.5 m grid (71 South Wacker, CME,
+Chase, UBS, One North LaSalle, 111 South Wacker): 71 South Wacker collapses
+from about 41,000 grid faces to about 900, its wall facets change azimuth by
+0° median and 6° at the 90th percentile between neighbours (the reference
+model: 5.3 m facets, 2.7°), the CME notches survive, Chase's flare is a
+broad sloped surface. The pitch is now half a printed layer (0.035 mm per
+cell), so the default scale grids Chicago at 0.5 m where a cell averages at
+least one upper-surface return; faces are cheap after the collapse, so plan
+resolution is spent freely.
+
+Removed with this change: tiers, traced outlines, `_labels`/`_outline`,
+block merging (`_levels`/`_coplanar`), the pitch-coarsening retry, the
+`outlines` in packed meshes and the per-tier Blender join. Records written
+by algorithm 20 are stale and re-measured.
+
+### What the first city run found (same day)
+
+Generating downtown Chicago from the first algorithm 21 re-measure gave 155
+geometry fallbacks against 13 for algorithm 20. Every one had a mechanical
+cause in the hand-off between the worker and the Blender join, none in the
+collapse itself:
+
+- **77 "nonplanar measured roof".** The builder refitted a plane through
+  three corners of each clipped face and rejected the face when a fourth
+  corner was 2 cm off. A clipped piece of a wall facet a few decimetres wide
+  and a hundred metres tall, with its published corners rounded to nine
+  decimals in degrees, misses that by construction. The cap faces now carry
+  their own vertex heights through the crop clip (`clip_cap`); no plane is
+  refitted.
+- **7 "boundary edge not on the outline".** The join allowed a cap corner
+  to sit three float32 ulps off the outline. Near the model centre that
+  floor is a few millionths of a millimetre, less than the nine-decimal
+  rounding of the record. The join takes a `precision` (a millimetre on
+  the ground at the print scale) as the floor of that test.
+- **6 pinched boundaries.** A footprint edge lying a hair inside a grid
+  line clipped a whole row of faces into slivers thinner than float32
+  holds at print scale (Canal Station: 110 of them); the join dropped them
+  and found a hole. Collapsed vertices within a quarter of the 1 cm vertex
+  gap of the footprint boundary are now snapped onto it before clipping,
+  and the collapse refuses a face thinner than that gap, so no clipped
+  piece is thinner than float32 can represent. Welding in the join was
+  rejected: vertex pairs 2 mm apart in plan can differ by 40 m in height
+  on a wall that the collapse legitimately made a few millimetres wide.
+
+Re-measuring those 92 buildings with the fixed worker left none failing.
+The other 67 fallbacks of that run were stale algorithm 20 records that the
+scratch re-measure keeps when a building's points are missing; a real
+Prepare does not produce them. The full re-measure with the final worker
+generated 942 LiDAR buildings with 608 K roof faces in 104 s, against 991
+buildings with 2.88 M faces for algorithm 20; its 66 fallbacks were those
+stale records plus two ordinary width rejections, none from the envelope.
+
+### Rim teeth and scan shadows
+
+The podium of 71 South Wacker showed vertical "teeth" along its outline
+wall. Profiling the cap along the outline showed isolated 5–14 m dips in
+the outermost half metre only, about ten per hundred metres, and dumping
+the raster showed why: in the scan shadow of the tower the low roof has
+almost no returns, a stray facade return every few cells, and each of those
+was the median of its own disc (unobserved cells never vote), so the fill
+copied a 6/12/19 m patchwork along the rim. Three rules, in order of what
+they fixed:
+
+- Cells outside the outline never vote: the roof reaches the outline at
+  the height of its last cell inside. On its own this changed nothing
+  visible, but it removes the rim's dependence on the facade band.
+- Where fewer than four cells of a disc are observed the cell is in a
+  shadow and takes the upper quantile of the shadow's cells over twice the
+  reach. A median there still alternated 6/12 m (a facade's returns are
+  scattered down the wall; any median of them is a mid-wall value).
+  Dropping sparse cells instead was tried and rejected: a strip of real
+  33 m roof north of the tower, sparse because shadowed, was then filled
+  from the tower at 207 m.
+- A rim cell more than two cells below a neighbour takes that neighbour's
+  height. This is what removed the teeth; without the threshold the max
+  lifted noisy roofs at the rim by a fraction of a metre and failed the
+  noisy-slope tests. City-wide, transitions along the outline between roof
+  and more than 3 m below it fell from about 11,900 to 9,100 in the
+  outermost quarter metre while staying at 7,400 a metre and a quarter in
+  (real steps), so the rim-only artefact fell by about two thirds; what
+  remains sits mostly in the second cell row. Extending the rule to two
+  rows was rejected: it lifted the foot of a genuinely steep roof plane by
+  nearly three metres.
+
+Rejected for the look: subset vertex placement (endpoints and midpoint,
+no quadric optimum) brought back ribs on every wall; halving the deviation
+bound made more faces and failed Chase; halving the collapse tolerance
+changed nothing visible. Chase Tower's doubly curved sweep still comes out
+creased because the memoryless optimum extrapolates along tangent planes;
+an error-driven edge-flip pass is the principled next step if that matters.
+
+## Tiers: real walls inside a footprint (algorithm 20, superseded)
+
+Reconstruction algorithm 20; superseded by the edge collapse above. Run **Prepare LiDAR Buildings** with Refresh off,
+then **Generate Model**; only measurement re-runs.
+
+Towers showed full-height vertical ribs, 71 South Wacker's curved north face
+most clearly. Most Chicago footprints are ground lots that include podiums and
+plazas, so a tower face is usually not an outline wall but a step inside the
+LiDAR cap: on the re-measured Chicago cache that was 53% of all wall area. On
+the 1 m raster a step can only fall between two grid nodes, so a curved,
+slanting or noisy wall is a staircase and every stair became a rib.
+
+The cap is now split into tiers wherever neighbouring grid nodes differ by at
+least half a printed millimetre (6.5 m at the default vertical scale). Each tier
+gets a smooth outline, traced where its mask blurred over 1.5 cells crosses one
+half, and its own measured roof clipped to that outline. Blender builds each tier
+as a separate solid with vertical walls along the outline, like building parts.
+A tier's outline also covers the tiers above it, so tiers nest and never leave a
+gap. Rooftop detail lower than
+the threshold stays in the tier's roof; smooth slopes of any steepness stay one
+tier. Tiny tiers (under half a printed square millimetre) and walls smeared over
+a node or two join the ground around them.
+
+On synthetic buildings the rib amplitude on a curved face fell from 0.40 m to
+0.09 m, a 45° wall is straight within 8 mm, and 3 m notched corners (as on the
+Chicago Mercantile Exchange Center) keep their shape; a square convex corner is
+rounded by under a metre.
+
+Steep merged faces are also always published as triangles now. Blender refits
+each face's plane from coordinates rounded to about 0.1 mm, and on a
+near-vertical polygon that misses the other corners by centimetres; on the
+Chicago cache that alone had rejected Aqua, Blue Cross-Blue Shield Tower,
+181 West Madison and Legacy at Millennium Park back to source boxes.
+
 ## Straight tower walls and scale-aware detail
 
-Reconstruction algorithm 19. Run **Prepare LiDAR Buildings** with Refresh off,
-then **Generate Model**; only measurement re-runs.
+Reconstruction algorithm 19.
 
 A tower rising from a lower part of the same footprint is a step of tens of
 metres inside the cap. Along a wall that is diagonal or curved against the grid

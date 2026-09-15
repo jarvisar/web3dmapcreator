@@ -5,7 +5,7 @@ never turn a missing upper roof into an apparently valid podium-only model.
 """
 import math
 
-ALGORITHM_VERSION = 19
+ALGORITHM_VERSION = 21
 MAX_ROOF_FACETS = 1024
 # A roof envelope costs about one face per print-scale cell, so a downtown
 # outline needs several times the earlier budget to keep its plan resolution
@@ -88,8 +88,25 @@ def envelope_mesh(rings):
                 indices.append(lookup[key])
         if len(indices) > 1 and indices[0] == indices[-1]:
             indices.pop()
-        if len(indices) >= 3:
-            faces.append(indices)
+        # A sliver clipped beside an outline can round onto one of its own
+        # corners; the ring then touches itself, and splitting it there leaves
+        # two simple faces covering the same ground.
+        pending, simple = [indices], []
+        while pending:
+            face = pending.pop()
+            seen = {}
+            for position, index in enumerate(face):
+                if index in seen:
+                    start = seen[index]
+                    pending += [face[start:position], face[position:]+face[:start]]
+                    break
+                seen[index] = position
+            else:
+                ring = [vertices[index] for index in face]
+                if len(face) >= 3 and sum((a[0]-ring[0][0])*(b[1]-ring[0][1])-(b[0]-ring[0][0])*(a[1]-ring[0][1])
+                                          for a, b in zip(ring, ring[1:])):
+                    simple.append(face)
+        faces += simple
     return {'vertices': vertices, 'faces': faces}
 
 

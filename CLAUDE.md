@@ -607,46 +607,78 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   boundaries and unmapped cliffs never establish a rock domain.
 - Roof Envelope (`FACETED`) calls `external/lidar_envelope.py` before any
   terrace reconstruction. It builds one height raster per footprint component:
-  a high upper quantile of the returns in each cell, then a moving median over
-  a print-scale window, a light mean over each observed cell and its observed
-  edge neighbours, then propagation across unobserved cells. Unobserved
-  cells never vote in the median or the mean, so a courtyard or the gap between separate
-  components cannot drag a roof edge across it. The mean removes the small
-  plateaus a median leaves on curved or noisy slopes (terraced domes); it keeps
-  flat and planar roofs exact, so block merging is unaffected. It skips any
-  cell whose neighbours differ by more than two pitches in height, so a tower
-  wall inside the footprint stays a sharp step instead of a ribbed ramp, and
-  each grid cell is split along its diagonal of most similar corner heights
-  (a fixed diagonal notched every cell a diagonal wall crosses).
-  Pitch follows print scale (0.07 mm per cell, never above 3 m). Its floor is
-  0.8 m, lowered to at most 0.5 m while a grid cell still averages about four
-  upper-surface returns (`_surface_density`: the median 1 m cell, counting
-  returns within 0.5 m of its top, so facades don't inflate it); the face budget is
-  `ENVELOPE_FACETS_AT_1M` scaled by (1 m / pitch)², capped at
-  `MAX_ENVELOPE_FACETS`, so a finer grid is not coarsened back.
-  The raster is laid along the footprint's minimum-rotated-rectangle long axis
-  (reduced to ±45°, no rotation at 0) so roof walls parallel to it do not
-  staircase into ribs; cap vertices rotate back before publication. `_clip_to`
-  keeps clipped slivers of any positive area: dropping them opened cap holes.
-  `_coplanar` admits a merged block only within 5 mm of its plane: the Blender
-  side takes corner heights from each face's fitted plane, and looser blocks
-  made neighbours disagree past the join's shared-corner tolerance.
-  **The rank filter is not interchangeable with morphology.** On a near-vertical
-  facade an opening or closing by any flat element is the identity, because the
-  slope dominates every neighbourhood, so dilation, erosion and relaxation
-  passes cannot remove cross-slope detail at all; a rank filter is unaffected by
-  slope. That is why the earlier relaxed height sheet left vertical ribs.
-  Grid cells merge into larger blocks only where the returns really are coplanar
-  within a fraction of a printed layer, and the block grid is kept two-to-one
-  balanced so the cap has no cracks. Every block corner is a raster node, so
-  simplification changes the face count and never the surface. At the default
-  scale the raster pitch is 1 m and the rank window is twice the pitch. The
-  pitch fixes the plan resolution of the building, so coarsening it turns a
-  drum or a curved facade into blocks: it is a last resort for an outline too
-  large to describe at print scale within the record budget at all, not the
-  ordinary path. A cap costs roughly one face per cell; adaptive triangulation
-  does not change that materially, because measured roofs carry relief
-  everywhere. Spend faces, not plan resolution.
+  a high upper quantile of the returns in each cell, then a moving median
+  over a disc two cells in radius (a slot narrower than that is bridged), a
+  light mean over each observed cell and its observed edge neighbours away
+  from walls, then the nearest observed height copied into unobserved
+  cells. Unobserved cells never vote in the median or the mean, so
+  a courtyard or the gap between separate components cannot drag a roof edge
+  across it. Cells outside the outline never vote either: the roof reaches
+  the outline at the height of its last cell inside, and the band beyond,
+  whose returns run the whole height of the wall, cannot notch the rim.
+  Where fewer than `MIN_VOTES` cells of a disc are observed the cell is in a
+  scan shadow and takes the upper quantile of the shadow's cells over twice
+  the reach: a few stray facade returns were otherwise each the median of
+  their own disc, and copying them across the shadow combed the rim with
+  teeth. They still count, because a shadow beside a tower can be a real
+  low roof and dropping them filled it from the tower. A rim cell more than
+  two cells below a neighbour is a facade return, not roof, and takes that
+  neighbour's height. **Returns are not filtered.** Every rule that dropped
+  returns by their neighbours (a "shadow" test, 3 m within 1 m) also
+  deleted sloping facades such as Chase Tower's flare and kept only a fifth of
+  some towers' returns. Copying the nearest height keeps a roof edge a step;
+  relaxing across the unobserved band made a ramp of uneven heights that the
+  cap showed as ribs.
+  **The rank filter is not interchangeable with morphology.** On a
+  near-vertical facade an opening or closing by any flat element is the
+  identity, because the slope dominates every neighbourhood, so dilation,
+  erosion and relaxation passes cannot remove cross-slope detail at all; a
+  rank filter is unaffected by slope.
+  The raster is triangulated on its grid, each cell split along the diagonal
+  of most similar corner heights, and laid along the footprint's
+  minimum-rotated-rectangle long axis (reduced to ±45°, no rotation at 0) so
+  an ordinary building's walls fall on grid lines. Then
+  `external/lidar_simplify.py` collapses edges by quadric error (Garland &
+  Heckbert) until every remaining edge costs more than `COLLAPSE_TOLERANCE`
+  × pitch² (32 cells², 8 m² at 0.5 m) and, beyond that, while the cap
+  exceeds `facet_budget(pitch)`. The error is **memoryless** (Lindstrom &
+  Turk): priced against the faces as they are now, not the original ones.
+  Accumulated quadrics remember every stair a straight facet replaced, so its
+  cost grows with the cube of the stairs it spans and walls stop merging at
+  about a metre however loose the threshold, while loosening flattens roof
+  detail; measured locally, extending a straight facet costs nothing and a
+  real feature still costs its full height. Flat-region ties break by edge
+  length, or one vertex swallows a whole roof and the run turns quadratic.
+  A collapse never flips a face in plan or leaves one thinner than
+  `MIN_GAP` (the cap must stay a height field for `envelope_solid`, and a
+  sliver that thin is float32 noise once printed), never puts two vertices
+  within that centimetre in plan (Blender welds float32 XY) and never moves
+  the mesh rim. Collapsed vertices within a quarter of that gap of the
+  footprint boundary are snapped onto it before clipping: an outline running
+  a hair inside a grid line otherwise clipped a row of slivers thinner than
+  float32 holds, which the join dropped and then found a hole. Vertex
+  placement keeps the quadric optimum: subset placement (endpoints and
+  midpoint only) brought the ribs back on every wall. Doubly curved faces
+  such as Chase Tower's sweep still come out creased, because the memoryless
+  optimum extrapolates along tangent planes; neither a tighter deviation nor
+  a lower tolerance changes that. This replaced tiers, traced outlines, block merging and the
+  pitch-coarsening retry: nothing detects tiers, setbacks or architecture,
+  and a curved tower (71 South Wacker) comes out as a coherent fan of 4–5 m
+  facets with under a thousand faces, against ~50,000 grid faces, matching a
+  decimated survey model. Collapsed faces are clipped to the footprint
+  (`_clip_to`, barycentric heights; a clipped piece with a courtyard hole is
+  cut by constrained Delaunay because the join takes simple rings) and
+  clipped slivers of any positive area are kept: dropping them opened cap
+  holes. Pitch follows print scale (0.035 mm per cell, half a printed
+  layer, never above 3 m). Its floor is 0.8 m, lowered to at most 0.5 m
+  while a grid cell still averages about one upper-surface return
+  (`_surface_density`), so Chicago at the default scale is gridded at
+  0.5 m; the face budget is `ENVELOPE_FACETS_AT_1M` scaled by
+  (1 m / pitch)², capped at `MAX_ENVELOPE_FACETS`, and enforced by
+  collapsing further, never by coarsening the pitch. A merged vertex never
+  leaves the faces it replaces by more than two cells, so a plant room or
+  parapet taller than that is never lowered away, while relief under it
+  (a fraction of a printed layer) may be. Spend faces, not plan resolution.
 - The default path no longer calls the `lidar_surface_*` region, primitive,
   outline or plane-stitching stack, including its compatibility fallbacks.
   Those modules remain as historical helper implementations/tests. Entirely
@@ -656,37 +688,30 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   partial roof. Terraces and disabled roof generation retain their existing path.
 - An envelope publishes `roof_mesh`, one shared vertex table plus integer
   faces, tagged `surface_reconstruction=roof_envelope`, with up to 16,384
-  faces on a 1 m grid and 65,536 on the finest. Its faces meet at common corners, so a polygon per face repeated
-  every corner about six times and the GeoJSON wrapper once per face: measured
-  on downtown buildings that was 238 bytes a face against 42, on disk and again
-  in the reader's memory. `lidar_records.envelope_mesh`/`envelope_rings` pack
-  and unpack it without moving a coordinate; `roof_faces`/`has_roof_surface`
-  read either encoding, and the loose `roof_surfaces` list remains valid for
-  every other reconstruction and for records written before algorithm 16.
-  A block wholly inside the outline stays one face; only blocks the outline
-  crosses are cut into triangles. Published coordinates are rounded to about a
-  centimetre. The reader's `lidar_buildings.json` guard is 512 MB; with the
-  packed mesh a dense downtown selection lands well inside it even at the
-  larger budget, but a raised budget still has to be checked against that file
-  size, not only against appearance. In Blender,
-  `geometry/lidar_envelope.py` joins their shared cap topology and adds only
-  exterior/courtyard walls and a base. The existing terrain-seated foundation
-  overlaps this upper solid slightly. Conform clipping-induced edge splits;
-  verify area, closure and winding before adoption. A join failure must retain
-  source geometry rather than extruding thousands of independent fragments.
-- The saved `FACETED` enum now displays **Roof Envelope**. Legacy width/step
-  sliders remain Terraces-only. Algorithm 19 requires Prepare again with
-  Refresh off; it reuses cached tiles and normalized points, because the
-  acquisition version is unchanged, and re-runs measurement only. Acquisition version 5 reads every octree level the survey
-  actually has (`resolution_m` 0.35, which for the Cook County EPT is its
-  deepest level) and retains classes 1-6 rather than 1/2/6: automated
-  classifiers file much of an articulated or glazed facade under a vegetation
-  class, and on the Chicago towers that is most of the facade. Those returns
-  never establish coverage, ground or height; reconstruction admits them only
-  where the structural envelope already reaches that level, so a real canopy
-  cannot lift a roof. Cached tiles are reused; normalized point batches and
-  measurements are re-read because their contents changed. See
-  [LiDAR reconstruction](docs/LIDAR_BUILDINGS.md) for behavior and limits.
+  faces on a 1 m grid and 65,536 on the finest; a collapsed cap normally
+  needs a few hundred to a few thousand. Its faces meet at common corners, so
+  a polygon per face repeated every corner about six times and the GeoJSON
+  wrapper once per face: measured on downtown buildings that was 238 bytes a
+  face against 42, on disk and again in the reader's memory.
+  `lidar_records.envelope_mesh`/`envelope_rings` pack and unpack it without
+  moving a coordinate; `roof_faces`/`has_roof_surface` read either encoding,
+  and the loose `roof_surfaces` list remains valid for every other
+  reconstruction and for records written before algorithm 16. Published
+  coordinates are rounded to nine decimals in degrees and 0.1 mm in height.
+  The reader's `lidar_buildings.json` guard is 512 MB. In Blender,
+  `geometry/lidar_envelope.py` joins the cap's shared topology into one solid
+  and adds only exterior/courtyard walls along the footprint and a base. Its
+  faces are clipped to the output frame carrying their own vertex heights
+  (`clip_cap`): a plane refitted through three rounded corners of a wall
+  facet a few decimetres wide and a hundred metres tall missed the planarity
+  tolerance and lost the building, 77 of them in downtown Chicago. The join's
+  outline test allows a `precision` of a millimetre on the ground, because
+  published corners are rounded to nine decimals in degrees and near the
+  model centre that exceeds the float32 rounding its tolerance was set for. The
+  existing terrain-seated foundation overlaps this upper solid slightly.
+  Conform clipping-induced edge splits; verify area, closure and winding
+  before adoption. A join failure must retain source geometry rather than
+  extruding thousands of independent fragments.
 - `lidar_source.py` evaluates source-height confidence and incomplete assemblies;
   `lidar_selection.py` chooses one complete survey using measured support/detail
   and capture age, with classification breaking quality ties. Never average or

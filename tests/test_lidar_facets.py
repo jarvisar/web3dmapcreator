@@ -5,7 +5,7 @@ try:
     import numpy as np
     from shapely.geometry import box, shape, mapping, GeometryCollection, LineString, Point
     from shapely.ops import unary_union
-    from lidar_envelope_test_utils import height_contour
+    from lidar_envelope_test_utils import height_contour, tier_areas
     from jarvizar_city_model.external.lidar_facets import fit_faceted_roof, continuous_boundary
     from jarvizar_city_model.external.lidar_measurements import measure_building, PointIndex
     AVAILABLE = True
@@ -65,7 +65,8 @@ class FacetedRoofTests(unittest.TestCase):
     def covered(self, record, footprint):
         roofs = [shape(s['geometry']) for s in record['roof_surfaces']]
         self.assertLess(unary_union(roofs).symmetric_difference(footprint).area, 1e-6)
-        self.assertAlmostEqual(sum(p.area for p in roofs), footprint.area, places=6)
+        for faces, outline in tier_areas(record, footprint):
+            self.assertAlmostEqual(faces, outline, places=6)
         self.assertTrue(all(s['bottom_m'] == record['height_m'] for s in record['roof_surfaces']))
 
     def test_curved_roof_has_sloping_facets_instead_of_height_bands(self):
@@ -100,8 +101,10 @@ class FacetedRoofTests(unittest.TestCase):
         upper = height_contour(result, 30)
         # Surface ownership is reconstructed directly, so its boundary should
         # approach the actual tower, not reproduce the old raster contour.
+        # The tower is its own tier, whose smoothed outline rounds a square
+        # corner by under a metre.
         expected = box(6, 6, 18, 18)
-        self.assertTrue(upper.buffer(.7).covers(expected))
+        self.assertTrue(upper.buffer(1.).covers(expected))
         self.assertLess(upper.boundary.hausdorff_distance(expected.boundary), 3.5)
 
     def test_supported_slope_crosses_artificial_major_terrace_bands(self):

@@ -5,12 +5,21 @@ from shapely.ops import unary_union
 
 
 def height_at(record, x, y):
+    """The cap height at a point, from the plane of the face above it."""
+    heights = []
     for surface in record['roof_surfaces']:
         if shape(surface['geometry']).buffer(1e-8).covers(Point(x, y)):
             xyz = np.asarray(surface['geometry']['coordinates'][0][:-1])
             design = np.column_stack((xyz[:, :2]-[x, y], np.ones(len(xyz))))
-            return float(np.linalg.lstsq(design, xyz[:, 2], rcond=None)[0][2])
-    raise AssertionError(f'No envelope above {(x, y)}')
+            heights.append(float(np.linalg.lstsq(design, xyz[:, 2], rcond=None)[0][2]))
+    if not heights:
+        raise AssertionError(f'No envelope above {(x, y)}')
+    return max(heights)
+
+
+def cap_area(record):
+    """Total face area: the cap tiles its footprint exactly."""
+    return sum(shape(s['geometry']).area for s in record['roof_surfaces'])
 
 
 def height_contour(record, elevation):

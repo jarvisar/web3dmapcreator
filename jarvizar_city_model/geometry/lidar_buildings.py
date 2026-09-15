@@ -8,7 +8,7 @@ from .buildings import footprint_admits_minimum_height, resolve_vertical_profile
 from .building_printability import source_part_widths
 from .planar import clean_ring, densify_ring, effective_width, signed_area, EPSILON
 from .planar import clip_ring_to_rectangle
-from .lidar_envelope import envelope_solid
+from .lidar_envelope import clip_cap, envelope_solid
 from .roofs import resolve_roof
 
 
@@ -98,15 +98,20 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
         terrain = heightfield.height_mm(x, y)-vertical(record['ground_anchor'][2])
     base_height = record["height_m"]
     surfaces = record.get('roof_surfaces', [])
+    caps, cap_heights = None, []
     if record.get('roof_mesh'):
         # Unpack this one building's cap for construction. The cached records
         # stay packed, which is where the size and the memory matter; these
-        # rings are transient and let the tested clipping, plane fitting and
-        # joining path stay exactly as it is.
-        surfaces = [{'geometry': {'type': 'Polygon', 'coordinates': [ring]},
-                     'bottom_m': base_height}
-                    for ring in envelope_rings(record['roof_mesh'])]
-    total_height = max([base_height] + [t['top_m'] for t in record['tiers']]
+        # faces are transient, clipped to the output frame with their own
+        # vertex heights, in metres until the join.
+        caps, bounds = [], transform.model_bounds
+        for ring in envelope_rings(record['roof_mesh']):
+            cap_heights.extend(v[2] for v in ring)
+            clipped = clip_cap([(*transform.forward(v[0], v[1])[:2], v[2]) for v in ring[:-1]], bounds)
+            if clipped:
+                caps.append(clipped)
+        surfaces = []
+    total_height = max([base_height] + [t['top_m'] for t in record['tiers']] + cap_heights
                        + [v[2] for s in surfaces for ring in s['geometry']['coordinates'] for v in ring])
     projected_surfaces = [(surface, surface_height(surface, transform),
                            projected_polygon_rings(surface['geometry'], transform))
@@ -115,7 +120,7 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
     # the base terrace and carry its tiers together so their steps survive.
     # A shaped roof instead uses its finished apex, as source roofs do; only
     # the portion actually inside the model crop contributes to that apex.
-    finished_height = max([base_height] + [height(x, y)
+    finished_height = max([base_height] + [z for cap in (caps or []) for _x, _y, z in cap] + [height(x, y)
         for _surface, height, polygons in projected_surfaces
         for rings in polygons for ring in rings for x, y in ring])
     lift = 0.0
@@ -153,22 +158,29 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
     if record.get('surface_reconstruction') == 'roof_envelope':
         # The measured TIN is one connected surface, not thousands of separate
         # extrusions. Clip in double precision before joining its shared edges.
-        caps = []
-        bounds = transform.model_bounds
-        for surface, height, _polygons in projected_surfaces:
-            for ring in surface['geometry']['coordinates']:
-                xy = [transform.forward(v[0], v[1])[:2] for v in ring[:-1]]
-                clipped = clip_ring_to_rectangle(xy, bounds.min_x_mm, bounds.min_y_mm,
-                    bounds.max_x_mm, bounds.max_y_mm, epsilon=1e-10)
-                if clipped:
-                    caps.append([(x, y, terrain+vertical(height(x, y))+lift) for x, y in clipped])
+        if caps is None:
+            caps = []
+            bounds = transform.model_bounds
+            for surface, height, _polygons in projected_surfaces:
+                for ring in surface['geometry']['coordinates']:
+                    xy = [transform.forward(v[0], v[1])[:2] for v in ring[:-1]]
+                    clipped = clip_ring_to_rectangle(xy, bounds.min_x_mm, bounds.min_y_mm,
+                        bounds.max_x_mm, bounds.max_y_mm, epsilon=1e-10)
+                    if clipped:
+                        caps.append([(x, y, height(x, y)) for x, y in clipped])
         bottom = terrain+vertical(base_height)+lift-min(.02, vertical(base_height)*.1)
-        solid = envelope_solid(caps, bottom, outlines)
-        if solid is None:
-            return None
-        builder.add_raw(*solid)
+        if caps:
+            # A published corner is rounded to nine decimals in degrees, about
+            # a tenth of a millimetre on the ground; the outline it is tested
+            # against is cleaned to the model EPSILON. Allow a millimetre.
+            precision = max(EPSILON, transform.scale_x_mm_per_m*1e-3)
+            solid = envelope_solid([[(x, y, terrain+vertical(z)+lift) for x, y, z in cap] for cap in caps],
+                                   bottom, outlines, precision=precision)
+            if solid is None:
+                return None
+            builder.add_raw(*solid)
+            roof_count += len(caps)
         joined = True
-        roof_count = len(caps)
     for surface, height, polygons in ([] if joined else projected_surfaces):
         bottom = terrain + vertical(surface['bottom_m']) + lift - min(0.02, vertical(base_height)*0.1)
         for rings in polygons:

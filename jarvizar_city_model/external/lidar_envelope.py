@@ -1,61 +1,70 @@
-"""A robust upper-surface raster over LiDAR returns, clipped to mapped footprints.
+"""A robust upper-surface raster over LiDAR returns, collapsed and clipped to mapped footprints.
 
-Coverage and ground checks run upstream. A near-vertical facade projects its
-whole height into a handful of plan cells, so the height there is decided by
-which return happened to land where, not by the shape of the building. Isotropic
-morphology cannot repair that: on a steep ramp an opening or closing by any flat
-element is the identity, so dilation, erosion and relaxation passes leave
-cross-slope detail exactly as they found it. A rank filter is unaffected by
-slope, so one moving median over a print-scale window removes those ribs while
-leaving ramps, steps and roof edges where the returns put them. A light mean
-afterwards removes the small plateaus a median leaves on curved roofs.
-
-The result is a height raster triangulated on its own grid and clipped to the
-footprint, so the cap covers the outline exactly and has no long slivers.
-Native dependencies stay in the preparation worker.
+Coverage and ground checks run upstream. The upper surface is the highest
+return in each print-scale cell, a moving median over a disc of cells, and a
+light mean over observed cells away from walls; unobserved cells copy their
+nearest observed neighbour. That raster, triangulated on its own grid, is a
+faithful but wasteful surface: a face per cell, and every wall a staircase of
+cells, because a step can only fall between nodes. An error-bounded edge
+collapse (`lidar_simplify`) then merges a flat roof into a few faces and a run
+of stairs into one straight facet, so a tower comes out as large flat walls, a
+curved face as a coherent fan of facets and a flared base as a smooth slope,
+while real steps, setbacks and rooftop plant above the tolerance survive. The
+collapsed faces are clipped to the footprint, so the cap covers the outline
+exactly. Nothing detects tiers, setbacks or architecture: the returns alone
+say where the walls are. Native dependencies stay in the preparation worker.
 """
 import math
 import warnings
 
 import numpy as np
+import shapely
 from shapely import contains_xy
 from shapely.affinity import rotate
 from shapely.errors import GEOSException
 from shapely.geometry import Polygon
-from shapely.ops import unary_union
+from shapely.ops import nearest_points, unary_union
 
 try:
     from .lidar_facets import UnsupportedFit, pieces
     from .lidar_records import ENVELOPE_FACETS_AT_1M, MAX_ENVELOPE_FACETS
+    from .lidar_simplify import MIN_GAP, collapse
 except ImportError:
     from lidar_facets import UnsupportedFit, pieces
     from lidar_records import ENVELOPE_FACETS_AT_1M, MAX_ENVELOPE_FACETS
+    from lidar_simplify import MIN_GAP, collapse
 
 CROSS = ((-1, 0), (1, 0), (0, -1), (0, 1))
 # The upper order statistic taken in each cell before the rank filter.
 UPPER_QUANTILE = .9
+MIN_VOTES = 4
+# Collapse error, in cells squared, under which an edge is always merged; see
+# `_surfaces`. Calibrated on Chicago towers at a 0.5 m grid: 8 m² there gives
+# 4–5 m facets on a curved face (the reference model has about 5 m) and keeps
+# rooftop plant over about a metre tall.
+COLLAPSE_TOLERANCE = 32.
 
 
 def envelope_parameters(scale, density=None):
-    """Raster pitch, rank window, mesh tolerance and secondary admission band.
+    """Raster pitch, rank window and secondary admission band.
 
     Every value is a printed length converted back to ground distance, so a
     coarser or finer output scale moves them together and no length is tied to
-    any particular survey, city or building. The mesh tolerance is well under
-    one printed layer, so simplifying to it cannot move a printed surface.
+    any particular survey, city or building.
 
-    The pitch follows the print scale down to 0.8 m. With a known return
-    `density` (per m²) it may go finer, to 0.5 m, while a cell still averages
-    about four returns: a larger print keeps the detail the survey measured,
-    and a sparse survey is never gridded finer than it can support.
+    The pitch follows the print scale (0.035 mm, half a printed layer) down
+    to 0.8 m. With a known return `density` (per m²) it may go finer, to
+    0.5 m, while a cell still averages about one return: the collapse makes
+    faces cheap, so the grid keeps the detail the survey measured and a
+    sparse survey is never gridded finer than it can support.
     """
     if len(scale) != 2 or not all(math.isfinite(s) and s > 0 for s in scale):
         raise ValueError('Invalid LiDAR reconstruction scale')
     floor = .8
     if density is not None and math.isfinite(density) and density > 0:
-        floor = min(floor, max(.5, 2/math.sqrt(density)))
-    pitch = min(3., max(floor, .07/scale[0]))
-    return pitch, pitch*2, max(.05, .015/scale[1]), max(3., .28/scale[0])
+        floor = min(floor, max(.5, 1/math.sqrt(density)))
+    pitch = min(3., max(floor, .035/scale[0]))
+    return pitch, pitch*2, max(3., .28/scale[0])
 
 
 def facet_budget(pitch):
@@ -88,19 +97,23 @@ class _Raster:
         return (np.clip(np.round((xy[:, 0]-self.x0)/self.pitch).astype(np.int64), 0, self.nx-1),
                 np.clip(np.round((xy[:, 1]-self.y0)/self.pitch).astype(np.int64), 0, self.ny-1))
 
-    def upper(self, samples, values=None, quantile=1.):
+    def upper(self, samples, quantile=1.):
         """An upper order statistic of the returns in each cell.
 
-        The plain maximum is the outer skin but it is the noisiest possible
-        estimator: it takes the extreme of however many returns happened to
-        land in the cell. A high quantile keeps the skin on a wall, where the
-        returns run the whole height of the cell, while costing only
-        measurement noise on a surface, where they do not.
+        Returns are not filtered before this. A cell beside a facade holds
+        returns from the whole height of the wall, and its top is near the
+        roof edge, so the roof reaches at most one cell past its true edge;
+        the median and the collapse below deal with everything else. Dropping
+        returns by any rule about their neighbours (a "shadow" test) removed
+        sloping facades and stepped roofs along with the noise and kept a
+        fifth of some towers' returns. The plain maximum is the outer skin
+        but the noisiest estimator; a high quantile costs only measurement
+        noise on a surface, where the returns do not run the cell's height.
         """
         grid = np.full((self.nx, self.ny), -np.inf)
         if not len(samples):
             return grid
-        values = samples[:, 2] if values is None else values
+        values = samples[:, 2]
         ix, iy = self.cells(samples)
         if quantile >= 1.:
             np.maximum.at(grid, (ix, iy), values)
@@ -121,22 +134,23 @@ class _Raster:
 
 
 def _fill(heights, observed):
-    """Carry the surrounding surface across unobserved cells.
+    """Copy the nearest observed height into each unobserved cell, unchanged.
 
-    The median has already rejected outliers, so propagation here cannot
-    spread a bad return; it only continues a scan shadow or a courtyard edge.
+    Inside a footprint the unobserved cells are scan shadows and the band
+    beside a facade, where the median found no surface. Copying the nearest
+    surface keeps a roof edge a step; relaxing across the band made it a
+    ramp of uneven heights, which the cap showed as ribs down the facade.
     """
     if observed.all():
         return heights
     if not observed.any():
         raise UnsupportedFit('no observed upper surface cells')
-    filled = np.where(observed, heights, float(np.median(heights[observed])))
-    for _ in range(2*max(heights.shape)):
-        relaxed = sum(np.roll(filled, offset, axis=(0, 1)) for offset in CROSS)/4.
-        updated = np.where(observed, filled, relaxed)
-        if np.max(np.abs(updated-filled)) < 1e-3:
-            return updated
-        filled = updated
+    filled, known = np.where(observed, heights, 0.), observed.copy()
+    while not known.all():
+        for offset in CROSS:
+            take = ~known & np.roll(known, offset, axis=(0, 1))
+            filled[take] = np.roll(filled, offset, axis=(0, 1))[take]
+            known |= take
     return filled
 
 
@@ -144,12 +158,10 @@ def _soften(heights, observed, steep):
     """Average each observed cell with its observed edge neighbours.
 
     A median of noisy returns on a curved or sloping roof settles into small
-    plateaus, and a cap triangulated on the raster shows them as terraces. The
-    ribs are already gone at this point, so a linear pass is safe: it keeps
-    flat roofs flat and planar slopes planar, which leaves block merging
-    intact. A cell beside a wall, where its neighbours differ by more than
-    `steep`, keeps its value: averaging there smears a tower edge into a ramp
-    of uneven heights, which the cap shows as ribs down the facade.
+    plateaus, and a cap triangulated on the raster shows them as terraces. A
+    cell beside a wall, where its neighbours differ by more than `steep`,
+    keeps its value: averaging there smears a roof edge into a ramp of uneven
+    heights, which the cap shows as ribs down the facade.
     """
     offsets = ((0, 0),)+CROSS
     weight = observed.astype(float)
@@ -167,11 +179,27 @@ def _rank(grid, pitch, window):
     """Moving median of the cell values; unobserved cells never vote.
 
     Counting them would drag a roof edge across a courtyard or across the gap
-    between two separate components of the same outline.
+    between two separate components of the same outline. A rank filter is
+    unaffected by slope, so it removes the ribs a facade's returns leave
+    across the grid while leaving ramps, steps and roof edges where the
+    returns put them. Where fewer than `MIN_VOTES` cells of the disc are
+    observed the cell is in a scan shadow, and its height is the upper
+    quantile of the shadow's cells over twice the reach instead: the few
+    returns there are a facade's, scattered down the wall, and each was
+    otherwise the median of its own disc, which combed the rim with teeth.
+    They still count; a shadow beside a tower can be a real low roof, and
+    dropping them filled it from the tower.
     """
     data = np.where(np.isfinite(grid), grid, np.nan)
-    with np.errstate(invalid='ignore'):
-        heights = np.nanmedian(_stack(data, _disc(window, pitch)), axis=0)
+    near = _stack(data, _disc(window, pitch))
+    with np.errstate(invalid='ignore'), warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        heights = np.nanmedian(near, axis=0)
+        sparse = np.isfinite(near).sum(axis=0) < MIN_VOTES
+        if sparse.any():
+            pooled = _stack(np.where(sparse, data, np.nan), _disc(window*2, pitch))
+            wide = np.nanquantile(pooled, UPPER_QUANTILE, axis=0)
+            heights = np.where(sparse & np.isfinite(wide), wide, heights)
     observed = np.isfinite(heights)
     heights = _soften(np.where(observed, heights, 0.), observed, pitch*2)
     return _fill(heights, observed), observed
@@ -183,12 +211,31 @@ def _component_surface(polygon, samples, pitch, window):
     inside = samples[contains_xy(polygon.buffer(pitch), samples[:, 0], samples[:, 1])]
     if len(inside) < 4:
         raise UnsupportedFit('insufficient upper surface support')
-    heights, observed = _rank(raster.upper(inside, quantile=UPPER_QUANTILE), pitch, window)
-    return heights, raster, int(observed.sum())
+    grid = raster.upper(inside, quantile=UPPER_QUANTILE)
+    gx, gy = raster.corners()
+    within = contains_xy(polygon, gx, gy)
+    # Returns outside the outline never vote: the roof reaches the outline at
+    # the height of its last cell inside, and the band beyond, whose returns
+    # run the whole height of the wall, cannot notch the rim.
+    grid[~within] = -np.inf
+    heights, observed = _rank(grid, pitch, window)
+    # The outermost cell inside the outline holds a facade's returns wherever
+    # the outline sits a little outside the wall, and its median dips there
+    # every few metres, which combed the outline wall with teeth. A rim cell
+    # more than two cells below a neighbour is such a dip, not roof: it
+    # takes that neighbour's height, and the cells outside copy it again so
+    # the cap is flat across the outline. Roof noise is far below that.
+    interior = within.copy()
+    for offset in CROSS:
+        interior &= np.roll(within, offset, axis=(0, 1))
+    rim = within & ~interior
+    highest = _stack(heights, _disc(pitch, pitch)).max(axis=0)
+    heights = np.where(rim & (highest-heights > 2*pitch), highest, heights)
+    return _fill(heights, within), raster, observed
 
 
 def _clip_to(polygon, shape, corners):
-    """Emit the parts of one grid triangle that lie inside the component.
+    """Emit the parts of one cap triangle that lie inside the component.
 
     Heights come from barycentric weights, not from a plane equation. A cap
     triangle on a facade is nearly vertical, and solving such a plane for z
@@ -208,180 +255,95 @@ def _clip_to(polygon, shape, corners):
     for part in parts:
         # Keep slivers however thin: an outline running close beside a grid
         # line clips into them, and dropping one leaves a hole in the cap.
-        if part.geom_type != 'Polygon' or part.area <= 0 or part.interiors:
+        if part.geom_type != 'Polygon' or part.area <= 0:
             continue
-        ring = []
-        for x, y in part.exterior.coords:
-            a = ((y2-y3)*(x-x3)+(x3-x2)*(y-y3))/det
-            b = ((y3-y1)*(x-x3)+(x1-x3)*(y-y3))/det
-            ring.append([float(x), float(y), float(a*z1+b*z2+(1-a-b)*z3)])
-        rings.append(ring)
+        # A collapsed face can span a courtyard smaller than the mesh margin.
+        # The join takes simple rings, so cut such a part around its holes.
+        pieces_ = ([part] if not part.interiors
+                   else [p for p in shapely.get_parts(shapely.constrained_delaunay_triangles(part))
+                         if p.area > 0])
+        for piece in pieces_:
+            ring = []
+            for x, y in piece.exterior.coords:
+                a = ((y2-y3)*(x-x3)+(x3-x2)*(y-y3))/det
+                b = ((y3-y1)*(x-x3)+(x1-x3)*(y-y3))/det
+                ring.append([float(x), float(y), float(a*z1+b*z2+(1-a-b)*z3)])
+            rings.append(ring)
     return rings
 
 
-def _levels(heights, tolerance, limit=6):
-    """Largest square block per cell whose corners still describe the raster.
+def _snap_to_boundary(vertices, polygon, gap):
+    """Move vertices within `gap` of the component boundary onto it, in plan.
 
-    A genuinely planar roof collapses to a handful of faces; measured relief
-    keeps its own cells. Only the face count changes: every block corner is a
-    raster node, so the surface itself is never moved by this step.
+    An outline running a hair inside a grid line clips the faces along it
+    into slivers thinner than float32 holds at print scale; the join drops
+    them and finds a hole, and two clip points that should coincide round
+    apart. Snapping the corners leaves every clipped piece at least `gap`
+    wide. The collapse keeps vertices `MIN_GAP` apart and faces at least
+    that wide, so with `gap` under a quarter of it snapped corners stay
+    apart and no face folds. Heights are untouched.
     """
-    nx, ny = heights.shape
-    fits = {0: np.ones((nx-1, ny-1), dtype=bool)}
-    top = 0
-    for level in range(1, limit+1):
-        span = 1 << level
-        bx, by = (nx-1)//span, (ny-1)//span
-        if bx < 1 or by < 1:
-            break
-        child = fits[level-1]
-        ok = (child[0::2, 0::2][:bx, :by] & child[1::2, 0::2][:bx, :by]
-              & child[0::2, 1::2][:bx, :by] & child[1::2, 1::2][:bx, :by])
-        i0, j0 = np.arange(bx)*span, np.arange(by)*span
-        corners = [heights[np.ix_(i0+a*span, j0+b*span)] for a in (0, 1) for b in (0, 1)]
-        error = np.zeros((bx, by))
-        for a in range(span+1):
-            u = a/span
-            for b in range(span+1):
-                v = b/span
-                predicted = (corners[0]*(1-u)*(1-v) + corners[1]*(1-u)*v
-                             + corners[2]*u*(1-v) + corners[3]*u*v)
-                error = np.maximum(error, np.abs(heights[np.ix_(i0+a, j0+b)]-predicted))
-        fits[level] = ok & (error <= tolerance)
-        top = level
-    level_of = np.zeros((nx-1, ny-1), dtype=np.int8)
-    claimed = np.zeros((nx-1, ny-1), dtype=bool)
-    for level in range(top, 0, -1):
-        span = 1 << level
-        bx, by = (nx-1)//span, (ny-1)//span
-        free = ~np.add.reduceat(np.add.reduceat(claimed[:bx*span, :by*span].astype(np.int32),
-                                                np.arange(0, bx*span, span), axis=0),
-                                np.arange(0, by*span, span), axis=1).astype(bool)
-        take = fits[level][:bx, :by] & free
-        if not take.any():
-            continue
-        spread = np.repeat(np.repeat(take, span, axis=0), span, axis=1)
-        region = np.zeros_like(claimed)
-        region[:bx*span, :by*span] = spread
-        level_of[region] = level
-        claimed |= region
-    # A block may sit beside one that is at most twice as fine; otherwise its
-    # edge would meet more than one vertex and open a crack in the cap.
-    while True:
-        padded = np.pad(level_of, 1, mode='edge')
-        neighbours = np.minimum.reduce([padded[:-2, 1:-1], padded[2:, 1:-1],
-                                        padded[1:-1, :-2], padded[1:-1, 2:]])
-        need = level_of > neighbours+1
-        if not need.any():
-            break
-        for level in range(top, 0, -1):
-            mask = need & (level_of == level)
-            if not mask.any():
-                continue
-            span = 1 << level
-            ii, jj = np.nonzero(mask)
-            flag = np.zeros(((nx-1+span-1)//span, (ny-1+span-1)//span), dtype=bool)
-            flag[ii//span, jj//span] = True
-            spread = np.repeat(np.repeat(flag, span, axis=0), span, axis=1)[:nx-1, :ny-1]
-            level_of = np.where((level_of == level) & spread, level-1, level_of)
-    blocks = {}
-    for i in range(nx-1):
-        for j in range(ny-1):
-            span = 1 << int(level_of[i, j])
-            blocks[(i//span*span, j//span*span, span)] = None
-    return sorted(blocks), level_of
+    boundary = polygon.boundary
+    points = shapely.points(vertices[:, :2])
+    near = np.flatnonzero(shapely.distance(points, boundary) <= gap)
+    if len(near):
+        vertices = vertices.copy()
+        for k in near:
+            nearest = nearest_points(boundary, points[k])[0]
+            vertices[k, :2] = (nearest.x, nearest.y)
+    return vertices
 
 
-def _coplanar(ring, tolerance=.005):
-    """Is one block flat enough to publish as a single face?
+def _surfaces(polygon, heights, raster, threshold, budget):
+    """Triangulate the raster over the component, collapse it, and clip it.
 
-    The reader fits a plane through each published face and takes every corner
-    height from it. Two neighbouring faces can err in opposite directions at a
-    shared corner, and the joined cap rejects a corner whose heights differ by
-    about 2.6 cm at the default vertical scale, so each face stays well inside
-    half of that, with room for coordinate rounding on a steep block.
+    Returns the clipped rings, their area and the number of collapsed faces.
     """
-    origin = ring[0]
-    far = max(ring, key=lambda v: (v[0]-origin[0])**2+(v[1]-origin[1])**2)
-    side = max(ring, key=lambda v: abs((far[0]-origin[0])*(v[1]-origin[1])
-                                       - (far[1]-origin[1])*(v[0]-origin[0])))
-    dx, dy, dz = far[0]-origin[0], far[1]-origin[1], far[2]-origin[2]
-    ex, ey, ez = side[0]-origin[0], side[1]-origin[1], side[2]-origin[2]
-    det = dx*ey-dy*ex
-    if not det:
-        return False
-    a, b = (dz*ey-dy*ez)/det, (dx*ez-dz*ex)/det
-    return all(abs(origin[2]+a*(x-origin[0])+b*(y-origin[1])-z) <= tolerance
-               for x, y, z in ring)
-
-
-def _surfaces(polygon, heights, raster, tolerance):
-    """Triangulate the raster on a crack-free block grid and clip it."""
     pitch = raster.pitch
-    blocks, level_of = _levels(heights, tolerance)
+    gx, gy = raster.corners()
+    mask = contains_xy(polygon.buffer(pitch*1.5), gx, gy)
+    index = np.full(mask.shape, -1)
+    index[mask] = np.arange(int(mask.sum()))
+    cell = mask[:-1, :-1] & mask[1:, :-1] & mask[:-1, 1:] & mask[1:, 1:]
+    i, j = np.nonzero(cell)
+    if not len(i):
+        raise UnsupportedFit('incomplete clipped upper surface')
+    a, b, c, d = index[i, j], index[i+1, j], index[i+1, j+1], index[i, j+1]
+    # Split each cell along the diagonal whose corners are closest in height.
+    # A fixed diagonal folds every cell a diagonal wall cuts into a V-shaped
+    # notch, and the collapse has to keep a row of notches as geometry.
+    first = np.abs(heights[i+1, j]-heights[i, j+1]) < np.abs(heights[i, j]-heights[i+1, j+1])
+    faces = np.concatenate((np.where(first[:, None], np.stack((a, b, d), 1), np.stack((a, b, c), 1)),
+                            np.where(first[:, None], np.stack((b, c, d), 1), np.stack((a, c, d), 1))))
+    # A merged vertex stays within two cells of every face it replaces: the
+    # stairs of a wall are half a cell, and a plant room or a parapet taller
+    # than two cells is never lowered away.
+    vertices, faces = collapse(np.column_stack((gx[mask], gy[mask], heights[mask])), faces,
+                               threshold, budget, deviation=2*pitch)
+    vertices = _snap_to_boundary(vertices, polygon, MIN_GAP/4)
     rings, area = [], 0.
-
-    def node(i, j):
-        return (raster.x0+i*pitch, raster.y0+j*pitch, float(heights[i, j]))
-
-    for i, j, span in blocks:
-        x, y = raster.x0+i*pitch, raster.y0+j*pitch
-        side = span*pitch
-        cell = Polygon([(x, y), (x+side, y), (x+side, y+side), (x, y+side)])
-        if not polygon.intersects(cell):
+    for face in faces:
+        corners = [tuple(vertices[k]) for k in face]
+        triangle = Polygon([p[:2] for p in corners])
+        if polygon.covers(triangle):
+            rings.append([list(p) for p in corners]+[list(corners[0])])
+            area += triangle.area
             continue
-        half = span//2
-        outline = []
-        for (ai, aj), (bi, bj), (ni, nj) in (
-                ((i, j), (i+span, j), (i+half, j-1)),
-                ((i+span, j), (i+span, j+span), (i+span, j+half)),
-                ((i+span, j+span), (i, j+span), (i+half, j+span)),
-                ((i, j+span), (i, j), (i-1, j+half))):
-            outline.append((ai, aj))
-            if span > 1 and (0 <= ni < level_of.shape[0] and 0 <= nj < level_of.shape[1]
-                             and level_of[ni, nj] < int(np.log2(span))):
-                outline.append(((ai+bi)//2, (aj+bj)//2))
-        # A block that needs no clipping and whose corners really are coplanar
-        # can stay one face. The Blender side fits each face's plane to carry
-        # heights across the output crop, so anything less flat than that fit
-        # allows still has to leave as triangles.
-        if polygon.covers(cell):
-            ring = [node(*v) for v in outline]
-            if _coplanar(ring):
-                rings.append([list(v) for v in ring]+[list(ring[0])])
-                area += side*side
-                continue
-        if span == 1 and (abs(heights[i+1, j]-heights[i, j+1])
-                          < abs(heights[i, j]-heights[i+1, j+1])):
-            # Split along the diagonal whose corners are closest in height. A
-            # fixed diagonal folds every cell a diagonal wall cuts into a
-            # V-shaped notch, and a row of notches reads as ribs.
-            fans = [(node(i, j), node(i+1, j), node(i, j+1)),
-                    (node(i+1, j), node(i+1, j+1), node(i, j+1))]
-        elif span == 1:
-            fans = [(node(i, j), node(i+1, j), node(i+1, j+1)),
-                    (node(i, j), node(i+1, j+1), node(i, j+1))]
-        else:
-            centre = node(i+half, j+half)
-            fans = [(centre, node(*a), node(*b))
-                    for a, b in zip(outline, outline[1:]+outline[:1])]
-        for points in fans:
-            triangle = [np.asarray(p) for p in points]
-            normal = np.cross(triangle[1]-triangle[0], triangle[2]-triangle[0])
-            if abs(normal[2]) < 1e-12:
-                continue
-            for ring in _clip_to(polygon, Polygon([p[:2] for p in triangle]), points):
-                rings.append(ring)
-                area += abs(sum((a[0]-ring[0][0])*(b[1]-ring[0][1])
-                                - (b[0]-ring[0][0])*(a[1]-ring[0][1])
-                                for a, b in zip(ring, ring[1:])))/2
-    return rings, area
+        for ring in _clip_to(polygon, triangle, corners):
+            rings.append(ring)
+            area += _ring_area(ring)
+    return rings, area, len(faces)
 
 
-def _envelope(components, footprint, observed, secondary, pitch, window,
-              mesh_tolerance, tolerance, budget):
-    """One whole-outline attempt, or None when it exceeds the record budget."""
-    surfaces, area, cells, admitted, residuals = [], 0., 0, 0, []
+def _ring_area(ring):
+    return abs(sum((a[0]-ring[0][0])*(b[1]-ring[0][1]) - (b[0]-ring[0][0])*(a[1]-ring[0][1])
+                   for a, b in zip(ring, ring[1:])))/2
+
+
+def _envelope(components, observed, secondary, pitch, window, tolerance, budget, threshold):
+    """The clipped cap faces of every component, and the fit diagnostics."""
+    rings, faces, cells, admitted, residuals = [], 0, 0, 0, []
+    total = sum(polygon.area for polygon in components)
     for polygon in components:
         usable = observed
         if len(secondary):
@@ -390,8 +352,8 @@ def _envelope(components, footprint, observed, secondary, pitch, window,
             keep = secondary[:, 2] <= established[ix, iy]+tolerance
             admitted += int(keep.sum())
             usable = np.concatenate((observed, secondary[keep]))
-        heights, raster, count = _component_surface(polygon, usable, pitch, window)
-        cells += count
+        heights, raster, seen_cells = _component_surface(polygon, usable, pitch, window)
+        cells += int(seen_cells.sum())
         # Comparing an upper envelope to individual returns measures the
         # building, not the reconstruction: under one facade cell the returns
         # run the whole height of the wall. Report instead how far the rank
@@ -400,12 +362,15 @@ def _envelope(components, footprint, observed, secondary, pitch, window,
         seen = np.isfinite(raw)
         if seen.any():
             residuals.append(np.abs(heights[seen]-raw[seen]))
-        rings, piece = _surfaces(polygon, heights, raster, mesh_tolerance)
-        surfaces.extend(rings)
-        area += piece
-        if len(surfaces) > budget:
-            return None
-    return surfaces, area, cells, admitted, residuals
+        share = max(1, int(budget*polygon.area/total))
+        part, area, count = _surfaces(polygon, heights, raster, threshold, share)
+        if not part or abs(area-polygon.area) > max(.00001, polygon.area*1e-5):
+            raise UnsupportedFit('incomplete clipped upper surface')
+        if count > share:
+            raise UnsupportedFit('upper surface facet budget')
+        rings.extend(part)
+        faces += count
+    return rings, faces, cells, admitted, residuals
 
 
 def _surface_density(footprint, returns):
@@ -462,12 +427,12 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
     observed = returns if len(returns) >= len(samples) else samples
     footprint = unary_union(pieces(footprint))
     density = _surface_density(footprint, observed)
-    pitch, window, mesh_tolerance, tolerance = envelope_parameters(scale, density)
+    pitch, window, tolerance = envelope_parameters(scale, density)
     try:
-        # Lay the raster along the building's long axis. A roof wall crossing
-        # the grid at an angle is sampled as a staircase of cells, which the
-        # cap shows as a row of vertical ribs. The grid is unchanged by a
-        # quarter turn, so an outline already on it is not rotated at all.
+        # Lay the raster along the building's long axis, so the walls of an
+        # ordinary rectangular building fall on grid lines and need no
+        # straightening at all. The grid is unchanged by a quarter turn, so an
+        # outline already on it is not rotated.
         corners = list(footprint.minimum_rotated_rectangle.exterior.coords)
         start, end = max(zip(corners, corners[1:]), key=lambda edge: math.dist(*edge))
         angle = (math.atan2(end[1]-start[1], end[0]-start[0])+math.pi/4) % (math.pi/2)-math.pi/4
@@ -477,23 +442,14 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
             footprint = rotate(footprint, -angle, origin=origin, use_radians=True)
             observed, secondary = _turn(observed, -angle, origin), _turn(secondary, -angle, origin)
         components = pieces(footprint)
-        base, budget = pitch, facet_budget(pitch)
-        for attempt in range(4):
-            # The pitch fixes how well the cap can follow the building in plan,
-            # so coarsening it turns a drum or a curved facade into blocks: it
-            # is the last resort, for an outline too large to describe at print
-            # scale within the record budget at all, not the ordinary path.
-            result = _envelope(components, footprint, observed, secondary, pitch,
-                               max(window, pitch*2), mesh_tolerance, tolerance, budget)
-            if result is not None:
-                break
-            pitch *= 1.5
-            if attempt == 3 or pitch > base*4:
-                raise UnsupportedFit('upper surface facet budget')
-        surfaces, area, cells, admitted, residuals = result
-        window = max(window, pitch*2)
-        if not surfaces or abs(area-footprint.area) > max(.00001, footprint.area*1e-5):
-            raise UnsupportedFit('incomplete clipped upper surface')
+        budget = facet_budget(pitch)
+        # The stairs a wall makes on the grid are the pitch high in plan, so
+        # the error that merges them scales with the pitch squared.
+        surfaces, faces, cells, admitted, residuals = _envelope(
+            components, observed, secondary, pitch, window, tolerance, budget,
+            COLLAPSE_TOLERANCE*pitch*pitch)
+        if len(surfaces) > MAX_ENVELOPE_FACETS:
+            raise UnsupportedFit('upper surface facet budget')
         # Publication rounds heights to the millimetre-scale precision this
         # model can use. Round before choosing the base, so no vertex can end
         # up under the base the record declares.
@@ -509,25 +465,25 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
         if low <= 0 or not np.isfinite(elevations).all():
             raise UnsupportedFit('invalid upper surface heights')
         residual = float(np.quantile(np.concatenate(residuals), .95)) if residuals else 0.
-        return {'height_m': low, 'tiers': [],
-                'roof_surfaces': [{'geometry': {'type': 'Polygon', 'coordinates': [ring]},
-                                   'bottom_m': low} for ring in surfaces],
-                'method': 'faceted_roof', 'surface_reconstruction': 'roof_envelope',
-                'roof_fit_p95_m': residual,
-                'surface_diagnostics': {
-                    'envelope_raw_returns': int(len(returns)),
-                    'envelope_observations': int(len(observed)),
-                    'envelope_secondary_returns': int(len(secondary)),
-                    'envelope_secondary_admitted': admitted,
-                    'envelope_cells': cells, 'envelope_pitch_m': pitch,
-                    'envelope_window_m': window,
-                    'envelope_components': len(components),
-                    'envelope_return_density_m2': round(density or 0., 2),
-                    'surface_retained_samples': int(len(samples)),
-                    'envelope_fit_error_basis': 'mesh_versus_height_raster',
-                    'envelope_residual_basis': 'rank_filter_versus_raw_upper_envelope',
-                    'envelope_fit_max_m': 0.,
-                    'envelope_smoothing_p95_m': residual,
-                    'envelope_budget_limited': bool(pitch > base+1e-9)}}, None
+        record = {'height_m': low, 'tiers': [],
+                  'roof_surfaces': [{'geometry': {'type': 'Polygon', 'coordinates': [ring]},
+                                     'bottom_m': low} for ring in surfaces],
+                  'method': 'faceted_roof', 'surface_reconstruction': 'roof_envelope',
+                  'roof_fit_p95_m': residual,
+                  'surface_diagnostics': {
+                      'envelope_raw_returns': int(len(returns)),
+                      'envelope_observations': int(len(observed)),
+                      'envelope_secondary_returns': int(len(secondary)),
+                      'envelope_secondary_admitted': admitted,
+                      'envelope_cells': cells, 'envelope_pitch_m': pitch,
+                      'envelope_window_m': window,
+                      'envelope_components': len(components),
+                      'envelope_return_density_m2': round(density or 0., 2),
+                      'surface_retained_samples': int(len(samples)),
+                      'envelope_collapsed_faces': faces,
+                      'envelope_collapse_tolerance_m2': COLLAPSE_TOLERANCE*pitch*pitch,
+                      'envelope_residual_basis': 'rank_filter_versus_raw_upper_envelope',
+                      'envelope_smoothing_p95_m': residual}}
+        return record, None
     except (UnsupportedFit, np.linalg.LinAlgError, GEOSException) as exc:
         return None, str(exc)
