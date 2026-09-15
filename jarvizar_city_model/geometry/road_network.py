@@ -85,12 +85,20 @@ SEGMENT_SHADOW_DENOMINATOR = 5
 # by it rather than ending there, in printed millimetres.
 BOUNDARY_TOLERANCE_MM = 0.05
 
-# A piece of a losing route this much shadowed is doubled and goes; one less
-# shadowed is a remnant that survives only as a link between kept routes.
-# Both carriageways of a divided street converge on each intersection and
-# the stem through it belongs to neither; welded to the losing side it was
-# culled with it and the street broke at every crossing.
+# A deck of a losing route this much shadowed is doubled and goes; one less
+# shadowed survives only as a link between kept routes.  Decks are whole or
+# nothing, so a footbridge never keeps an end in the air over the water.
 REMNANT_SHADOW_FRACTION = 0.3
+
+# How far a cut end of a losing street's surviving stretch follows its own
+# road back into a kept road, in corridor widths, and how far along it the
+# straight join to the nearest kept road may start when it never gets
+# there.  Following is allowed further: a carriageway kept on one side of a
+# borderline stretch and lost on the other has to meet itself again, or its
+# kept side ends in mid-air.  The join stays short so it tapers, never a
+# long straight cut across the doubled stretch.
+FOLLOW_CORRIDORS = 6.0
+EXTENSION_CORRIDORS = 3.0
 
 # A piece of a surviving route this much shadowed is doubled, and a run of
 # such pieces is dropped when both its ends land on kept geometry, so the
@@ -186,6 +194,9 @@ class _Item:
     minor: bool
     origin: Tuple[int, int]
     trimmed_ends: Tuple[bool, bool] = (False, False)
+    # Ends that met nothing in the source network, sidewalks and crossings
+    # included: real dead ends, which the tidy must not join or prune away.
+    dead_ends: Tuple[bool, bool] = (False, False)
     moved: bool = False
 
     @property
@@ -311,6 +322,19 @@ def _samples(a: Point, b: Point, spacing: float) -> List[Point]:
     ]
 
 
+def _walk(path: Sequence[Point], step: float) -> Iterable[Point]:
+    """Points along *path* no more than *step* apart, both ends included."""
+    if not path:
+        return
+    yield path[0]
+    for a, b in zip(path[:-1], path[1:]):
+        length = math.hypot(b[0] - a[0], b[1] - a[1])
+        count = max(1, int(math.ceil(length / step)))
+        for number in range(1, count + 1):
+            t = number / count
+            yield (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+
 def _shadow(
     a: Point,
     b: Point,
@@ -319,6 +343,7 @@ def _shadow(
     gap: float,
     cos_limit: float,
     spacing: float,
+    ranked: bool = False,
 ) -> Tuple[int, int]:
     """How many of a segment's samples lie alongside a kept ribbon.
 
@@ -326,6 +351,8 @@ def _shadow(
     deck) runs within the printed gap of it, edge to edge, and within the
     parallel angle of it.  Decks never shadow the ground beneath them, nor the
     ground a deck: an overpass and the street under it are a layer apart.
+    With *ranked*, grid entries carry a rank and only roads at least as
+    important as *item* count, so a service road never trims a motorway.
     """
     direction = _unit(a, b)
     if direction is None:
@@ -333,8 +360,9 @@ def _shadow(
     samples = _samples(a, b, spacing)
     hits = 0
     for point in samples:
-        for other_a, other_b, other_direction, other_half_width, other_deck in grid.near(point):
-            if other_deck != item.deck:
+        for entry in grid.near(point):
+            other_a, other_b, other_direction, other_half_width, other_deck = entry[:5]
+            if other_deck != item.deck or (ranked and entry[5] > item.rank):
                 continue
             threshold = gap + item.half_width + other_half_width
             distance_sq = _alongside_sq(point, other_a, other_b)
@@ -494,6 +522,20 @@ def _weld(items: Sequence[_Item], quantum: float) -> Tuple[List[_Chain], int]:
     return chains, joins
 
 
+def _chain_dead_ends(chain: _Chain, items: Sequence[_Item]) -> Tuple[bool, bool]:
+    """Whether each end of a welded chain was a dead end in the source."""
+    result = []
+    for member, point in ((chain.members[0], chain.points[0]), (chain.members[-1], chain.points[-1])):
+        item = items[member]
+        if point == item.points[0]:
+            result.append(item.dead_ends[0])
+        elif point == item.points[-1]:
+            result.append(item.dead_ends[1])
+        else:
+            result.append(False)
+    return result[0], result[1]
+
+
 def _run_points(chain: _Chain, items: Sequence[_Item], start: int, end: int) -> List[Point]:
     """The chain's welded points covering members ``start..end`` inclusive.
 
@@ -519,6 +561,7 @@ def _cull(
     stub: float,
     spacing: float,
     quantum: float,
+    on_boundary: Callable[[Point], bool],
     counts: NetworkCounts,
 ) -> List[_Item]:
     """Drop routes that run alongside more important routes already kept.
@@ -528,13 +571,15 @@ def _cull(
     important as itself.  Streets are judged whole: a residential street
     beside a primary for a tenth of its length keeps that tenth, because the
     alternative is a street with a bite out of its middle.  A losing street
-    loses the pieces that are doubled; a piece of it nothing else covers is
-    a remnant, kept only when it still links kept routes at both ends (the
-    stem of a divided street through an intersection) and dropped when it
-    hangs free (the wide middle of a lens whose tips went).  Minor classes
-    are trimmed segment by segment instead, so a cycle track that leaves the
-    road it followed keeps the part that left.  A trimmed remnant shorter
-    than a stub is not a route and goes with the shadowed part.
+    loses only what is doubled.  Its stretches that nothing covers (a ramp
+    curving away, carriageways parting round an island, the stem of a
+    divided street through an intersection) are judged once everything
+    else is settled: each keeps its real path, its cut ends follow the road
+    back into the kept road that doubled it, and it survives when both ends
+    land somewhere real, never left floating.  Minor classes are trimmed
+    segment by segment instead, so a cycle track that leaves the road it
+    followed keeps the part that left.  A trimmed stretch shorter than a
+    stub is not a route and goes with the shadowed part.
     """
     cos_limit = math.cos(math.radians(settings.parallel_angle_deg))
     grid = _Grid(spacing)
@@ -584,13 +629,9 @@ def _cull(
             shadowed = sum(part for part, _whole in fractions)
             total = sum(whole for _part, whole in fractions)
             if total > 0.0 and shadowed / total >= settings.shadow_fraction:
-                for item, (part, whole) in zip(members, fractions):
-                    if whole > 0.0 and part / whole < REMNANT_SHADOW_FRACTION:
-                        # Not indexed yet: a later route must never be
-                        # culled against a remnant that is dropped after.
-                        remnants.append(item)
-                    else:
-                        drop(item, whole)
+                # Deferred, and not indexed: a later route must never be
+                # culled against a stretch that is dropped after.
+                remnants.extend(members)
                 continue
 
             # The route stays.  A run of doubled pieces inside it is still
@@ -687,6 +728,8 @@ def _cull(
                         minor=item.minor,
                         origin=(item.origin[0], number),
                         trimmed_ends=(not first_original, not last_original),
+                        dead_ends=(item.dead_ends[0] and first_original,
+                                   item.dead_ends[1] and last_original),
                         moved=True,
                     )
                 )
@@ -698,36 +741,216 @@ def _cull(
                 counts.culled_pieces += 1
 
     if remnants:
-        # Remnants are judged again against everything that finally stays:
-        # a shorter route processed later may double one, and the routes
-        # its run has to link may not have been in the index at the time.
-        grid = _Grid(spacing)
-        for item in kept:
-            grid.add(item.points, item.half_width, item.deck)
-        survivors: List[_Item] = []
-        for item in remnants:
-            part, whole = fraction(item)
-            if whole > 0.0 and part / whole >= REMNANT_SHADOW_FRACTION:
-                drop(item, whole)
-            else:
-                survivors.append(item)
-
-        # A remnant run survives only as a link: both of its ends have to
-        # touch something that is staying in its own right.
-        runs, _joins = _weld(survivors, quantum)
-        for run in runs:
-            deck = survivors[run.members[0]].deck
-            if covered(run.points[0], deck) and covered(run.points[-1], deck):
-                kept.extend(survivors[index] for index in run.members)
-            else:
-                for index in run.members:
-                    drop(survivors[index], survivors[index].length)
+        kept.extend(_settle_remnants(
+            remnants, kept, gap, stub, spacing, quantum, cos_limit, on_boundary, counts))
     return kept
+
+
+def _settle_remnants(
+    remnants: Sequence[_Item],
+    kept: Sequence[_Item],
+    gap: float,
+    stub: float,
+    spacing: float,
+    quantum: float,
+    cos_limit: float,
+    on_boundary: Callable[[Point], bool],
+    counts: NetworkCounts,
+) -> List[_Item]:
+    """Keep the undoubled stretches of losing streets that still mean something.
+
+    Judged against everything that finally stays: a shorter route processed
+    later may double a stretch, and the routes it has to reach may not have
+    been kept when its own route lost.  A deck is whole or nothing.  A street
+    piece keeps each stretch that is not shadowed and is at least a stub
+    long; a cut end follows the piece back along its own path until it is
+    inside a kept ribbon, and failing that within a few corridors, joins the
+    nearest kept road beside it.  Stretches that meet end to end are judged
+    together, and survive only when both ends land on a kept ribbon, the crop
+    boundary, or a dead end that is really in the source.
+    """
+    ranks = _Grid(spacing)
+    for item in kept:
+        ranks.add(item.points, item.half_width, item.deck, item.rank)
+
+    def covered(point: Point, deck: bool, rank: Optional[int] = None) -> bool:
+        """Inside a kept ribbon of the same kind, of *rank* or better if given."""
+        for a, b, _direction, half_width, other_deck, other_rank in ranks.near(point):
+            if other_deck != deck or (rank is not None and other_rank > rank):
+                continue
+            reach = max(half_width, quantum)
+            if _distance_sq(point, a, b)[0] <= reach * reach:
+                return True
+        return False
+
+    def shadow_flags(item: _Item, points: Sequence[Point]) -> List[bool]:
+        # Only roads at least as important count, as in the cull itself: a
+        # lesser road kept beside a losing motorway must not trim it away.
+        return [
+            _is_shadowed(*_shadow(a, b, item, ranks, gap, cos_limit, spacing, ranked=True))
+            for a, b in zip(points[:-1], points[1:])
+        ]
+
+    def follow(item: _Item, path: Sequence[Point]) -> Optional[List[Point]]:
+        """Points past a cut end that carry it into a kept road.
+
+        The end follows its own road along *path* until it is inside a kept
+        ribbon at least as important as itself: what doubled it was, and
+        stopping at the first driveway on the way leaves a gap before the
+        road it should rejoin.  Failing that within :data:`FOLLOW_CORRIDORS`,
+        or where the road ends first, it is joined straight to such a road
+        beside the furthest point it reached within
+        :data:`EXTENSION_CORRIDORS`: a taper towards where the two converge,
+        rather than a square jog, without printing the doubled stretch
+        between.  None when no such road was within reach.
+        """
+        follow_limit = FOLLOW_CORRIDORS * spacing
+        joint_limit = EXTENSION_CORRIDORS * spacing
+        step = max(item.half_width, quantum * 4.0)
+        travelled = 0.0
+        previous: Optional[Point] = None
+        extra: List[Point] = []
+        joint: Optional[Point] = None
+        for point in _walk(path, step):
+            if previous is not None:
+                travelled += math.hypot(point[0] - previous[0], point[1] - previous[1])
+                if travelled > follow_limit:
+                    break
+                extra.append(point)
+                if covered(point, item.deck, item.rank):
+                    return extra
+            previous = point
+            if travelled <= joint_limit:
+                joint = nearest_kept(item, point) or joint
+        return None if joint is None else [joint]
+
+    def visible_length(item: _Item, points: Sequence[Point]) -> float:
+        """Length of *points* that prints apart from every kept ribbon.
+
+        A stretch that is not shadowed can still lie inside the corridor
+        of a kept road without running beside it: the last few metres of a
+        carriageway bending into the node where it meets its twin.  Only
+        what clears every kept ribbon by the gap reads as a road of its own.
+        """
+        visible = 0.0
+        for a, b in zip(points[:-1], points[1:]):
+            length = math.hypot(b[0] - a[0], b[1] - a[1])
+            samples = _samples(a, b, max(item.half_width, quantum * 4.0))
+            clear = 0
+            for point in samples:
+                inside = False
+                for c, d, _direction, half_width, other_deck, other_rank in ranks.near(point):
+                    if other_deck != item.deck or other_rank > item.rank:
+                        continue
+                    reach = gap + item.half_width + half_width
+                    if _distance_sq(point, c, d)[0] <= reach * reach:
+                        inside = True
+                        break
+                clear += not inside
+            visible += length * clear / len(samples)
+        return visible
+
+    def nearest_kept(item: _Item, point: Point) -> Optional[Point]:
+        best: Optional[Tuple[float, Point]] = None
+        for a, b, _direction, half_width, other_deck, other_rank in ranks.near(point):
+            if other_deck != item.deck or other_rank > item.rank:
+                continue
+            reach = gap + item.half_width + half_width
+            distance_sq, closest = _distance_sq(point, a, b)
+            if distance_sq <= reach * reach and (best is None or distance_sq < best[0]):
+                best = (distance_sq, closest)
+        return None if best is None else best[1]
+
+    candidates: List[_Item] = []
+    source_length: Dict[int, float] = {}
+    for item in remnants:
+        source_length[item.origin[0]] = source_length.get(item.origin[0], 0.0) + item.length
+        if item.deck:
+            flags = shadow_flags(item, item.points)
+            shadowed = sum(
+                math.hypot(b[0] - a[0], b[1] - a[1])
+                for (a, b), flag in zip(zip(item.points[:-1], item.points[1:]), flags) if flag
+            )
+            if item.length > 0.0 and shadowed / item.length < REMNANT_SHADOW_FRACTION:
+                candidates.append(item)
+            continue
+
+        dense = densify_polyline(item.points, spacing)
+        flags = shadow_flags(item, dense)
+        if not any(flags):
+            candidates.append(item)
+            continue
+        number = 0
+        segment = 0
+        while segment < len(flags):
+            if flags[segment]:
+                segment += 1
+                continue
+            first = segment
+            while segment + 1 < len(flags) and not flags[segment + 1]:
+                segment += 1
+            last = segment
+            segment += 1
+            # Vertices first .. last + 1 of the dense polyline.
+            run = list(dense[first:last + 2])
+            if polyline_length(run) < stub or visible_length(item, run) < stub:
+                continue
+            first_cut = first > 0
+            last_cut = last + 2 < len(dense)
+            joined = True
+            for cut, forwards in ((first_cut, False), (last_cut, True)):
+                if not cut:
+                    continue
+                path = dense[last + 1:] if forwards else list(reversed(dense[:first + 1]))
+                extra = follow(item, path)
+                if extra is None:
+                    joined = False
+                    break
+                run = run + extra if forwards else list(reversed(extra)) + run
+            if not joined:
+                continue
+            candidates.append(_Item(
+                piece=item.piece,
+                points=run,
+                half_width=item.half_width,
+                rank=item.rank,
+                deck=item.deck,
+                minor=item.minor,
+                origin=(item.origin[0], number),
+                trimmed_ends=(first_cut, last_cut),
+                dead_ends=(item.dead_ends[0] and not first_cut, item.dead_ends[1] and not last_cut),
+                moved=True,
+            ))
+            number += 1
+
+    survivors: List[_Item] = []
+    chains, _joins = _weld(candidates, quantum)
+    for chain in chains:
+        deck = candidates[chain.members[0]].deck
+        dead_first, dead_last = _chain_dead_ends(chain, candidates)
+        first_ok = dead_first or on_boundary(chain.points[0]) or covered(chain.points[0], deck)
+        last_ok = dead_last or on_boundary(chain.points[-1]) or covered(chain.points[-1], deck)
+        if first_ok and last_ok:
+            survivors.extend(candidates[index] for index in chain.members)
+
+    kept_length: Dict[int, float] = {}
+    for item in survivors:
+        kept_length[item.origin[0]] = kept_length.get(item.origin[0], 0.0) + item.length
+    for origin, whole in source_length.items():
+        remaining = kept_length.get(origin, 0.0)
+        if remaining <= 0.0:
+            counts.culled_pieces += 1
+            counts.culled_length_mm += whole
+        elif any(item.origin[0] == origin and item.trimmed_ends != (False, False) for item in survivors):
+            counts.trimmed_pieces += 1
+            counts.culled_length_mm += max(0.0, whole - remaining)
+    return survivors
 
 
 def _snap(
     items: List[_Item],
     settings: NetworkSettings,
+    gap: float,
     snap_gap: float,
     quantum: float,
     max_half_width: float,
@@ -736,11 +959,17 @@ def _snap(
 ) -> None:
     """Pull a loose end onto the surface road it nearly meets.
 
-    Mapping is full of ways that stop a hair short of the road they join, and
-    once the sidewalks are gone a park path ends at the kerb.  An end whose
-    ribbon would leave less than the snap gap of ground before the road's
-    edge is moved onto the road's centerline, so the two ribbons overlap and
-    print as one junction.
+    Once the sidewalks are gone a park path ends at the kerb, and a side
+    street that met the carriageway that was culled ends beside the one that
+    stayed.  An end like that, which met something in the source that is no
+    longer there, is moved onto the road's centerline when its ribbon would
+    leave less than the snap gap of ground before the road's edge, so the
+    two ribbons overlap and print as one junction.
+
+    An end that met nothing in the source is a real dead end: a cul-de-sac
+    or a driveway that stops short of the next street.  Joining it would
+    invent a connection, so it is only moved when the ground left would be
+    narrower than the printable gap itself.
 
     An end only joins a road at least as important as its own: a path is
     pulled onto the street, never the street onto the path.  It has to be
@@ -773,7 +1002,8 @@ def _snap(
             heading = _unit(neighbour, point)
             if heading is None:
                 continue
-            reach = snap_gap + item.half_width
+            dead = item.dead_ends[0 if end == 0 else 1]
+            reach = (min(gap, snap_gap) if dead else snap_gap) + item.half_width
             best: Optional[Tuple[float, Point]] = None
             touching = False
             for a, b, direction, other_half_width, other_rank, other in grid.near(point):
@@ -788,19 +1018,92 @@ def _snap(
                 if distance_sq > limit * limit:
                     continue
                 dot = heading[0] * direction[0] + heading[1] * direction[1]
-                if abs(dot) >= cos_limit:
-                    continue
+                parallel = abs(dot) >= cos_limit
+                if parallel:
+                    # Running alongside.  A real dead end stays put; an end
+                    # whose partner went (a ramp whose merge link was culled
+                    # as doubled) merges into the road it runs beside, but
+                    # only from inside the corridor that doubled it.
+                    alongside = gap + item.half_width + other_half_width
+                    if dead or distance_sq > alongside * alongside:
+                        continue
                 if best is None or distance_sq < best[0]:
-                    best = (distance_sq, closest)
+                    best = (distance_sq, closest, parallel)
             if touching or best is None:
                 continue
-            target = best[1]
-            # Never collapse the segment being moved.
-            if math.hypot(target[0] - neighbour[0], target[1] - neighbour[1]) <= quantum:
-                continue
-            item.points[end] = target
-            item.moved = True
-            counts.snapped_ends += 1
+            _, target, parallel = best
+            if parallel:
+                changed = _taper_end(item.points, end, target, quantum)
+            else:
+                changed = _connect_end(item.points, end, target, heading, quantum)
+            if changed:
+                item.moved = True
+                counts.snapped_ends += 1
+
+
+# A sideways merge bends the end in over this many times the distance it has
+# to move, so it tapers instead of kinking.
+TAPER_RATIO = 3.0
+
+
+def _connect_end(points: List[Point], end: int, target: Point, heading: Point, quantum: float) -> bool:
+    """Join an end heading into a road without tilting the line behind it.
+
+    The end stays where it was and a short connector reaches the road; an
+    end that had run a little past the road is cut back along its own line
+    instead.  Moving the end vertex itself would swing the whole last
+    segment, and Overture draws a straight kilometre with two vertices.
+    """
+    point = points[end]
+    offset = (target[0] - point[0], target[1] - point[1])
+    if math.hypot(*offset) <= quantum:
+        return False
+    neighbour = points[1] if end == 0 else points[-2]
+    if offset[0] * heading[0] + offset[1] * heading[1] < 0.0:
+        # Behind the end: the line overshot the road.  Trim it back.
+        if math.hypot(target[0] - neighbour[0], target[1] - neighbour[1]) <= quantum:
+            return False
+        points[end] = target
+        return True
+    if end == 0:
+        points.insert(0, target)
+    else:
+        points.append(target)
+    return True
+
+
+def _taper_end(points: List[Point], end: int, target: Point, quantum: float) -> bool:
+    """Bend the end of a line running beside a road into it, over a taper.
+
+    Only the last stretch, :data:`TAPER_RATIO` times the sideways distance
+    long, changes; everything before it keeps its place.  A line too short
+    for that stays as it is.
+    """
+    ordered = points if end != 0 else list(reversed(points))
+    lateral = math.hypot(target[0] - ordered[-1][0], target[1] - ordered[-1][1])
+    if lateral <= quantum:
+        return False
+    taper = TAPER_RATIO * lateral
+    if polyline_length(ordered) < 2.0 * taper:
+        return False
+    remaining = taper
+    index = len(ordered) - 1
+    while index > 0:
+        a, b = ordered[index - 1], ordered[index]
+        length = math.hypot(b[0] - a[0], b[1] - a[1])
+        if length >= remaining:
+            t = (length - remaining) / length if length > 0.0 else 0.0
+            start = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+            break
+        remaining -= length
+        index -= 1
+    else:
+        return False
+    rebuilt = ordered[:index] + [start, target]
+    if end == 0:
+        rebuilt.reverse()
+    points[:] = rebuilt
+    return True
 
 
 def _prune(
@@ -811,7 +1114,12 @@ def _prune(
     on_boundary: Callable[[Point], bool],
     counts: NetworkCounts,
 ) -> List[_Item]:
-    """Remove short routes that lead nowhere.
+    """Remove short routes left leading nowhere by what the tidy removed.
+
+    A stub is a short route with a free end that met something in the
+    source: the kerb stub of a crossing whose crosswalk was dropped, or the
+    spur of a culled carriageway.  A short route whose free end was a dead
+    end in the source is real, and stays.
 
     An end counts as connected when it lies inside another live route's
     ribbon, mid-span included: a side street almost always meets the middle
@@ -861,9 +1169,13 @@ def _prune(
         (supporters(number, chain.points[0]), supporters(number, chain.points[-1]))
         for number, chain in enumerate(chains)
     ]
-    anchored = [
-        (on_boundary(chain.points[0]), on_boundary(chain.points[-1])) for chain in chains
-    ]
+    anchored = []
+    for chain in chains:
+        dead_first, dead_last = _chain_dead_ends(chain, items)
+        anchored.append((
+            dead_first or on_boundary(chain.points[0]),
+            dead_last or on_boundary(chain.points[-1]),
+        ))
     dependents: Dict[int, Set[int]] = {}
     for number, (first, last) in enumerate(support):
         for other in first | last:
@@ -906,6 +1218,7 @@ def tidy_network(
     half_width_m: Callable[[SubSegment], float],
     is_deck: Callable[[SubSegment], bool],
     settings: NetworkSettings | None = None,
+    context: Iterable[SubSegment] = (),
 ) -> Tuple[List[SubSegment], NetworkCounts]:
     """Weld, cull, snap and prune the clipped centerline pieces of a selection.
 
@@ -914,8 +1227,10 @@ def tidy_network(
     will be built as an elevated deck; decks and surface pieces never shadow
     each other and deck ends are never moved.  *bounds_m* is the metric crop
     rectangle ``(min_x, min_y, max_x, max_y)``: ends on it were clipped, not
-    dangling.  Returns the surviving pieces in their original order and the
-    counts of what each pass did.
+    dangling.  *context* holds pieces left out before the tidy (sidewalks and
+    crossings): never built, but an end that met one is a junction whose
+    partner went, not a real dead end.  Returns the surviving pieces in their
+    original order and the counts of what each pass did.
     """
     settings = settings or NetworkSettings()
     counts = NetworkCounts()
@@ -971,12 +1286,32 @@ def tidy_network(
                 or max_y - y <= boundary
             )
 
+    # Which ends met nothing in the source network.  Overture repeats a
+    # connector's coordinates on every segment meeting it, mid-span included,
+    # so the node tolerance is enough.
+    source = _Grid(max(spacing, quantum * 4.0))
+    for index, item in enumerate(items):
+        source.add(item.points, index)
+    for number, piece in enumerate(context):
+        if len(piece.points) >= 2:
+            source.add(list(piece.points), -1 - number)
+    touch_sq = quantum * quantum
+    for index, item in enumerate(items):
+        flags = []
+        for point in (item.points[0], item.points[-1]):
+            met = on_boundary(point) or any(
+                other != index and _distance_sq(point, a, b)[0] <= touch_sq
+                for a, b, _direction, other in source.near(point)
+            )
+            flags.append(not met)
+        item.dead_ends = (flags[0], flags[1])
+
     chains, joins = _weld(items, quantum)
     counts.welded_joins += joins
-    items = _cull(items, chains, settings, gap, stub, spacing, quantum, counts)
+    items = _cull(items, chains, settings, gap, stub, spacing, quantum, on_boundary, counts)
 
     if snap_gap > 0.0:
-        _snap(items, settings, snap_gap, quantum, max_half_width, on_boundary, counts)
+        _snap(items, settings, gap, snap_gap, quantum, max_half_width, on_boundary, counts)
 
     # Weld again: trimming split pieces and snapping brought ends together,
     # and both leave joins the first pass could not have seen.  The pruner

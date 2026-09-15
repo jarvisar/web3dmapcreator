@@ -462,22 +462,40 @@ the streets and the service roads -- welds pieces that meet end to end into
 routes, and drops a route that runs close to *and* parallel with a more
 important route already kept. "Close" is measured between the printed edges:
 **Minimum Road Gap** (0.4 mm, one nozzle line) is the narrowest strip of ground
-allowed between two ribbons running alongside each other. A street loses only
-what is actually doubled, and only where the road carries on through what
-doubled it: the losing carriageway of a divided street goes block by block
-while the stem through each intersection stays, so the street prints straight
-and connected. Footways, cycleways, paths and tracks lose only their shadowed
-sections, so a cycle track that follows a street and then turns into a park
-keeps the park. A loose end
-whose ribbon would stop within twice the gap of a street's edge is pulled onto
-the street's centerline (a path onto a street, never a street onto a path, and
-never an end running parallel to the line), and short fragments that lead
-nowhere -- the kerb stubs left when crossings are dropped -- are removed.
+allowed between two ribbons running alongside each other. A less important
+road never removes a more important one. A street loses only what is actually
+doubled: the losing carriageway of a divided street goes block by block while
+the stem through each intersection stays, and a stretch that parts from the
+road that doubled it -- a ramp curving away, carriageways splitting round an
+island, a road carrying on past its partner's end -- stays on its own path and
+tapers back into the kept road where it was cut. Footways, cycleways, paths and
+tracks lose only their shadowed sections, so a cycle track that follows a
+street and then turns into a park keeps the park.
+
+The tidy repairs only what removal broke. It knows which ends met something in
+the source -- sidewalks and crossings included -- and which were real dead ends.
+An end whose partner was removed (a park path that ended on a dropped
+sidewalk) is joined to a street within twice the gap of its edge; a real dead
+end, such as a cul-de-sac or a driveway stopping short of the next street, is
+only joined when the ground left would be thinner than the gap itself. A join
+adds a short connector or tapers the end in; it never tilts the existing line.
+Short fragments left leading nowhere by removal -- the kerb stubs of dropped
+crossings -- are removed, while short spurs that are real dead ends stay.
 Bridge decks and the ground under them never shadow each other, and deck ends
 are never moved. The counts are `network_culled_pieces`,
 `network_trimmed_pieces`, `network_culled_length_mm`, `network_snapped_ends`,
 `network_pruned_stubs` and `network_welded_joins`. Turning the toggle off
 restores the untidied network exactly.
+
+**Airports print with the roads.** Runways, stopways, taxiways and taxilanes
+from Overture's `infrastructure` layer are mapped as centerlines; each is
+widened by its mapped width (or 45 m for runways, 23 m for taxiways, 15 m for
+taxilanes) into an area, square-ended for runways. Aprons and helipads are
+used as mapped. All of them are built road-thick over their whole area in one
+object of their own, road class `airport` (exported as "Roads (Airport)"), so
+land cover is cut from beneath them and trees avoid them like any ground road.
+The airport grounds polygon itself is not paved. The count is
+`airport_surfaces`.
 
 **Roads are widened to stay printable.** Below **Minimum Road Width**, a class
 is widened to that floor. At the default 0.07 mm/m that floor is 6.4 m of real

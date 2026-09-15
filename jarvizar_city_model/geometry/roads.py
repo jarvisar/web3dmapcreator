@@ -27,7 +27,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from ..blender.mesh_utils import MeshBuilder
+from ..blender.mesh_utils import MeshBuilder, projected_polygon_rings
 from ..data.geojson import feature_id, feature_properties
 from ..data.linework import (
     MINOR_ROAD_CLASSES,
@@ -44,6 +44,7 @@ from ..data.linework import (
     simplify_polyline,
     split_segment,
 )
+from .airports import airport_surface_features
 from .bridge_network import node_key, open_water_corridors, split_at_open_water
 from .bridges import add_bridge_deck, add_bridge_supports
 from .deck_graph import SegmentIndex, solve_deck_network
@@ -55,6 +56,7 @@ from .planar import (
     offset_is_safe,
     oriented_ring,
     parametric_ribbon,
+    signed_area,
 )
 from .road_network import NetworkSettings, tidy_network
 from .support import CUT_WATER_DROP_MM
@@ -68,6 +70,11 @@ HIDDEN_FLAGS = frozenset({"is_tunnel"})
 EVIDENCE_FLAG = "road_flags.is_bridge"
 EVIDENCE_RAIL_FLAG = "rail_flags.is_bridge"
 EVIDENCE_CROSSING = "crosses_cut_water"
+
+# Airport paving smaller than this, in square printed millimetres, is left
+# out: a helipad a few tenths of a millimetre across is a blob, not a pad.
+AIRPORT_MINIMUM_AREA_MM2 = 0.25
+AIRPORT_CLASS = "airport"
 
 # How close to the selection rectangle a deck end has to be to count as cut
 # off by it rather than ending there.  Clipping puts the vertex on the edge
@@ -102,6 +109,9 @@ class RoadSettings:
     # alongside each other, edge to edge: one nozzle line.
     network_gap_mm: float = 0.4
     network_stub_length_mm: float = 0.7
+    # Runways, taxiways, aprons and helipads from base/infrastructure, built
+    # as road-thick paving over their whole area in their own object.
+    include_airports: bool = True
     include_bridges: bool = True
     # A deck is as thick as a road, so a bridge continues the road it carries
     # with the same number of printed layers.
@@ -157,6 +167,8 @@ class RoadCounts:
     skipped_over_void: int = 0
     decomposed_ribbons: int = 0
     rejected_geometry: int = 0
+    airport_surfaces: int = 0
+    airport_rejected: int = 0
     classes: Dict[str, int] = field(default_factory=dict)
     evidence: Dict[str, int] = field(default_factory=dict)
     network: Dict[str, Any] = field(default_factory=dict)
@@ -188,6 +200,8 @@ class RoadCounts:
             "skipped_over_void": self.skipped_over_void,
             "decomposed_ribbons": self.decomposed_ribbons,
             "roads_rejected_geometry": self.rejected_geometry,
+            "airport_surfaces": self.airport_surfaces,
+            "airport_rejected": self.airport_rejected,
             "classes": dict(sorted(self.classes.items())),
             **self.network,
         }
@@ -226,8 +240,24 @@ def _replace(piece: SubSegment, **changes) -> SubSegment:
     return SubSegment(**values)
 
 
-def _subsegments(features, transform, settings: RoadSettings, counts: RoadCounts):
-    """Yield clipped, rule-resolved metric subsegments for every road feature."""
+def _clipped(piece: SubSegment, metric_bounds):
+    return clip_polyline_to_rectangle(
+        piece.points,
+        metric_bounds.min_east_m,
+        metric_bounds.min_north_m,
+        metric_bounds.max_east_m,
+        metric_bounds.max_north_m,
+    )
+
+
+def _subsegments(features, transform, settings: RoadSettings, counts: RoadCounts,
+                 left_out: Optional[List[SubSegment]] = None):
+    """Yield clipped, rule-resolved metric subsegments for every road feature.
+
+    *left_out* collects the clipped minor roads and sidewalks the settings
+    skip.  They are never built, but the network tidy needs to know that a
+    path which ended on one was connected, not a dead end.
+    """
     metric_bounds = transform.metric_bounds
     for feature in features:
         properties = feature_properties(feature)
@@ -264,27 +294,29 @@ def _subsegments(features, transform, settings: RoadSettings, counts: RoadCounts
             if piece.flags & HIDDEN_FLAGS:
                 counts.skipped_tunnels += 1
                 continue
+            skipped = False
             if (
                 subtype == "road"
                 and not settings.include_minor_roads
                 and piece.road_class in MINOR_ROAD_CLASSES
             ):
                 counts.skipped_minor += 1
-                continue
-            if (
+                skipped = True
+            elif (
                 subtype == "road"
                 and settings.skip_sidepaths
                 and piece.subclass in SIDEPATH_SUBCLASSES
             ):
                 counts.skipped_sidepaths += 1
+                skipped = True
+            if skipped:
+                if left_out is not None:
+                    left_out.extend(
+                        _replace(piece, points=tuple(clipped))
+                        for clipped in _clipped(piece, metric_bounds)
+                    )
                 continue
-            for clipped in clip_polyline_to_rectangle(
-                piece.points,
-                metric_bounds.min_east_m,
-                metric_bounds.min_north_m,
-                metric_bounds.max_east_m,
-                metric_bounds.max_north_m,
-            ):
+            for clipped in _clipped(piece, metric_bounds):
                 yield _replace(
                     piece,
                     points=tuple(clipped),
@@ -502,6 +534,52 @@ def _solve_deck_heights(
     return solution.heights, demoted
 
 
+def _add_airport_paving(features, transform, heightfield, ground_height, settings,
+                        builders, counts, ground_support) -> None:
+    """Build runways, taxiways, aprons and helipads as road-thick slabs.
+
+    They are ground, not routes, so each covers its whole area and drapes on
+    the terrain the way a land slab does, with the road's thickness and
+    embed.  All of them share one object, batched like a road class.
+    """
+    from .surfaces import _draped_slab
+
+    areas = airport_surface_features(features, transform.projection)
+    if not areas:
+        return
+    thickness = float(settings.road_thickness_mm)
+    embed = float(settings.road_embed_mm)
+    supported = ground_support is not None and settings.support_over_water
+
+    def draped(x: float, y: float):
+        # Same grade as a supported road over a cut; bank heights otherwise.
+        height = heightfield.height_mm(x, y) if supported else ground_height(x, y)
+        return height - embed, height + thickness
+
+    builder = None
+    for feature in areas:
+        added = False
+        for rings in projected_polygon_rings(feature.get("geometry") or {}, transform):
+            if abs(signed_area(rings[0])) < AIRPORT_MINIMUM_AREA_MM2:
+                continue
+            built = _draped_slab(rings, draped, thickness + embed, settings.drape_spacing_mm)
+            if built is None:
+                continue
+            if builder is None:
+                builder = builders.setdefault(AIRPORT_CLASS, MeshBuilder(f"ROAD_{AIRPORT_CLASS}"))
+            if not builder.add_raw(*built):
+                continue
+            added = True
+            if supported and (ground_support.overlaps_basin([rings[0]])
+                              or (heightfield.void_mask is not None
+                                  and heightfield.void_mask.touches_water([rings[0]]))):
+                ground_support.footprint([rings[0]], "road")
+        if added:
+            counts.airport_surfaces += 1
+        else:
+            counts.airport_rejected += 1
+
+
 def generate_roads(
     segment_features: Iterable[Dict[str, Any]],
     transform,
@@ -513,12 +591,16 @@ def generate_roads(
     settings: RoadSettings | None = None,
     progress_callback=None,
     ground_support=None,
+    airport_features: Iterable[Dict[str, Any]] = (),
 ) -> Dict[str, Any]:
     """Generate surface roads, bridge decks, bridge supports, and causeways.
 
     *ground_support* is the :class:`~jarvizar_city_model.geometry.support.SupportBuilder`
     that keeps terrain under decks standing over cut water.  Without it, piers
-    over the opening are dropped as before.
+    over the opening are dropped as before.  *airport_features* are the
+    ``infrastructure`` features; their runways, taxiways, aprons and helipads
+    are built as road-thick paving over their whole area, in one object of
+    their own (see :mod:`airports`).
     """
     settings = settings or RoadSettings()
     counts = RoadCounts()
@@ -543,7 +625,8 @@ def generate_roads(
         heightfield = ground_support.structure_heightfield
     ground_height = getattr(heightfield, "ground_height_mm", heightfield.height_mm)
 
-    pieces = list(_subsegments(segment_features, transform, settings, counts))
+    left_out: List[SubSegment] = []
+    pieces = list(_subsegments(segment_features, transform, settings, counts, left_out))
     if settings.tidy_network:
         # Before crossings are recovered: a culled carriageway must not first
         # earn a deck, and a snapped end must be where the water test runs.
@@ -566,6 +649,7 @@ def generate_roads(
                 snap_gap_mm=2.0 * settings.network_gap_mm,
                 stub_length_mm=settings.network_stub_length_mm,
             ),
+            context=left_out,
         )
         counts.network = network_counts.as_dict()
     pieces = _recover_crossings(pieces, transform, heightfield, settings, counts)
@@ -820,12 +904,22 @@ def generate_roads(
             counts.rejected_geometry += 1
         tick()
 
+    if settings.include_airports:
+        _add_airport_paving(
+            airport_features, transform, heightfield, ground_height, settings,
+            surface_builders, counts, ground_support,
+        )
+
     for road_class, builder in sorted(surface_builders.items()):
         obj = builder.build(surface_collection, materials.get("road"))
         if obj is not None:
             obj["feature_type"] = "surface_road"
             obj["road_class"] = road_class
-            obj["source"] = "Overture transportation/segment"
+            obj["source"] = (
+                "Overture base/infrastructure (airport)"
+                if road_class == AIRPORT_CLASS
+                else "Overture transportation/segment"
+            )
 
     for road_class, builder in sorted(bridge_builders.items()):
         obj = builder.build(bridge_collection, materials.get("bridge"))

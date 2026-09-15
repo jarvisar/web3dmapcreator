@@ -105,9 +105,11 @@ def _required_types(settings) -> tuple:
         required.extend(WATER_TYPES)
     if settings.generate_land_surfaces or settings.generate_trees:
         required.extend(LAND_TYPES)
-    if _cuts_water(settings) or (settings.recess_ponds_and_fountains and settings.generate_terrain):
+    if (_cuts_water(settings) or (settings.recess_ponds_and_fountains and settings.generate_terrain)
+            or settings.generate_roads):
         # Piers, quays, and breakwaters are mapped here; the cut needs them to
-        # know which ground out over the water is real.
+        # know which ground out over the water is real.  Runways, taxiways
+        # and aprons are here too, and print with the roads.
         required.extend(INFRASTRUCTURE_TYPES)
     ordered = []
     for item in ALL_TYPES:
@@ -913,6 +915,10 @@ class JARVIZAR_OT_generate_model(Operator):
                         road_settings,
                         progress_callback=lambda f: progress(0.25 + f * 0.25),
                         ground_support=ground_support,
+                        airport_features=(
+                            _load_features(bundle, "infrastructure")
+                            if settings.generate_roads else ()
+                        ),
                     )
                 )
                 if settings.generate_land_surfaces:

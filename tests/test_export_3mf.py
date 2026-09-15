@@ -38,6 +38,7 @@ class ExportNamesTests(unittest.TestCase):
             ({'feature_type': 'surface_road', 'road_class': 'footway'}, 'Paths (Footway)'),
             ({'feature_type': 'surface_road', 'road_class': 'residential'}, 'Roads (Residential)'),
             ({'feature_type': 'surface_road', 'road_class': 'rail'}, 'Railways'),
+            ({'feature_type': 'surface_road', 'road_class': 'airport'}, 'Roads (Airport)'),
             ({'feature_type': 'surface_road', 'road_class': 'pedestrian'}, 'Paths (Pedestrian)'),
             ({'feature_type': 'bridge_deck', 'road_class': 'footway'}, 'Footbridges (Footway)'),
             ({'feature_type': 'trees'}, 'Trees'),

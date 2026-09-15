@@ -396,19 +396,38 @@ colors, overwriting manual palette edits.
   against kept routes within 28° of parallel whose printed edges would be
   closer than **Minimum Road Gap** (0.4 mm); a sample counts only beside the
   interior of a neighbour, never past its end, or the stem through an
-  intersection reads as doubled by the carriageway it continues. A route
-  ≥ 68% shadowed loses its doubled pieces (≥ 30%) and keeps undoubled
-  remnants only where they link kept geometry at both ends (the stems of a
-  divided street); a surviving route still drops a run of doubled pieces
-  (≥ 60%) whose ends both land on kept ribbons. `MINOR_ROAD_CLASSES` are
+  intersection reads as doubled by the carriageway it continues. A surviving
+  route drops a run of doubled pieces (≥ 60%) whose ends both land on kept
+  ribbons. A route ≥ 68% shadowed is settled after all routes
+  (`_settle_remnants`), against kept roads of equal or better rank only:
+  decks are whole or nothing (< 30% shadowed); street pieces keep undoubled
+  stretches at least a stub long whose length clear of every such ribbon is
+  also a stub, cut ends follow their own path (up to 6 corridors) into an
+  equal-or-better ribbon or join the nearest one diagonally from within 3
+  corridors, and welded stretches survive only when both ends are covered,
+  on the crop boundary, or source dead ends. `MINOR_ROAD_CLASSES` are
   trimmed at sample resolution with remnants shorter than a stub dropped.
   Decks and surface pieces never shadow each other; deck ends never move.
-  Snapping pulls a
-  loose end within twice the gap onto an equal-or-higher-ranked surface
-  road it approaches at an angle; ends inside the other ribbon already touch.
-  Stub pruning (0.7 mm) removes routes free at one end, mid-span support and
-  crop-boundary anchoring included. Dense-cluster, tangle and loop passes of
-  the laser reference were deliberately not ported. Counts are `network_*`.
+  `tidy_network(context=...)` receives the skipped sidewalks/minor pieces;
+  an end is a *dead end* when it met nothing in the source. Snapping: ends
+  touching or on the boundary stay; orphaned ends reach twice the gap onto
+  an equal-or-better surface road approached at an angle, dead ends only the
+  gap; orphaned ends running parallel within the corridor taper in (3× the
+  lateral distance). A snap appends a connector (or trims an overshoot) and
+  never moves an end vertex of a long segment. Stub pruning (0.7 mm) removes
+  routes with a free, non-dead, non-boundary end. Dense-cluster, tangle and
+  loop passes of the laser reference were deliberately not ported. Counts
+  are `network_*`. A pure audit over cached bundles (lost length beyond the
+  corridor, invented junctions, named-street fragments) was used to tune
+  this; tests in `test_road_network.py` pin the rules.
+- `geometry/airports.py` (pure) selects `infrastructure` subtype `airport`
+  aprons/helipads and widens runway/stopway/taxiway/taxilane centerlines
+  (width tag via `length_metres`, else 45/45/23/15 m; runways square-ended)
+  into WGS84 polygons. `roads.generate_roads(airport_features=...)` drapes them
+  with `surfaces._draped_slab` at road thickness/embed into one `ROAD_airport`
+  object (`feature_type=surface_road`, `road_class=airport`), so road cuts,
+  tree clearance and export treat it as a ground road. Generating roads now
+  requires `infrastructure`; it stays non-essential for old caches.
 - `roads.py` orchestrates one `deck_graph.py` height solve for the whole network;
   `deck_profile.py` interpolates that solution, it is not a separate height solver.
   Joints share heights. Anchors meet ground plus road thickness; unconnected
@@ -926,7 +945,7 @@ Select focused checks based on the change:
 | --- | --- |
 | Core pipeline | `test_*.py`, `blender_smoke.py`; smoke exercises merged/unmerged geometry, heights, roofs, and cleanup. `blender_generation_transaction.py` checks rollback/ownership. `blender_generation_modal.py` exercises real worker cancellation at each phase, import, retries and cleanup; windowed `blender_generation_gui.py` checks real Esc/Cancel and event-loop responsiveness. |
 | Water / supports | `blender_water_cut.py`, `blender_ground_support.py`, `blender_pond_basins.py`, `blender_basin_support.py`, `blender_water_surfaces.py`, `blender_visible_supports.py`, `blender_paved_supports.py`; cached `blender_water_cut_live.py`, `blender_coastline_live.py`, `blender_pond_basins_live.py` |
-| Roads / surface ownership | `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_shore_roads.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
+| Roads / surface ownership | `test_road_network.py`, `test_airports.py`, `blender_airport_paving.py`, `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_shore_roads.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
 | Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_envelope.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
 | Anchored LiDAR / mapped rock | `test_lidar_relief.py`, `test_lidar_offer.py`, `blender_lidar_relief.py`; verify anchor alignment, class/coverage rejection, transactional fallback, source suppression, and unchanged disabled-LiDAR mesh fingerprints |
 | Export / trees / clipboard | `test_export_3mf.py`, `test_export_sections.py`, `blender_export_cutout.py`, `blender_export_plates.py`, installed Bambu `bambu_export_plates.py` and the live crop script; `blender_tree_printability.py`, `blender_tree_road_clearance.py`; `test_projection.py` and windowed `blender_gui_paste.py` |

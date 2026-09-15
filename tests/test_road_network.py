@@ -43,7 +43,7 @@ def piece(source_id, points, road_class="residential", flags=(), width_m=6.0):
     )
 
 
-def tidy(pieces, decks=(), settings=None, bounds=BOUNDS):
+def tidy(pieces, decks=(), settings=None, bounds=BOUNDS, context=()):
     return tidy_network(
         pieces,
         SCALE,
@@ -51,7 +51,13 @@ def tidy(pieces, decks=(), settings=None, bounds=BOUNDS):
         lambda p: HALF_WIDTH_M,
         lambda p: p.source_id in decks,
         settings,
+        context=context,
     )
+
+
+def sidewalk(source_id, points):
+    """A dropped sidewalk: never built, but its junctions still count."""
+    return piece(source_id, points, road_class="footway")
 
 
 def ids(pieces):
@@ -89,13 +95,46 @@ class CullTests(unittest.TestCase):
         self.assertEqual(counts.culled_pieces, 0)
 
     def test_less_important_class_loses(self):
-        # The service road is listed first and is longer, and still loses to
-        # the primary beside it: three quarters of it is shadowed.
+        # The service road is listed first and is as long, and still loses
+        # to the primary beside it.
+        kept, _ = tidy([
+            piece("service", [(100, 104), (400, 104)], road_class="service"),
+            piece("main", [(90, 100), (410, 100)], road_class="primary"),
+        ])
+        self.assertEqual(ids(kept), ["main"])
+
+    def test_a_losing_road_keeps_where_it_carries_on_past_the_winner(self):
+        # The service road runs 50 m past each end of the primary beside it.
+        # Only the doubled part goes; each end stretch stays on its own path
+        # and is joined back to the primary where it was cut.
         kept, _ = tidy([
             piece("service", [(50, 104), (450, 104)], road_class="service"),
             piece("main", [(100, 100), (400, 100)], road_class="primary"),
         ])
-        self.assertEqual(ids(kept), ["main"])
+        self.assertEqual(ids(kept), ["service", "service", "main"])
+        west, east = sorted((p for p in kept if p.source_id == "service"),
+                            key=lambda p: p.points[0][0])
+        self.assertEqual(west.points[0], (50.0, 104.0))
+        self.assertEqual(east.points[-1], (450.0, 104.0))
+        for stretch in (west, east):
+            ends = (stretch.points[0], stretch.points[-1])
+            self.assertTrue(any(100.0 <= x <= 400.0 and abs(y - 100.0) <= HALF_WIDTH_M
+                                for x, y in ends))
+
+    def test_a_ramp_curving_away_keeps_the_part_that_leaves(self):
+        # A ramp runs beside the motorway for 200 m, then curves away to a
+        # street 60 m off.  The doubled start goes; the curve stays, reaches
+        # the street, and follows its own path back into the motorway.
+        kept, _ = tidy([
+            piece("motorway", [(0, 100), (600, 100)], road_class="motorway"),
+            piece("street", [(300, 200), (500, 200)], road_class="residential"),
+            piece("ramp", [(50, 100), (250, 104), (330, 130), (400, 200)],
+                  road_class="motorway"),
+        ])
+        self.assertIn("ramp", ids(kept))
+        ramp = next(p for p in kept if p.source_id == "ramp")
+        self.assertEqual(ramp.points[-1], (400.0, 200.0))
+        self.assertLessEqual(abs(ramp.points[0][1] - 100.0), HALF_WIDTH_M)
 
     def test_an_untagged_sidewalk_beside_its_street_is_dropped(self):
         kept, counts = tidy([
@@ -225,18 +264,54 @@ class CullTests(unittest.TestCase):
         self.assertEqual(ids(kept), ["w1", "w2", "stem", "l2"])
 
     def test_a_losing_route_remnant_hanging_free_is_dropped(self):
+        # The stem met a sidewalk that was left out, so with its carriageway
+        # gone it leads nowhere.
+        kept, _ = tidy(
+            [
+                piece("w1", [(-100, 100), (195, 100), (200, 104)]),
+                piece("l1", [(0, 100), (60, 108), (140, 108), (200, 104)]),
+                piece("stem", [(200, 104), (230, 104)]),
+            ],
+            context=[sidewalk("walk", [(230, 104), (230, 150)])],
+        )
+        self.assertEqual(ids(kept), ["w1"])
+
+    def test_a_remnant_ending_at_a_real_dead_end_stays(self):
+        # The same stem, but its far end is a dead end in the source: the
+        # street really carries on past the kept carriageway, and stays.
         kept, _ = tidy([
             piece("w1", [(-100, 100), (195, 100), (200, 104)]),
             piece("l1", [(0, 100), (60, 108), (140, 108), (200, 104)]),
             piece("stem", [(200, 104), (230, 104)]),
         ])
-        self.assertEqual(ids(kept), ["w1"])
+        self.assertEqual(ids(kept), ["w1", "stem"])
 
-    def test_the_wide_middle_of_a_lost_lens_does_not_float(self):
-        # A carriageway that bows out just beyond the corridor mid-block:
-        # its long converging tips are doubled and go, and the middle,
-        # touching nothing that stays, goes with them instead of floating.
+    def test_a_lens_that_parts_by_printable_ground_keeps_its_middle(self):
+        # A carriageway bows out beyond the corridor mid-block, leaving
+        # printable ground between the two.  The converging tips are doubled
+        # and go; the middle stays and tapers back into the kept road at
+        # both ends, never floating and never a square jog.
         wide = 100 + CORRIDOR_M + 1.0
+        kept, _ = tidy([
+            piece("winner", [(0, 100), (400, 100)]),
+            piece("tip1", [(0, 100), (150, wide)]),
+            piece("middle", [(150, wide), (190, wide)]),
+            piece("tip2", [(190, wide), (340, 100)]),
+        ])
+        self.assertIn("winner", ids(kept))
+        lens = [p for p in kept if p.source_id != "winner"]
+        self.assertTrue(lens)
+        ends = [p.points[0] for p in lens] + [p.points[-1] for p in lens]
+        on_winner = [(x, y) for x, y in ends if abs(y - 100.0) <= HALF_WIDTH_M]
+        self.assertEqual(len(on_winner), 2)
+        west, east = sorted(on_winner)
+        # Tapered: each join lands along the road towards its tip, not
+        # straight below where the middle was cut.
+        self.assertLess(west[0], 150.0 - 1.0)
+        self.assertGreater(east[0], 190.0 + 1.0)
+
+    def test_a_lens_closer_than_the_gap_goes_whole(self):
+        wide = 100 + CORRIDOR_M - 1.0
         kept, _ = tidy([
             piece("winner", [(0, 100), (400, 100)]),
             piece("tip1", [(0, 100), (150, wide)]),
@@ -321,6 +396,29 @@ class CullTests(unittest.TestCase):
 
 
 class SnapTests(unittest.TestCase):
+    def test_a_path_that_met_a_dropped_sidewalk_is_joined_across_the_verge(self):
+        # The footway ended on the sidewalk, 14 m from the street centre.
+        # With the sidewalk gone it is pulled onto the street.
+        kept, counts = tidy(
+            [
+                piece("main", [(100, 100), (400, 100)], road_class="primary"),
+                piece("walk", [(250, 300), (250, 114)], road_class="footway"),
+            ],
+            context=[sidewalk("sidewalk", [(100, 114), (400, 114)])],
+        )
+        self.assertEqual(counts.snapped_ends, 1)
+        self.assertAlmostEqual(kept[1].points[-1][1], 100.0)
+
+    def test_a_real_dead_end_is_not_joined_across_printable_ground(self):
+        # The same footway, but it met nothing in the source: a cul-de-sac
+        # 14 m from the street leaves printable ground, so it stays a dead end.
+        kept, counts = tidy([
+            piece("main", [(100, 100), (400, 100)], road_class="primary"),
+            piece("walk", [(250, 300), (250, 114)], road_class="footway"),
+        ])
+        self.assertEqual(counts.snapped_ends, 0)
+        self.assertEqual(kept[1].points[-1], (250.0, 114.0))
+
     def test_a_path_stopping_short_of_a_street_is_joined_to_it(self):
         kept, counts = tidy([
             piece("main", [(100, 100), (400, 100)], road_class="primary"),
@@ -368,6 +466,53 @@ class SnapTests(unittest.TestCase):
         self.assertEqual(counts.snapped_ends, 0)
         self.assertEqual(kept[1].points[0], (100.0, 108.0))
 
+    def test_a_ramp_whose_merge_link_went_merges_into_the_road_beside_it(self):
+        # The ramp's start met a link that was culled; it now ends running
+        # beside the road the link joined, and merges into it.
+        kept, counts = tidy(
+            [
+                piece("road", [(0, 100), (300, 100)], road_class="primary"),
+                piece("ramp", [(200, 110), (400, 150)], road_class="primary"),
+            ],
+            context=[sidewalk("gone-link", [(200, 110), (150, 100)])],
+        )
+        self.assertEqual(counts.snapped_ends, 1)
+        ramp = next(p for p in kept if p.source_id == "ramp")
+        self.assertAlmostEqual(ramp.points[0][1], 100.0)
+
+    def test_joining_a_road_never_tilts_the_line_behind_the_end(self):
+        # A two-vertex footway 190 m long stops 8 m short of the street.  Its
+        # original end stays and a connector reaches the street; moving the
+        # end vertex instead would swing the whole footway.
+        kept, counts = tidy([
+            piece("main", [(100, 100), (400, 100)], road_class="primary"),
+            piece("walk", [(250, 300), (262, 108)], road_class="footway"),
+        ])
+        self.assertEqual(counts.snapped_ends, 1)
+        walk = kept[1]
+        self.assertEqual(walk.points[:2], ((250.0, 300.0), (262.0, 108.0)))
+        self.assertAlmostEqual(walk.points[-1][1], 100.0)
+
+    def test_a_sideways_merge_only_bends_its_tail(self):
+        # The ramp starts 10 m beside the road, runs along it briefly, then
+        # climbs away.  Its merge link was culled.
+        kept, counts = tidy(
+            [
+                piece("road", [(0, 100), (600, 100)], road_class="primary"),
+                piece("ramp", [(200, 110), (260, 125), (700, 300)], road_class="primary"),
+            ],
+            context=[sidewalk("gone-link", [(200, 110), (150, 100)])],
+        )
+        self.assertEqual(counts.snapped_ends, 1)
+        ramp = next(p for p in kept if p.source_id == "ramp")
+        self.assertEqual(ramp.points[0], (200.0, 100.0))
+        # The taper starts three lateral distances (30 m) back along the
+        # ramp; from there on it is exactly where it was.
+        direction = (60 / math.hypot(60, 15), 15 / math.hypot(60, 15))
+        self.assertAlmostEqual(ramp.points[1][0], 200 + 30 * direction[0])
+        self.assertAlmostEqual(ramp.points[1][1], 110 + 30 * direction[1])
+        self.assertEqual(ramp.points[2:], ((260.0, 125.0), (700.0, 300.0)))
+
     def test_a_street_is_not_pulled_onto_a_path(self):
         kept, counts = tidy([
             piece("walk", [(100, 100), (400, 100)], road_class="footway"),
@@ -403,13 +548,27 @@ class SnapTests(unittest.TestCase):
 
 class PruneTests(unittest.TestCase):
     def test_a_kerb_stub_is_removed(self):
-        # 6 m of footway hanging off the street: the remnant of a crossing.
+        # 6 m of footway hanging off the street, to a sidewalk that was left
+        # out: the remnant of a crossing.
+        kept, counts = tidy(
+            [
+                piece("main", [(100, 100), (400, 100)], road_class="primary"),
+                piece("stub", [(250, 100), (250, 106)], road_class="footway"),
+            ],
+            context=[sidewalk("walk", [(200, 106), (300, 106)])],
+        )
+        self.assertEqual(ids(kept), ["main"])
+        self.assertEqual(counts.pruned_stubs, 1)
+
+    def test_a_short_spur_that_is_a_real_dead_end_stays(self):
+        # The same 6 m of footway, but it met nothing in the source: steps
+        # to a doorway, a short driveway.  Real data, and kept.
         kept, counts = tidy([
             piece("main", [(100, 100), (400, 100)], road_class="primary"),
             piece("stub", [(250, 100), (250, 106)], road_class="footway"),
         ])
-        self.assertEqual(ids(kept), ["main"])
-        self.assertEqual(counts.pruned_stubs, 1)
+        self.assertEqual(ids(kept), ["main", "stub"])
+        self.assertEqual(counts.pruned_stubs, 0)
 
     def test_a_short_link_between_two_streets_survives(self):
         kept, counts = tidy([
@@ -432,12 +591,18 @@ class PruneTests(unittest.TestCase):
     def test_removing_a_stub_can_free_the_stub_it_hung_from(self):
         # A 6 m spur forking into two 7 m spurs: the fork is a junction, so
         # nothing welds; the branches go first, then the spur they freed.
-        kept, counts = tidy([
-            piece("main", [(100, 100), (400, 100)], road_class="primary"),
-            piece("spur", [(250, 100), (250, 106)], road_class="footway"),
-            piece("left", [(250, 106), (246, 112)], road_class="footway"),
-            piece("right", [(250, 106), (254, 112)], road_class="footway"),
-        ])
+        kept, counts = tidy(
+            [
+                piece("main", [(100, 100), (400, 100)], road_class="primary"),
+                piece("spur", [(250, 100), (250, 106)], road_class="footway"),
+                piece("left", [(250, 106), (246, 112)], road_class="footway"),
+                piece("right", [(250, 106), (254, 112)], road_class="footway"),
+            ],
+            context=[
+                sidewalk("walk-left", [(246, 112), (200, 112)]),
+                sidewalk("walk-right", [(254, 112), (300, 112)]),
+            ],
+        )
         self.assertEqual(ids(kept), ["main"])
         self.assertEqual(counts.pruned_stubs, 3)
 
@@ -463,10 +628,13 @@ class PruneTests(unittest.TestCase):
         self.assertEqual(counts.pruned_stubs, 0)
 
     def test_a_short_piece_entering_from_the_edge_and_stopping_is_a_stub(self):
-        kept, counts = tidy([
-            piece("main", [(100, 100), (400, 100)], road_class="primary"),
-            piece("edge", [(0, 200), (6, 200)], road_class="footway"),
-        ])
+        kept, counts = tidy(
+            [
+                piece("main", [(100, 100), (400, 100)], road_class="primary"),
+                piece("edge", [(0, 200), (6, 200)], road_class="footway"),
+            ],
+            context=[sidewalk("walk", [(6, 200), (6, 300)])],
+        )
         self.assertEqual(ids(kept), ["main"])
         self.assertEqual(counts.pruned_stubs, 1)
 
