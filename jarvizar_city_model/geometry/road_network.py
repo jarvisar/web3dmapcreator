@@ -149,6 +149,11 @@ class NetworkSettings:
     # A route shorter than this with a loose end leads nowhere: the kerb stub
     # left when a crossing was dropped, or a spur of the mapping itself.
     stub_length_mm: float = 0.7
+    # A fragment touching nothing else, shorter than this in total, is a
+    # speck: the flight of steps that joined two dropped sidewalks, the
+    # scrap of footway whose every neighbour was culled.  A short route that
+    # meets a street is a spur and is judged by the stub rule instead.
+    island_length_mm: float = 1.4
     # Ends closer than this share a node.  Overture repeats a connector's
     # coordinates exactly, so this only has to absorb projection noise.
     node_tolerance_mm: float = 0.03
@@ -168,6 +173,8 @@ class NetworkCounts:
     culled_length_mm: float = 0.0
     snapped_ends: int = 0
     pruned_stubs: int = 0
+    pruned_nubs: int = 0
+    pruned_islands: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -179,6 +186,8 @@ class NetworkCounts:
             "network_culled_length_mm": round(self.culled_length_mm, 3),
             "network_snapped_ends": self.snapped_ends,
             "network_pruned_stubs": self.pruned_stubs,
+            "network_pruned_nubs": self.pruned_nubs,
+            "network_pruned_islands": self.pruned_islands,
         }
 
 
@@ -377,6 +386,43 @@ def _shadow(
 
 def _is_shadowed(hits: int, samples: int) -> bool:
     return hits * SEGMENT_SHADOW_DENOMINATOR >= samples * SEGMENT_SHADOW_NUMERATOR
+
+
+def _clear_length(
+    item: _Item,
+    points: Sequence[Point],
+    grid: _Grid,
+    gap: float,
+    quantum: float,
+    ranked: bool = False,
+) -> float:
+    """Length of *points* that prints apart from every kept ribbon.
+
+    A stretch that is not shadowed can still lie inside the corridor of a
+    kept road without running beside it: the last few metres of a
+    carriageway bending into the node where it meets its twin, or the leg
+    of a path that leaves a street only to stop at its kerb.  Only what
+    clears every kept ribbon of the same kind by the gap reads as a line of
+    its own.  With *ranked*, only roads at least as important count.
+    """
+    visible = 0.0
+    for a, b in zip(points[:-1], points[1:]):
+        length = math.hypot(b[0] - a[0], b[1] - a[1])
+        samples = _samples(a, b, max(item.half_width, quantum * 4.0))
+        clear = 0
+        for point in samples:
+            inside = False
+            for entry in grid.near(point):
+                c, d, _direction, half_width, other_deck = entry[:5]
+                if other_deck != item.deck or (ranked and entry[5] > item.rank):
+                    continue
+                reach = gap + item.half_width + half_width
+                if _distance_sq(point, c, d)[0] <= reach * reach:
+                    inside = True
+                    break
+            clear += not inside
+        visible += length * clear / len(samples)
+    return visible
 
 
 def _node(point: Point, quantum: float) -> Tuple[int, int]:
@@ -825,30 +871,7 @@ def _settle_remnants(
         return None if joint is None else [joint]
 
     def visible_length(item: _Item, points: Sequence[Point]) -> float:
-        """Length of *points* that prints apart from every kept ribbon.
-
-        A stretch that is not shadowed can still lie inside the corridor
-        of a kept road without running beside it: the last few metres of a
-        carriageway bending into the node where it meets its twin.  Only
-        what clears every kept ribbon by the gap reads as a road of its own.
-        """
-        visible = 0.0
-        for a, b in zip(points[:-1], points[1:]):
-            length = math.hypot(b[0] - a[0], b[1] - a[1])
-            samples = _samples(a, b, max(item.half_width, quantum * 4.0))
-            clear = 0
-            for point in samples:
-                inside = False
-                for c, d, _direction, half_width, other_deck, other_rank in ranks.near(point):
-                    if other_deck != item.deck or other_rank > item.rank:
-                        continue
-                    reach = gap + item.half_width + half_width
-                    if _distance_sq(point, c, d)[0] <= reach * reach:
-                        inside = True
-                        break
-                clear += not inside
-            visible += length * clear / len(samples)
-        return visible
+        return _clear_length(item, points, ranks, gap, quantum, ranked=True)
 
     def nearest_kept(item: _Item, point: Point) -> Optional[Point]:
         best: Optional[Tuple[float, Point]] = None
@@ -1106,10 +1129,38 @@ def _taper_end(points: List[Point], end: int, target: Point, quantum: float) -> 
     return True
 
 
+# A member at the free end of a route, shorter than a stub, that turns off
+# the route by more than this is the spur where a carriageway bent in to
+# meet its culled twin, not the end of the street: welding through the
+# corner made it part of a long route the stub rule could not see.
+TERMINAL_BEND_DEG = 60.0
+
+
+def _segments_touch(a: Point, b: Point, c: Point, d: Point, tolerance: float) -> bool:
+    """Whether segments ``a-b`` and ``c-d`` cross or pass within *tolerance*."""
+    limit = tolerance * tolerance
+    if (
+        _distance_sq(a, c, d)[0] <= limit
+        or _distance_sq(b, c, d)[0] <= limit
+        or _distance_sq(c, a, b)[0] <= limit
+        or _distance_sq(d, a, b)[0] <= limit
+    ):
+        return True
+
+    def side(p: Point, q: Point, r: Point) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    return (side(a, b, c) > 0.0) != (side(a, b, d) > 0.0) and (
+        (side(c, d, a) > 0.0) != (side(c, d, b) > 0.0)
+    )
+
+
 def _prune(
     items: List[_Item],
     chains: Sequence[_Chain],
+    gap: float,
     stub: float,
+    island: float,
     quantum: float,
     on_boundary: Callable[[Point], bool],
     counts: NetworkCounts,
@@ -1118,38 +1169,57 @@ def _prune(
 
     A stub is a short route with a free end that met something in the
     source: the kerb stub of a crossing whose crosswalk was dropped, or the
-    spur of a culled carriageway.  A short route whose free end was a dead
-    end in the source is real, and stays.
+    spur of a culled carriageway.  Short is measured two ways: the route's
+    length, and the length of it that clears every other live ribbon by the
+    gap, because the leg of a trimmed path that leaves a street only to
+    stop inside the corridor of the next one prints as no line of its own
+    however long it is on paper.  A short route whose free end was a dead
+    end in the source is real, and stays, unless it is a nub: what shows of
+    it beyond the edge of the road it hangs from is shorter than its own
+    printed width, a bump as wide as it is long.
 
     An end counts as connected when it lies inside another live route's
     ribbon, mid-span included: a side street almost always meets the middle
     of a welded main road, and judging by endpoints alone would declare
     every such junction dangling.  Ends on the crop boundary are clipped,
     not dangling.  A route connected at both ends is never removed, however
-    short, so real links between roads survive.  Removing a stub can free
-    the end of the route it hung from, so the test repeats over whoever
-    leaned on it.
+    short, so real links between roads survive; nor is one that another
+    live route's end rests on, since removing it would leave that route
+    hanging where it was.  Removing a stub can free the end of the route
+    it hung from, and the route it leaned on, so the test repeats over both.
+
+    A route's free end is also trimmed back over a final member shorter
+    than a stub that turns off the route by :data:`TERMINAL_BEND_DEG`: the
+    few metres where a carriageway bent in to meet its culled twin were
+    welded to the street through that corner.  Last, whatever touches
+    nothing at all, boundary included, and is shorter than *island* in
+    total is a speck rather than a route and goes whole.
     """
-    if stub <= 0.0 or not chains:
+    if (stub <= 0.0 and island <= 0.0) or not chains:
         return list(items)
     widths = [
         max((items[index].half_width for index in chain.members), default=0.0)
         for chain in chains
     ]
-    cell = max(quantum * 4.0, max(widths, default=0.0), 1.0e-9)
+    # Cells as wide as the widest corridor any clear-length sample can
+    # reach, so a 3x3 neighbourhood holds every segment within range.
+    cell = max(quantum * 4.0, gap + 2.0 * max(widths, default=0.0), 1.0e-9)
     buckets: Dict[Tuple[int, int], List[Tuple[int, Point, Point]]] = {}
 
     def key(x: float, y: float) -> Tuple[int, int]:
         return int(math.floor(x / cell)), int(math.floor(y / cell))
 
+    def cells(a: Point, b: Point) -> Set[Tuple[int, int]]:
+        steps = int(math.hypot(b[0] - a[0], b[1] - a[1]) / cell) + 1
+        seen = set()
+        for step in range(steps + 1):
+            t = step / steps
+            seen.add(key(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+        return seen
+
     for number, chain in enumerate(chains):
         for a, b in zip(chain.points[:-1], chain.points[1:]):
-            steps = int(math.hypot(b[0] - a[0], b[1] - a[1]) / cell) + 1
-            seen = set()
-            for step in range(steps + 1):
-                t = step / steps
-                seen.add(key(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
-            for k in seen:
+            for k in cells(a, b):
                 buckets.setdefault(k, []).append((number, a, b))
 
     def supporters(number: int, point: Point) -> Set[int]:
@@ -1169,13 +1239,25 @@ def _prune(
         (supporters(number, chain.points[0]), supporters(number, chain.points[-1]))
         for number, chain in enumerate(chains)
     ]
-    anchored = []
-    for chain in chains:
-        dead_first, dead_last = _chain_dead_ends(chain, items)
-        anchored.append((
-            dead_first or on_boundary(chain.points[0]),
-            dead_last or on_boundary(chain.points[-1]),
-        ))
+    dead = [_chain_dead_ends(chain, items) for chain in chains]
+    boundary = [
+        (on_boundary(chain.points[0]), on_boundary(chain.points[-1])) for chain in chains
+    ]
+    # A route whose ends meet is a loop: a turning circle, a fountain's
+    # ring, the path round a garden.  Its ends rest on itself, which the
+    # support sets leave out, so they are anchored rather than dangling.
+    # A scrap shorter than a stub has its ends within reach of each other
+    # without going anywhere; it is not a loop.
+    closed = [
+        chain.length >= stub
+        and _distance_sq(chain.points[0], chain.points[-1], chain.points[-1])[0]
+        <= max(widths[number], quantum) ** 2
+        for number, chain in enumerate(chains)
+    ]
+    anchored = [
+        (dead_first or edge_first or loop, dead_last or edge_last or loop)
+        for (dead_first, dead_last), (edge_first, edge_last), loop in zip(dead, boundary, closed)
+    ]
     dependents: Dict[int, Set[int]] = {}
     for number, (first, last) in enumerate(support):
         for other in first | last:
@@ -1183,28 +1265,218 @@ def _prune(
 
     removed = [False] * len(chains)
 
+    def live(others: Set[int]) -> List[int]:
+        return [other for other in others if not removed[other]]
+
+    def leaned_on(number: int, points: Sequence[Point]) -> bool:
+        """Whether a live route's end rests on the interior of *points*.
+
+        Ends meeting at either end of *points* are the ordinary junction
+        the support sets already describe; only an end resting mid-span
+        would be left hanging if *points* went.
+        """
+        tolerance = max(widths[number], quantum)
+        limit = tolerance * tolerance
+        ends = (points[0], points[-1])
+        for other in dependents.get(number, ()):
+            if removed[other]:
+                continue
+            for point in (chains[other].points[0], chains[other].points[-1]):
+                if any(_distance_sq(point, end, end)[0] <= limit for end in ends):
+                    continue
+                if any(
+                    _distance_sq(point, a, b)[0] <= limit
+                    for a, b in zip(points[:-1], points[1:])
+                ):
+                    return True
+        return False
+
+    def clear_length(number: int) -> float:
+        """Length of route *number* clearing every other live ribbon by the gap."""
+        chain = chains[number]
+        visible = 0.0
+        for a, b in zip(chain.points[:-1], chain.points[1:]):
+            length = math.hypot(b[0] - a[0], b[1] - a[1])
+            samples = _samples(a, b, max(widths[number], quantum * 4.0))
+            clear = 0
+            for point in samples:
+                cx, cy = key(point[0], point[1])
+                inside = False
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        for other, c, d in buckets.get((cx + dx, cy + dy), ()):
+                            if other == number or removed[other]:
+                                continue
+                            reach = gap + widths[number] + widths[other]
+                            if _distance_sq(point, c, d)[0] <= reach * reach:
+                                inside = True
+                                break
+                        if inside:
+                            break
+                    if inside:
+                        break
+                clear += not inside
+            visible += length * clear / len(samples)
+        return visible
+
+    def near_another(number: int, point: Point) -> bool:
+        """Whether *point* lies within the gap of another live route's ribbon."""
+        cx, cy = key(point[0], point[1])
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for other, a, b in buckets.get((cx + dx, cy + dy), ()):
+                    if other == number or removed[other]:
+                        continue
+                    reach = gap + widths[number] + widths[other]
+                    if _distance_sq(point, a, b)[0] <= reach * reach:
+                        return True
+        return False
+
     def is_stub(number: int) -> bool:
+        if removed[number] or stub <= 0.0:
+            return False
+        chain = chains[number]
+        first, last = support[number]
+        loose = [
+            point
+            for point, held, anchor in (
+                (chain.points[0], live(first), anchored[number][0]),
+                (chain.points[-1], live(last), anchored[number][1]),
+            )
+            if not held and not anchor
+        ]
+        if not loose:
+            return False
+        if chain.length >= stub:
+            # Long enough on paper: a stub only when what clears the other
+            # ribbons is not, and its loose end is not reaching for one of
+            # them, since removing it would widen the gap it nearly closes.
+            if clear_length(number) >= stub or any(near_another(number, p) for p in loose):
+                return False
+        return not leaned_on(number, chain.points)
+
+    def is_nub(number: int) -> bool:
+        """A real dead-end spur showing less than its own width past the road."""
         if removed[number] or chains[number].length >= stub:
             return False
+        if leaned_on(number, chains[number].points):
+            return False
         first, last = support[number]
-        free_first = not any(not removed[other] for other in first)
-        free_last = not any(not removed[other] for other in last)
-        return (free_first and not anchored[number][0]) or (
-            free_last and not anchored[number][1]
-        )
+        for held, free, dead_end, edge in (
+            (live(first), not live(last), dead[number][1], boundary[number][1]),
+            (live(last), not live(first), dead[number][0], boundary[number][0]),
+        ):
+            if not held or not free or not dead_end or edge:
+                continue
+            shown = chains[number].length - max(widths[other] for other in held)
+            if shown < 2.0 * widths[number]:
+                return True
+        return False
 
-    queue = [number for number in range(len(chains)) if is_stub(number)]
+    queue = [number for number in range(len(chains)) if is_stub(number) or is_nub(number)]
     while queue:
         number = queue.pop()
-        if not is_stub(number):
+        if is_stub(number):
+            counts.pruned_stubs += len(chains[number].members)
+        elif is_nub(number):
+            counts.pruned_nubs += len(chains[number].members)
+        else:
             continue
         removed[number] = True
-        counts.pruned_stubs += len(chains[number].members)
-        for other in dependents.get(number, ()):
-            if not removed[other] and is_stub(other):
+        first, last = support[number]
+        for other in dependents.get(number, set()) | first | last:
+            if not removed[other] and (is_stub(other) or is_nub(other)):
                 queue.append(other)
 
-    gone: Set[int] = set()
+    # Terminal bends: strip a short final member turning off a live route
+    # at a free, unanchored end.  Only members go; the route itself stays,
+    # and so does a member another live route's end rests on, or that
+    # route would be left hanging where the member was.  A leg whose free
+    # end lies within the gap of another route was reaching for it and
+    # stays too: stripping it would widen the very gap it nearly closes.
+    stripped: Set[int] = set()
+    bend_limit = math.cos(math.radians(TERMINAL_BEND_DEG))
+    for number, chain in enumerate(chains):
+        if removed[number] or len(chain.members) < 2 or stub <= 0.0:
+            continue
+        for at_end in (True, False):
+            end_index = 1 if at_end else 0
+            if live(support[number][end_index]) or anchored[number][end_index]:
+                continue
+            if near_another(number, chain.points[-1 if at_end else 0]):
+                continue
+            positions = list(range(len(chain.members)))
+            if at_end:
+                positions.reverse()
+            for position in positions[:-1]:
+                member = chain.members[position]
+                if items[member].length >= stub:
+                    break
+                leg = _run_points(chain, items, position, position)
+                inward = position - 1 if at_end else position + 1
+                rest = _run_points(chain, items, inward, inward)
+                # Both legs read away from the joint between them: a
+                # straight continuation is dot -1, a right angle dot 0.
+                if at_end:
+                    leg_direction = _unit(leg[0], leg[-1])
+                    rest_direction = _unit(rest[-1], rest[0])
+                else:
+                    leg_direction = _unit(leg[-1], leg[0])
+                    rest_direction = _unit(rest[0], rest[-1])
+                if leg_direction is None or rest_direction is None:
+                    break
+                dot = leg_direction[0] * rest_direction[0] + leg_direction[1] * rest_direction[1]
+                if -dot > bend_limit or leaned_on(number, leg):
+                    break
+                stripped.add(member)
+                counts.pruned_nubs += 1
+
+    # Islands: whatever remains that touches no other live route anywhere,
+    # not just at its ends, and is shorter than the island length in total.
+    if island > 0.0:
+        candidates = [
+            number for number, chain in enumerate(chains)
+            if not removed[number] and chain.length < island
+        ]
+        parent = {number: number for number in candidates}
+
+        def find(number: int) -> int:
+            while parent[number] != number:
+                parent[number] = parent[parent[number]]
+                number = parent[number]
+            return number
+
+        held: Set[int] = set()
+        for number in candidates:
+            chain = chains[number]
+            if boundary[number][0] or boundary[number][1]:
+                held.add(number)
+            for a, b in zip(chain.points[:-1], chain.points[1:]):
+                seen: Set[int] = set()
+                for k in cells(a, b):
+                    for other, c, d in buckets.get(k, ()):
+                        if other == number or other in seen or removed[other]:
+                            continue
+                        tolerance = max(widths[number], widths[other], quantum)
+                        if _segments_touch(a, b, c, d, tolerance):
+                            seen.add(other)
+                            if other in parent:
+                                parent[find(number)] = find(other)
+                            else:
+                                held.add(number)
+        groups: Dict[int, List[int]] = {}
+        for number in candidates:
+            groups.setdefault(find(number), []).append(number)
+        for members in groups.values():
+            if any(number in held for number in members):
+                continue
+            if sum(chains[number].length for number in members) >= island:
+                continue
+            for number in members:
+                removed[number] = True
+                counts.pruned_islands += len(chains[number].members)
+
+    gone: Set[int] = set(stripped)
     for number, chain in enumerate(chains):
         if removed[number]:
             gone.update(chain.members)
@@ -1244,6 +1516,7 @@ def tidy_network(
     gap = max(0.0, float(settings.gap_mm)) / scale
     snap_gap = max(0.0, float(settings.snap_gap_mm)) / scale
     stub = max(0.0, float(settings.stub_length_mm)) / scale
+    island = max(0.0, float(settings.island_length_mm)) / scale
     quantum = max(float(settings.node_tolerance_mm), 1.0e-6) / scale
     boundary = BOUNDARY_TOLERANCE_MM / scale
 
@@ -1317,7 +1590,7 @@ def tidy_network(
     # and both leave joins the first pass could not have seen.  The pruner
     # has to judge the routes as they now are.
     chains, _rejoined = _weld(items, quantum)
-    items = _prune(items, chains, stub, quantum, on_boundary, counts)
+    items = _prune(items, chains, gap, stub, island, quantum, on_boundary, counts)
 
     items.sort(key=lambda item: item.origin)
     result: List[SubSegment] = []

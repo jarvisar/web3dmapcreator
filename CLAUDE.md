@@ -415,9 +415,20 @@ colors, overwriting manual palette edits.
   gap; orphaned ends running parallel within the corridor taper in (3× the
   lateral distance). A snap appends a connector (or trims an overshoot) and
   never moves an end vertex of a long segment. Stub pruning (0.7 mm) removes
-  routes with a free, non-dead, non-boundary end. Dense-cluster, tangle and
-  loop passes of the laser reference were deliberately not ported. Counts
-  are `network_*`. A pure audit over cached bundles (lost length beyond the
+  routes with a free, non-dead, non-boundary end, judged by length and by
+  the length that clears every other ribbon by the gap (a trimmed leg
+  stopping inside the next corridor), except a loose end within the gap of
+  another route or a route another route's end rests on mid-span. A
+  dead-end spur showing less than its own width past the road is a nub; a
+  final member shorter than a stub turning off a route by 60° at a free end
+  is stripped; whatever touches nothing and totals under **Island Length**
+  (1.4 mm) goes. A route whose ends meet is a loop and is anchored to
+  itself. Dense-cluster, tangle and loop-collapse passes of the laser
+  reference were deliberately not ported. Counts are `network_*`. An audit
+  harness in `scratchpad/road_tidy/` renders before/after/delta PNGs and
+  counts speck components and orphaned ends (ends that met something in the
+  source but touch nothing after the tidy) over cached bundles; keep the
+  orphaned count from rising when changing these rules. A pure audit over cached bundles (lost length beyond the
   corridor, invented junctions, named-street fragments) was used to tune
   this; tests in `test_road_network.py` pin the rules.
 - `geometry/airports.py` (pure) selects `infrastructure` subtype `airport`

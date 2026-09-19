@@ -561,13 +561,124 @@ class PruneTests(unittest.TestCase):
         self.assertEqual(counts.pruned_stubs, 1)
 
     def test_a_short_spur_that_is_a_real_dead_end_stays(self):
-        # The same 6 m of footway, but it met nothing in the source: steps
-        # to a doorway, a short driveway.  Real data, and kept.
+        # 15 m of footway that met nothing in the source: steps to a
+        # doorway, a short driveway.  Real data, and kept.
         kept, counts = tidy([
             piece("main", [(100, 100), (400, 100)], road_class="primary"),
-            piece("stub", [(250, 100), (250, 106)], road_class="footway"),
+            piece("stub", [(250, 100), (250, 115)], road_class="footway"),
         ])
         self.assertEqual(ids(kept), ["main", "stub"])
+        self.assertEqual(counts.pruned_stubs, 0)
+        self.assertEqual(counts.pruned_nubs, 0)
+
+    def test_a_dead_end_nub_no_longer_than_it_is_wide_goes(self):
+        # The same spur at 6 m shows 3 m past the street's edge: a bump
+        # half as long as its own 6 m ribbon is wide.
+        kept, counts = tidy([
+            piece("main", [(100, 100), (400, 100)], road_class="primary"),
+            piece("nub", [(250, 100), (250, 106)], road_class="footway"),
+        ])
+        self.assertEqual(ids(kept), ["main"])
+        self.assertEqual(counts.pruned_nubs, 1)
+        self.assertEqual(counts.pruned_stubs, 0)
+
+    def test_a_stub_another_route_leans_on_stays(self):
+        # The 8 m stub met a dropped sidewalk, but a park path ends on its
+        # middle; removing it would leave the path hanging where it was.
+        kept, counts = tidy(
+            [
+                piece("main", [(100, 100), (400, 100)], road_class="primary"),
+                piece("stub", [(250, 100), (250, 108)], road_class="service"),
+                piece("path", [(250, 104), (300, 150)], road_class="footway"),
+            ],
+            context=[sidewalk("walk", [(250, 108), (300, 108)])],
+        )
+        self.assertEqual(ids(kept), ["main", "stub", "path"])
+        self.assertEqual(counts.pruned_stubs, 0)
+
+    def test_a_trimmed_leg_inside_the_next_corridor_is_a_stub(self):
+        # A footway follows the street, then turns 16 m towards a sidewalk
+        # that was dropped.  On paper the leg is longer than a stub; what
+        # clears the street's corridor is 7 m, and it reaches nothing.
+        kept, counts = tidy(
+            [
+                piece("main", [(100, 100), (400, 100)], road_class="primary"),
+                piece("walk", [(100, 103), (290, 103), (290, 119)], road_class="footway"),
+            ],
+            context=[sidewalk("sidewalk", [(290, 119), (350, 119)])],
+        )
+        self.assertEqual(ids(kept), ["main"])
+        self.assertGreaterEqual(counts.pruned_stubs, 1)
+
+    def test_a_trimmed_leg_reaching_for_a_street_stays(self):
+        # The same leg, with a street 6 m past its end: within the gap of
+        # its ribbon, so removing the leg would widen a gap it nearly closes.
+        kept, counts = tidy(
+            [
+                piece("main", [(100, 100), (400, 100)], road_class="primary"),
+                piece("side", [(200, 125), (400, 125)], road_class="residential"),
+                piece("walk", [(100, 103), (290, 103), (290, 119)], road_class="footway"),
+            ],
+            context=[sidewalk("sidewalk", [(290, 119), (350, 119)])],
+        )
+        self.assertEqual(ids(kept), ["main", "side", "walk"])
+        self.assertEqual(counts.pruned_stubs, 0)
+
+    def test_an_isolated_fragment_shorter_than_the_island_length_goes(self):
+        # 15 m of footway touching nothing: a flight of steps between two
+        # dropped sidewalks.  A 25 m one is a path of its own and stays.
+        kept, counts = tidy([
+            piece("main", [(100, 100), (400, 100)], road_class="primary"),
+            piece("speck", [(600, 600), (615, 600)], road_class="steps"),
+            piece("path", [(600, 700), (625, 700)], road_class="footway"),
+        ])
+        self.assertEqual(ids(kept), ["main", "path"])
+        self.assertEqual(counts.pruned_islands, 1)
+
+    def test_an_isolated_fragment_on_the_boundary_stays(self):
+        kept, counts = tidy([
+            piece("main", [(100, 100), (400, 100)], road_class="primary"),
+            piece("edge", [(0, 600), (15, 600)], road_class="steps"),
+        ])
+        self.assertEqual(ids(kept), ["main", "edge"])
+        self.assertEqual(counts.pruned_islands, 0)
+
+    def test_an_isolated_pair_is_judged_together(self):
+        # Two 12 m footways meeting end to end at an angle: 24 m of route,
+        # above the island length, so they stay.
+        kept, counts = tidy([
+            piece("main", [(100, 100), (400, 100)], road_class="primary"),
+            piece("a", [(600, 600), (612, 600)], road_class="footway"),
+            piece("b", [(612, 600), (612, 612)], road_class="footway"),
+        ])
+        self.assertEqual(ids(kept), ["main", "a", "b"])
+        self.assertEqual(counts.pruned_islands, 0)
+
+    def test_a_short_bent_leg_at_a_free_end_is_stripped(self):
+        # A street welded through the corner into the 6 m leg that met its
+        # culled twin: the leg turns off the street and leads nowhere.
+        kept, counts = tidy(
+            [
+                piece("street", [(100, 100), (300, 100)]),
+                piece("leg", [(300, 100), (300, 106)]),
+            ],
+            context=[sidewalk("gone", [(300, 106), (300, 150)])],
+        )
+        self.assertEqual(ids(kept), ["street"])
+        self.assertEqual(counts.pruned_nubs, 1)
+
+    def test_a_loop_keeps_the_piece_that_closes_it(self):
+        # A service loop hanging from the street closes on itself at a
+        # corner nothing else touches.  The 8 m closing piece is neither a
+        # stub nor a bent leg: the loop's ends rest on each other.
+        kept, counts = tidy([
+            piece("main", [(100, 100), (400, 100)], road_class="primary"),
+            piece("loop", [(230, 140), (230, 120), (250, 100), (270, 120), (270, 140), (238, 140)],
+                  road_class="service"),
+            piece("close", [(238, 140), (230, 140)], road_class="service"),
+        ])
+        self.assertEqual(ids(kept), ["main", "loop", "close"])
+        self.assertEqual(counts.pruned_nubs, 0)
         self.assertEqual(counts.pruned_stubs, 0)
 
     def test_a_short_link_between_two_streets_survives(self):

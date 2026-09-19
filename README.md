@@ -480,12 +480,18 @@ end, such as a cul-de-sac or a driveway stopping short of the next street, is
 only joined when the ground left would be thinner than the gap itself. A join
 adds a short connector or tapers the end in; it never tilts the existing line.
 Short fragments left leading nowhere by removal -- the kerb stubs of dropped
-crossings -- are removed, while short spurs that are real dead ends stay.
-Bridge decks and the ground under them never shadow each other, and deck ends
-are never moved. The counts are `network_culled_pieces`,
-`network_trimmed_pieces`, `network_culled_length_mm`, `network_snapped_ends`,
-`network_pruned_stubs` and `network_welded_joins`. Turning the toggle off
-restores the untidied network exactly.
+crossings, the leg of a trimmed path that stops inside the corridor of the
+next street -- are removed, while short spurs that are real dead ends stay
+unless they show less than their own width past the road. A fragment that
+another route's end rests on, or whose loose end nearly reaches another
+route, is never removed, so pruning closes gaps rather than opening them.
+Specks that touch nothing at all -- a flight of steps between two dropped
+sidewalks -- go when shorter than 1.4 mm in total. Bridge decks and the
+ground under them never shadow each other, and deck ends are never moved.
+The counts are `network_culled_pieces`, `network_trimmed_pieces`,
+`network_culled_length_mm`, `network_snapped_ends`, `network_pruned_stubs`,
+`network_pruned_nubs`, `network_pruned_islands` and `network_welded_joins`.
+Turning the toggle off restores the untidied network exactly.
 
 **Airports print with the roads.** Runways, stopways, taxiways and taxilanes
 from Overture's `infrastructure` layer are mapped as centerlines; each is
