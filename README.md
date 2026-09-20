@@ -229,12 +229,19 @@ before partitioning. No connectors or seam clearance are added. See
    semicolons, surrounding brackets and a `bbox=` prefix all read the same;
    the order does not, because several other orders are still a legal box
    somewhere else on earth. If the clipboard does not hold a box, the button
-   asks for the text instead of guessing.
+   asks for the text instead of guessing. The **Presets** menu beside the
+   **Area** heading fills the fields from a named box; presets are
+   `Name: west,south,east,north` lines in
+   `jarvizar_city_model/data/bounds_presets.txt`.
 2. Choose the print scale, as above.
-3. Under **Features**, enable what you want. Each feature only downloads the
-   Overture types it actually needs.
-4. Set **Cache Directory**. The **Overture Python** path comes from add-on
-   preferences; only fill the sidebar field to override it for this scene.
+3. Enable the features you want with the checkboxes on the sub-panel headers
+   below the main panel (**Terrain**, **Parks and Land Cover**, **Water**,
+   **Roads**, **Bridges**, **Trees**, **Buildings**); each sub-panel holds
+   that feature's settings. Each feature only downloads the Overture types it
+   actually needs.
+4. Under **Setup and Cache**, set **Cache Directory**. The **Overture Python**
+   path comes from add-on preferences; only fill the override field to change
+   it for this scene.
 5. Click **Download / Cache Data**. Matching cached types are reused; only the
    missing ones are fetched, so enabling roads later does not re-download
    buildings.
@@ -544,7 +551,7 @@ default`.
 **Trees have compact, three-tier foliage and no trunk.** Their broad bases embed
 directly in terrain, even beneath raised land surfaces or roads. Each tree is one
 closed low-poly solid; the tiers have sloped undersides for FDM printing.
-Under **Ground Surfaces > Trees**, **Minimum Tree Width** (1.1 mm across flats)
+Under **Trees**, **Minimum Tree Width** (1.1 mm across flats)
 and **Minimum Tree Height** (1.6 mm) apply independently after **Size Variation**
 (18%). **Tree Spacing** defaults to 26 m for forests. All tree sources share a
 0.2 mm gap between finished crowns, with mapped trees placed first, so overlapping
@@ -586,7 +593,7 @@ All recessed fills share a separate `WATER_RECESSED` object, while other water
 remains in `WATER_SURFACE`. Both are in the `WATER` collection and can be
 selected, hidden or deleted independently.
 
-Under Ground Surfaces →
+Under Water →
 Ponds, Fountains and Basins, enable/disable the mode and set recess depth (1.0 mm) and
 water thickness (0.8 mm). The water top is therefore 0.2 mm below the lowest
 sampled local bank. Water stays level; higher banks have a larger drop. The
@@ -699,7 +706,7 @@ clear foundation is available, the gap remains open; this is not a guarantee
 that every bridge can be printed without slicer supports.
 
 **Surface types do not overlap.** The default order is **paved > sand > rock >
-greens > forest**. In **Ground Surfaces > Surface Priority**, use the up/down
+greens > forest**. In **Parks and Land Cover > Surface Priority**, use the up/down
 arrows to reorder the five categories; the top entry wins. The order is saved
 with the scene and applied when you click **Generate Model**. Higher-priority
 footprints are removed through the full thickness of lower-priority slabs,

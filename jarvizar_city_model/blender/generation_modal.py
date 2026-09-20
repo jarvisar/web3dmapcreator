@@ -14,7 +14,8 @@ from .generation import GenerationTransaction
 
 _active = None
 _RUNTIME = {"rna_type", "name", "last_status", "lidar_preparation_status", "lidar_generation_status",
-            "lidar_preparing", "generation_running", "generation_phase", "generation_progress"}
+            "lidar_preparing", "generation_running", "generation_phase", "generation_progress",
+            "show_laz_offer_details"}
 
 
 def settings_snapshot(settings):

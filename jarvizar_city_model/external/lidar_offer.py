@@ -22,6 +22,27 @@ def approved_offers(bundle, request, token):
     raise ValueError('LAZ offer changed or is stale; prepare EPT again and review the current gaps')
 
 
+def _tiles_and_size(offer):
+    sizes = [t.get('size_bytes') for t in offer['tiles']]
+    known = [s for s in sizes if isinstance(s, (int, float)) and s > 0]
+    size = f"{sum(known)/1024**2:.1f} MiB" if known else 'size unknown'
+    if known and len(known) != len(sizes):
+        size += ' + unknown sizes'
+    return len(sizes), size
+
+
+def offer_summary(offers):
+    """One line per offered survey, with what the download costs; ``offer_details`` has the rest."""
+    lines = []
+    for offer in offers:
+        tiles, size = _tiles_and_size(offer)
+        lines.append(f"{offer.get('provider', 'LiDAR')} / {offer['name']}: "
+                     f"{len(offer['buildings'])} buildings, {tiles} tiles, {size}")
+        if offer.get('delivery_note'):
+            lines.append(offer['delivery_note'])
+    return '\n'.join(lines)
+
+
 def offer_details(offers):
     """Readable areas and known catalog information; never imply guaranteed recovery."""
     lines = []
@@ -31,12 +52,8 @@ def offer_details(offers):
             w, s, e, n = area['bbox']
             lines.append(f"Area W/S/E/N: {w:.5f}, {s:.5f}, {e:.5f}, {n:.5f} ({area['buildings']} buildings)")
         lines.append('; '.join(offer['reasons']).replace('_', ' '))
-        sizes = [t.get('size_bytes') for t in offer['tiles']]
-        known = [s for s in sizes if isinstance(s, (int, float)) and s > 0]
-        size = f"{sum(known)/1024**2:.1f} MiB" if known else 'size unknown'
-        if known and len(known) != len(sizes):
-            size += ' + unknown sizes'
-        lines.append(f"{len(sizes)} tiles; {size}")
+        tiles, size = _tiles_and_size(offer)
+        lines.append(f"{tiles} tiles; {size}")
         if offer.get('delivery_note'):
             lines.append(offer['delivery_note'])
         meta = offer.get('survey_metadata', {})

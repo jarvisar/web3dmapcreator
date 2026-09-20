@@ -32,7 +32,7 @@ from .data.cache import (
 from .data.dem import DEMTerrain, ElevationGrid, ElevationGridError
 from .data.lidar import request_signature, load_measurements, prepare_lidar, LidarPreparation
 from .external.lidar_reuse import reusable_prepared, summarize_prepared
-from .external.lidar_offer import approved_offers, offer_details
+from .external.lidar_offer import approved_offers, offer_details, offer_summary
 from .data.geojson import load_feature_collection, polygon_features, first_osm_id, feature_id
 from .data.land import recessed_water_kind
 from .config import preferred_python_path, storage_limits
@@ -386,6 +386,7 @@ class JARVIZAR_OT_prepare_lidar(Operator):
         offers = result.get('laz_offers', [])
         settings.lidar_laz_offer_token = result.get('laz_offer_token', '')
         settings.lidar_laz_offer_details = offer_details(offers)
+        settings.lidar_laz_offer_summary = offer_summary(offers)
         if offers:
             gaps = len({identifier for o in offers for identifier in o['buildings']})
             message += f'; optional LAZ/LAS gaps or upgrades for {gaps} buildings'

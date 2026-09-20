@@ -50,6 +50,20 @@ at `scene.jarvizar_city_model`. UI panels are in View3D → Sidebar → City Mod
 `operators.py` coordinates downloads, LiDAR preparation, generation, export,
 and generated-model cleanup.
 
+`ui.py` keeps the main panel to the workflow in order of use: area (with the
+**Presets** menu, which passes `data/bounds_presets.txt` lines to
+`jarvizar.paste_bounds`), print scale, Download / Prepare LiDAR (shown once
+LiDAR is on) / Generate / Export, then the last status. Everything set rarely
+is a closed sub-panel; a feature's toggle is its sub-panel's header checkbox,
+so the closed headers are the feature list. Water and LiDAR Buildings are not
+greyed by their headers: cuts and basins outlive the water fill, and Prepare
+runs before **Use Prepared LiDAR** is on. Text that grows with the selection
+(status, LAZ offers) goes through `_wrapped` with a line cap; offer details are
+collapsed by default and list three areas per survey. Design for the narrowest
+sidebar: one field per row for values that must stay readable, labels above
+paths/URLs, and UI-only state in `generation_modal._RUNTIME` so toggling it
+never cancels a pending generation.
+
 | Layer | Responsibility / boundary |
 | --- | --- |
 | `data/` | Cache/provenance, GeoJSON and rule reading, projection, terrain providers, external-process adapters. No `bpy` dependency. |
@@ -959,7 +973,7 @@ Select focused checks based on the change:
 | Roads / surface ownership | `test_road_network.py`, `test_airports.py`, `blender_airport_paving.py`, `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_shore_roads.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
 | Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_envelope.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
 | Anchored LiDAR / mapped rock | `test_lidar_relief.py`, `test_lidar_offer.py`, `blender_lidar_relief.py`; verify anchor alignment, class/coverage rejection, transactional fallback, source suppression, and unchanged disabled-LiDAR mesh fingerprints |
-| Export / trees / clipboard | `test_export_3mf.py`, `test_export_sections.py`, `blender_export_cutout.py`, `blender_export_plates.py`, installed Bambu `bambu_export_plates.py` and the live crop script; `blender_tree_printability.py`, `blender_tree_road_clearance.py`; `test_projection.py` and windowed `blender_gui_paste.py` |
+| Export / trees / clipboard | `test_export_3mf.py`, `test_export_sections.py`, `blender_export_cutout.py`, `blender_export_plates.py`, installed Bambu `bambu_export_plates.py` and the live crop script; `blender_tree_printability.py`, `blender_tree_road_clearance.py`; `test_projection.py`, `test_bounds_presets.py` and windowed `blender_gui_paste.py` |
 
 For geometry work, compare identical inputs/settings, check closure **and winding**,
 then inspect focused renders and seating/overlap probes. `render_preview.py`

@@ -300,6 +300,11 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     lidar_update_seconds: IntProperty(default=0, min=0, options={'SKIP_SAVE'})
     lidar_laz_offer_token: StringProperty(default='', options={'HIDDEN'})
     lidar_laz_offer_details: StringProperty(default='', options={'HIDDEN'})
+    lidar_laz_offer_summary: StringProperty(default='', options={'HIDDEN'})
+    show_laz_offer_details: BoolProperty(
+        name='Details', default=False, options={'SKIP_SAVE'},
+        description='Show the offered areas, survey metadata, source URL and licence',
+    )
     use_lidar_buildings: BoolProperty(
         name="Use Prepared LiDAR", default=False,
         description="Use prepared LiDAR heights, roof tiers and supported roof planes; other buildings retain source geometry",

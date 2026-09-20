@@ -2,7 +2,7 @@
 
 ## Ponds, fountains and water basins
 
-Ground Surfaces → **Ponds, Fountains and Basins** offers an enabled-by-default
+Water → **Ponds, Fountains and Basins** offers an enabled-by-default
 **Recess Ponds, Fountains and Basins** toggle and two model-millimetre dimensions:
 
 | Setting | Default |

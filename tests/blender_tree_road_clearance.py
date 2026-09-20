@@ -110,7 +110,7 @@ def main():
     assert mask.overlaps([p for p in fixture['vertices'] if p[2] == bottom])
     import jarvizar_city_model as addon
     from jarvizar_city_model.blender.generation_modal import settings_snapshot
-    from jarvizar_city_model.ui import JARVIZAR_PT_surfaces
+    from jarvizar_city_model.ui import JARVIZAR_PT_trees
     addon.register()
     settings = bpy.context.scene.jarvizar_city_model
     assert settings.tree_avoid_roads is True
@@ -121,7 +121,7 @@ def main():
     class Layout:
         def prop(self, settings, name, **kwargs): drawn.append(name)
         def __getattr__(self, name): return lambda *args, **kwargs: self
-    JARVIZAR_PT_surfaces.draw(SimpleNamespace(layout=Layout()), bpy.context)
+    JARVIZAR_PT_trees.draw(SimpleNamespace(layout=Layout()), bpy.context)
     assert 'tree_avoid_roads' in drawn
     addon.unregister()
     assert not any(obj.modifiers for obj in bpy.data.objects if obj.get('feature_type') == 'trees')
