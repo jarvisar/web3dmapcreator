@@ -321,6 +321,9 @@ colors, overwriting manual palette edits.
   recesses: `is_untyped_water` rejects explicit types/tags, and the solver checks
   the entire uncropped source feature area, including all MultiPolygon parts.
   A small crop cannot turn a large river into a basin. The 0.25 mm² surface floor still applies.
+  **Skip Ponds, Fountains and Basins** (default off) drops exactly those
+  features in `solve_water_bodies` before they become bodies, so nothing
+  downstream sees them; it overrides the recess and does not need terrain.
 - `basins.py` uses Exact Boolean on temporary terrain, checking closure and
   requested floors with rays before committing. Connected parts share the lowest
   bank reference; overlaps with other water types are skipped/counted. Floors
@@ -620,8 +623,14 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   reconstruction in `measure_features` runs in a reusable spawn process pool
   (automatic: CPU count − 1, capped at 8; `--measure-workers` or
   `JARVIZAR_LIDAR_MEASURE_WORKERS`, 1 is serial). Cropping, epoch checks and
-  publication stay in the parent; results, counts and their order match serial
-  exactly, and a broken pool finishes the batch serially. Direct `prepare()`
+  publication stay in the parent; `check_source` runs with the reconstruction,
+  because intersecting a cap's faces with mapped parts takes seconds and held
+  the pool idle from the parent. Buildings complete in their original order,
+  but the in-flight window (2 × workers) counts unfinished ones only, so a
+  slow tower at its head does not stop new submissions; finished entries drop
+  their points and at most 8 windows wait. Results, counts and their order
+  match serial exactly, and a broken pool finishes the batch serially. Check
+  speed changes byte for byte against a replayed `lidar_derived` batch. Direct `prepare()`
   calls default to serial. EPT
   lookahead retains at most that many futures and consumes the original node
   order; futures keep no response payloads. Prefetch is limited to the current batch;
@@ -735,7 +744,9 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   cost grows with the cube of the stairs it spans and walls stop merging at
   about a metre however loose the threshold, while loosening flattens roof
   detail; measured locally, extending a straight facet costs nothing and a
-  real feature still costs its full height. Flat-region ties break by edge
+  real feature still costs its full height. Face planes are cached and refit
+  only for the faces around a collapsed vertex (the refit per push was most of
+  the run). Flat-region ties break by edge
   length, or one vertex swallows a whole roof and the run turns quadratic.
   A collapse never flips a face in plan or leaves one thinner than
   `MIN_GAP` (the cap must stay a height field for `envelope_solid`, and a

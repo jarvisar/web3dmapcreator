@@ -78,9 +78,12 @@ class SurfaceSettings:
     recess_ponds_and_fountains: bool = True
     pond_recess_depth_mm: float = 1.0
     pond_water_thickness_mm: float = 0.8
+    # Leave out the waters the recess would take: no body, so no terrain
+    # change, cut, fill, slab exclusion or support. Overrides the recess.
+    skip_ponds_and_fountains: bool = False
 
     def __post_init__(self):
-        if self.recess_ponds_and_fountains and not (
+        if self.recess_ponds_and_fountains and not self.skip_ponds_and_fountains and not (
             math.isfinite(self.pond_recess_depth_mm)
             and math.isfinite(self.pond_water_thickness_mm)
             and 0 < self.pond_water_thickness_mm <= self.pond_recess_depth_mm
@@ -300,6 +303,7 @@ def solve_water_bodies(
     invalid_polygons = 0
     failed_meshes = 0
     basin_duplicates = 0
+    skipped_basins = 0
     seen_basins = set()
     # Model millimetres square per real square metre, so a clipped ring can be
     # judged against a real-world threshold without reprojecting it.
@@ -307,12 +311,17 @@ def solve_water_bodies(
         transform.scale_x_mm_per_m * transform.scale_y_mm_per_m, 1.0e-12
     )
 
+    skip_basins = settings.skip_ponds_and_fountains
+    classify_basins = settings.recess_ponds_and_fountains or skip_basins
     for feature in features:
-        basin_kind = recessed_water_kind(feature) if settings.recess_ponds_and_fountains else None
-        if (settings.recess_ponds_and_fountains and not basin_kind and is_untyped_water(feature)
+        basin_kind = recessed_water_kind(feature) if classify_basins else None
+        if (classify_basins and not basin_kind and is_untyped_water(feature)
                 and _source_water_area(feature.get('geometry') or {}, transform)
                 < MINIMUM_WATER_CUT_AREA_M2 * area_scale):
             basin_kind = 'untyped_water'
+        if basin_kind and skip_basins:
+            skipped_basins += 1
+            continue
         if not basin_kind and not is_printable_water(feature):
             skipped_non_polygon += 1
             continue
@@ -386,6 +395,7 @@ def solve_water_bodies(
         "water_meshes_rejected": failed_meshes,
         "water_basins": sum(bool(body.basin_kind) for body in bodies),
         "water_basin_duplicates": basin_duplicates,
+        "water_basins_skipped": skipped_basins,
     }
 
 

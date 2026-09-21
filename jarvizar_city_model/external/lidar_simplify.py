@@ -98,6 +98,10 @@ def collapse(vertices, faces, threshold, budget, deviation=math.inf, fine=()):
     fine = set(map(int, fine))
     version = [0]*len(V)
     heap = []
+    # A face's plane changes only when a collapse moves one of its corners.
+    # Every push used to refit the dozen planes around its edge, which was
+    # most of the run; each is the same arithmetic on the same corners here.
+    plane = [_plane(*(V[v] for v in face)) for face in F]
 
     def neighbours(v):
         return {u for index in vf[v] for u in F[index]}-{v}
@@ -108,7 +112,7 @@ def collapse(vertices, faces, threshold, budget, deviation=math.inf, fine=()):
         pin_a, pin_b = a in pinned, b in pinned
         if pin_a and pin_b:
             return
-        planes = [p for p in (_plane(*(V[v] for v in F[index])) for index in vf[a] | vf[b]) if p]
+        planes = [p for p in (plane[index] for index in vf[a] | vf[b]) if p]
         q = _quadric(planes)
         pa, pb = V[a], V[b]
         if pin_a:
@@ -165,6 +169,8 @@ def collapse(vertices, faces, threshold, budget, deviation=math.inf, fine=()):
             F[index][F[index].index(b)] = a
             vf[a].add(index)
         vf[b] = set()
+        for index in vf[a]:
+            plane[index] = _plane(*(V[v] for v in F[index]))
         version[a] += 1
         version[b] = -1
         if b in pinned:

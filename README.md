@@ -604,7 +604,9 @@ OSM tags retained by the importer. Small polygons mapped only as generic water
 also recess when their full source area is below 5,000 m². Explicit rivers,
 lakes and reservoirs keep their existing handling; a small viewport does not
 reclassify a large water feature. Other water keeps the existing cut/slab
-thresholds, and swimming pools remain excluded.
+thresholds, and swimming pools remain excluded. **Skip Ponds, Fountains and
+Basins** instead leaves those same waters out of the model entirely: no recess,
+cut, fill, surface exclusion or support. It overrides the recess.
 
 With **Keep Ground Under Structures** enabled, buildings and roads/paths over
 recessed water stay at the surrounding terrain grade, with terrain foundations

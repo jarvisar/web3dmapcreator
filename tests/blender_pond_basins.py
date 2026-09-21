@@ -132,6 +132,42 @@ def test_disabled_and_parameters():
         pass
 
 
+def test_skipped_basins_leave_no_trace():
+    field = ModelHeightField(0,0,20,20,3,3,[0,1,2]*3)
+    before = list(field.values)
+    untyped = feature('water', rectangle(2,7,5,9))
+    untyped['properties'] = {'subtype': 'water', 'class': 'water'}
+    features = [feature('pond', rectangle(2,2,5,5)), feature('fountain', rectangle(7,2,8,3)),
+                untyped, feature('river', rectangle(12,-2,24,22))]
+    recessed, _ = solve_water_bodies(features, Transform(), field)
+    # Skipping wins over the recess, whose dimensions then no longer matter.
+    settings = SurfaceSettings(skip_ponds_and_fountains=True,
+                               pond_recess_depth_mm=.5, pond_water_thickness_mm=.8)
+    bodies, stats = solve_water_bodies(features, Transform(), field, settings)
+    assert stats['water_basins_skipped'] == sum(bool(b.basin_kind) for b in recessed) > 0, stats
+    assert len(bodies) == 1 and bodies[0].cut and stats['water_basins'] == 0, stats
+    assert stats['water_rejected'] == 0, stats
+    only_river, _ = solve_water_bodies(features[-1:], Transform(), field, settings)
+    flatten_terrain_under_water(field, bodies)
+    cut_water_from_terrain(field, bodies)
+    reference = ModelHeightField(0,0,20,20,3,3,before)
+    flatten_terrain_under_water(reference, only_river)
+    cut_water_from_terrain(reference, only_river)
+    assert list(field.values) == list(reference.values)
+    target, water = collection('skipped_basin_terrain'), collection('skipped_basin_water')
+    expected = collection('skipped_basin_reference')
+    counts = generate_terrain_solid(field, 1.3, target)
+    generate_terrain_solid(reference, 1.3, expected)
+    stats = recess_terrain_basins(field, bodies, target, 1.3)
+    assert not stats['water_recesses_built'] and not field.basins
+    # The terrain is the one the river alone produces, vertex for vertex.
+    assert ([v.co[:] for v in target.objects[0].data.vertices]
+            == [v.co[:] for v in expected.objects[0].data.vertices])
+    assert hits(target.objects[0],3,3) is not None and hits(target.objects[0],14,10) is None
+    generate_water(bodies, water, None, settings, counts['terrain_bottom_z_mm'])
+    assert len(water.objects) == 1 and hits(water.objects[0],3,3) is None
+
+
 def test_slopes_and_duplicate_basins():
     field = ModelHeightField(0,0,20,20,3,3,[0,1,2]*3)
     pond = feature('pond', rectangle(2,2,5,5))
@@ -224,6 +260,10 @@ def test_settings_persist_and_water_toggle_keeps_recess():
     settings.cut_water_from_terrain = False
     assert _needs_water_data(settings)
     assert 'water' in _required_types(settings) and 'infrastructure' in _required_types(settings)
+    assert not settings.skip_ponds_and_fountains
+    settings.skip_ponds_and_fountains = True
+    assert not _needs_water_data(settings)
+    settings.skip_ponds_and_fountains = False
     settings.recess_ponds_and_fountains = False
     assert not _needs_water_data(settings)
     settings.pond_recess_depth_mm = 1.7
@@ -242,6 +282,7 @@ def test_settings_persist_and_water_toggle_keeps_recess():
 
 test_basins()
 test_disabled_and_parameters()
+test_skipped_basins_leave_no_trace()
 test_slopes_and_duplicate_basins()
 test_failure_keeps_original_terrain()
 test_mapped_water_basins_recess_instead_of_ordinary_water_slabs()

@@ -675,6 +675,15 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         ),
         default=True,
     )
+    skip_ponds_and_fountains: BoolProperty(
+        name="Skip Ponds, Fountains and Basins",
+        description=(
+            "Leave out the same waters the recess applies to: mapped ponds, fountains, basins and "
+            "unclassified water polygons below 5000 square metres. They change no terrain, land "
+            "surface or support and get no water fill. Overrides the recess"
+        ),
+        default=False,
+    )
     pond_recess_depth_mm: FloatProperty(
         name="Recess Depth (mm)",
         description="Depth of ponds, fountains and water basins below the local bank",

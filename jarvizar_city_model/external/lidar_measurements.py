@@ -9,7 +9,7 @@ import math
 import multiprocessing
 import os
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 
 import numpy as np
@@ -749,7 +749,17 @@ def _reconstruct(feature, footprint, local, reason, min_width_m, min_step_m, roo
                 PointIndex(local), min_width_m, min_step_m, roof_planes=roof_planes, prefer_lidar=prefer_lidar)
             if supplement or supplement_reason == 'source_height_conflict':
                 measured, reason = supplement, supplement_reason
-    return measured, reason
+    # Comparing a cap with its mapped parts intersects every roof face with
+    # them, seconds for a large building: it belongs with the reconstruction,
+    # not in the parent, where it ran one building at a time beside idle workers.
+    decision = None
+    if measured and measured['method'] not in ('height_only', 'source_parts'):
+        try:
+            from .lidar_source import check_source
+        except ImportError:
+            from lidar_source import check_source
+        decision = check_source(feature, source_parts, measured, footprint)
+    return measured, reason, decision
 
 
 def measure_features(features, points, to_metric, to_geographic, min_width_m, min_step_m, roi, roof_planes=True, parts_by_parent=None, observations_out=None, neighbors_by_id=None, source_parts_by_parent=None, prefer_lidar=False, roof_mode='TERRACES', surface_scale=None, progress_callback=None, workers=1):
@@ -758,8 +768,11 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
     ``workers`` above 1 reconstructs buildings in spawned processes. Cropping,
     epoch checks and publication stay here; each building's work is a pure
     function of its own cropped points, so results, counts and their order are
-    identical to a serial run. A bounded window of buildings is in flight, so
-    memory holds a few cropped halos, not every building's points at once.
+    identical to a serial run. A bounded window of unfinished buildings is in
+    flight, so memory holds a few cropped halos, not every building's points
+    at once. Buildings are still completed in their original order; a finished
+    one waiting its turn behind a slow tower holds only its result, and does
+    not stop the pool taking new work.
     """
     index = PointIndex(points)
     results, counts, rejected = {}, Counter(), {}
@@ -824,7 +837,7 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
     def outcome(entry):
         nonlocal executor, window
         if 'early' in entry:
-            return None, entry['early']
+            return None, entry['early'], None
         task = entry['task']
         if task is not None:
             try:
@@ -844,27 +857,20 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
             names = (feature.get('properties') or {}).get('names')
             name = (names.get('primary') if isinstance(names, dict) else None) or identifier
             progress_callback(position, total, str(name))
-        measured, reason = outcome(entry)
+        measured, reason, checked = outcome(entry)
         entry.pop('args', None)
         if 'early' in entry:
             counts[reason] += 1
             rejected[identifier] = reason
             return
-        footprint = entry['footprint']
         props = feature.get("properties") or {}
         dated, predates = entry['dated'], entry['predates']
-        source_parts = (source_parts_by_parent or {}).get(identifier, ())
         if measured:
-            try:
-                from .lidar_source import check_source
-            except ImportError:
-                from lidar_source import check_source
             if measured['method'] == 'height_only':
                 # Each mapped main mass was checked against its own samples.
                 decision = 'measured_height'
             else:
-                decision = (measured.get('height_decision') if measured['method'] == 'source_parts'
-                            else check_source(feature, source_parts, measured, footprint))
+                decision = measured.get('height_decision') if measured['method'] == 'source_parts' else checked
             if decision in ('source_height_conflict', 'weak_height_correction') and not prefer_lidar:
                 measured, reason = None, decision
             else:
@@ -919,12 +925,31 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
         else:
             rejected[identifier] = reason
 
+    def unfinished():
+        count = 0
+        for entry in inflight:
+            task = entry['task']
+            if task is not None and task.done() and not task.cancelled() and task.exception() is None:
+                # Only a failed building is repeated here, so only it needs its points.
+                entry.pop('args', None)
+            else:
+                count += 1
+        return count
+
     for position, feature in enumerate(features):
         entry = stage(position, feature)
         submit(entry)
         inflight.append(entry)
-        while len(inflight) >= window:
-            complete(inflight.pop(0))
+        # One slow tower at the head used to hold the whole window, and the
+        # pool idled behind it. Results waiting their turn are small; their
+        # number is bounded all the same.
+        while inflight and (unfinished() >= window or len(inflight) >= 8 * window):
+            head = inflight[0]['task']
+            running = [e['task'] for e in inflight if e['task'] is not None and not e['task'].done()]
+            if head is None or head.done() or len(inflight) >= 8 * window or not running:
+                complete(inflight.pop(0))
+            else:
+                wait(running, return_when=FIRST_COMPLETED)
     while inflight:
         complete(inflight.pop(0))
     if progress_callback:

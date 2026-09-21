@@ -321,13 +321,16 @@ class JARVIZAR_PT_water(_SubPanel, Panel):
         row.enabled = settings.cut_water_from_terrain
         row.prop(settings, "minimum_water_cut_area_m2")
         row = layout.row()
-        row.enabled = settings.generate_terrain and (
-            settings.cut_water_from_terrain or settings.recess_ponds_and_fountains)
+        recessing = settings.recess_ponds_and_fountains and not settings.skip_ponds_and_fountains
+        row.enabled = settings.generate_terrain and (settings.cut_water_from_terrain or recessing)
         row.prop(settings, "support_structures_over_water")
         _heading(layout, "Ponds, Fountains and Basins")
-        layout.prop(settings, "recess_ponds_and_fountains")
+        layout.prop(settings, "skip_ponds_and_fountains")
+        row = layout.row()
+        row.enabled = not settings.skip_ponds_and_fountains
+        row.prop(settings, "recess_ponds_and_fountains")
         column = layout.column(align=True)
-        column.enabled = settings.recess_ponds_and_fountains and settings.generate_terrain
+        column.enabled = recessing and settings.generate_terrain
         column.prop(settings, "pond_recess_depth_mm")
         column.prop(settings, "pond_water_thickness_mm")
         gap = settings.pond_recess_depth_mm - settings.pond_water_thickness_mm
@@ -335,7 +338,7 @@ class JARVIZAR_PT_water(_SubPanel, Panel):
         row.alert = gap < -1e-6
         row.label(text=(f"Water below bank: {max(0.0, gap):.2f} mm" if gap >= -1e-6
                         else "Water thickness must not exceed depth"))
-        if settings.recess_ponds_and_fountains and not settings.generate_terrain:
+        if recessing and not settings.generate_terrain:
             layout.label(text="Enable Terrain to build basins")
 
 

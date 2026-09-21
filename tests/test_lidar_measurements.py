@@ -135,6 +135,29 @@ class MeasurementsTests(unittest.TestCase):
         self.assertEqual(list(counts), ['tiers', 'incomplete_footprint_or_ground_halo',
                                         'elevated_or_underground', 'source_height_conflict'])
 
+    def test_parallel_window_keeps_order_beyond_its_size(self):
+        from jarvizar_city_model.external import lidar_measurements
+        from jarvizar_city_model.external.lidar_measurements import measure_features
+        from shapely.geometry import mapping
+        cloud = self.cloud(lambda x,y: 90 if 20<x<40 and 20<y<40 else 30)
+        kinds = ({}, {'is_underground':True}, {'height':19})
+        features = [{'id':f'b{n}', 'properties':dict(kinds[n % 3]), 'geometry':mapping(box(0,0,60,60))}
+                    for n in range(14)]
+        outputs, progress = {}, {1:[], 2:[]}
+        for workers in (1, 2):
+            observations = {}
+            outputs[workers] = measure_features(features, cloud, lambda x,y:(x,y), lambda x,y:(x,y), 6, 3,
+                box(-100,-100,100,100), observations_out=observations, workers=workers,
+                progress_callback=lambda position, total, name, w=workers: progress[w].append(position))
+            outputs[workers] += (observations,)
+        lidar_measurements.close_measurement_pool()
+        self.assertEqual(outputs[1], outputs[2])
+        self.assertEqual(progress[2], list(range(15)))
+        records, _, rejected, observations = outputs[2]
+        self.assertEqual(list(records), [f'b{n}' for n in range(0, 14, 3)])
+        self.assertEqual(list(rejected), [f'b{n}' for n in range(14) if n % 3])
+        self.assertEqual(list(observations), [f'b{n}' for n in range(14) if n % 3 != 1])
+
     def test_new_tall_lidar_building_does_not_morph_old_short_source(self):
         from jarvizar_city_model.external.lidar_measurements import measure_features
         from shapely.geometry import mapping

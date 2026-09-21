@@ -76,6 +76,12 @@ Turning off **Water** hides the fill while retaining the recess. Turning off
 **Cut Water From Terrain** continues to control other water and its existing
 minimum cut area. Terrain must be enabled for the new basin mode.
 
+**Skip Ponds, Fountains and Basins** (off by default) leaves out exactly the
+waters the recess would take, using the same classification. They never become
+water bodies, so they change no terrain, land surface or support and get no
+fill; other water is unaffected. It overrides the recess, works without
+terrain, and is reported as `water_basins_skipped`.
+
 Run `tests/blender_pond_basins.py` inside Blender for exact dimension, island,
 sub-cell, crop, slope, overlap, failure, UI/toggle and scene-persistence checks.
 `tests/blender_basin_support.py` checks structure placement against unrecessed

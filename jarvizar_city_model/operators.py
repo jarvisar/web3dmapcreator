@@ -85,13 +85,17 @@ def _cache_bundle(settings) -> CacheBundle:
 
 def _needs_water_data(settings) -> bool:
     """Whether the source water layer is needed, for a slab or for the cut."""
-    return bool(settings.generate_water) or bool(
-        (settings.cut_water_from_terrain or settings.recess_ponds_and_fountains) and settings.generate_terrain
-    )
+    return bool(settings.generate_water) or _cuts_water(settings) or _recesses_water(settings)
 
 
 def _cuts_water(settings) -> bool:
     return bool(settings.cut_water_from_terrain and settings.generate_terrain)
+
+
+def _recesses_water(settings) -> bool:
+    """Whether basins are built; skipping those waters leaves nothing to recess."""
+    return bool(settings.recess_ponds_and_fountains and settings.generate_terrain
+                and not settings.skip_ponds_and_fountains)
 
 
 def _required_types(settings) -> tuple:
@@ -105,8 +109,7 @@ def _required_types(settings) -> tuple:
         required.extend(WATER_TYPES)
     if settings.generate_land_surfaces or settings.generate_trees:
         required.extend(LAND_TYPES)
-    if (_cuts_water(settings) or (settings.recess_ponds_and_fountains and settings.generate_terrain)
-            or settings.generate_roads):
+    if _cuts_water(settings) or _recesses_water(settings) or settings.generate_roads:
         # Piers, quays, and breakwaters are mapped here; the cut needs them to
         # know which ground out over the water is real.  Runways, taxiways
         # and aprons are here too, and print with the roads.
@@ -718,9 +721,10 @@ class JARVIZAR_OT_generate_model(Operator):
                 water_thickness_mm=settings.water_thickness_mm,
                 cut_from_terrain=settings.cut_water_from_terrain,
                 minimum_cut_area_m2=settings.minimum_water_cut_area_m2,
-                recess_ponds_and_fountains=(settings.recess_ponds_and_fountains and settings.generate_terrain),
+                recess_ponds_and_fountains=_recesses_water(settings),
                 pond_recess_depth_mm=settings.pond_recess_depth_mm,
                 pond_water_thickness_mm=settings.pond_water_thickness_mm,
+                skip_ponds_and_fountains=settings.skip_ponds_and_fountains,
             )
 
             # Water is solved before anything else reads the height field.  The
