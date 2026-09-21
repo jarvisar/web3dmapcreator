@@ -859,6 +859,9 @@ class JARVIZAR_OT_generate_model(Operator):
                 hierarchy["land_surfaces"], water_bodies,
                 surface_settings.surface_rise_mm + surface_settings.surface_embed_mm,
                 preserve_paved=ground_support is not None,
+                beach_rise_mm=surface_settings.surface_rise_mm if settings.taper_beaches else 0.0,
+                beach_width_mm=settings.beach_taper_width_mm,
+                ground=heightfield.height_mm,
             ))
             if ground_support is not None:
                 counts.update(ground_support.support_paved_surfaces(

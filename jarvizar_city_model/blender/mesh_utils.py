@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import bpy
 from mathutils import Vector
-from mathutils.geometry import tessellate_polygon
+from mathutils.geometry import delaunay_2d_cdt, tessellate_polygon
 
 from ..data.geojson import geometry_polygons
 from ..geometry.planar import (
@@ -24,6 +24,7 @@ from ..geometry.planar import (
     ear_clip,
     orient_faces_outward,
     oriented_ring,
+    point_in_polygon,
     refine_triangles,
     signed_area,
 )
@@ -139,6 +140,73 @@ def _tessellate_rings(
     return flat, triangles
 
 
+def _cdt_rings(
+    rings: Sequence[Sequence[PrismVertex]],
+) -> Tuple[List[PrismVertex], List[Tuple[int, int, int]]]:
+    """Triangulate rings by constrained Delaunay, as flat indices like the above.
+
+    ``tessellate_polygon`` reaches each hole through a bridge, and along a
+    coastline with islands it can lay extra triangles over one: the cap then
+    puts three faces on an edge and the whole ocean is rejected.  Constraining
+    a Delaunay triangulation to the ring edges needs no bridges.  Triangles
+    are grouped across every edge that is not an outline edge, and one
+    point-in-polygon test of a group's largest triangle keeps or drops it.
+
+    Outlines that cross or touch make the triangulation add or merge
+    vertices; the cap would no longer be the rings', so that returns nothing.
+    """
+    flat: List[PrismVertex] = [vertex for ring in rings for vertex in ring]
+    outline, start = [], 0
+    for ring in rings:
+        outline.extend((start + i, start + (i + 1) % len(ring)) for i in range(len(ring)))
+        start += len(ring)
+    try:
+        points, _edges, faces, origins, _edge_origins, _face_origins = delaunay_2d_cdt(
+            [Vector((vertex[0], vertex[1])) for vertex in flat], outline, [], 0, 0.0, True)
+    except Exception:
+        return [], []
+    if len(points) != len(flat) or any(len(origin) != 1 for origin in origins):
+        return [], []
+    triangles = [tuple(origins[index][0] for index in face) for face in faces if len(face) == 3]
+
+    groups = list(range(len(triangles)))
+
+    def find(item):
+        while groups[item] != item:
+            groups[item] = groups[groups[item]]
+            item = groups[item]
+        return item
+
+    fixed = {frozenset(edge) for edge in outline}
+    across: Dict[frozenset, int] = {}
+    for t, triangle in enumerate(triangles):
+        for offset in range(3):
+            edge = frozenset((triangle[offset], triangle[(offset + 1) % 3]))
+            if edge in fixed:
+                continue
+            if edge in across:
+                groups[find(t)] = find(across[edge])
+            else:
+                across[edge] = t
+
+    def area(triangle):
+        a, b, c = (flat[index] for index in triangle)
+        return abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+
+    largest: Dict[int, int] = {}
+    for t, triangle in enumerate(triangles):
+        group = find(t)
+        if group not in largest or area(triangle) > area(triangles[largest[group]]):
+            largest[group] = t
+    plan = [[(x, y) for x, y, _bottom, _top in ring] for ring in rings]
+    inside = set()
+    for group, t in largest.items():
+        a, b, c = (flat[index] for index in triangles[t])
+        if point_in_polygon(((a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0), plan):
+            inside.add(group)
+    return flat, [triangle for t, triangle in enumerate(triangles) if find(t) in inside]
+
+
 def _build_solid(
     flat: Sequence[PrismVertex],
     triangles: Sequence[Tuple[int, int, int]],
@@ -248,7 +316,8 @@ def _prism_geometry(
     Blender's triangulator is tried first because it is fast and handles holes;
     when it returns something that will not close, a ring without holes is
     retried with ear clipping, which is slower but uses every vertex and cannot
-    overlap itself.  Only if both fail is the solid rejected and counted.
+    overlap itself, and rings with holes with a constrained Delaunay
+    triangulation.  Only if both fail is the solid rejected and counted.
 
     With *refine*, cap edges longer than the given spacing are split and the
     new vertices draped through the given function, so a wide slab follows
@@ -264,11 +333,13 @@ def _prism_geometry(
     if len(rings) == 1:
         flat = list(rings[0])
         triangles = ear_clip(flat)
-        if refine is not None and triangles:
-            flat, triangles = refine_triangles(flat, triangles, refine[0], refine[1])
-        built = _build_solid(flat, triangles, rings)
-        if built is not None:
-            return built
+    else:
+        flat, triangles = _cdt_rings(rings)
+    if refine is not None and triangles:
+        flat, triangles = refine_triangles(flat, triangles, refine[0], refine[1])
+    built = _build_solid(flat, triangles, rings)
+    if built is not None:
+        return built
     return [], []
 
 

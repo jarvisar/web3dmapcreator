@@ -723,6 +723,25 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         soft_max=1.0,
         precision=2,
     )
+    taper_beaches: BoolProperty(
+        name="Slope Beaches Into Water",
+        description=(
+            "Slope mapped sand down to the waterline beside water cut from the "
+            "terrain; disable to end it in a wall like other land surfaces"
+        ),
+        default=True,
+    )
+    beach_taper_width_mm: FloatProperty(
+        name="Beach Slope Width (mm)",
+        description=(
+            "Printed distance from the waterline over which the sand climbs to the "
+            "full land surface rise. 1.5 mm is about 21 m at the default scale"
+        ),
+        default=1.5,
+        min=0.1,
+        soft_max=5.0,
+        precision=2,
+    )
 
     # ------------------------------------------------------------- vegetation
     tree_avoid_roads: BoolProperty(

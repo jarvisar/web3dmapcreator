@@ -17,7 +17,9 @@ from mathutils.bvhtree import BVHTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from jarvizar_city_model.blender import mesh_utils
 from jarvizar_city_model.data.projection import ModelBounds
+from jarvizar_city_model.geometry import basins
 from jarvizar_city_model.geometry.basins import cut_water_land_surfaces
 from jarvizar_city_model.geometry.dem_terrain import generate_terrain_solid
 from jarvizar_city_model.geometry.heightfield import ModelHeightField
@@ -258,6 +260,92 @@ def test_unusable_water_cannot_flatten_or_cut_terrain():
     assert not bodies and stats['water_invalid_polygons'] == 1, stats
 
 
+def test_water_with_islands_survives_a_bad_tessellation():
+    """Blender's triangulator laid extra triangles over a hole bridge of Rio's
+    ocean. Rings with holes had no retry, so the whole ocean was dropped."""
+    water = feature('lake', rectangle(1, 1, 19, 19), rectangle(4, 4, 8, 8), rectangle(11, 11, 15, 16))
+    original = mesh_utils._tessellate_rings
+
+    def overlapping(rings):
+        flat, triangles = original(rings)
+        return flat, triangles + [(0, 1, 2), (0, 2, 3)]
+
+    with patch.object(mesh_utils, '_tessellate_rings', overlapping):
+        prism = [[(x, y, 0.0, 1.0) for x, y in ring]
+                 for ring in (rectangle(1, 1, 19, 19), rectangle(4, 4, 8, 8)[::-1])]
+        assert mesh_utils._build_solid(*overlapping(prism), prism) is None, "Fixture closes"
+        bodies, stats = solve_water_bodies([water], FixtureTransform(), flat_field())
+    assert len(bodies) == 1 and stats['water_meshes_rejected'] == 0, stats
+    vertices, faces = bodies[0].geometry
+    cap = 0.0
+    for face in faces:
+        corners = [vertices[index] for index in face]
+        if len(corners) == 3 and all(z == 1.0 for _x, _y, z in corners):
+            (ax, ay, _), (bx, by, _), (cx, cy, _) = corners
+            cap += abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) / 2
+    assert abs(cap - (18 * 18 - 4 * 4 - 4 * 5)) < 1.0e-6, cap
+    edges = Counter(tuple(sorted((face[i], face[(i + 1) % len(face)])))
+                    for face in faces for i in range(len(face)))
+    assert all(count == 2 for count in edges.values()), "Open water prism"
+    assert faces_are_consistent(faces), "Water prism winding"
+
+
+def beach_fixture(name):
+    field = flat_field()
+    bodies = solve(field, [feature("lake", rectangle(1, 1, 10, 19))])
+    target = collection(name)
+    counts = generate_land_surfaces(
+        [("land", [feature("beach", rectangle(8, 3, 18, 12))]),
+         ("land_use", [feature("park", rectangle(8, 13, 18, 19.4))])],
+        FixtureTransform(), field, target, {}, SurfaceSettings(),
+    )
+    assert counts["land_surfaces"] == 2, counts
+
+    def tops():
+        result = {}
+        for obj in target.objects:
+            tree = mesh_tree(obj)
+            result[obj["surface_category"]] = lambda x, y, tree=tree: tree.ray_cast(
+                (x, y, 10.0), (0.0, 0.0, -1.0))[0].z
+        return result
+
+    return target, bodies, tops
+
+
+def test_only_sand_slopes_down_to_cut_water():
+    settings = SurfaceSettings()
+    rise, thickness = settings.surface_rise_mm, settings.surface_rise_mm + settings.surface_embed_mm
+    target, bodies, tops = beach_fixture("beach_surfaces")
+    flat = cut_water_land_surfaces(target, bodies, thickness)
+    assert "beach_vertices_tapered" not in flat, flat
+    assert abs(tops()["sand"](10.001, 7.0) - rise) < 1e-5, tops()["sand"](10.001, 7.0)
+
+    counts = cut_water_land_surfaces(target, bodies, thickness, beach_rise_mm=rise,
+                                     beach_width_mm=1.5, ground=lambda x, y: 0.0)
+    assert counts["beach_vertices_tapered"] > 0, counts
+    top = tops()
+    assert abs(top["sand"](10.001, 7.0) - basins.BEACH_WATERLINE_RISE_MM) < 0.01, top["sand"](10.001, 7.0)
+    assert abs(top["sand"](14.0, 7.0) - rise) < 1e-5, "Beach lowered away from the water"
+    assert abs(top["green"](10.001, 16.0) - rise) < 1e-5, "Park tapered"
+    heights = [top["sand"](10.001 + step * 0.1, 7.0) for step in range(30)]
+    assert all(b >= a - 1e-5 for a, b in zip(heights, heights[1:])), heights
+    for obj in target.objects:
+        assert_closed(obj)
+        assert abs(min(v.co.z for v in obj.data.vertices) + settings.surface_embed_mm) < 1e-5, obj.name
+
+    # Ground bulging between slab vertices must not show through thinned sand.
+    target, bodies, tops = beach_fixture("beach_bulge")
+    bulge = lambda x, y: 0.3 if 5.0 < y < 9.0 else 0.0
+    cut_water_land_surfaces(target, bodies, thickness, beach_rise_mm=rise, ground=bulge)
+    top = tops()["sand"]
+    for step in range(40):
+        x, y = 10.01 + step * 0.05, 7.0
+        assert top(x, y) >= bulge(x, y) + basins.BEACH_GROUND_CLEARANCE_MM - 1e-5, (x, top(x, y))
+    assert top(10.001, 11.0) < 0.2, "Guard raised the whole beach"
+    for obj in target.objects:
+        assert_closed(obj)
+
+
 def test_cut_threshold_uses_water_area_excluding_islands():
     field = flat_field()
     water = feature('lake', rectangle(1, 1, 19, 19), rectangle(1.1, 1.1, 18.9, 18.9))
@@ -272,6 +360,8 @@ def main():
     test_cropped_islands_and_water_mesh_share_the_solved_area()
     test_narrow_water_is_cut_exactly_where_its_fill_is()
     test_unusable_water_cannot_flatten_or_cut_terrain()
+    test_water_with_islands_survives_a_bad_tessellation()
+    test_only_sand_slopes_down_to_cut_water()
     test_cut_threshold_uses_water_area_excluding_islands()
     print("JARVIZAR_WATER_CUT_OK")
 

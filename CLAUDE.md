@@ -29,7 +29,7 @@ retain explicitly stored values when defaults change.
 | Terrain | DEM, resolution 192, smoothing radius 1 (3×3 mean), exaggeration 1.0 |
 | Base | 1.3 mm below the lowest built terrain surface, including basin floors |
 | Roads / decks | Both default to 0.6 mm; widths constrained to 0.45–0.7 mm |
-| Ground surfaces | 0.4 mm rise, 0.15 mm embed; roads and ground-founded buildings use that embed too |
+| Ground surfaces | 0.4 mm rise, 0.15 mm embed; roads and ground-founded buildings use that embed too; beaches slope to the waterline over 1.5 mm |
 | Buildings | Height multiplier 1.1; minimum height 0.8 mm, gated by a 0.6 mm footprint setting |
 | Source building detail | Minimum effective width 0.08 mm; slenderness limit 30 below 0.45 mm width |
 | LiDAR | Opt-in; Prefer LiDAR on Conflicts enabled; automatic Roof Envelope; legacy Terraces width 0.1 mm / step 0.05 mm |
@@ -205,7 +205,10 @@ FDM geometry/defaults. Download cancellation is a separate outstanding task.
 
 - Prism walls in `blender/mesh_utils.py` follow triangulated cap boundaries.
   Validate closure, directed-edge consistency, and cap coverage. Hole-free
-  failures retry `planar.ear_clip`; rejected geometry is counted.
+  failures retry `planar.ear_clip`; rings with holes retry a constrained
+  Delaunay cap (`_cdt_rings`), because `tessellate_polygon` can lay extra
+  triangles over a hole bridge: that dropped Rio's whole ocean (islands), with
+  only `water_meshes_rejected` to show for it. Rejected geometry is counted.
 - `MeshBuilder.add_raw` appends independent vertices for each solid. Merged
   objects intentionally contain overlapping, individually closed shells.
   Never weld adjacent buildings, tiers, road pieces, or trees by coordinate;
@@ -364,6 +367,14 @@ colors, overwriting manual palette edits.
   basins, and retains island holes and full slab thickness outside the cut.
   Water-fill visibility does not control these exclusions. Structure supports
   and road/building geometry keep their separate ownership.
+- **Slope Beaches Into Water** defaults on, 1.5 mm wide. Sand comes only from
+  explicit beach/sand/shingle/dune classes, so sand beside *cut* water is a
+  beach: right after the water cut, `basins._taper_beach` lowers sand top
+  vertices by distance to the cut-water outlines, from the full rise to 0.1 mm
+  at the waterline. Only Z of top vertices moves; later road cuts interpolate
+  that top. Triangles left under 0.05 mm above `height_mm` raise their vertices
+  again: ground bulging between slab vertices showed through the thinned sand.
+  Other categories, basins and uncut water keep their walls.
 - Surface priority defaults to **paved > sand > rock > green > forest** and is
   scene configurable. Priority, water and ground-road cuts all use
   `surface_priority._rebuild_surface`: slab wall outlines, cutter rings and a

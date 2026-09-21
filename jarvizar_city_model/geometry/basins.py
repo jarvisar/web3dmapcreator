@@ -187,8 +187,84 @@ def recess_terrain_basins(heightfield, bodies, collection, base_thickness_mm):
     return counts
 
 
-def cut_water_land_surfaces(collection, bodies, thickness, *, preserve_paved=False):
+# A beach runs down into the sea; a slab ending in a wall at the waterline
+# reads as a kerb. Sand is mapped from explicit beach/sand/shingle/dune classes
+# only, so sand beside water cut from the terrain is a beach. Its top slopes
+# from the full rise down to this much above the ground at the waterline.
+BEACH_WATERLINE_RISE_MM = 0.1
+# The ground bulges between slab vertices, and did show through sand thinned
+# this far. Every tapered triangle keeps this much over the ground it covers.
+BEACH_GROUND_CLEARANCE_MM = 0.05
+_CLEARANCE_SAMPLES = ((1, 0, 0), (0, 1, 0), (0, 0, 1),
+                      (1/3, 1/3, 1/3), (.5, .5, 0), (0, .5, .5), (.5, 0, .5),
+                      (2/3, 1/6, 1/6), (1/6, 2/3, 1/6), (1/6, 1/6, 2/3))
+
+
+def _taper_beach(obj, bodies, drop, width, ground=None):
+    """Slope a sand slab's top down to cut water. Returns the vertices lowered.
+
+    Only top vertices move, by less than the rise, so the slab stays a closed
+    solid over its embedded underside. Later road cuts interpolate this top.
+    With *ground*, a height query, vertices of a triangle left too close to
+    the ground are raised again, at most back to where they were.
+    """
+    corners, walls = [], []
+    for body in bodies:
+        for ring in body.rings:
+            for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1]):
+                walls.append(tuple(range(len(corners), len(corners) + 4)))
+                corners.extend(((ax, ay, -1.0), (bx, by, -1.0), (bx, by, 1.0), (ax, ay, 1.0)))
+    if not walls:
+        return 0
+    shore = BVHTree.FromPolygons(corners, walls)
+    mesh = obj.data
+    tops = {}
+    for vertex in mesh.vertices:
+        key = (vertex.co.x, vertex.co.y)
+        tops[key] = max(tops.get(key, vertex.co.z), vertex.co.z)
+    lowered = {}
+    for vertex in mesh.vertices:
+        x, y, z = vertex.co
+        if z < tops[x, y] - 1e-6:
+            continue
+        distance = shore.find_nearest((x, y, 0.0), width)[3]
+        if distance is not None and distance < width:
+            lowered[vertex.index] = drop * (1.0 - distance / width)
+    if not lowered:
+        return 0
+    heights = {index: mesh.vertices[index].co.z - amount for index, amount in lowered.items()}
+    if ground is not None:
+        for face in mesh.polygons:
+            if len(face.vertices) != 3 or not any(index in lowered for index in face.vertices):
+                continue
+            points = [mesh.vertices[index].co for index in face.vertices]
+            if any(z < tops[x, y] - 1e-6 for x, y, z in points):
+                continue
+            need = 0.0
+            for weights in _CLEARANCE_SAMPLES:
+                x = sum(w * p.x for w, p in zip(weights, points))
+                y = sum(w * p.y for w, p in zip(weights, points))
+                z = sum(w * heights.get(index, p.z)
+                        for w, index, p in zip(weights, face.vertices, points))
+                share = sum(w for w, index in zip(weights, face.vertices) if index in lowered)
+                if share > 0.0:
+                    need = max(need, (ground(x, y) + BEACH_GROUND_CLEARANCE_MM - z) / share)
+            if need > 0.0:
+                for index in face.vertices:
+                    if index in lowered:
+                        heights[index] = min(mesh.vertices[index].co.z, heights[index] + need)
+    for index, z in heights.items():
+        mesh.vertices[index].co.z = z
+    mesh.update()
+    return len(lowered)
+
+
+def cut_water_land_surfaces(collection, bodies, thickness, *, preserve_paved=False,
+                            beach_rise_mm=0.0, beach_width_mm=1.5, ground=None):
     """Clear all land-cover slabs from validated water footprints.
+
+    With *beach_rise_mm*, the slabs' rise, sand then slopes down to cut water
+    over *beach_width_mm*, staying clear of the *ground* height query.
 
     The same exact polygons supply water fills and surface exclusions, with
     islands preserved. Apply to both recessed basins and ordinary water,
@@ -209,4 +285,12 @@ def cut_water_land_surfaces(collection, bodies, thickness, *, preserve_paved=Fal
             continue
         removed, _shells = _rebuild_surface(obj, cutters, thickness)
         changed += removed > 1e-8
-    return {"land_surface_water_cuts": changed}
+    counts = {"land_surface_water_cuts": changed}
+    drop = beach_rise_mm - BEACH_WATERLINE_RISE_MM
+    if drop > 0.0 and beach_width_mm > 0.0:
+        cut = [body for body in bodies if body.cut]
+        counts["beach_vertices_tapered"] = sum(
+            _taper_beach(obj, cut, drop, beach_width_mm, ground) for obj in collection.objects
+            if obj.type == 'MESH' and obj.get('feature_type') == 'land_surface'
+            and obj.get('surface_category') == 'sand')
+    return counts

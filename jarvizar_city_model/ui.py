@@ -287,6 +287,10 @@ class JARVIZAR_PT_surfaces(_SubPanel, Panel):
         column = layout.column(align=True)
         column.prop(settings, "surface_rise_mm")
         column.prop(settings, "surface_embed_mm")
+        layout.prop(settings, "taper_beaches")
+        row = layout.row()
+        row.enabled = settings.taper_beaches
+        row.prop(settings, "beach_taper_width_mm")
         box = layout.box()
         box.label(text="Surface Priority (highest first)")
         order = settings.surface_order()
