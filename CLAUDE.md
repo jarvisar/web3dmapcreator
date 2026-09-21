@@ -756,6 +756,35 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   leaves the faces it replaces by more than two cells, so a plant room or
   parapet taller than that is never lowered away, while relief under it
   (a fraction of a printed layer) may be. Spend faces, not plan resolution.
+  **That bound is a distance to planes, and the two cells are what smooth
+  tower walls need:** halving it everywhere, or for walls only, roughened
+  every tower's walls (Kinzie Station, Miami's Ivy), and refusing
+  extrapolated optimum heights made fidelity worse (Brickell Heights'
+  largest error went from 56 to 106 m). But a wall may wander those two
+  cells at every merge, and a mass only a few times that across is folded
+  into its neighbours: Cinderella Castle came out as one slanted blade
+  although its raster showed six towers. `_spires` marks cells standing
+  more than the admission band (0.28 mm printed, at least 3 m) above four
+  fifths of a ring six cells out, and `collapse(fine=...)` holds edges
+  touching them (or a vertex that absorbed one) to half the bound. A tower,
+  steeple or chimney clears the ring; a bay or fin on a larger mass clears
+  half and a square corner three quarters, so walls and corners are never
+  marked and a cap without such a mass is collapsed byte for byte as before
+  (30 of 43 regression buildings; the rest gained a few percent of faces).
+  Marking by width alone (a grey opening) caught 5–17% of tower cells and
+  roughened walls like the global change. Pinning marked vertices instead
+  was slightly crisper but kept every rooftop spike of a planted parking
+  deck. The half-metre band of `_surface_density` also reads a steep roof
+  as sparse (the castle 2 returns/m² against 10 beside it, so 0.71 m
+  cells), and deliberately reads a noisy one so, which grids it coarser
+  and averages the noise out (`test_noisy_slope_is_not_terraced`). So only
+  a cap that shows spires at the coarser pitch is regridded by
+  `_scatter_density`, the share of half-metre cells holding any return
+  (d returns per m² leave exp(-d/4) empty); every other cap keeps its
+  pitch. Not changed: the rank filter still truncates a spire's last metres
+  (the castle's 54 m tip reads 45 m); that part is one or two cells wide,
+  under 0.1 mm printed. Returns excluded upstream (unclassified,
+  multi-return) would add 2 m to that tip and tree canopy to low roofs.
 - The default path no longer calls the `lidar_surface_*` region, primitive,
   outline or plane-stitching stack, including its compatibility fallbacks.
   Those modules remain as historical helper implementations/tests. Entirely

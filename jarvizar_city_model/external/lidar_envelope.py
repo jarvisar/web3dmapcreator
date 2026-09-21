@@ -43,6 +43,10 @@ MIN_VOTES = 4
 # 4–5 m facets on a curved face (the reference model has about 5 m) and keeps
 # rooftop plant over about a metre tall.
 COLLAPSE_TOLERANCE = 32.
+# A collapsed vertex may leave the faces it replaces by this many cells, and a
+# mass counts as slender up to three times that across; see `_spires`.
+DEVIATION_CELLS = 2
+SPIRE_SHARE = .8
 
 
 def envelope_parameters(scale, density=None):
@@ -57,6 +61,10 @@ def envelope_parameters(scale, density=None):
     0.5 m, while a cell still averages about one return: the collapse makes
     faces cheap, so the grid keeps the detail the survey measured and a
     sparse survey is never gridded finer than it can support.
+
+    The band (0.28 mm printed, never under 3 m) is a layer and a half: a
+    vegetation return that far above the structural envelope is canopy, and a
+    slender mass that far above its surroundings is a tower; see `_spires`.
     """
     if len(scale) != 2 or not all(math.isfinite(s) and s > 0 for s in scale):
         raise ValueError('Invalid LiDAR reconstruction scale')
@@ -131,6 +139,29 @@ class _Raster:
         x = np.arange(self.nx)*self.pitch+self.x0
         y = np.arange(self.ny)*self.pitch+self.y0
         return np.meshgrid(x, y, indexing='ij')
+
+
+def _spires(heights, rise):
+    """Cells of slender masses standing free: `rise` above most of a ring around them.
+
+    The collapse lets a wall wander two cells at every merge. A broad mass
+    never shows that; a tower a few cells across is folded into the towers
+    beside it, and a castle comes out as one slanted blade. A tower, a
+    steeple or a chimney clears nearly the whole ring. A bay or a fin
+    attached to a larger mass clears half of it and a square corner three
+    quarters, so walls and corners are never marked, and a cap without such
+    a mass is collapsed exactly as before.
+    """
+    reach = 3*DEVIATION_CELLS
+    ring = [(dx, dy) for dx in range(-reach-1, reach+2) for dy in range(-reach-1, reach+2)
+            if (reach-.5)**2 <= dx*dx+dy*dy < (reach+.5)**2]
+    span = reach+1
+    nx, ny = heights.shape
+    padded = np.pad(heights, span, mode='edge')
+    below = np.zeros(heights.shape, dtype=np.int32)
+    for dx, dy in ring:
+        below += padded[span+dx:span+dx+nx, span+dy:span+dy+ny] < heights-rise
+    return below >= SPIRE_SHARE*len(ring)
 
 
 def _fill(heights, observed):
@@ -234,6 +265,11 @@ def _component_surface(polygon, samples, pitch, window):
     return _fill(heights, within), raster, observed
 
 
+def _has_spires(polygon, samples, pitch, window, rise):
+    heights, raster, _ = _component_surface(polygon, samples, pitch, window)
+    return bool((_spires(heights, rise) & contains_xy(polygon, *raster.corners())).any())
+
+
 def _clip_to(polygon, shape, corners):
     """Emit the parts of one cap triangle that lie inside the component.
 
@@ -294,7 +330,7 @@ def _snap_to_boundary(vertices, polygon, gap):
     return vertices
 
 
-def _surfaces(polygon, heights, raster, threshold, budget):
+def _surfaces(polygon, heights, raster, threshold, budget, rise):
     """Triangulate the raster over the component, collapse it, and clip it.
 
     Returns the clipped rings, their area and the number of collapsed faces.
@@ -317,9 +353,10 @@ def _surfaces(polygon, heights, raster, threshold, budget):
                             np.where(first[:, None], np.stack((b, c, d), 1), np.stack((a, c, d), 1))))
     # A merged vertex stays within two cells of every face it replaces: the
     # stairs of a wall are half a cell, and a plant room or a parapet taller
-    # than two cells is never lowered away.
+    # than two cells is never lowered away. Slender masses get half of that.
     vertices, faces = collapse(np.column_stack((gx[mask], gy[mask], heights[mask])), faces,
-                               threshold, budget, deviation=2*pitch)
+                               threshold, budget, deviation=DEVIATION_CELLS*pitch,
+                               fine=index[mask & _spires(heights, rise)])
     vertices = _snap_to_boundary(vertices, polygon, MIN_GAP/4)
     rings, area = [], 0.
     for face in faces:
@@ -363,7 +400,7 @@ def _envelope(components, observed, secondary, pitch, window, tolerance, budget,
         if seen.any():
             residuals.append(np.abs(heights[seen]-raw[seen]))
         share = max(1, int(budget*polygon.area/total))
-        part, area, count = _surfaces(polygon, heights, raster, threshold, share)
+        part, area, count = _surfaces(polygon, heights, raster, threshold, share, tolerance)
         if not part or abs(area-polygon.area) > max(.00001, polygon.area*1e-5):
             raise UnsupportedFit('incomplete clipped upper surface')
         if count > share:
@@ -378,7 +415,8 @@ def _surface_density(footprint, returns):
 
     A facade stacks many returns over a small plan area, so a plain count per
     footprint area says how much wall was scanned, not how densely the roof
-    was sampled.
+    was sampled. The half-metre band also reads a noisy roof as sparse, which
+    grids it coarser and averages the noise out.
     """
     inside = returns[contains_xy(footprint, returns[:, 0], returns[:, 1])]
     if len(inside) < 4:
@@ -389,6 +427,23 @@ def _surface_density(footprint, returns):
     near_top = inside[:, 2] >= top[ix, iy]-.5
     counts = np.bincount(ix[near_top]*raster.ny+iy[near_top], minlength=raster.nx*raster.ny)
     return float(np.median(counts[counts > 0]))
+
+
+def _scatter_density(footprint, returns):
+    """Returns per m² read from how many half-metre cells hold any: blind to height.
+
+    A scatter of d returns per m² leaves exp(-d/4) of such cells empty. Cones
+    and turrets spread the returns of a cell over many metres however densely
+    they were scanned, so `_surface_density` reads a castle as a quarter as
+    dense as the flat roofs beside it.
+    """
+    inside = returns[contains_xy(footprint, returns[:, 0], returns[:, 1])]
+    raster = _Raster(footprint.bounds, .5, 0.)
+    within = contains_xy(footprint, *raster.corners())
+    if not len(inside) or not within.any():
+        return None
+    seen = np.isfinite(raster.upper(inside)) & within
+    return -4*math.log(max(1-seen.sum()/within.sum(), 1e-3))
 
 
 def _turn(points, angle, origin):
@@ -442,6 +497,15 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
             footprint = rotate(footprint, -angle, origin=origin, use_radians=True)
             observed, secondary = _turn(observed, -angle, origin), _turn(secondary, -angle, origin)
         components = pieces(footprint)
+        # The band reading grids a steep roof coarser too, where nothing is
+        # noisy, and slender free-standing masses are what a coarse grid
+        # costs: a cap that shows any is gridded as finely as its cells are
+        # filled. Every other cap keeps the pitch the band reading gave it.
+        scatter = _scatter_density(footprint, observed) if pitch > envelope_parameters(scale, 1e9)[0] else None
+        if scatter and envelope_parameters(scale, scatter)[0] < pitch and any(
+                _has_spires(polygon, observed, pitch, window, tolerance) for polygon in components):
+            density = scatter
+            pitch, window, tolerance = envelope_parameters(scale, density)
         budget = facet_budget(pitch)
         # The stairs a wall makes on the grid are the pitch high in plan, so
         # the error that merges them scales with the pitch squared.

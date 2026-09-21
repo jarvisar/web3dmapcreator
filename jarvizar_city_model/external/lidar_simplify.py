@@ -68,7 +68,7 @@ def _optimum(q):
     return x, y, z
 
 
-def collapse(vertices, faces, threshold, budget, deviation=math.inf):
+def collapse(vertices, faces, threshold, budget, deviation=math.inf, fine=()):
     """Return (vertices, faces) with every edge under `threshold` collapsed.
 
     Beyond the threshold, the cheapest edges keep collapsing while the face
@@ -78,6 +78,12 @@ def collapse(vertices, faces, threshold, budget, deviation=math.inf):
     so without this bound such a feature is lowered step by step until it
     is gone. `vertices` is an Nx3 array in metres, `faces` an Mx3 array of
     counter-clockwise triangles in plan.
+
+    The bound is a distance to planes, and a wall's plane says nothing about
+    height: a wall may wander `deviation` sideways at every merge, which a
+    broad mass never shows and which folds a mass only a few times that wide
+    into its neighbours. An edge touching one of the `fine` vertices, or a
+    vertex that has absorbed one, is held to half the bound.
     """
     V = [tuple(map(float, v)) for v in np.asarray(vertices, dtype=float)]
     F = [list(map(int, f)) for f in np.asarray(faces, dtype=np.int64)]
@@ -89,6 +95,7 @@ def collapse(vertices, faces, threshold, budget, deviation=math.inf):
     pairs = np.sort(np.concatenate([np.asarray(faces)[:, k] for k in ((0, 1), (1, 2), (2, 0))]), axis=1)
     unique, counts = np.unique(pairs, axis=0, return_counts=True)
     pinned = set(map(int, unique[counts == 1].ravel()))
+    fine = set(map(int, fine))
     version = [0]*len(V)
     heap = []
 
@@ -114,8 +121,9 @@ def collapse(vertices, faces, threshold, budget, deviation=math.inf):
             best = _optimum(q)
             if best is not None and math.dist(best, mid) <= 2*math.dist(pa, pb)+1.:
                 candidates.append(best)
+        bound = deviation/2 if a in fine or b in fine else deviation
         for cost, position in sorted((max(_error(q, *c), 0.), c) for c in candidates):
-            if all(abs(nx*position[0]+ny*position[1]+nz*position[2]+d) <= deviation
+            if all(abs(nx*position[0]+ny*position[1]+nz*position[2]+d) <= bound
                    for nx, ny, nz, d in planes):
                 heapq.heappush(heap, (cost, (pa[0]-pb[0])**2+(pa[1]-pb[1])**2+(pa[2]-pb[2])**2,
                                       a, b, version[a], version[b], position))
@@ -161,6 +169,8 @@ def collapse(vertices, faces, threshold, budget, deviation=math.inf):
         version[b] = -1
         if b in pinned:
             pinned.add(a)
+        if b in fine:
+            fine.add(a)
         for u in neighbours(a):
             push(a, u)
     kept = np.array([f for f, ok in zip(F, alive) if ok], dtype=np.int64).reshape(-1, 3)

@@ -145,6 +145,71 @@ changed nothing visible. Chase Tower's doubly curved sweep still comes out
 creased because the memoryless optimum extrapolates along tangent planes;
 an error-driven edge-flip pass is the principled next step if that matters.
 
+### Slender towers: a castle as one blade (algorithm 23, 0.25.1)
+
+Cinderella Castle (Magic Kingdom, 857 m², about 2 mm across at the default
+scale) came out as a tent with one slanted spike. The survey was not the
+limit: 11,900 returns inside the outline, 14 per m², up to 54.5 m. Printing
+the raster at each stage and rendering it uncollapsed showed where the
+towers went:
+
+- **The collapse.** The raster held six distinct towers; the collapsed cap
+  one blade. The deviation bound is a distance to planes, and a wall's plane
+  says nothing about height or about how far the wall has already moved: a
+  wall may wander two cells at every merge. A broad mass never shows that; a
+  tower three to six cells across is folded into the towers beside it.
+- **The pitch.** The castle alone among 396 buildings was gridded at 0.71 m
+  (eleven mapped rock surfaces at 0.58 m). `_surface_density` counts returns
+  within half a metre of each 1 m cell's top, and cones and turrets spread a
+  cell's returns over metres, so the castle read 2 per m² beside roofs
+  reading 10 from the same flight lines. Its half-metre cells are 83% filled,
+  more than many buildings gridded at 0.5 m.
+- **The rank filter** lowers the main spire from 51 m (raw cell quantile) to
+  45 m. That part of the cone is one or two cells wide, under 0.1 mm printed,
+  and the filter is what keeps every other roof clean. Left alone.
+- **Returns excluded upstream** (unclassified, multi-return: 29% of the
+  castle's) would raise the raw tip by 2 m and put tree canopy on low roofs
+  (665 low cells of the Contemporary rise over 3 m). Left alone.
+
+What was tried on a 43-building set (Magic Kingdom, Chicago's West Loop,
+downtown Miami; renders and a fidelity measure of the cap against its own
+raster, tolerant of a wall shifted within its cell):
+
+- Halving the deviation everywhere, or for wall planes only, kept the
+  towers but roughened every skyscraper's walls (Kinzie Station, Ivy) and
+  added 20–50% faces. Rejected, as before.
+- Refusing optimum positions outside the height range of the faces they
+  replace (to stop extrapolated blades) made fidelity worse: Brickell
+  Heights' largest error went from 56 to 106 m. Rejected.
+- A two-sided bound (the vertex given up must stay near the new faces) and
+  a bound against the original raster both leave towers under four cells
+  across unprotected, because every cell of such a tower is within reach of
+  its foot; the raster bound also cost 65% more time. Rejected.
+- Marking slender masses by width (what a grey opening removes) caught
+  5–17% of tower cells, bays and fins included, and roughened walls like
+  the global change. Rejected.
+
+Adopted: `_spires` marks cells standing more than the admission band
+(0.28 mm printed, at least 3 m) above four fifths of a ring six cells out. A
+tower, a steeple or a chimney clears the ring; a bay attached to a larger
+mass clears half of it and a square corner three quarters. `collapse` holds
+edges touching a marked vertex, or a vertex that absorbed one, to half the
+deviation. Kinzie Station and most towers mark nothing, and a cap that marks
+nothing is collapsed byte for byte as before: 30 of the 43 buildings; of
+the other 13, the castle apart, none gained more than 14% faces and no wall
+changed visibly. Re-measuring 122 Magic Kingdom records changed 18 of them
+and generated the same 373 LiDAR buildings and 23 rock surfaces with no
+geometry fallbacks. Pinning marked
+vertices instead was slightly crisper on the castle but kept every spike of
+a planted parking deck. The pitch: a blanket occupancy-based density made
+`test_noisy_slope_is_not_terraced` fail, rightly (the half-metre band also
+reads a noisy roof as sparse, and the coarser grid is what averages it out),
+so only a cap that shows spires at its coarser pitch is regridded by
+`_scatter_density` (the share of half-metre cells holding any return; d per
+m² leave exp(-d/4) empty). The castle goes to 0.5 m and 526 faces, its
+towers distinct and vertical; synthetic 2–2.5 m towers that the plain
+collapse cut down by up to 4.5 m keep their heights exactly.
+
 ## Tiers: real walls inside a footprint (algorithm 20, superseded)
 
 Reconstruction algorithm 20; superseded by the edge collapse above. Run **Prepare LiDAR Buildings** with Refresh off,

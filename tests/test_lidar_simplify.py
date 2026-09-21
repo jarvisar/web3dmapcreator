@@ -32,6 +32,17 @@ def block(angle_deg, pitch=.5, size=60, top=60.):
     return np.where((np.abs(u) < 15) & (np.abs(v) < 10), top, 0.)
 
 
+def height(vertices, faces, x, y):
+    """The cap's height over one plan point."""
+    for a, b, c in faces:
+        (x1, y1, z1), (x2, y2, z2), (x3, y3, z3) = vertices[a], vertices[b], vertices[c]
+        det = (y2-y3)*(x1-x3)+(x3-x2)*(y1-y3)
+        u, v = ((y2-y3)*(x-x3)+(x3-x2)*(y-y3))/det, ((y3-y1)*(x-x3)+(x1-x3)*(y-y3))/det
+        if min(u, v, 1-u-v) >= -1e-9:
+            return u*z1+v*z2+(1-u-v)*z3
+    raise AssertionError('point outside the cap')
+
+
 def walls(vertices, faces, tall=30):
     """Azimuth changes between neighbouring wall facets, and their plan widths."""
     tri = vertices[faces]
@@ -106,6 +117,25 @@ class CollapseTests(unittest.TestCase):
         self.assertTrue(np.any(np.abs(z-63.) < .1))
         # The plaza and the roof each collapse to a handful of faces.
         self.assertLess(np.sum(np.abs(collapsed[kept][:, :, 2].max(1)-60) < 1e-9), 60)
+
+    def test_fine_vertices_keep_slender_towers(self):
+        tops = (30., 38., 26.)
+        for width in (4, 5):
+            heights, centres = np.full((61, 41), 10.), []
+            for k, top in enumerate(tops):
+                start = 12+k*(width+3)
+                heights[start:start+width, 18:18+width] = top
+                centres.append(((start+(width-1)/2)*.5, (18+(width-1)/2)*.5))
+            vertices, faces = grid(heights)
+
+            def measured(fine):
+                collapsed, kept = collapse(vertices, faces, 8., 10**6, deviation=1., fine=fine)
+                self.check_cap(collapsed, kept)
+                return [height(collapsed, kept, x, y) for x, y in centres]
+            # A wall may wander the whole bound at every merge, and these
+            # towers are only two bounds across: one of them is cut down.
+            self.assertGreater(np.abs(np.subtract(measured(()), tops)).max(), 2.)
+            np.testing.assert_allclose(measured(np.flatnonzero(heights.ravel() > 20)), tops, atol=.1)
 
     def test_budget_rim_and_determinism(self):
         vertices, faces = grid(np.zeros((21, 21)))

@@ -79,11 +79,41 @@ class UpperEnvelopeTests(unittest.TestCase):
         self.assertAlmostEqual(height_at(record, 22, 12), 32.2, delta=.3)
         self.assertLess(height_contour(record, 1).intersection(box(8, 8, 16, 16)).area, 1e-8)
 
+    def test_slender_towers_keep_their_heights(self):
+        footprint = box(0, 0, 30, 24)
+        towers = [(box(8, 10, 11, 13), 30.), (box(13, 10, 16, 13), 38.), (box(18, 10, 21, 13), 26.)]
+
+        def roof(x, y):
+            z = np.full(len(x), 10.)
+            for tower, top in towers:
+                z[contains_xy(tower, x, y)] = top
+            return z
+        record = self.fit(footprint, self.cloud(footprint, roof))
+        for tower, top in towers:
+            self.assertAlmostEqual(height_at(record, tower.centroid.x, tower.centroid.y), top, delta=.3)
+        self.assertLess(max(height_at(record, x, 11.5) for x in (12, 17)), 11)
+        # Unmarked, their walls wander two cells at every merge and each
+        # tower is cut down by metres.
+        with patch('jarvizar_city_model.external.lidar_envelope._spires',
+                   lambda heights, rise: np.zeros(heights.shape, dtype=bool)):
+            plain = self.fit(footprint, self.cloud(footprint, roof))
+        self.assertLess(height_at(plain, 14.5, 11.5), 36)
+
+    def test_steep_spire_is_gridded_as_finely_as_it_was_scanned(self):
+        footprint = Point(0, 0).buffer(8)
+        record = self.fit(footprint, self.cloud(footprint, lambda x, y: 40-3*np.hypot(x, y)))
+        # Half a metre under a cell's top holds a sixth of a steep cell's
+        # returns, which reads as a sparse survey; the noisy slope below
+        # reads the same way and must stay on its coarser grid.
+        self.assertEqual(record['surface_diagnostics']['envelope_pitch_m'], .5)
+        self.assertGreater(height_at(record, 0, 0), 38)
+
     def test_noisy_slope_is_not_terraced(self):
         footprint = box(0, 0, 40, 30)
         noise = np.random.default_rng(3)
         record = self.fit(footprint, self.cloud(
             footprint, lambda x, y: 20+.4*x+noise.uniform(-2, 2, len(x))))
+        self.assertGreater(record['surface_diagnostics']['envelope_pitch_m'], .5)
         xs = np.arange(4, 36, .25)
         profiles = np.array([[height_at(record, x, y) for x in xs] for y in (7.3, 15.1, 22.7)])
         # A median alone settles into small plateaus here, which the cap
