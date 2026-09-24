@@ -55,7 +55,6 @@ from .planar import (
     buffer_polyline_convex_pieces,
     offset_is_safe,
     oriented_ring,
-    parametric_ribbon,
     signed_area,
 )
 from .road_network import NetworkSettings, tidy_network
@@ -735,19 +734,9 @@ def generate_roads(
         counts.classes[piece.road_class] = counts.classes.get(piece.road_class, 0) + 1
         counts.evidence[piece.evidence] = counts.evidence.get(piece.evidence, 0) + 1
 
-        # Retain ground below mapped decks over shallow basins too. Use the
-        # deck's printed outline, including its width at the shoreline.
-        if ground_support is not None and settings.support_over_water:
-            if offset_is_safe(centerline, half_width_mm):
-                ring, _parameters = parametric_ribbon(centerline, half_width_mm)
-                basin_rings = [ring] if ring else []
-            else:
-                basin_rings = buffer_polyline_convex_pieces(
-                    centerline, half_width_mm, arc_segments=4, epsilon=EPSILON)
-            for ring in basin_rings:
-                if ground_support.overlaps_basin([ring]):
-                    ground_support.footprint([ring], "bridge_causeway")
-
+        # A recessed basin keeps its floor, and piers stand on it (see
+        # foundation_height), so a deck over one needs no causeway: filled to
+        # the bank under the deck, it dammed the pond in front of the water.
         # The causeway is built before the piers are placed, so a pier station
         # over the water finds ground under it.
         if (

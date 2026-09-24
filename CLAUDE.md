@@ -132,7 +132,7 @@ independently:
    with copies of shared materials; record source/transform metadata. Solve and
    validate water polygons and their reusable prism topology before altering terrain.
 3. Flatten terrain under ordinary water to solved levels (cut water both ways,
-   other water down only); construct the
+   its shore raised to at least that level, other water down only); construct the
    through-cut mask from the exact water outlines, then keep mapped deck and
    building footprints that touch the water. Ponds/fountains use a separate finite-depth path.
 4. Build terrain and obtain its actual `bottom_z`. Apply basin recesses,
@@ -341,7 +341,11 @@ colors, overwriting manual palette edits.
   opened diamonds at single wet nodes and gaps at convex shores. Land slabs are
   not grid clipped; `cut_water_land_surfaces` clears them from exact footprints.
 - `data/land.py` uses category allowlists and rejects regional land/scatter
-  polygons whose uncut extent-area exceeds 8× the selection. A marina is a
+  polygons whose uncut extent-area exceeds 8× the selection. Generation also
+  drops an area tagged `bridge`/`man_made=bridge` that a bridge-flagged segment
+  crosses: its deck carries it, and the plaza draped under Ponte Sant'Angelo
+  became a supported dam across the Tiber. One no bridge way crosses (the
+  Polynesian's boardwalk to its over-water bungalows) is kept. A marina is a
   facility extent, not a deck: only physical pier/quay/dam/etc. footprints restore
   ground. The exact cut keeps sub-cell structure footprints; supports still lift
   those under retained water. Never widen water masks to reach them.
@@ -353,19 +357,38 @@ colors, overwriting manual palette edits.
   Exact cap overlap selects supports under built road footprints and building
   footprints, including sub-cell shoreline overlaps and enclosed basins. The
   physical field retains its floors; basin islands and courtyards remain open.
+  A support covers only the part of its footprint that lacks ground (`_trimmed`):
+  the footprint is triangulated with the cut and basin outlines as constraints,
+  and a triangle is kept over cut water, over a basin, or where the grade stands
+  clear of the terrain by more than the embed, plus one edge-ring over the bank
+  whose outer corners sink an embed further. Whole-footprint pedestals were
+  mostly buried and flickered through the terrain in the viewport.
+  Only a cheap window test gates it, and it ignores earlier supports: their
+  outlines are not constraints, so a triangle straddling one was judged by its
+  centre and footways beside it were left over the Chicago River. Overlapping
+  supports simply lie under their own structures.
   Non-bridge foundations have a footprint-wide minimum grade that puts their
-  tops at least 0.2 mm above retained water; buildings and roads use that same
-  grade, preserving their thickness/heights. Cut water is solved no lower than
-  the low tenth of its connected shoreline (bathymetric DEMs put the median on
-  the seabed), its nodes are set to that bank level, and its top sits
-  `CUT_WATER_DROP_MM` below, so the grade over a cut is the bank and shore
-  structures need no pedestals above the terrain. Bridge causeways touching
-  cut water sink by that drop, whole, and stay under the water. Paving alone among land-cover categories retains supports:
-  build these from surviving caps after category priority, and share their grade
-  with later roads/buildings. Never restore forest, green, sand, or rock footprints.
+  tops at least 0.2 mm above retained (uncut, non-basin) water sheets; buildings
+  and roads use that same grade, preserving their thickness/heights. Cut water
+  and basins set no minimum: basin water sits below its lowest bank, and cut
+  water is solved no lower than the low tenth of its connected shoreline
+  (bathymetric DEMs put the median on the seabed), its nodes are set to that
+  bank level, every node of every cell it reaches is raised to at least that
+  level (`raise_cut_shores`), and its top sits `CUT_WATER_DROP_MM` below. The
+  grade over and beside a cut is therefore the bank and shore structures need
+  no pedestals. A basin-driven footprint-wide minimum lifted the whole
+  Quirinale 1.1 mm onto a pedestal from a fountain at its hilltop. Bridge
+  causeways touching cut water sink by that drop, whole, and stay under the
+  water; bridges over basins get none (piers stand on the floor). Paving alone
+  among land-cover categories retains supports over ordinary water: build these
+  from surviving caps after category priority, welded per slab, and share its
+  lifted grade (the lifted vertices', never a slope's highest vertex) with later
+  roads/buildings. Never restore forest, green, sand, or rock footprints.
 - `cut_water_land_surfaces` removes every validated water footprint from all
   land-cover slabs, including forest/green, sand and rock. Paving is preserved
-  on foundations when ground supports are enabled; otherwise it is cut too. It applies
+  over ordinary water on foundations when ground supports are enabled; otherwise
+  it is cut too, and it is always cut from basins (kept, it buried Piazza
+  Navona's fountains under a supported plaza). It applies
   to ordinary water below the terrain-cut threshold as well as recessed
   basins, and retains island holes and full slab thickness outside the cut.
   Water-fill visibility does not control these exclusions. Structure supports
@@ -394,7 +417,7 @@ colors, overwriting manual palette edits.
   use 0.005 mm XY clearance and built road outlines to avoid huge cutter sets
   from refined caps. Elevated bridges retain land beneath them.
 - Trees combine mapped `land` points and deterministic forest scatter, including
-  satellite forest by default. They avoid open water and embed their broad bases
+  satellite forest by default. They avoid open water and recessed basins and embed their broad bases
   directly in the terrain, not raised land/road caps. Trunkless three-tier crowns
   are single closed solids with sloped undersides. Size floors apply independently
   to height and width. A shared spatial clearance check uses varied crown radii

@@ -27,6 +27,7 @@ from ..data.land import (
     MINIMUM_WATER_CUT_AREA_M2,
     SURFACE_CATEGORIES,
     classify_surface,
+    is_bridge_area,
     is_printable_water,
     is_regional_feature,
     is_water_deck,
@@ -34,7 +35,9 @@ from ..data.land import (
     recessed_water_kind,
     surface_priority,
 )
-from .planar import EPSILON, clean_ring, densify_ring, interior_grid_points, ring_bounds, signed_area
+from ..data.geojson import feature_properties
+from .planar import (EPSILON, clean_ring, densify_ring, interior_grid_points, polyline_meets_polygon,
+                     ring_bounds, signed_area)
 from .support import CUT_WATER_DROP_MM
 from .surface_priority import _lattice, _solid, _triangulate, cut_surface_overlaps
 from .water_geometry import projected_water_polygons, valid_water_polygon
@@ -151,12 +154,19 @@ def generate_land_surfaces(
     bounds: Tuple[float, float, float, float] | None = None,
     progress_callback=None,
     ground_support=None,
+    bridge_lines: Sequence[Sequence[Tuple[float, float]]] = (),
 ) -> Dict[str, Any]:
     """Generate one batched slab object per surface category.
 
     *typed_features* pairs each Overture type name with its features, because
     the same class string means different things in ``land``, ``land_use``, and
     ``land_cover``.
+
+    *bridge_lines* are the model-space centerlines of bridge-flagged segments.
+    An area tagged as a bridge that one of them crosses is the surface of that
+    bridge's deck and is left out (see :func:`is_bridge_area`); one no bridge
+    way crosses, a boardwalk out to over-water bungalows, is the only record
+    of its structure and stays.
     """
     settings = settings or SurfaceSettings()
     builders: Dict[str, MeshBuilder] = {}
@@ -169,6 +179,13 @@ def generate_land_surfaces(
     counts: Dict[str, int] = {}
     rejected = 0
     regional = 0
+    bridge_decks = 0
+    bridge_lines = [(ring_bounds(line), line) for line in bridge_lines if len(line) >= 2]
+
+    def carried_by_bridge(rings):
+        box = ring_bounds(rings[0])
+        return any(b[0] <= box[2] and box[0] <= b[2] and b[1] <= box[3] and box[1] <= b[3]
+                   and polyline_meets_polygon(line, rings) for b, line in bridge_lines)
 
     classified: List[Tuple[int, str, Dict[str, Any], str]] = []
     for feature_type, features in typed_features:
@@ -202,8 +219,13 @@ def generate_land_surfaces(
     for index, (_priority, category, feature, feature_type) in enumerate(classified):
         builder = builders.setdefault(category, MeshBuilder(f"SURFACE_{category.upper()}"))
         added = False
+        bridge_area = bridge_lines and is_bridge_area(feature_properties(feature))
         for rings in projected_polygon_rings(feature.get("geometry") or {}, transform):
             if _ring_area(rings[0]) < settings.minimum_area_mm2:
+                continue
+            if bridge_area and carried_by_bridge(rings):
+                bridge_decks += 1
+                added = True
                 continue
             keep_paving = category == 'paved' and ground_support is not None
             # Slabs are draped whole; cut_water_land_surfaces later removes
@@ -239,6 +261,7 @@ def generate_land_surfaces(
         "land_surface_categories": dict(sorted(counts.items())),
         "land_surfaces_rejected": rejected,
         "land_surfaces_regional_skipped": regional,
+        "land_surfaces_bridge_decks_skipped": bridge_decks,
         **overlap_counts,
     }
 
@@ -456,13 +479,19 @@ def flatten_terrain_under_water(heightfield, bodies: Sequence[WaterBody]) -> int
 
     Water cut out of the terrain is set to its level both ways, lowest level
     winning where bodies overlap; its nodes only shape the shoreline and the
-    ground under structures, and both should be the bank.  Other water is
-    carved down only, so a slab over it cannot be pierced.
+    ground under structures, and both should be the bank.  The shore around
+    it is kept at or above that level, so no cell it reaches dips below the
+    water.  Other water is carved down only, so a slab over it cannot be
+    pierced.
     """
     ordinary = [body for body in bodies if not body.basin_kind]
     changed = 0
-    for body in sorted((body for body in ordinary if body.cut), key=lambda body: -body.bed_mm):
+    cut = [body for body in ordinary if body.cut]
+    for body in sorted(cut, key=lambda body: -body.bed_mm):
         changed += heightfield.flatten_inside(body.rings, body.bed_mm, raise_nodes=True)
+    if cut:
+        changed += heightfield.raise_cut_shores(
+            cut, [body for body in bodies if not body.cut])
     for body in ordinary:
         if not body.cut:
             changed += heightfield.flatten_inside(body.rings, body.bed_mm)

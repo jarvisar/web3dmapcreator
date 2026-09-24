@@ -18,7 +18,7 @@ import math
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from ..data.terrain import TerrainSampler
-from .planar import point_in_polygon, ring_bounds
+from .planar import densify_ring, point_in_polygon, ring_bounds
 from .watermask import WaterMask, _line_crossings
 
 Ring = Sequence[Tuple[float, float]]
@@ -293,6 +293,14 @@ class ModelHeightField:
         """Exact test: cut water below, and nothing put back to stand on."""
         return self.in_cut_water(x, y) and not self.is_supported(x, y)
 
+    def in_basin(self, x: float, y: float) -> bool:
+        """Whether a recessed basin floor lies under this point."""
+        return any(
+            bounds[0] <= x <= bounds[2] and bounds[1] <= y <= bounds[3]
+            and point_in_polygon((x, y), rings)
+            for bounds, rings, _floor in self.basins
+        )
+
     def has_ground(self, x: float, y: float) -> bool:
         """Whether a pier or foundation founded here would reach something.
 
@@ -369,6 +377,50 @@ class ModelHeightField:
             if bounds[0] <= x <= bounds[2] and bounds[1] <= y <= bounds[3] and point_in_polygon((x, y), rings):
                 height = min(height, floor)
         return height
+
+    def raise_cut_shores(self, bodies, others=()) -> int:
+        """Keep the ground around cut water at or above its level. Returns nodes raised.
+
+        The water is solved no lower than the low tenth of its shore, so a
+        tenth of the shore nodes, and more where smoothing averaged a seabed
+        into the bank, stand below it.  Every cell the water reaches then
+        interpolates below the level, the water plug stands above the printed
+        bank beside it, and anything founded across the shore sits under the
+        water.  Structures used to be lifted over a whole footprint to hide
+        that, standing proud of the terrain everywhere else.  Raising those
+        few nodes instead keeps the grade over and beside a cut at the bank
+        level for everything at once.  Nodes under the water are left as the
+        flattening set them; nodes under the *others* are not touched.
+        """
+        columns, rows = self.columns, self.rows
+        inside = [(body, set(self.nodes_inside(body.rings))) for body in bodies]
+        wet = set().union(*(nodes for _body, nodes in inside)) if inside else set()
+        for other in others:
+            wet.update(self.nodes_inside(other.rings))
+        step = min(self.step_x, self.step_y) * 0.5
+        raised = {}
+        for body, nodes in inside:
+            near = set()
+            for node in nodes:
+                row, column = divmod(node, columns)
+                for r in (row - 1, row, row + 1):
+                    for c in (column - 1, column, column + 1):
+                        if 0 <= r < rows and 0 <= c < columns:
+                            near.add(r * columns + c)
+            # A channel narrower than a cell holds no node; its outline
+            # still reaches every corner of the cells it runs through.
+            for ring in body.rings:
+                for x, y in densify_ring(ring, step):
+                    c = min(max(int(math.floor((x - self.min_x) / self.step_x)), 0), columns - 2)
+                    r = min(max(int(math.floor((y - self.min_y) / self.step_y)), 0), rows - 2)
+                    base = r * columns + c
+                    near.update((base, base + 1, base + columns, base + columns + 1))
+            for node in near - wet:
+                if self.values[node] < body.bed_mm and raised.get(node, -math.inf) < body.bed_mm:
+                    raised[node] = body.bed_mm
+        for node, level in raised.items():
+            self.values[node] = level
+        return len(raised)
 
     def register_basin(self, rings, floor_mm):
         """Share the actual recessed floor with later ground-aligned geometry."""

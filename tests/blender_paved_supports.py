@@ -9,7 +9,10 @@ sys.path.insert(0, str(ROOT / 'tests'))
 from blender_basin_support import Transform, polygon, field, rectangle, collection, tree, top, assert_closed
 from jarvizar_city_model.geometry.support import SupportBuilder
 from jarvizar_city_model.geometry.heightfield import ModelHeightField
-from jarvizar_city_model.geometry.surfaces import SurfaceSettings, solve_water_bodies, generate_land_surfaces, cut_water_from_terrain
+from jarvizar_city_model.geometry.surfaces import (
+    SurfaceSettings, solve_water_bodies, generate_land_surfaces, cut_water_from_terrain,
+    flatten_terrain_under_water,
+)
 from jarvizar_city_model.geometry.basins import cut_water_land_surfaces, recess_terrain_basins
 from jarvizar_city_model.geometry.dem_terrain import generate_terrain_solid
 from jarvizar_city_model.geometry.roads import generate_roads, RoadSettings
@@ -27,6 +30,8 @@ def test_paving_and_natural_cover(kind, enabled):
         generate_terrain_solid(heights, 1.3, terrain)
         recess_terrain_basins(heights, bodies, terrain, 1.3)
     else:
+        # As generation does: the terrain under cut water is set to its level.
+        flatten_terrain_under_water(heights, bodies)
         cut_water_from_terrain(heights, bodies)
     supports = SupportBuilder(heights, -2, water_bodies=bodies) if enabled else None
     surfaces = collection('surfaces')
@@ -42,7 +47,9 @@ def test_paving_and_natural_cover(kind, enabled):
         assert_closed(obj)
         if obj != paving:
             assert all(not (2.001 < v.co.x < 17.999 and 2.001 < v.co.y < 17.999) for v in obj.data.vertices), obj.name
-    if not enabled:
+    # A pond or fountain is set into the paving, never under a deck: the
+    # plaza is cut around it even where supports keep paving over a river.
+    if not enabled or kind == 'pond':
         assert top(tree(paving), 3,3) is None
         return
     supports.support_paved_surfaces(surfaces, .4, .15)

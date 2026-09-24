@@ -8,7 +8,9 @@ sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(ROOT/'tests'))
 from blender_basin_support import Transform, polygon, road, field, collection, rectangle, tree, top, assert_closed, meshes
 from jarvizar_city_model.geometry.support import SupportBuilder, SUPPORT_WATER_CLEARANCE_MM
-from jarvizar_city_model.geometry.surfaces import solve_water_bodies, cut_water_from_terrain
+from jarvizar_city_model.geometry.surfaces import (
+    solve_water_bodies, cut_water_from_terrain, flatten_terrain_under_water,
+)
 from jarvizar_city_model.geometry.building_generation import generate_buildings
 from jarvizar_city_model.geometry.roads import generate_roads, RoadSettings
 
@@ -24,6 +26,9 @@ def test_support_kinds_and_bridge_identity():
         for with_water in (False,True):
             heights=field()
             bodies=water(heights)
+            # As generation does: cut water's terrain and shore are set to its
+            # level, which is what keeps a foundation over it above the water.
+            flatten_terrain_under_water(heights,bodies)
             cut_water_from_terrain(heights,bodies)
             support=SupportBuilder(heights,-1.3,water_bodies=bodies if with_water else ())
             assert support.footprint([rectangle(5,5,7,7)],kind)
@@ -40,6 +45,7 @@ def test_support_kinds_and_bridge_identity():
     # visible foundation at the same outline.
     heights=field()
     bodies=water(heights)
+    flatten_terrain_under_water(heights,bodies)
     cut_water_from_terrain(heights,bodies)
     support=SupportBuilder(heights,-1.3,water_bodies=bodies)
     rings=[rectangle(5,5,7,7)]
@@ -51,7 +57,11 @@ def test_support_kinds_and_bridge_identity():
 def test_raised_structures_remain_seated_and_keep_heights():
     heights=field()
     bodies=water(heights)
-    bodies[0].top_mm=2  # Water well above the original terrain: no buried road/roof.
+    # Retained water well above the original terrain: no buried road/roof.
+    # Only a sheet laid on kept terrain lifts foundations; cut water sits
+    # under its bank.
+    bodies[0].top_mm=2
+    bodies[0].cut=False
     supports=SupportBuilder(heights,-1.3,water_bodies=bodies)
     parent=polygon('parent',[rectangle(5,5,9,9)],height=20,has_parts=True)
     part=polygon('part',[rectangle(7,5,9,7)],height=30,building_id='parent')

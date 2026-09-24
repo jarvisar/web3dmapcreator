@@ -134,10 +134,15 @@ def test_bridge_over_basin_and_support_toggle():
             assert_closed(obj)
         built_decks.append(meshes(decks))
     assert built_decks[0] == built_decks[1], 'Basin changed solved bridge geometry'
-    assert support.counts['bridge_causeway'] > 0
+    # The basin keeps its floor for the piers: a causeway filled to the bank
+    # under the deck would dam the pond in front of its water.
+    assert 'bridge_causeway' not in support.counts, support.counts
+    # Only the surface underpass crossing the basin at x=10 keeps its ground.
     obj = support.build(collection('basin_bridge_ground'))
+    assert obj is not None and set(support.counts) == {'road'}, support.counts
     assert_closed(obj)
-    assert abs(top(tree(obj),12,12) - (original.height_mm(12,12)-.05)) < 1e-4
+    assert top(tree(obj),12.5,12) is None, 'Basin dammed under its bridge'
+    assert abs(top(tree(obj),10,12) - (original.height_mm(10,12)-.05)) < 1e-4
     disabled = SupportBuilder(physical,-2.3)
     target = collection('support_disabled_road')
     generate_roads([road('crossing',[(2,12),(18,12)])],Transform(),physical,target,

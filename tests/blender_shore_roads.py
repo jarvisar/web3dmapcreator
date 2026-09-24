@@ -79,7 +79,9 @@ def test_road_crossing_irregular_shore_has_no_height_steps_or_support_gaps():
         road_top = top(road_tree, x, y)
         # Preserve the real slope instead of flattening the waterfront road.
         assert abs(road_top-(field.height_mm(x, y)+.6)) < .015, (x, y, road_top)
-        assert road_top-.75 < top(support_tree, x, y), ('Gap under road', x, y)
+        # Over the cut the support is the ground; on the bank, the terrain.
+        ground = top(support_tree, x, y) if field.in_cut_water(x, y) else field.height_mm(x, y)
+        assert ground is not None and road_top-.75 < ground, ('Gap under road', x, y)
     assert wet == {False, True}, 'Fixture must cross both sides of the shore'
     assert top(road_tree, 10.5, 17) > top(road_tree, 10.5, 3)+.5
     assert top(support_tree, 15, 10) is None, 'Unrelated open water filled'
@@ -129,8 +131,9 @@ def test_bathymetric_water_is_levelled_to_its_shore():
     assert min(field.height_mm(9+i*.05, 3) for i in range(21)) >= 3.02-1e-9, 'Shore wedge'
 
     support = SupportBuilder(field, -1.3, water_bodies=bodies)
-    # Kept ground already stands at the foundation grade: no second solid.
-    assert abs(support.minimum_ground([rectangle(12, 7.5, 14, 9.5)], 'building')-3.02) < 1e-9
+    # Cut water sits below a bank held at its level: the grade over it needs
+    # no floor, and kept ground already stands at it: no second solid.
+    assert support.minimum_ground([rectangle(12, 7.5, 14, 9.5)], 'building') is None
     assert not support.footprint([rectangle(12, 7.5, 14, 9.5)], 'building')
     assert support.footprint([rectangle(16, 4, 17, 6)], 'bridge_causeway')
     obj = make_roads(field, [(6, 12), (14, 12)], support)

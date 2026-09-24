@@ -161,6 +161,25 @@ def point_in_polygon(point: Point, rings: Sequence[Sequence[Point]]) -> bool:
     return not any(point_in_ring(point, hole) for hole in rings[1:])
 
 
+def polyline_meets_polygon(line: Sequence[Point], rings: Sequence[Sequence[Point]]) -> bool:
+    """Whether an open polyline has a vertex inside a polygon or crosses its outline."""
+    if len(line) < 1 or not rings or len(rings[0]) < 3:
+        return False
+    if any(point_in_polygon(point, rings) for point in line):
+        return True
+
+    def side(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    for p, q in zip(line, line[1:]):
+        for ring in rings:
+            for a, b in zip(ring, list(ring[1:]) + [ring[0]]):
+                if (side(p, q, a) > 0) != (side(p, q, b) > 0) and \
+                        (side(a, b, p) > 0) != (side(a, b, q) > 0):
+                    return True
+    return False
+
+
 def densify_ring(points: Sequence[Point], maximum_spacing: float) -> List[Point]:
     """Insert vertices so no ring edge is longer than *maximum_spacing*.
 

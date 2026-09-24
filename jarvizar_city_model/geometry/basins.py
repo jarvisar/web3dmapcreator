@@ -270,20 +270,29 @@ def cut_water_land_surfaces(collection, bodies, thickness, *, preserve_paved=Fal
     islands preserved. Apply to both recessed basins and ordinary water,
     regardless of terrain-cut thresholds or water-fill visibility. Removing
     the full slab thickness prevents buried fragments reappearing at banks.
-    Supported paving can be retained; callers must build its foundations.
+    Supported paving can be retained over ordinary water; callers must build
+    its foundations. A basin is a fountain or pond set into the paving around
+    it, never a deck, so paving is cut from it like every other cover: kept,
+    it buried Piazza Navona's fountains under a supported plaza.
     Structure supports, roads and buildings have separate ownership.
     """
     if not bodies:
         return {"land_surface_water_cuts": 0}
     cutters = [_cutter(ring, EPSILON, hole=index > 0)
                for body in bodies for index, ring in enumerate(body.rings)]
+    basin_cutters = [_cutter(ring, EPSILON, hole=index > 0)
+                     for body in bodies if body.basin_kind
+                     for index, ring in enumerate(body.rings)]
     changed = 0
     for obj in list(collection.objects):
         if obj.type != 'MESH' or obj.get('feature_type') != 'land_surface':
             continue
+        own = cutters
         if preserve_paved and obj.get('surface_category') == 'paved':
-            continue
-        removed, _shells = _rebuild_surface(obj, cutters, thickness)
+            own = basin_cutters
+            if not own:
+                continue
+        removed, _shells = _rebuild_surface(obj, own, thickness)
         changed += removed > 1e-8
     counts = {"land_surface_water_cuts": changed}
     drop = beach_rise_mm - BEACH_WATERLINE_RISE_MM

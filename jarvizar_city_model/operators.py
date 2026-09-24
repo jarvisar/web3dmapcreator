@@ -33,8 +33,10 @@ from .data.dem import DEMTerrain, ElevationGrid, ElevationGridError
 from .data.lidar import request_signature, load_measurements, prepare_lidar, LidarPreparation
 from .external.lidar_reuse import reusable_prepared, summarize_prepared
 from .external.lidar_offer import approved_offers, offer_details, offer_summary
-from .data.geojson import load_feature_collection, polygon_features, first_osm_id, feature_id
-from .data.land import recessed_water_kind
+from .data.geojson import (
+    load_feature_collection, polygon_features, first_osm_id, feature_id, feature_properties,
+)
+from .data.land import has_bridge_flag, recessed_water_kind
 from .config import preferred_python_path, storage_limits
 from .data.overture import (
     OvertureDownloadError,
@@ -834,12 +836,24 @@ class JARVIZAR_OT_generate_model(Operator):
                     terrain_bottom_mm,
                     drape_spacing_mm=surface_settings.drape_spacing_mm,
                     water_bodies=water_bodies,
+                    embed_mm=surface_settings.surface_embed_mm,
                 )
                 for rings in heightfield.restored_footprints:
                     ground_support.footprint(rings, "mapped_deck")
             progress(0.10, "Building land surfaces")
 
             if settings.generate_land_surfaces:
+                # A bridge way crossing a bridge-tagged plaza is its deck.
+                bridge_lines = []
+                for feature in _load_features(bundle, "segment"):
+                    geometry = feature.get("geometry") or {}
+                    lines = ([geometry.get("coordinates") or []] if geometry.get("type") == "LineString"
+                             else geometry.get("coordinates") or [] if geometry.get("type") == "MultiLineString"
+                             else [])
+                    if lines and has_bridge_flag(feature_properties(feature)):
+                        bridge_lines.extend(
+                            [transform.geographic_to_model(point[0], point[1], 0.0)[:2] for point in line]
+                            for line in lines)
                 counts.update(
                     generate_land_surfaces(
                         [
@@ -855,6 +869,7 @@ class JARVIZAR_OT_generate_model(Operator):
                         bounds=bounds.as_tuple(),
                         progress_callback=lambda f: progress(0.10 + f * 0.10),
                         ground_support=ground_support,
+                        bridge_lines=bridge_lines,
                     )
                 )
             progress(0.20, "Clearing land surfaces from water")

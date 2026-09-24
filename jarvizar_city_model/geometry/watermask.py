@@ -293,6 +293,30 @@ class WaterMask:
             return True
         return self.cell_wet_corners(x, y) > 0
 
+    def outline_edges(self, bounds, water_only: bool = False) -> List[Tuple[Point, Point]]:
+        """Every water and kept-ground outline edge that can meet a box, once.
+
+        A caller that triangulates with these as constraints gets triangles
+        wholly on one side of the cut, so one point of each classifies all
+        of it, even across a channel narrower than the triangle.
+        """
+        left, low, right, high = bounds
+        first = max(0, int(math.floor((low - self.min_y) / self.step_y)))
+        last = min(self.rows - 2, int(math.floor((high - self.min_y) / self.step_y)))
+        seen = set()
+        edges = []
+        for band in range(first, last + 1):
+            for edge in self._bands.get(band, ()):
+                polygon, ax, ay, bx, by = edge
+                if water_only and not self._is_water[polygon]:
+                    continue
+                if (edge in seen or max(ax, bx) < left or min(ax, bx) > right
+                        or max(ay, by) < low or min(ay, by) > high):
+                    continue
+                seen.add(edge)
+                edges.append(((ax, ay), (bx, by)))
+        return edges
+
     def touches_water(self, rings: Sequence[Ring]) -> bool:
         """Whether any water lies inside a polygon's grid window."""
         usable = [ring for ring in rings if len(ring) >= 3]

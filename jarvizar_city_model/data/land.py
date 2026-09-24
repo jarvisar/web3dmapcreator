@@ -264,6 +264,28 @@ def _water_tags(properties):
     return {str(key).strip().lower(): str(value).strip().lower() for key, value in tags.items()}
 
 
+def is_bridge_area(properties: Mapping[str, Any]) -> bool:
+    """Whether a mapped area is the surface of a bridge, not ground.
+
+    Pedestrian bridges are often mapped as plazas too (``bridge=yes``,
+    ``area:highway``).  Where a bridge way crosses one, its deck carries the
+    bridge, and the area draped as a slab and supported over cut water was a
+    second, solid dam across the river under it: Ponte Sant'Angelo in Rome.
+    """
+    tags = _water_tags(properties)
+    return tags.get("bridge", "no") not in ("", "no") or tags.get("man_made") == "bridge"
+
+
+def has_bridge_flag(properties: Mapping[str, Any]) -> bool:
+    """Whether any stretch of a transportation segment is flagged a bridge."""
+    for key in ("road_flags", "rail_flags"):
+        for rule in properties.get(key) or ():
+            values = rule.get("values") if isinstance(rule, Mapping) else None
+            if values and "is_bridge" in values:
+                return True
+    return False
+
+
 def is_untyped_water(feature: Mapping[str, Any]) -> bool:
     """Generic polygonal water eligible for a size-checked recess fallback."""
     if (feature.get('geometry') or {}).get('type') not in {'Polygon', 'MultiPolygon'}:

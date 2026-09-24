@@ -141,22 +141,20 @@ def test_necessary_support_drapes_its_interior_and_keeps_its_hole():
     assert_closed(support_obj)
     support_tree = tree(support_obj)
 
-    # These cap-interior probes lie at least one default 1.5 mm drape step
-    # inside the flat trough. They can be compared with the actual mesh to
-    # float32 tolerance without assuming that bilinear grid sampling exactly
-    # matches Blender's triangles along the sloping transition cells.
-    for x in (9.6, 10.2, 10.4):
-        for y in (9.6, 10.2, 10.4):
-            land_z = top(terrain_tree, x, y)
-            support_z = top(support_tree, x, y)
-            assert land_z is not None and support_z is not None
-            assert abs(support_z - (land_z - 0.05)) < 1.0e-4, (
-                "Support cap spans the terrain depression", x, y, support_z, land_z,
-            )
-    # Its wet end remains a real foundation, sharing the terrain's underside.
+    # The dry trough and the rest of the dry footprint already stand on the
+    # terrain: a pedestal there would only be buried in it, and a cap spanning
+    # the trough would stand above it. Neither is built.
+    for x in (5.0, 9.6, 10.2, 10.4, 12.0):
+        for y in (9.6, 10.2, 10.4, 15.0):
+            assert top(terrain_tree, x, y) is not None
+            assert top(support_tree, x, y) is None, ("Buried pedestal", x, y)
+    # Its wet end remains a real foundation, sharing the terrain's underside,
+    # and reaches a little way over the bank so it overlaps the cut wall.
     assert top(terrain_tree, 16.1, 10.2) is None
     assert abs(top(support_tree, 16.1, 10.2) + 0.05) < 1.0e-4
     assert heightfield.is_supported(16.1, 10.2)
+    assert top(support_tree, 14.2, 10.2) is not None, "Support stops at the cut wall"
+    assert top(support_tree, 14.2, 10.2) < top(terrain_tree, 14.2, 10.2) - 0.05
     assert top(support_tree, 6.3, 6.4) is None, "Support filled its mapped hole"
     assert not heightfield.is_supported(6.3, 6.4)
     assert abs(min(vertex.co.z for vertex in support_obj.data.vertices) - bottom) < 1.0e-4

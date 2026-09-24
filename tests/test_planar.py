@@ -20,6 +20,7 @@ from jarvizar_city_model.geometry.planar import (
     parametric_ribbon,
     point_in_polygon,
     point_in_ring,
+    polyline_meets_polygon,
     refine_triangles,
     ring_bounds,
     signed_area,
@@ -100,6 +101,24 @@ class ContainmentTests(unittest.TestCase):
 
     def test_empty_polygon_contains_nothing(self):
         self.assertFalse(point_in_polygon((0, 0), []))
+
+
+class PolylinePolygonTests(unittest.TestCase):
+    square = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]
+    hole = [(1.0, 1.0), (1.0, 3.0), (3.0, 3.0), (3.0, 1.0)]
+
+    def test_a_vertex_inside_meets(self):
+        self.assertTrue(polyline_meets_polygon([(2.0, 0.5), (9.0, 9.0)], [self.square]))
+
+    def test_a_line_crossing_without_a_vertex_inside_meets(self):
+        self.assertTrue(polyline_meets_polygon([(-1.0, 2.0), (5.0, 2.0)], [self.square]))
+
+    def test_a_line_passing_by_does_not(self):
+        self.assertFalse(polyline_meets_polygon([(-1.0, 5.0), (5.0, 6.0)], [self.square]))
+
+    def test_a_line_wholly_in_a_hole_does_not(self):
+        self.assertFalse(polyline_meets_polygon([(1.5, 2.0), (2.5, 2.0)], [self.square, self.hole]))
+        self.assertTrue(polyline_meets_polygon([(1.5, 2.0), (3.5, 2.0)], [self.square, self.hole]))
 
 
 class InteriorSamplingTests(unittest.TestCase):

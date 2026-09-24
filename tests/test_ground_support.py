@@ -99,12 +99,62 @@ class VoidQueryTests(unittest.TestCase):
         self.assertAlmostEqual(field.ground_height_mm(5.0, 5.0), 2.0)
 
 
+class _Body:
+    def __init__(self, rings, bed_mm):
+        self.rings, self.bed_mm = rings, bed_mm
+
+
+class ShoreTests(unittest.TestCase):
+    def test_every_cell_the_water_reaches_stands_at_or_above_its_level(self):
+        # A bank sloping down to the east, below the water's level beside it.
+        field = ModelHeightField(0.0, 0.0, 10.0, 10.0, 11, 11,
+                                 [3.0 - 0.3 * column for _row in range(11) for column in range(11)])
+        lake = _Body([[(6.5, -1.0), (11.0, -1.0), (11.0, 11.0), (6.5, 11.0)]], 2.0)
+        field.flatten_inside(lake.rings, lake.bed_mm, raise_nodes=True)
+        raised = field.raise_cut_shores([lake])
+        # Column 6 borders the water: 1.2 mm raised to 2.0. Column 5 does not.
+        self.assertEqual(raised, 11)
+        self.assertAlmostEqual(field.height_mm(6.0, 5.0), 2.0)
+        self.assertAlmostEqual(field.height_mm(5.0, 5.0), 1.5)
+        self.assertGreaterEqual(min(field.height_mm(6.0 + 0.1 * i, 5.0) for i in range(41)), 2.0)
+
+    def test_a_channel_between_nodes_raises_the_cells_it_crosses(self):
+        field = ModelHeightField(0.0, 0.0, 10.0, 10.0, 11, 11, [1.0] * 121)
+        channel = _Body([[(4.2, -1.0), (4.7, -1.0), (4.7, 11.0), (4.2, 11.0)]], 2.0)
+        field.raise_cut_shores([channel])
+        self.assertAlmostEqual(field.height_mm(4.45, 5.0), 2.0)
+        self.assertAlmostEqual(field.height_mm(2.0, 5.0), 1.0)
+
+    def test_other_water_and_higher_banks_are_left_alone(self):
+        field = ModelHeightField(0.0, 0.0, 10.0, 10.0, 11, 11,
+                                 [5.0 if column <= 3 else 1.0 for _row in range(11) for column in range(11)])
+        lake = _Body([[(3.5, -1.0), (6.5, -1.0), (6.5, 11.0), (3.5, 11.0)]], 2.0)
+        pond = _Body([[(6.8, -1.0), (8.5, -1.0), (8.5, 11.0), (6.8, 11.0)]], 0.5)
+        field.raise_cut_shores([lake], [pond])
+        self.assertAlmostEqual(field.height_mm(2.0, 5.0), 5.0)
+        self.assertAlmostEqual(field.height_mm(3.0, 5.0), 5.0)
+        self.assertAlmostEqual(field.height_mm(8.0, 5.0), 1.0, msg="pond nodes untouched")
+
+
 class MaskHelperTests(unittest.TestCase):
     def test_touches_water_looks_only_at_the_polygon_window(self):
         mask = WaterMask(11, 11, 0.0, 0.0, 1.0, 1.0)
         mask.add_polygon([[(2.5, 2.5), (4.5, 2.5), (4.5, 4.5), (2.5, 4.5)]])
         self.assertTrue(mask.touches_water([[(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)]]))
         self.assertFalse(mask.touches_water([[(7.5, 7.5), (9.5, 7.5), (9.5, 9.5), (7.5, 9.5)]]))
+
+    def test_outline_edges_near_a_box(self):
+        mask = WaterMask(11, 11, 0.0, 0.0, 1.0, 1.0)
+        mask.add_polygon([[(2.5, 2.5), (4.5, 2.5), (4.5, 4.5), (2.5, 4.5)]])
+        mask.remove_polygon([[(4.0, 3.0), (6.0, 3.0), (6.0, 4.0), (4.0, 4.0)]])
+        box = (4.2, 2.0, 5.0, 5.0)
+        near = mask.outline_edges(box)
+        water = {((2.5, 2.5), (4.5, 2.5)), ((4.5, 2.5), (4.5, 4.5)), ((4.5, 4.5), (2.5, 4.5))}
+        ground = {((4.0, 3.0), (6.0, 3.0)), ((6.0, 4.0), (4.0, 4.0))}
+        self.assertEqual(len(near), len(set(near)), "each edge once")
+        self.assertEqual(set(near), water | ground)
+        self.assertEqual(set(mask.outline_edges(box, water_only=True)), water)
+        self.assertEqual(mask.outline_edges((8.0, 8.0, 9.0, 9.0)), [])
 
 
 class RailFlagTests(unittest.TestCase):

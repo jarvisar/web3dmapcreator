@@ -182,7 +182,9 @@ def generate_trees(
     model_bounds = transform.model_bounds
     placements: List[Tuple[float, float, float]] = []
     # A tree standing in a cut-out river would float at the level of a bed
-    # that is no longer printed, so the water is simply not planted.
+    # that is no longer printed, and one in a recessed pond would stand in its
+    # water, so neither is planted.
+    in_basin = getattr(heightfield, "in_basin", None)
     skipped_over_water = 0
     skipped_crowded = 0
     skipped_roads = 0
@@ -195,7 +197,7 @@ def generate_trees(
         nonlocal skipped_over_water, skipped_crowded, skipped_roads
         if len(placements) >= settings.maximum_trees:
             return False
-        if heightfield.over_open_water(x, y):
+        if heightfield.over_open_water(x, y) or (in_basin is not None and in_basin(x, y)):
             skipped_over_water += 1
             return False
         radius = canopy_radius * _tree_scale(size, canopy_radius, tree_height, settings)

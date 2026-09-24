@@ -14,6 +14,8 @@ from jarvizar_city_model.data.land import (
     classify_surface,
     extent_ratio,
     geometry_extent,
+    has_bridge_flag,
+    is_bridge_area,
     is_printable_water,
     is_regional_feature,
     is_tree_point,
@@ -62,6 +64,25 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(
             classify_surface("land_use", polygon(0, 0, 1, 1, **{"class": "pedestrian"})), PAVED
         )
+
+    def test_bridge_areas_are_recognised(self):
+        # Ponte Sant'Angelo is mapped as a pedestrian area on bridge=yes. It
+        # stays a paved surface; generation drops it where a bridge way
+        # crosses it, and keeps a boardwalk no bridge way crosses.
+        bridge = polygon(0, 0, 1, 1, subtype="pedestrian", source_tags=[
+            ["area", "yes"], ["bridge", "yes"], ["highway", "pedestrian"]], **{"class": "pedestrian"})
+        self.assertTrue(is_bridge_area(bridge["properties"]))
+        self.assertEqual(classify_surface("land_use", bridge), PAVED)
+        self.assertTrue(is_bridge_area({"source_tags": {"bridge": "viaduct"}}))
+        self.assertTrue(is_bridge_area({"source_tags": [["man_made", "bridge"]]}))
+        self.assertFalse(is_bridge_area({"source_tags": [["bridge", "no"]]}))
+        self.assertFalse(is_bridge_area({"class": "pedestrian"}))
+
+    def test_bridge_flags_on_segments(self):
+        self.assertTrue(has_bridge_flag({"road_flags": [{"values": ["is_bridge"], "between": [0, .5]}]}))
+        self.assertTrue(has_bridge_flag({"rail_flags": [{"values": ["is_bridge"], "between": None}]}))
+        self.assertFalse(has_bridge_flag({"road_flags": [{"values": ["is_tunnel"], "between": None}]}))
+        self.assertFalse(has_bridge_flag({"road_flags": None}))
 
     def test_sand_and_beach_are_sand(self):
         self.assertEqual(classify_surface("land", polygon(0, 0, 1, 1, **{"class": "sand"})), SAND)
