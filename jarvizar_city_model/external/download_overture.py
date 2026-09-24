@@ -19,21 +19,77 @@ def _empty_feature_collection(path: Path) -> None:
     )
 
 
+_STAC_INDEXES = {}
+
+
+def _stac_index(release):
+    import io
+    from urllib.request import urlopen
+
+    import pyarrow.parquet as pq
+
+    if release not in _STAC_INDEXES:
+        url = f"https://stac.overturemaps.org/{release}/collections.parquet"
+        with urlopen(url, timeout=120) as response:
+            table = pq.read_table(io.BytesIO(response.read()), columns=["assets", "bbox"])
+        _STAC_INDEXES[release] = table.to_pylist()
+    return _STAC_INDEXES[release]
+
+
+def _intersecting_files(feature_type, bbox, release):
+    """Return the S3 files of one type whose index bbox meets ``bbox``.
+
+    Items are selected by their S3 path, not by the index's ``collection``
+    value: release 2026-09-23.0 published every collection as null, and the
+    client's own STAC selection then found no files for any type.  A type
+    absent from the whole index is an error, never an empty layer.
+    """
+    from overturemaps.core import _dataset_path
+
+    prefix = _dataset_path(feature_type, release)
+    xmin, ymin, xmax, ymax = bbox
+    listed = 0
+    files = []
+    for item in _stac_index(release):
+        href = item["assets"]["aws"]["alternate"]["s3"]["href"]
+        if not href.startswith("s3://" + prefix):
+            continue
+        listed += 1
+        box = item["bbox"]
+        if box["xmin"] < xmax and box["xmax"] > xmin and box["ymin"] < ymax and box["ymax"] > ymin:
+            files.append(href[len("s3://"):])
+    if not listed:
+        raise RuntimeError(f"Overture release {release} STAC index lists no {feature_type} files")
+    return files
+
+
 def _download_one(feature_type, bbox, release, output_path):
-    from overturemaps.core import record_batch_reader
+    import pyarrow.compute as pc
+    import pyarrow.dataset as ds
+    import pyarrow.fs as fs
+    from overturemaps.core import _record_batch_reader_from_dataset
     from overturemaps.writers import get_writer
 
-    reader = record_batch_reader(
-        feature_type,
-        bbox=bbox,
-        release=release,
-        connect_timeout=10,
-        request_timeout=120,
-        stac=True,
-    )
-    if reader is None:
+    files = _intersecting_files(feature_type, bbox, release)
+    if not files:
         _empty_feature_collection(output_path)
         return 0, []
+    xmin, ymin, xmax, ymax = bbox
+    filter_expr = (
+        (pc.field("bbox", "xmin") < xmax)
+        & (pc.field("bbox", "xmax") > xmin)
+        & (pc.field("bbox", "ymin") < ymax)
+        & (pc.field("bbox", "ymax") > ymin)
+    )
+    dataset = ds.dataset(
+        files,
+        filesystem=fs.S3FileSystem(
+            anonymous=True, region="us-west-2", connect_timeout=10, request_timeout=120
+        ),
+    )
+    reader = _record_batch_reader_from_dataset(dataset, filter_expr=filter_expr)
+    if reader is None:
+        raise RuntimeError(f"Could not read Overture {feature_type} data for release {release}")
 
     fields = list(reader.schema.names)
     count = 0
