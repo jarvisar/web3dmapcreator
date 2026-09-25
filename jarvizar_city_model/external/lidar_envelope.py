@@ -236,13 +236,27 @@ def _rank(grid, pitch, window):
     return _fill(heights, observed), observed
 
 
-def _component_surface(polygon, samples, pitch, window):
-    """Upper returns, rank filtered, over one connected footprint component."""
+def _component_surface(polygon, samples, pitch, window, secondary=()):
+    """Upper returns, rank filtered, over one connected footprint component.
+
+    `secondary` returns (a vegetation class) join each cell's upper quantile
+    but never lower it. A survey that files a facade as vegetation puts the
+    whole wall's returns into the cells along an outline drawn a little
+    outside it, where they outnumber the roof's; the quantile then sat on
+    the facade and hung the roof edge down it in icicles. A cell the
+    building classes left empty still takes them, so a flare filed as
+    vegetation keeps its slope.
+    """
     raster = _Raster(polygon.bounds, pitch, window)
     inside = samples[contains_xy(polygon.buffer(pitch), samples[:, 0], samples[:, 1])]
     if len(inside) < 4:
         raise UnsupportedFit('insufficient upper surface support')
     grid = raster.upper(inside, quantile=UPPER_QUANTILE)
+    if len(secondary):
+        extra = secondary[contains_xy(polygon.buffer(pitch), secondary[:, 0], secondary[:, 1])]
+        if len(extra):
+            both = raster.upper(np.concatenate((inside, extra)), quantile=UPPER_QUANTILE)
+            grid = np.where(np.isfinite(grid), np.maximum(grid, both), both)
     gx, gy = raster.corners()
     within = contains_xy(polygon, gx, gy)
     # Returns outside the outline never vote: the roof reaches the outline at
@@ -382,14 +396,15 @@ def _envelope(components, observed, secondary, pitch, window, tolerance, budget,
     rings, faces, cells, admitted, residuals = [], 0, 0, 0, []
     total = sum(polygon.area for polygon in components)
     for polygon in components:
-        usable = observed
+        usable, extra = observed, ()
         if len(secondary):
             established, raster, _ = _component_surface(polygon, observed, pitch, window)
             ix, iy = raster.cells(secondary)
             keep = secondary[:, 2] <= established[ix, iy]+tolerance
             admitted += int(keep.sum())
-            usable = np.concatenate((observed, secondary[keep]))
-        heights, raster, seen_cells = _component_surface(polygon, usable, pitch, window)
+            extra = secondary[keep]
+            usable = np.concatenate((observed, extra))
+        heights, raster, seen_cells = _component_surface(polygon, observed, pitch, window, extra)
         cells += int(seen_cells.sum())
         # Comparing an upper envelope to individual returns measures the
         # building, not the reconstruction: under one facade cell the returns
@@ -467,7 +482,8 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
     facade. `secondary_samples` are returns the survey filed under a vegetation
     class; they are admitted only where the structural envelope already reaches
     that level, so a canopy can never lift a roof while a facade misfiled as
-    vegetation is still used.
+    vegetation is still used, and they never lower a cell the building classes
+    observed.
     """
     samples = np.asarray(samples, dtype=float)
     returns = np.asarray(boundary_samples, dtype=float)

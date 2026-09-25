@@ -210,6 +210,51 @@ m² leave exp(-d/4) empty). The castle goes to 0.5 m and 526 faces, its
 towers distinct and vertical; synthetic 2–2.5 m towers that the plain
 collapse cut down by up to 4.5 m keep their heights exactly.
 
+### Facades filed as vegetation: icicles (algorithm 24, 0.25.2)
+
+Rendered beside the Micropolitan model from the same cameras (it is north-up
+in a local metric frame, offset about 353 m east and 619 m south of this
+bundle's centre), Chicago's envelopes matched it closely except for jagged
+"icicles" hanging a few storeys down from many roof edges (the Daley Center,
+Leo Burnett, North Pier Tower). Micropolitan's edges there are straight.
+
+The raster was clean, the collapse was not at fault: the cells along those
+edges already held 174–183 m against a 192 m roof. They were lowered by the
+vegetation-class returns (`secondary_samples`). The Cook County survey files
+most of every tower's facade under classes 3–5 (the Daley Center 48,563
+against 75,728 building-class returns, the Kemper Building 104,790 against
+39,372), and reconstruction admits every one below the structural envelope
+plus the band. Where an outline runs a metre outside the wall, the facade's
+returns, spread over its whole height, outnumber the roof's in the last cells,
+and each cell's 90th percentile sits on the facade. The one-row rim rule
+cannot reach the second row.
+
+Dropping vegetation returns entirely halved the sag but deleted Chase
+Tower's flare, which the survey files as vegetation. Adopted: they still join
+each cell's upper quantile, but never lower a cell that building-class
+returns observed (`max(structural, combined)`), and a cell those left empty
+takes the combined value, so they may still raise a cell by up to the band
+or fill a gap.
+
+- 19 dumped Loop towers: outline length sagging more than 3 m below the cap
+  1.5 m inside fell from 3.6% to 2.4% (Daley 2.2 → 0, Burnett 9.5 → 2.6,
+  One South Dearborn 2.6 → 0.2); Chase's flare unchanged.
+- The 34 Magic Kingdom and Miami buildings of the regression set are byte
+  for byte unchanged (those surveys file no facades as vegetation); the
+  West Loop's changed slightly.
+- Re-measuring the 599 Chicago records whose points were still cached (the
+  others kept theirs): 159 → 135 buildings with more than 2% sag, faces
+  −1.2%, the same 1,010 LiDAR buildings and no geometry fallbacks. The
+  buildings whose number rose (a rooftop block now reaching an edge) looked
+  unchanged or cleaner in renders; North Pier Tower and University Center
+  lost nearly all their icicles.
+
+What remains of the sag is real transitions (a tower meeting its wing) and
+short teeth where only vegetation-class returns saw the edge. Thin shards
+beside towers on scan-shadowed podium roofs (the pooled rule of "Rim teeth
+and scan shadows") and creases on Chase's doubly curved faces are the next
+visible differences from the reference.
+
 ## Tiers: real walls inside a footprint (algorithm 20, superseded)
 
 Reconstruction algorithm 20; superseded by the edge collapse above. Run **Prepare LiDAR Buildings** with Refresh off,

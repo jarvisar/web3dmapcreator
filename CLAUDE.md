@@ -743,7 +743,15 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   teeth. They still count, because a shadow beside a tower can be a real
   low roof and dropping them filled it from the tower. A rim cell more than
   two cells below a neighbour is a facade return, not roof, and takes that
-  neighbour's height. **Returns are not filtered.** Every rule that dropped
+  neighbour's height. Returns filed under a vegetation class (3–5) are
+  admitted up to the band above the structural envelope and join each
+  cell's upper quantile, but **never lower a cell the building classes
+  observed**: the Cook County survey files most of every tower's facade as
+  vegetation, and along an outline a metre outside the wall they outnumbered
+  the roof returns and hung the roof edge down the facade in icicles (Daley
+  Center, Leo Burnett, North Pier Tower). Cells the building classes left
+  empty still take them: Chase Tower's flare is filed as vegetation and
+  disappears without them. **Returns are not filtered.** Every rule that dropped
   returns by their neighbours (a "shadow" test, 3 m within 1 m) also
   deleted sloping facades such as Chase Tower's flare and kept only a fifth of
   some towers' returns. Copying the nearest height keeps a roof edge a step;

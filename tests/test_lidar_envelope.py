@@ -59,6 +59,23 @@ class UpperEnvelopeTests(unittest.TestCase):
         self.assertEqual(record['surface_reconstruction'], 'roof_envelope')
         self.assertGreater(height_at(record, 12, 12), 79)
 
+    def test_facade_filed_as_vegetation_never_pulls_the_roof_edge_down(self):
+        # Chicago's survey files most facade returns under a vegetation class.
+        # Where the outline runs a little outside the wall they outnumber the
+        # roof returns in its last cells, and a cell's upper quantile then
+        # hung the roof edge down the facade in icicles. They may still fill
+        # a surface the building classes missed: here a flared annex.
+        footprint = box(0, 0, 30, 24)
+        roof = self.cloud(box(0, 0, 22, 24), lambda x, y: np.full_like(x, 80.))
+        facade = np.array([(x, y, z) for x in np.arange(.05, 22, .1) for y in np.arange(22.95, 24, .25)
+                           for z in np.arange(2, 79, .25)])
+        flare = self.cloud(box(22, 0, 30, 24), lambda x, y: 80-5*(x-22))
+        record, reason = fit_roof_envelope(footprint, roof, 1.5, (.07, .077), roof,
+                                           secondary_samples=np.concatenate((facade, flare)))
+        self.assertIsNotNone(record, reason)
+        self.assertGreater(min(height_at(record, x, 23.99) for x in np.arange(1, 20, .5)), 79)
+        self.assertAlmostEqual(height_at(record, 26, 12), 60, delta=1.5)
+
     def test_isolated_high_return_is_removed_but_supported_cap_survives(self):
         footprint = box(0, 0, 30, 30)
         cap = box(12, 12, 18, 18)
