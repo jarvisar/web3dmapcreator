@@ -5,7 +5,9 @@ return in each print-scale cell, a moving median over a disc of cells, and a
 light mean over observed cells away from walls; unobserved cells copy their
 nearest observed neighbour. That raster, triangulated on its own grid, is a
 faithful but wasteful surface: a face per cell, and every wall a staircase of
-cells, because a step can only fall between nodes. An error-bounded edge
+cells, because a step can only fall between nodes. Relief along a steep face
+narrower than a nozzle once printed (piers, fins) is straightened first,
+where no height level moves more than a small printed reach. An error-bounded edge
 collapse (`lidar_simplify`) then merges a flat roof into a few faces and a run
 of stairs into one straight facet, so a tower comes out as large flat walls, a
 curved face as a coherent fan of facets and a flared base as a smooth slope,
@@ -35,7 +37,9 @@ except ImportError:
     from lidar_simplify import MIN_GAP, collapse
 
 CROSS = ((-1, 0), (1, 0), (0, -1), (0, 1))
-# The upper order statistic taken in each cell before the rank filter.
+# Each cell's height before the rank filter: its second-highest return.
+UPPER_RANK = 2
+# The quantile of a scan shadow's cells that its pooled height takes.
 UPPER_QUANTILE = .9
 MIN_VOTES = 4
 # Collapse error, in cells squared, under which an edge is always merged; see
@@ -47,6 +51,11 @@ COLLAPSE_TOLERANCE = 32.
 # mass counts as slender up to three times that across; see `_spires`.
 DEVIATION_CELLS = 2
 SPIRE_SHARE = .8
+# Printed lengths of `_fair`: relief along a steep face narrower than half the
+# window (0.3 mm, under a nozzle's width) is straightened where no height level
+# moves further than the reach.
+FAIR_WINDOW_MM = .6
+FAIR_REACH_MM = .14
 
 
 def envelope_parameters(scale, density=None):
@@ -105,8 +114,8 @@ class _Raster:
         return (np.clip(np.round((xy[:, 0]-self.x0)/self.pitch).astype(np.int64), 0, self.nx-1),
                 np.clip(np.round((xy[:, 1]-self.y0)/self.pitch).astype(np.int64), 0, self.ny-1))
 
-    def upper(self, samples, quantile=1.):
-        """An upper order statistic of the returns in each cell.
+    def upper(self, samples, rank=1):
+        """The `rank`-th highest return in each cell, or its lowest if it holds fewer.
 
         Returns are not filtered before this. A cell beside a facade holds
         returns from the whole height of the wall, and its top is near the
@@ -115,15 +124,18 @@ class _Raster:
         returns by any rule about their neighbours (a "shadow" test) removed
         sloping facades and stepped roofs along with the noise and kept a
         fifth of some towers' returns. The plain maximum is the outer skin
-        but the noisiest estimator; a high quantile costs only measurement
-        noise on a surface, where the returns do not run the cell's height.
+        but the noisiest estimator: one stray return sets it. The second
+        highest ignores that return and, unlike a quantile, how many returns
+        lie below it: a facade cell holds hundreds of the wall's, and its
+        90th percentile sat a tenth of the way down the wall, which hung
+        roof edges down it in teeth. The two agree up to eleven returns.
         """
         grid = np.full((self.nx, self.ny), -np.inf)
         if not len(samples):
             return grid
         values = samples[:, 2]
         ix, iy = self.cells(samples)
-        if quantile >= 1.:
+        if rank <= 1:
             np.maximum.at(grid, (ix, iy), values)
             return grid
         keys = ix*self.ny+iy
@@ -131,7 +143,7 @@ class _Raster:
         ordered = keys[order]
         starts = np.flatnonzero(np.concatenate(([True], ordered[1:] != ordered[:-1])))
         counts = np.diff(np.concatenate((starts, [len(ordered)])))
-        picked = starts+np.floor(quantile*(counts-1)).astype(np.int64)
+        picked = starts+np.maximum(counts-rank, 0)
         grid.reshape(-1)[ordered[starts]] = values[order][picked]
         return grid
 
@@ -162,6 +174,81 @@ def _spires(heights, rise):
     for dx, dy in ring:
         below += padded[span+dx:span+dx+nx, span+dy:span+dy+ny] < heights-rise
     return below >= SPIRE_SHARE*len(ring)
+
+
+def _fair(heights, pitch, window, reach, spires):
+    """Straighten relief along steep faces narrower than half `window`, within `reach`.
+
+    Piers, fins and mullions a metre or two proud of a tower's face are far
+    under a nozzle's width once printed, but the collapse keeps any relief
+    over its deviation bound, and where it tapers up a curved face it leaves
+    long slivers, creases down the whole facade (Chase Tower). Along a face
+    the heights rise monotonically across it, so the median of the heights
+    on a line along the face is the median of the face's position at every
+    height: it straightens the face without mixing heights across it, and
+    keeps steps and square corners exactly. Each steep cell takes the line
+    whose heights vary least over the window, which is the one along its
+    face, and only where the face is straight along it and goes on past
+    both ends of it. A change is kept only where every height level moves
+    by at most `reach` in plan, both ways, so a mass the median would erase
+    (a plant room, a fin, a turret) stays whole. Cells within half a window
+    of a spire are left alone: a turret's flank is a face curved too
+    tightly for a straight line.
+    """
+    half = max(1, int(round(window/pitch/2)))
+    offsets = _disc(reach, pitch)
+    span = half+max(max(abs(dx), abs(dy)) for dx, dy in offsets)+1
+    nx, ny = heights.shape
+    padded = np.pad(heights, span, mode='edge')
+
+    def shifted(data, dx, dy):
+        return data[span+dx:span+dx+nx, span+dy:span+dy+ny]
+
+    # Over four cells, so that noise on a gentle roof never reads as a face.
+    slope = np.hypot(shifted(padded, 2, 0)-shifted(padded, -2, 0),
+                     shifted(padded, 0, 2)-shifted(padded, 0, -2))/(4*pitch)
+    # Half a cell of plan position, in height on this face.
+    tolerance = slope*pitch/2
+    # Within half the reach of a steep cell: at a pier's toe the face it
+    # stands on has not started to rise yet, a metre further in.
+    steep = np.pad(slope >= 1, span, mode='constant')
+    steep = np.pad(np.logical_or.reduce([shifted(steep, dx, dy) for dx, dy in _disc(reach/2, pitch)]),
+                   span, mode='constant')
+    least = np.full(heights.shape, np.inf)
+    straight, level = heights, np.zeros(heights.shape, dtype=bool)
+    for dx, dy in ((1, 0), (0, 1), (1, 1), (1, -1)):
+        steps = half if not (dx and dy) else max(1, int(round(half/math.sqrt(2))))
+        line = np.stack([shifted(padded, k*dx, k*dy) for k in range(-steps, steps+1)])
+        spread = line.max(axis=0)-line.min(axis=0)
+        middle = np.median(line, axis=0)
+        along = spread < least
+        least = np.where(along, spread, least)
+        straight = np.where(along, middle, straight)
+        # Most of the line lies on one straight face: the relief is narrow.
+        # A face curved tighter than the window, or crossing the line at an
+        # angle, drifts away from the median along it and is left alone.
+        # The face goes on past both ends: a line through a convex corner
+        # runs off the mass at both ends and would cut the corner off.
+        face = 2*(np.abs(line-middle) <= tolerance).sum(axis=0) > len(line)
+        face &= shifted(steep, steps*dx, steps*dy) & shifted(steep, -steps*dx, -steps*dy)
+        level = np.where(along, face, level)
+    moved = np.pad(straight, span, mode='edge')
+    ok = (slope >= 1) & level & (straight != heights)
+    ok &= np.minimum.reduce([shifted(moved, dx, dy) for dx, dy in offsets]) <= heights
+    ok &= np.maximum.reduce([shifted(moved, dx, dy) for dx, dy in offsets]) >= heights
+    ok &= np.minimum.reduce([shifted(padded, dx, dy) for dx, dy in offsets]) <= straight
+    ok &= np.maximum.reduce([shifted(padded, dx, dy) for dx, dy in offsets]) >= straight
+    if spires.any():
+        near = np.pad(spires, half, mode='constant')
+        wide = np.zeros(heights.shape, dtype=bool)
+        for d in range(-half, half+1):
+            wide |= near[half+d:half+d+nx, half:half+ny]
+        near = np.pad(wide, half, mode='constant')
+        wide = np.zeros(heights.shape, dtype=bool)
+        for d in range(-half, half+1):
+            wide |= near[half:half+nx, half+d:half+d+ny]
+        ok &= ~wide
+    return np.where(ok, straight, heights)
 
 
 def _fill(heights, observed):
@@ -239,23 +326,22 @@ def _rank(grid, pitch, window):
 def _component_surface(polygon, samples, pitch, window, secondary=()):
     """Upper returns, rank filtered, over one connected footprint component.
 
-    `secondary` returns (a vegetation class) join each cell's upper quantile
+    `secondary` returns (a vegetation class) join each cell's upper return
     but never lower it. A survey that files a facade as vegetation puts the
     whole wall's returns into the cells along an outline drawn a little
-    outside it, where they outnumber the roof's; the quantile then sat on
-    the facade and hung the roof edge down it in icicles. A cell the
-    building classes left empty still takes them, so a flare filed as
+    outside it, and a lone roof return there must still set the cell. A cell
+    the building classes left empty still takes them, so a flare filed as
     vegetation keeps its slope.
     """
     raster = _Raster(polygon.bounds, pitch, window)
     inside = samples[contains_xy(polygon.buffer(pitch), samples[:, 0], samples[:, 1])]
     if len(inside) < 4:
         raise UnsupportedFit('insufficient upper surface support')
-    grid = raster.upper(inside, quantile=UPPER_QUANTILE)
+    grid = raster.upper(inside, rank=UPPER_RANK)
     if len(secondary):
         extra = secondary[contains_xy(polygon.buffer(pitch), secondary[:, 0], secondary[:, 1])]
         if len(extra):
-            both = raster.upper(np.concatenate((inside, extra)), quantile=UPPER_QUANTILE)
+            both = raster.upper(np.concatenate((inside, extra)), rank=UPPER_RANK)
             grid = np.where(np.isfinite(grid), np.maximum(grid, both), both)
     gx, gy = raster.corners()
     within = contains_xy(polygon, gx, gy)
@@ -344,12 +430,14 @@ def _snap_to_boundary(vertices, polygon, gap):
     return vertices
 
 
-def _surfaces(polygon, heights, raster, threshold, budget, rise):
-    """Triangulate the raster over the component, collapse it, and clip it.
+def _surfaces(polygon, heights, raster, threshold, budget, rise, fairing):
+    """Straighten the raster's faces, triangulate it over the component, collapse it, and clip it.
 
     Returns the clipped rings, their area and the number of collapsed faces.
     """
     pitch = raster.pitch
+    spires = _spires(heights, rise)
+    heights = _fair(heights, pitch, *fairing, spires)
     gx, gy = raster.corners()
     mask = contains_xy(polygon.buffer(pitch*1.5), gx, gy)
     index = np.full(mask.shape, -1)
@@ -370,7 +458,7 @@ def _surfaces(polygon, heights, raster, threshold, budget, rise):
     # than two cells is never lowered away. Slender masses get half of that.
     vertices, faces = collapse(np.column_stack((gx[mask], gy[mask], heights[mask])), faces,
                                threshold, budget, deviation=DEVIATION_CELLS*pitch,
-                               fine=index[mask & _spires(heights, rise)])
+                               fine=index[mask & spires])
     vertices = _snap_to_boundary(vertices, polygon, MIN_GAP/4)
     rings, area = [], 0.
     for face in faces:
@@ -391,7 +479,7 @@ def _ring_area(ring):
                    for a, b in zip(ring, ring[1:])))/2
 
 
-def _envelope(components, observed, secondary, pitch, window, tolerance, budget, threshold):
+def _envelope(components, observed, secondary, pitch, window, tolerance, budget, threshold, fairing):
     """The clipped cap faces of every component, and the fit diagnostics."""
     rings, faces, cells, admitted, residuals = [], 0, 0, 0, []
     total = sum(polygon.area for polygon in components)
@@ -415,7 +503,7 @@ def _envelope(components, observed, secondary, pitch, window, tolerance, budget,
         if seen.any():
             residuals.append(np.abs(heights[seen]-raw[seen]))
         share = max(1, int(budget*polygon.area/total))
-        part, area, count = _surfaces(polygon, heights, raster, threshold, share, tolerance)
+        part, area, count = _surfaces(polygon, heights, raster, threshold, share, tolerance, fairing)
         if not part or abs(area-polygon.area) > max(.00001, polygon.area*1e-5):
             raise UnsupportedFit('incomplete clipped upper surface')
         if count > share:
@@ -527,7 +615,7 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
         # the error that merges them scales with the pitch squared.
         surfaces, faces, cells, admitted, residuals = _envelope(
             components, observed, secondary, pitch, window, tolerance, budget,
-            COLLAPSE_TOLERANCE*pitch*pitch)
+            COLLAPSE_TOLERANCE*pitch*pitch, (FAIR_WINDOW_MM/scale[0], FAIR_REACH_MM/scale[0]))
         if len(surfaces) > MAX_ENVELOPE_FACETS:
             raise UnsupportedFit('upper surface facet budget')
         # Publication rounds heights to the millimetre-scale precision this

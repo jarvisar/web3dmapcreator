@@ -141,9 +141,8 @@ they fixed:
 Rejected for the look: subset vertex placement (endpoints and midpoint,
 no quadric optimum) brought back ribs on every wall; halving the deviation
 bound made more faces and failed Chase; halving the collapse tolerance
-changed nothing visible. Chase Tower's doubly curved sweep still comes out
-creased because the memoryless optimum extrapolates along tangent planes;
-an error-driven edge-flip pass is the principled next step if that matters.
+changed nothing visible. Chase Tower's sweep still came out creased; the
+cause turned out to be its piers, not the curvature (algorithm 26 below).
 
 ### Slender towers: a castle as one blade (algorithm 23, 0.25.1)
 
@@ -254,6 +253,108 @@ short teeth where only vegetation-class returns saw the edge. Thin shards
 beside towers on scan-shadowed podium roofs (the pooled rule of "Rim teeth
 and scan shadows") and creases on Chase's doubly curved faces are the next
 visible differences from the reference.
+
+### The second-highest return; shards that stay (algorithm 25, 0.25.3)
+
+The teeth left after algorithm 24 had the same cause with building-class
+returns: the Cook County classifier also files part of each facade under
+class 6, and a cell's 90th percentile is a proportion. Up to eleven returns
+it is the second-highest return; a facade cell holds hundreds, and it read
+a tenth of the way down the wall. Each cell now takes its second-highest
+return (`UPPER_RANK`): one stray high return still cannot set it, and no
+number of returns below can pull it down. Sparse cells are unchanged byte
+for byte; the scan-shadow pool keeps its quantile over cells.
+
+- 65 dumped buildings: Burnett's rim sag 2.6% → 0, Aon 3.1 → 1.2, Chase
+  5.2 → 2.9, chi00 5.7 → 3.3, mia06 10.0 → 7.4; Aon's roof-edge icicles, the
+  last large ones in the Loop, are gone, and Title's crown is crisper.
+  Trump's spire tip reads 423 m (the real height) instead of 414 m. The
+  castle keeps its towers; 19 buildings are byte-identical.
+- The 599 re-measured Chicago records: mean sag 1.81% (algorithm 23) →
+  1.67% (24) → 1.47%; more than 5% sag 69 → 62 → 54; faces 271,032 →
+  267,656 → 264,569; 1,010 LiDAR buildings and no geometry fallbacks. The
+  buildings whose number rose (Crane Company, Butler, Trump) looked the
+  same or cleaner; the metric counts a rooftop crown reaching an edge.
+
+Shards, investigated and left alone. At street level beside the reference
+Chicago's tower bases are as clean; the worst shards are on Miami podium
+decks (mia03). There, groups of cells at 36–37 m on a 28–30 m deck are
+supported by real returns (up to four a cell): palms, lamp posts or stair
+towers, at four returns per m² indistinguishable, and slender features like
+the castle's towers are wanted. The rest come from scan shadows at a tower's
+foot, where the pooled quantile lifts a few facade returns into a blob and
+nearest fill hands some empty cells the tower's height. Two rules were
+tried, both on the principle that an unseen patch is hidden by something
+taller and so lies low:
+
+- Capping each connected patch of sparse cells a band above the lowest
+  directly measured cell bordering it removed some blobs and icicles but cut
+  Trump Tower's setback terraces (about 70 m, a few returns each) to 20 m:
+  sparse patches connect genuinely different levels.
+- Filling empty cells only from neighbours within that cap dropped 134
+  cells of the Aon Center's roof (299–337 m, no returns at all) to 7 m, and
+  dark or glazed roof patches on the Contemporary Resort and mia05 likewise.
+
+A patch with few or no returns can be a low roof hidden by a tower or a roof
+that returned nothing, and the returns cannot tell which. Nearest fill and
+the pooled quantile stay.
+
+### Straightening facade relief: Chase Tower's creases (algorithm 26, 0.25.4)
+
+Chase Tower's long faces came out as fans of long slivers, spikes up the
+lower half of the sweep; Micropolitan's are smooth. Slicing the returns at
+fixed heights showed the cause is not the curvature: the faces carry piers
+1.2–2 m proud of the wall, 3–4 m wide, every 12 m (0.3 m proud near the
+top). They are real, but under a nozzle's width once printed. The collapse
+keeps any relief deeper than its two-cell bound, and where a pier tapers up
+the face it leaves a sliver.
+
+`_fair` straightens them on the raster before the collapse. On a face the
+heights rise monotonically across it, so the median of the heights along a
+line on the face is the median of the face's plan position at every height:
+it removes relief narrower than half the line without mixing heights across
+the face, and keeps steps and square corners. Each steep cell (slope over
+four cells at least 1) takes whichever of four directions varies least
+along a 0.6 mm printed window (8.6 m at the default scale). A change is
+kept only where:
+
+- more than half the line lies within half a cell of the median, i.e. the
+  face is straight there. A cone's flank, a round tower tighter than about
+  10 m radius or a face crossing the line at an angle is left alone (the
+  first version shrank a steep cone and lowered its tip);
+- every height level moves at most 0.14 mm printed (2 m) in plan, both
+  ways, so a plant room, fin or turret the median would erase stays whole;
+- the face is still steep within half the reach of both ends of the line.
+  A diagonal line through a convex corner runs off the mass at both ends,
+  and without this the median chamfered plant rooms and tower tops by up to
+  a metre (`test_significant_rooftop_plant_survives_roof_noise`,
+  `test_raw_points_keep_nested_flat_towers_...`). At a pier's toe the face
+  it stands on starts to rise a metre further in, hence the half reach;
+- the cell is more than half a window from a spire (the first version
+  turned the castle's flat-topped central tower into a cone).
+
+Rejected: loosening the collapse's deviation bound and weighting on walls
+(2× and 1.5×). Walls drifted (Chase's nodes over 2 m off the raster went from
+646 to 1,842, Legacy's mean error from 0.18 to 2.4 m), new diagonal creases
+appeared, and agreement with Micropolitan got worse on average. A 3 m reach
+left more spikes at Chase's base than 2 m.
+
+Evidence (`scratchpad/micropolitan_compare`, README "Algorithm 26"):
+
+- Chase: north face clean; the south face keeps a few short spikes at the
+  base, where the arcade and lobby are real. Burnett, Jewelers (35 E Wacker),
+  Miami's twin towers and several West Loop towers lose vertical slits.
+- Castle, Magic Kingdom, Miami and Chicago dumps (65 buildings): no
+  regression in renders; Title's crown fins, Trump's spire and terraces kept.
+- City (599 re-measured Chicago buildings): same rejections, 1,010 LiDAR
+  buildings, 0 fallbacks, faces 264,569 → 261,811. The 40 buildings whose
+  caps changed most were reviewed one by one: equal or cleaner.
+- Agreement with the Micropolitan STL (surface distance and normal angle,
+  15 Loop buildings): Chase's facade normal error 10.3° → 9.1° (and 11.4° →
+  10.1° the other way); the mean over all moves 8.6° → 8.6°, within noise. Micropolitan's own lumpy surfaces set
+  that floor, so the renders decided.
+
+Run **Prepare LiDAR Buildings** with Refresh off, then **Generate Model**.
 
 ## Tiers: real walls inside a footprint (algorithm 20, superseded)
 

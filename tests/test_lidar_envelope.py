@@ -76,6 +76,20 @@ class UpperEnvelopeTests(unittest.TestCase):
         self.assertGreater(min(height_at(record, x, 23.99) for x in np.arange(1, 20, .5)), 79)
         self.assertAlmostEqual(height_at(record, 26, 12), 60, delta=1.5)
 
+    def test_dense_facade_band_inside_outline_does_not_hang_roof_edge(self):
+        # Hundreds of a facade's returns in each of the last cells inside an
+        # outline drawn a metre outside the wall, filed as building: a
+        # cell's 90th percentile sat a tenth of the way down the wall and
+        # hung the roof edge in teeth. The second-highest return is the top
+        # of the wall however many returns lie below it.
+        footprint = box(0, 0, 30, 24)
+        roof = self.cloud(footprint, lambda x, y: np.full_like(x, 80.))
+        facade = np.array([(x, y, z) for x in np.arange(.05, 30, .1) for y in np.arange(22.95, 24, .25)
+                           for z in np.arange(2, 80, .25)])
+        record, reason = fit_roof_envelope(footprint, roof, 1.5, (.07, .077), np.concatenate((roof, facade)))
+        self.assertIsNotNone(record, reason)
+        self.assertGreater(min(height_at(record, x, 23.99) for x in np.arange(1, 29, .5)), 79)
+
     def test_isolated_high_return_is_removed_but_supported_cap_survives(self):
         footprint = box(0, 0, 30, 30)
         cap = box(12, 12, 18, 18)
@@ -191,6 +205,37 @@ class UpperEnvelopeTests(unittest.TestCase):
                  for s in record['roof_surfaces']]
         outline = [[[(x*.07, y*.07) for x, y in footprint.exterior.coords[:-1]]]]
         self.assertIsNotNone(envelope_solid(rings, (record['height_m']-1)*.077, outline))
+
+    def test_narrow_piers_on_a_leaning_face_are_straightened(self):
+        # Shaped like Chase Tower, Chicago: piers 1.2 m proud of a leaning
+        # face, 3 m wide every 12 m. Under a nozzle's width once printed, but
+        # deeper than the collapse's bound, they came out as creases down the
+        # whole facade; the face at each height is now one straight line.
+        footprint = box(0, 0, 72, 40)
+        pier = lambda x: np.where((x % 12) < 3, 1.2, 0.)
+        record = self.fit(footprint, self.cloud(
+            footprint, lambda x, y: np.clip(10+35*(y-10+pier(x)), 10, 150)))
+        for level in (40, 80, 120):
+            riser = height_contour(record, level).boundary.difference(footprint.exterior.buffer(3))
+            ys = [y for line in getattr(riser, 'geoms', [riser]) for _, y in line.coords]
+            self.assertTrue(ys)
+            self.assertLess(max(ys)-min(ys), .6)
+
+    def test_small_masses_on_a_roof_are_not_straightened_away(self):
+        # A plant room and a thin wall are narrower than the line the faces
+        # are straightened along, but nothing of their height stands within
+        # the reach, so they are masses, not relief on a face.
+        footprint = box(0, 0, 40, 30)
+        room, wall = box(10, 10, 13, 13), box(20, 5, 22.5, 14)
+
+        def roof(x, y):
+            z = np.full(len(x), 30.)
+            z[contains_xy(room, x, y)] = 33.
+            z[contains_xy(wall, x, y)] = 32.
+            return z
+        record = self.fit(footprint, self.cloud(footprint, roof))
+        self.assertGreater(height_at(record, 11.5, 11.5), 32.5)
+        self.assertGreater(height_at(record, 21.25, 9.5), 31.5)
 
     def test_stepped_tower_corners_inside_footprint_keep_their_steps(self):
         # Shaped like the Chicago Mercantile Exchange Center: 3 m notches step

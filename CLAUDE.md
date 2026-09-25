@@ -727,7 +727,10 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   boundaries and unmapped cliffs never establish a rock domain.
 - Roof Envelope (`FACETED`) calls `external/lidar_envelope.py` before any
   terrace reconstruction. It builds one height raster per footprint component:
-  a high upper quantile of the returns in each cell, then a moving median
+  the second-highest return in each cell (`UPPER_RANK`; a quantile agrees up
+  to eleven returns, but a facade cell holds hundreds and its 90th
+  percentile sat a tenth of the way down the wall, hanging roof edges in
+  teeth; the second highest is blind to how many lie below), then a moving median
   over a disc two cells in radius (a slot narrower than that is bridged), a
   light mean over each observed cell and its observed edge neighbours away
   from walls, then the nearest observed height copied into unobserved
@@ -745,13 +748,18 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   two cells below a neighbour is a facade return, not roof, and takes that
   neighbour's height. Returns filed under a vegetation class (3–5) are
   admitted up to the band above the structural envelope and join each
-  cell's upper quantile, but **never lower a cell the building classes
+  cell's upper return, but **never lower a cell the building classes
   observed**: the Cook County survey files most of every tower's facade as
   vegetation, and along an outline a metre outside the wall they outnumbered
   the roof returns and hung the roof edge down the facade in icicles (Daley
   Center, Leo Burnett, North Pier Tower). Cells the building classes left
   empty still take them: Chase Tower's flare is filed as vegetation and
-  disappears without them. **Returns are not filtered.** Every rule that dropped
+  disappears without them. **Scan shadows are ambiguous:** a patch with few
+  or no returns can be a low roof hidden by a tower or a roof that returned
+  nothing. Capping sparse patches a band above their lowest measured border
+  cut Trump Tower's setback terraces to 20 m, and filling empty cells from
+  their lowest neighbour dropped 134 cells of the Aon Center's roof to 7 m;
+  nearest fill stays. **Returns are not filtered.** Every rule that dropped
   returns by their neighbours (a "shadow" test, 3 m within 1 m) also
   deleted sloping facades such as Chase Tower's flare and kept only a fifth of
   some towers' returns. Copying the nearest height keeps a roof edge a step;
@@ -788,10 +796,25 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   a hair inside a grid line otherwise clipped a row of slivers thinner than
   float32 holds, which the join dropped and then found a hole. Vertex
   placement keeps the quadric optimum: subset placement (endpoints and
-  midpoint only) brought the ribs back on every wall. Doubly curved faces
-  such as Chase Tower's sweep still come out creased, because the memoryless
-  optimum extrapolates along tangent planes; neither a tighter deviation nor
-  a lower tolerance changes that. This replaced tiers, traced outlines, block merging and the
+  midpoint only) brought the ribs back on every wall. **Relief along a
+  steep face is straightened before the collapse** (`_fair`): Chase
+  Tower's creases were its piers, 1–2 m proud every 12 m, deeper than the
+  deviation bound and tapering up the sweep into long slivers. On a face
+  the heights rise monotonically across it, so a median along the face is
+  the median of its plan position at every height; each steep cell (over
+  four cells, so roof noise never reads as a face) takes the line of four
+  directions whose heights vary least, only where more than half the line
+  lies within half a cell of that median (a straight face: a cone or a face
+  crossing the line at an angle is left alone), only where the face is
+  still steep within half the reach of both ends (a line through a convex
+  corner runs off the mass and chamfered plant rooms and tower tops by a
+  metre; a pier's toe has its face a metre in), only where every height
+  level moves at most `FAIR_REACH_MM` (0.14 mm) in plan both ways (a plant
+  room, fin or turret the median would erase stays whole), and never within
+  half a window of a spire. The window is `FAIR_WINDOW_MM` (0.6 mm, so
+  relief under 0.3 mm, a nozzle's width, goes). Loosening the collapse's
+  bound on walls instead let every tower's walls drift (fidelity loss
+  tripled) and was rejected. This replaced tiers, traced outlines, block merging and the
   pitch-coarsening retry: nothing detects tiers, setbacks or architecture,
   and a curved tower (71 South Wacker) comes out as a coherent fan of 4–5 m
   facets with under a thousand faces, against ~50,000 grid faces, matching a
