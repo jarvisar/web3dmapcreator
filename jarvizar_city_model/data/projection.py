@@ -86,10 +86,6 @@ class WGS84Bounds:
         return (self.south + self.north) * 0.5
 
     @property
-    def center(self) -> Tuple[float, float]:
-        return self.center_longitude, self.center_latitude
-
-    @property
     def width_degrees(self) -> float:
         return self.east - self.west
 
@@ -327,9 +323,6 @@ class LocalENUProjection:
             + self._sin_lat * dz
         )
         return east, north, up
-
-    # ``project`` is a readable synonym for callers dealing in source features.
-    project = forward
 
     def inverse(
         self, east_m: float, north_m: float, up_m: float = 0.0
@@ -623,12 +616,6 @@ class MiniatureTransform:
         """
 
         return _finite_float(millimetres, "millimetres") / self.scale_x_mm_per_m
-
-    @property
-    def metadata(self) -> Dict[str, Any]:
-        """Alias for :attr:`bounds_metadata` for cache/manifests."""
-
-        return self.bounds_metadata
 
 
 def create_miniature_transform(

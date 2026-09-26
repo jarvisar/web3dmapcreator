@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from ..data.linework import cumulative_positions
+from ..data.linework import cumulative_positions, polyline_length
 
 
 Point = Tuple[float, float]
@@ -107,7 +107,7 @@ def additional_support_stations(
     with a crossing road are unavailable, never filled with a floating pier.
     All distances use the caller's model units; returned stations are 0..1.
     """
-    length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))
+    length = polyline_length(points)
     if length <= 0.0 or maximum_span <= 0.0:
         return []
     positions = cumulative_positions(points)

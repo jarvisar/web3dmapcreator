@@ -1,4 +1,4 @@
-"""Acquire a bounded USGS 3DEP crop and atomically cache building measurements.
+"""Acquire bounded LiDAR for the selected buildings and atomically cache measurements.
 
 Run with the optional requirements-lidar.txt environment, never Blender's
 Python. --request is the signature written by data/lidar.py.
@@ -20,7 +20,7 @@ except ImportError:
     from lidar_rock import rock_features
     from lidar_footprint import select_footprints
 try:
-    from .lidar_records import ALGORITHM_VERSION, validate_records, finite_number
+    from .lidar_records import ALGORITHM_VERSION, RESULT_FILE, RESULT_FORMAT_VERSION, validate_records, finite_number
     from .lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
     from .lidar_worker import cache_owner, watch_parent
     from .lidar_progress import ProgressReporter
@@ -29,7 +29,7 @@ try:
     from .lidar_point_cache import PointBatchCache
     from .lidar_storage import CacheStorage, DEFAULT_CACHE_GIB, DEFAULT_FREE_GIB
 except ImportError:
-    from lidar_records import ALGORITHM_VERSION, validate_records, finite_number
+    from lidar_records import ALGORITHM_VERSION, RESULT_FILE, RESULT_FORMAT_VERSION, validate_records, finite_number
     from lidar_downloads import prefetch_source, DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, validate_download_workers
     from lidar_worker import cache_owner, watch_parent
     from lidar_progress import ProgressReporter
@@ -80,14 +80,17 @@ def prepare(bundle, request, refresh=False, progress_path=None, download_workers
 def _prepare(bundle, request, refresh, progress_path, download_workers, laz_approval='', resources=None, storage=None, measure_workers=1):
     reporter = ProgressReporter(progress_path)
     reporter('Checking prepared results and input settings', stage='Checking cache', completed=0, total=0, force=True)
+    # Imported here, not at the top: the native dependencies stay optional
+    # until a preparation runs, and tests patch these modules' functions,
+    # which a module-level import would have bound before the patch.
     from pyproj import CRS, Transformer
     from shapely.geometry import box, shape
     from shapely.ops import transform as map_geometry
     from lidar_ept import Fetcher, CATALOG_URL, BudgetExceeded
-    from lidar_acquisition import (discover_sources, read_source, source_audit, TNM_URL,
+    from lidar_acquisition import (discover_sources, read_source, source_audit,
                                    building_tile_plan, batch_source, tile_audit)
     from lidar_ranking import AcquisitionPlan, ACQUISITION_VERSION, FALLBACK_POLICY_VERSION, selection_thresholds
-    from lidar_tiles import shared_tile_features
+    from lidar_tiles import shared_tile_features, SELECTION_HALO_M
     from lidar_batches import building_batches, batch_bounds, split_batch
     from lidar_measurements import (measure_features, default_measure_workers, validate_measure_workers,
                                     close_measurement_pool)
@@ -135,7 +138,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     to_metric = Transformer.from_crs(4326, metric, always_xy=True).transform
     to_geographic = Transformer.from_crs(metric, 4326, always_xy=True).transform
     selected = map_geometry(to_metric, box(*bbox))
-    halo = selected.buffer(75)
+    halo = selected.buffer(SELECTION_HALO_M)
     query = map_geometry(to_geographic, halo).bounds
     if storage:
         storage.trim()
@@ -466,7 +469,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
          'conflicting_surveys_unknown_order', 'newer_survey_building_changed'))
         for reason in rejected.values())
     validate_records(measured)
-    payload = {"format": 1, "request": request, "buildings": measured,
+    payload = {"format": RESULT_FORMAT_VERSION, "request": request, "buildings": measured,
                'cache_stats': cache_stats, 'cache_dependencies': dependencies,
                'laz_offers': laz_offers,
                'laz_offer_token': offer_token(request, laz_offers) if laz_offers else '',
@@ -483,7 +486,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                'conflict_buildings':conflict_buildings,
                "bytes_read": fetch.bytes, "network_requests": fetch.requests}
     payload['candidate_buildings'] = total_candidates
-    destination = bundle / "lidar_buildings.json"
+    destination = bundle / RESULT_FILE
     result_data = json.dumps(payload, allow_nan=False).encode('utf-8')
     if storage:
         storage.write_bytes(destination, result_data, managed=False)
@@ -492,18 +495,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
         temporary.write_bytes(result_data)
         temporary.replace(destination)
     progress(f'Prepared {len(measured)} buildings; cached work is ready to reuse', stage='Complete', completed=1, total=1, force=True)
-    return {"ok": True, "buildings": len(measured), "tiered_buildings": sum(bool(r["tiers"]) for r in measured.values()),
-            'cache_stats': cache_stats,
-            'laz_offers': laz_offers, 'laz_offer_token': payload['laz_offer_token'],
-            'infill_buildings': sum(bool(r.get('infill_geometry')) for r in measured.values()),
-            'part_heights': sum(len(r.get('part_heights', {})) for r in measured.values()),
-            'estimated_heights_corrected': sum(r.get('source_height_decision', r.get('height_decision')) == 'corrected_estimated_height' for r in measured.values()),
-            'roof_plane_buildings': sum(bool(r.get('roof_surfaces')) and r.get('method') != 'faceted_roof' for r in measured.values()),
-            'faceted_roof_buildings': sum(r.get('method') == 'faceted_roof' for r in measured.values()),
-            "candidate_buildings": payload['candidate_buildings'],
-            'compared_sources':payload['compared_sources'], 'conflict_buildings':conflict_buildings,
-            "sources": provenance, "counts": dict(counts), 'rejection_counts': rejection_counts, "failures": failures,
-            "bytes_read": fetch.bytes, "prepared_at_utc": payload["prepared_at_utc"]}
+    return summarize_prepared(payload)
 
 
 def main():

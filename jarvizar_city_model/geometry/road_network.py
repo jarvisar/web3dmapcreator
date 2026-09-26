@@ -30,7 +30,7 @@ a snapped end moves onto the line it nearly met.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from ..data.linework import (
@@ -82,7 +82,9 @@ SEGMENT_SHADOW_NUMERATOR = 3
 SEGMENT_SHADOW_DENOMINATOR = 5
 
 # How close to the selection rectangle an end has to be to count as cut off
-# by it rather than ending there, in printed millimetres.
+# by it rather than ending there, in printed millimetres.  Clipping puts the
+# vertex on the edge to floating-point precision; the slack is a fraction of
+# a road width.
 BOUNDARY_TOLERANCE_MM = 0.05
 
 # A deck of a losing route this much shadowed is doubled and goes; one less
@@ -717,14 +719,7 @@ def _cull(
                 # A deck is whole or nothing: a footbridge cannot lose the
                 # half of itself that runs beside the road bridge and keep
                 # an end in the air over the water.
-                shadowed = 0.0
-                total = 0.0
-                for a, b in zip(item.points[:-1], item.points[1:]):
-                    length = math.hypot(b[0] - a[0], b[1] - a[1])
-                    hits, samples = _shadow(a, b, item, grid, gap, cos_limit, spacing)
-                    total += length
-                    if samples:
-                        shadowed += length * hits / samples
+                shadowed, total = fraction(item)
                 if total > 0.0 and shadowed / total >= settings.shadow_fraction:
                     counts.culled_pieces += 1
                     counts.culled_length_mm += total
@@ -765,13 +760,9 @@ def _cull(
                 first_original = run_points[0] == dense[0]
                 last_original = run_points[-1] == dense[-1]
                 keep(
-                    _Item(
-                        piece=item.piece,
+                    replace(
+                        item,
                         points=run_points,
-                        half_width=item.half_width,
-                        rank=item.rank,
-                        deck=item.deck,
-                        minor=item.minor,
                         origin=(item.origin[0], number),
                         trimmed_ends=(not first_original, not last_original),
                         dead_ends=(item.dead_ends[0] and first_original,
@@ -932,13 +923,9 @@ def _settle_remnants(
                 run = run + extra if forwards else list(reversed(extra)) + run
             if not joined:
                 continue
-            candidates.append(_Item(
-                piece=item.piece,
+            candidates.append(replace(
+                item,
                 points=run,
-                half_width=item.half_width,
-                rank=item.rank,
-                deck=item.deck,
-                minor=item.minor,
                 origin=(item.origin[0], number),
                 trimmed_ends=(first_cut, last_cut),
                 dead_ends=(item.dead_ends[0] and not first_cut, item.dead_ends[1] and not last_cut),
@@ -1027,7 +1014,7 @@ def _snap(
                 continue
             dead = item.dead_ends[0 if end == 0 else 1]
             reach = (min(gap, snap_gap) if dead else snap_gap) + item.half_width
-            best: Optional[Tuple[float, Point]] = None
+            best: Optional[Tuple[float, Point, bool]] = None
             touching = False
             for a, b, direction, other_half_width, other_rank, other in grid.near(point):
                 if other == index or other_rank > item.rank:
@@ -1300,22 +1287,7 @@ def _prune(
             samples = _samples(a, b, max(widths[number], quantum * 4.0))
             clear = 0
             for point in samples:
-                cx, cy = key(point[0], point[1])
-                inside = False
-                for dx in (-1, 0, 1):
-                    for dy in (-1, 0, 1):
-                        for other, c, d in buckets.get((cx + dx, cy + dy), ()):
-                            if other == number or removed[other]:
-                                continue
-                            reach = gap + widths[number] + widths[other]
-                            if _distance_sq(point, c, d)[0] <= reach * reach:
-                                inside = True
-                                break
-                        if inside:
-                            break
-                    if inside:
-                        break
-                clear += not inside
+                clear += not near_another(number, point)
             visible += length * clear / len(samples)
         return visible
 

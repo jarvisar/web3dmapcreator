@@ -32,11 +32,11 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from copy import copy
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, Sequence, Tuple
 
 from ..blender.mesh_utils import MeshBuilder, _prism_geometry
 from ..data.linework import simplify_polyline
-from .footprint_cut import FootprintIndex, area_xy
+from .footprint_cut import FootprintIndex, area_xy, bounds_overlap
 from .heightfield import ModelHeightField
 from .planar import (
     EPSILON,
@@ -58,6 +58,9 @@ Ring = Sequence[Point]
 # 0.2 mm layer: invisible in the print, but enough that a support overlapping
 # the bank never shares a face with the terrain there.
 SUPPORT_TOP_OFFSET_MM = 0.05
+# The least a support stands above the base's underside, so a structure low
+# over a deep cut never collapses its pedestal to zero height.
+SUPPORT_MINIMUM_THICKNESS_MM = 0.05
 # One default FDM layer of visible terrain above a retained water fill.
 SUPPORT_WATER_CLEARANCE_MM = 0.2
 # Cut water is set this far below the bank level its terrain is flattened to,
@@ -81,11 +84,6 @@ class _FoundationHeightField:
 
     minimum_over = ModelHeightField.minimum_over
     maximum_over = ModelHeightField.maximum_over
-    sample_ring = ModelHeightField.sample_ring
-
-
-def _overlaps(a, b) -> bool:
-    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
 def _cross(o, a, b) -> float:
@@ -185,13 +183,12 @@ class SupportBuilder:
         a = ring_bounds(rings[0])
         sources = [(b, mask, top + SUPPORT_WATER_CLEARANCE_MM + self.top_offset_mm)
                    for b, mask, top in self._water_levels] + self._paved_levels
-        candidates = [(mask, minimum) for b, mask, minimum in sources if _overlaps(a, b)]
+        candidates = [(mask, minimum) for b, mask, minimum in sources if bounds_overlap(a, b)]
         if not candidates:
             return None
         caps = list(self._footprint_caps(rings))
         levels = [minimum for mask, minimum in candidates
-                  if any(area_xy(cap)-sum(area_xy(p) for p in mask.difference(cap)) > 1e-8
-                         for cap in caps)]
+                  if any(mask.covered_area(cap) > 1e-8 for cap in caps)]
         return max(levels) if levels else None
 
     def foundation_field(self, minimum):
@@ -296,7 +293,7 @@ class SupportBuilder:
             z = height(index)
             if index in core:
                 return z
-            return max(z - self.embed_mm, self.bottom_z + 0.05)
+            return max(z - self.embed_mm, self.bottom_z + SUPPORT_MINIMUM_THICKNESS_MM)
         return banded
 
     def overlaps_basin(self, rings: Sequence[Ring]) -> bool:
@@ -309,10 +306,9 @@ class SupportBuilder:
         if not self._basin_bounds or not rings or len(rings[0]) < 3:
             return False
         a = ring_bounds(rings[0])
-        if not any(_overlaps(a, b) for b in self._basin_bounds):
+        if not any(bounds_overlap(a, b) for b in self._basin_bounds):
             return False
-        return any(area_xy(cap) - sum(area_xy(p) for p in self._basin_mask.difference(cap)) > 1e-8
-                   for cap in self._footprint_caps(rings))
+        return any(self._basin_mask.covered_area(cap) > 1e-8 for cap in self._footprint_caps(rings))
 
     def _near_missing_ground(self, rings: Sequence[Ring]) -> bool:
         """Cheap and conservative: could any of this footprint lack ground?
@@ -327,7 +323,7 @@ class SupportBuilder:
         if mask is not None and mask.touches_water(rings):
             return True
         a = ring_bounds(rings[0])
-        return any(_overlaps(a, b) for b in self._basin_bounds)
+        return any(bounds_overlap(a, b) for b in self._basin_bounds)
 
     def _outline_edges(self, box, water_only=False):
         """Cut and basin outline segments inside *box*, as constraint edges."""
@@ -335,7 +331,7 @@ class SupportBuilder:
         edges = (list(field.void_mask.outline_edges(box, water_only))
                  if field.void_mask is not None else [])
         for bounds, rings, _floor in field.basins:
-            if _overlaps(bounds, box):
+            if bounds_overlap(bounds, box):
                 for ring in rings:
                     edges.extend(zip(ring, list(ring[1:]) + [ring[0]]))
         clipped = []
@@ -439,7 +435,7 @@ class SupportBuilder:
         """Support top: the structure's grade less the offset, above the base."""
         top = max(
             self.structure_heightfield.height_mm(x, y) - self.top_offset_mm - drop,
-            self.bottom_z + 0.05,
+            self.bottom_z + SUPPORT_MINIMUM_THICKNESS_MM,
         )
         if minimum_ground is not None:
             top = max(top, minimum_ground - self.top_offset_mm)

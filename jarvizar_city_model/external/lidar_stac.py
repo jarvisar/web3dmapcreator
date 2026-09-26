@@ -1,7 +1,7 @@
 """Bounded STAC API/static-catalog discovery; only metadata is fetched here."""
 import hashlib
 import json
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import urlencode, urljoin
 
 from pyproj import CRS
 from shapely.geometry import box, shape

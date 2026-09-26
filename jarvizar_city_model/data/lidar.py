@@ -11,16 +11,15 @@ import os
 import subprocess
 import tempfile
 import time
-from collections import Counter
 from pathlib import Path
-from ..external.lidar_records import ALGORITHM_VERSION, validate_records
+from ..external.lidar_records import (
+    ALGORITHM_VERSION, MAX_RESULT_BYTES, RESULT_FILE, RESULT_FORMAT_VERSION, validate_records,
+)
 from ..external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, validate_download_workers
 from ..external.lidar_storage import DEFAULT_CACHE_GIB, DEFAULT_FREE_GIB
 from ..external.lidar_ranking import ACQUISITION_VERSION, FALLBACK_POLICY_VERSION, selection_thresholds
 from ..external.lidar_candidates import discovery_settings
 from ..external.lidar_footprint import DEFAULT_MINIMUM_FOOTPRINT_AREA_MM2, minimum_footprint_area_m2
-
-FORMAT_VERSION = 1
 
 
 def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0.05, source_url="", roof_planes=True, prefer_lidar=True, manifest_url="", acquisition_thresholds=None, roof_mode='FACETED', providers=None, stac_urls=(), vertical_units='', rock_surfaces=False, min_footprint_area_mm2=DEFAULT_MINIMUM_FOOTPRINT_AREA_MM2, xy_area_scale=None):
@@ -66,42 +65,22 @@ def request_signature(bundle, xy_scale, z_scale, min_width_mm=0.1, min_step_mm=0
 
 
 def load_measurements(bundle, signature):
-    path = bundle.path / "lidar_buildings.json"
+    path = bundle.path / RESULT_FILE
     if not path.is_file():
         return {}, "No prepared LiDAR; using source buildings"
     try:
-        if path.stat().st_size > 512 * 1024 * 1024:
+        if path.stat().st_size > MAX_RESULT_BYTES:
             raise ValueError("LiDAR measurement cache is oversized")
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("Invalid LiDAR cache document")
-        if payload.get("format") != FORMAT_VERSION or payload.get("request") != signature:
+        if payload.get("format") != RESULT_FORMAT_VERSION or payload.get("request") != signature:
             return {}, "LiDAR cache is stale; prepare again for these footprints/print settings"
         buildings = payload["buildings"]
         validate_records(buildings)
         return buildings, f"LiDAR measurements: {len(buildings)} buildings"
     except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
         return {}, f"Unreadable LiDAR cache; using source buildings ({exc})"
-
-
-def measurement_summary(bundle):
-    """Small user-facing summary of the last prepared result, not a readiness check."""
-    payload = json.loads((bundle.path / 'lidar_buildings.json').read_text(encoding='utf-8'))
-    records = payload['buildings']
-    return {'buildings': len(records), 'candidate_buildings': payload.get('candidate_buildings', len(records)),
-            'infill_buildings': sum(bool(r.get('infill_geometry')) for r in records.values()),
-            'part_heights': sum(len(r.get('part_heights', {})) for r in records.values()),
-            'estimated_heights_corrected': sum(r.get('source_height_decision', r.get('height_decision')) == 'corrected_estimated_height' for r in records.values()),
-            'tiered_buildings': sum(bool(r['tiers']) for r in records.values()),
-            'roof_plane_buildings': sum(bool(r.get('roof_surfaces')) and r.get('method') != 'faceted_roof' for r in records.values()),
-            'faceted_roof_buildings': sum(r.get('method') == 'faceted_roof' for r in records.values()),
-            'compared_sources': payload.get('compared_sources', 0),
-            'conflict_buildings': payload.get('conflict_buildings', 0),
-            'laz_offers': payload.get('laz_offers', []),
-            'laz_offer_token': payload.get('laz_offer_token', ''),
-            'rejection_counts': dict(Counter(reason for key, reason in payload.get('rejected', {}).items()
-                                            if key not in records)),
-            'failures': payload.get('failures', []), 'counts': payload.get('counts', {})}
 
 
 class LidarPreparation:
@@ -194,4 +173,5 @@ class LidarPreparation:
 
 
 def prepare_lidar(python_path, bundle, signature, refresh=False, download_workers=DEFAULT_DOWNLOAD_WORKERS, laz_approval='', cache_gib=DEFAULT_CACHE_GIB, free_gib=DEFAULT_FREE_GIB):
-    return LidarPreparation(python_path, bundle, signature, refresh, download_workers, laz_approval, cache_gib, free_gib).result()
+    return LidarPreparation(python_path, bundle, signature, refresh=refresh, download_workers=download_workers,
+                            laz_approval=laz_approval, cache_gib=cache_gib, free_gib=free_gib).result()

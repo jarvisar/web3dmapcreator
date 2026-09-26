@@ -7,7 +7,7 @@ import math
 import struct
 from collections import Counter, defaultdict
 
-from .planar import clip_ring_to_rectangle, ear_clip, faces_are_consistent, signed_area
+from .planar import clip_ring_to_rectangle, ear_clip, faces_are_consistent, polygon_area, signed_area
 
 
 def _float32(value):
@@ -166,7 +166,7 @@ def envelope_solid(polygons, bottom, outlines, precision=0.):
     if (any(n != 1 for n in Counter(a for _, a, _ in boundary).values()) or
             any(n != 1 for n in Counter(b for _, _, b in boundary).values())):
         return None
-    expected = sum(abs(signed_area(rings[0]))-sum(abs(signed_area(r)) for r in rings[1:]) for rings in outlines)
+    expected = sum(polygon_area(rings) for rings in outlines)
     area = sum(abs(signed_area([vertices[i][:2] for i in triangle])) for triangle in triangles)
     if abs(area-expected) > max(1e-5, expected*1e-5):
         return None

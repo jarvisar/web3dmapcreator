@@ -9,14 +9,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import re
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Set, Tuple
 
-from ..data.geojson import feature_id, feature_properties, geometry_polygons
+from ..data.geojson import feature_id, feature_properties, geometry_polygons, positive_number
 from .planar import (
     effective_width,
     interior_grid_points,
     point_in_polygon,
+    polygon_area,
     ring_bounds,
+    signed_area,
 )
 
 # A building without parts whose footprint is at least this fraction inside
@@ -145,16 +147,6 @@ class BuildingSelection:
     duplicate_ids: frozenset = frozenset()
 
 
-def _positive_number(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) and number > 0.0 else None
-
-
 def _nonnegative_number(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
@@ -207,8 +199,8 @@ def resolve_vertical_profile(
     thickness. Contradictory intervals remain invalid and are skipped by the
     generator. Never manufacture a new top above a suspect min_height.
     """
-    explicit_height = _positive_number(length_metres(properties.get("height")))
-    floor_count = _positive_number(properties.get("num_floors", properties.get("building:levels")))
+    explicit_height = positive_number(length_metres(properties.get("height")))
+    floor_count = positive_number(properties.get("num_floors", properties.get("building:levels")))
     if explicit_height is not None:
         top_m = explicit_height
         height_source = "height"
@@ -273,14 +265,6 @@ def _bounds(rings: Sequence[Sequence[Tuple[float, float]]]):
     )
 
 
-def _ring_area(ring: Sequence[Tuple[float, float]]) -> float:
-    count = len(ring)
-    return 0.5 * sum(
-        ring[i][0] * ring[(i + 1) % count][1] - ring[(i + 1) % count][0] * ring[i][1]
-        for i in range(count)
-    )
-
-
 def footprint_admits_minimum_height(
     ring: Sequence[Tuple[float, float]], minimum_size_mm: float
 ) -> bool:
@@ -304,14 +288,14 @@ def footprint_admits_minimum_height(
         return True
     if len(ring) < 3:
         return False
-    if abs(_ring_area(ring)) < minimum_size_mm * minimum_size_mm:
+    if abs(signed_area(ring)) < minimum_size_mm * minimum_size_mm:
         return False
     return effective_width(ring) >= 0.5 * minimum_size_mm
 
 
 def _samples(rings: Sequence[Sequence[Tuple[float, float]]]) -> List[Tuple[float, float]]:
     """Interior sample points of the largest ring, a dozen across."""
-    ring = max(rings, key=lambda r: abs(_ring_area(r)))
+    ring = max(rings, key=lambda r: abs(signed_area(r)))
     min_x, min_y, max_x, max_y = ring_bounds(ring)
     spacing = max(max_x - min_x, max_y - min_y) / 12.0
     if spacing <= 0.0:
@@ -366,8 +350,8 @@ def _information_rank(feature: Mapping[str, Any]) -> Tuple[int, int, int]:
     properties = feature_properties(dict(feature))
     names = properties.get("names") or {}
     return (
-        int(_positive_number(properties.get("height")) is not None),
-        int(_positive_number(properties.get("num_floors")) is not None),
+        int(positive_number(properties.get("height")) is not None),
+        int(positive_number(properties.get("num_floors")) is not None),
         int(bool(isinstance(names, dict) and names.get("primary"))),
     )
 
@@ -521,7 +505,7 @@ def _sparse_parts_leave_main_mass(building, parts):
     # This keeps small disconnected wings from deciding a whole complex's fate.
     total_area = covered_area = 0.0
     for polygon in parent_polygons:
-        area = abs(_ring_area(polygon[0])) - sum(abs(_ring_area(hole)) for hole in polygon[1:])
+        area = polygon_area(polygon)
         samples = _footprint_samples([polygon])
         if area <= 0 or not samples:
             return False

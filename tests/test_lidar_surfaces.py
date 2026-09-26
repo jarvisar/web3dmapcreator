@@ -51,7 +51,7 @@ class CoherentSurfaceTests(unittest.TestCase):
     def reconstructed(self, footprint, **kwargs):
         record, reason = self.measure(footprint, **kwargs)
         self.assertIsNotNone(record, reason)
-        self.assertEqual(reason, 'faceted_roof', record.get('surface_fallback'))
+        self.assertEqual(reason, 'faceted_roof', record.get('faceted_fallback'))
         self.assertEqual(record.get('surface_reconstruction'), 'roof_envelope')
         self.assertFalse(record['tiers'], 'Continuous surfaces must not become terraces')
         self.assertEqual(record['cell_m'], 1.5)

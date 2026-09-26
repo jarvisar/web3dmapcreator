@@ -1,7 +1,7 @@
 """A robust upper-surface raster over LiDAR returns, collapsed and clipped to mapped footprints.
 
-Coverage and ground checks run upstream. The upper surface is the highest
-return in each print-scale cell, a moving median over a disc of cells, and a
+Coverage and ground checks run upstream. The upper surface is the
+second-highest return in each print-scale cell, a moving median over a disc of cells, and a
 light mean over observed cells away from walls; unobserved cells copy their
 nearest observed neighbour. That raster, triangulated on its own grid, is a
 faithful but wasteful surface: a face per cell, and every wall a staircase of

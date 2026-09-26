@@ -1,4 +1,4 @@
-"""Bounded LAZ download lookahead, independent of point/building processing."""
+"""Bounded LAZ tile and EPT node download lookahead, independent of point/building processing."""
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 from collections import deque

@@ -1,6 +1,8 @@
-"""Discover, schedule and acquire independent EPT and USGS LPC surveys.
+"""Discover, rank and read LiDAR surveys from every configured provider.
 
-Metadata ranks practical EPT first unless LAZ has a material advantage.
+`discover_sources` queries USGS, the lazily loaded adapters in `PROVIDERS` and
+any STAC endpoints, enriches their metadata and ranks them. Streamed EPT/COPC
+ranks ahead of staged LAS/LAZ unless metadata shows a material advantage.
 Lower-ranked sources are retained for unresolved coverage and measurement gaps.
 """
 from __future__ import annotations
@@ -11,31 +13,29 @@ try:
     from .lidar_storage import StorageFull
     from . import lidar_ept, lidar_laz
     from .lidar_selection import project_year
-    from .lidar_metadata import normalized_metadata, enrich_sources
+    from .lidar_metadata import enrich_sources
     from .lidar_usgs_projects import enrich_usgs_projects
     from .lidar_ranking import rank_sources
-    from .lidar_identity import metadata_identity
     from .lidar_tiles import building_tile_plan, batch_source, tile_audit
     from .lidar_provenance import enrich_provenance, enrich_asset_provenance
 except ImportError:
     from lidar_storage import StorageFull
     import lidar_ept, lidar_laz
     from lidar_selection import project_year
-    from lidar_metadata import normalized_metadata, enrich_sources
+    from lidar_metadata import enrich_sources
     from lidar_usgs_projects import enrich_usgs_projects
     from lidar_ranking import rank_sources
-    from lidar_identity import metadata_identity
     from lidar_tiles import building_tile_plan, batch_source, tile_audit
     from lidar_provenance import enrich_provenance, enrich_asset_provenance
 
 
 try:
-    from .lidar_usgs import TNM_URL, DISCOVERY_ERRORS, valid_bbox, laz_url, tnm_tiles, manifest_tiles, grouped_laz, discover_usgs
+    from .lidar_usgs import TNM_URL, DISCOVERY_ERRORS, tnm_tiles, manifest_tiles, grouped_laz, discover_usgs
     from .lidar_stac import discover_stac
     from .lidar_candidates import candidate, asset_format, discovery_settings, SOURCE_FIELDS
     from .lidar_copc import read_copc
 except ImportError:
-    from lidar_usgs import TNM_URL, DISCOVERY_ERRORS, valid_bbox, laz_url, tnm_tiles, manifest_tiles, grouped_laz, discover_usgs
+    from lidar_usgs import TNM_URL, DISCOVERY_ERRORS, tnm_tiles, manifest_tiles, grouped_laz, discover_usgs
     from lidar_stac import discover_stac
     from lidar_candidates import candidate, asset_format, discovery_settings, SOURCE_FIELDS
     from lidar_copc import read_copc

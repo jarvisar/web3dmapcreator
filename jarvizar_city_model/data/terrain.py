@@ -15,7 +15,7 @@ class TerrainSampler(ABC):
 
 
 class FlatTerrain(TerrainSampler):
-    """Phase 1 terrain implementation with a constant elevation."""
+    """Terrain with a constant elevation."""
 
     def __init__(self, elevation_m: float = 0.0) -> None:
         self.elevation_m = float(elevation_m)

@@ -13,7 +13,8 @@ from jarvizar_city_model.geometry.lidar_buildings import prefer_source_detail
 
 addon.register()
 s = bpy.context.scene.jarvizar_city_model
-assert s.maximum_building_slenderness == 30
+# The scene filter is off by default; generate_buildings keeps its own 30.
+assert s.maximum_building_slenderness == 0
 t = create_fixed_scale_transform(-84.51, 39.09, -84.50, 39.10, mm_per_metre=s.mm_per_metre)
 
 

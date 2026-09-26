@@ -6,6 +6,12 @@ never turn a missing upper roof into an apparently valid podium-only model.
 import math
 
 ALGORITHM_VERSION = 27
+# The published result in each cache bundle: the layout the worker writes and
+# both readers (Prepare's reuse check and Blender generation) accept, and the
+# largest file either will parse.
+RESULT_FILE = 'lidar_buildings.json'
+RESULT_FORMAT_VERSION = 1
+MAX_RESULT_BYTES = 512 * 1024 * 1024
 MAX_ROOF_FACETS = 1024
 # A roof envelope costs about one face per print-scale cell, so a downtown
 # outline needs several times the earlier budget to keep its plan resolution

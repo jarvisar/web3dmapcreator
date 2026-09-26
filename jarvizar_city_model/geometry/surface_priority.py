@@ -8,6 +8,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.geometry import barycentric_transform, delaunay_2d_cdt
 
+from ..blender.collections import GENERATED_KEY
 from ..data.land import DEFAULT_SURFACE_PRIORITY
 from .footprint_cut import area_xy
 from .planar import EPSILON, clean_ring, densify_ring, ear_clip
@@ -497,7 +498,7 @@ def _rebuild_surface(obj, cutters, thickness, outline=None, progress_callback=No
 
     vertices, polygons, count = _solid(out_points, kept, height, thickness)
     replacement = bpy.data.meshes.new(mesh.name + '_CUT')
-    replacement['jarvizar_generated'] = True
+    replacement[GENERATED_KEY] = True
     replacement.from_pydata(vertices, [], polygons)
     for material in mesh.materials:
         replacement.materials.append(material)

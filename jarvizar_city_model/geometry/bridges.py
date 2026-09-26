@@ -1,8 +1,9 @@
 """Blender mesh construction for bridge decks and their supports.
 
-The elevation solving itself is pure and lives in
-:mod:`jarvizar_city_model.geometry.deck_profile`.  This module turns a solved
-profile into closed geometry.
+The heights are solved for the whole network in
+:mod:`jarvizar_city_model.geometry.deck_graph` and read back along each
+centerline by :mod:`jarvizar_city_model.geometry.deck_profile`.  This module
+turns a solved profile into closed geometry.
 """
 
 from __future__ import annotations
@@ -34,7 +35,6 @@ PIER_OVERLAP_MM = 0.1
 __all__ = [
     "add_bridge_deck",
     "add_bridge_supports",
-    "support_stations",
 ]
 
 

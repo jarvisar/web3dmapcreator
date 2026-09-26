@@ -123,7 +123,7 @@ def metadata_order(source, thresholds, accuracy_fields):
     # Resolution is distinct from positional accuracy. Unknowns earn no bonus.
     density, spacing = meta.get('point_density_m2'), meta.get('point_spacing_m')
     # Put nominal spacing and areal density on a consistent bounded scale:
-    # spacing s and density 1/sÂ² have equal resolution scores. This is only
+    # spacing s and density 1/s² have equal resolution scores. This is only
     # an ordering score, not an invented reported metric. When both are
     # supplied, the weaker evidence limits the score.
     resolution_scores = []

@@ -33,6 +33,11 @@ def signed_area(points: Sequence[Point]) -> float:
     )
 
 
+def polygon_area(rings: Sequence[Sequence[Point]]) -> float:
+    """Return an outer ring's area less its holes', whatever their winding."""
+    return abs(signed_area(rings[0])) - sum(abs(signed_area(ring)) for ring in rings[1:])
+
+
 def clean_ring(points: Iterable[Point], epsilon: float = EPSILON) -> List[Point]:
     """Drop duplicate/near-duplicate vertices and reject degenerate rings."""
     clean: List[Point] = []

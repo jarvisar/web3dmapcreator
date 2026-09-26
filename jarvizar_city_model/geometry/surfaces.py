@@ -36,8 +36,8 @@ from ..data.land import (
     surface_priority,
 )
 from ..data.geojson import feature_properties
-from .planar import (EPSILON, clean_ring, densify_ring, interior_grid_points, polyline_meets_polygon,
-                     ring_bounds, signed_area)
+from .planar import (EPSILON, clean_ring, densify_ring, interior_grid_points, polygon_area,
+                     polyline_meets_polygon, ring_bounds, signed_area)
 from .support import CUT_WATER_DROP_MM
 from .surface_priority import _lattice, _solid, _triangulate, cut_surface_overlaps
 from .water_geometry import projected_water_polygons, valid_water_polygon
@@ -139,8 +139,6 @@ def _draped_slab(rings, draped, thickness: float, spacing: float):
 
 
 def _ring_area(ring: Sequence[Tuple[float, float]]) -> float:
-    from .planar import signed_area
-
     return abs(signed_area(ring))
 
 
@@ -291,7 +289,7 @@ def _source_water_area(geometry, transform):
                      for ring in polygon]
             if not rings or any(len(ring) < 3 for ring in rings):
                 return math.inf
-            part_area = _ring_area(rings[0]) - sum(_ring_area(ring) for ring in rings[1:])
+            part_area = polygon_area(rings)
             if not math.isfinite(part_area) or part_area <= 0:
                 return math.inf
             area += part_area
@@ -357,7 +355,7 @@ def solve_water_bodies(
             if not all(rings) or not valid_water_polygon(rings):
                 invalid_polygons += 1
                 continue
-            model_area = _ring_area(rings[0]) - sum(_ring_area(hole) for hole in rings[1:])
+            model_area = polygon_area(rings)
             if model_area < settings.minimum_area_mm2:
                 continue
             if basin_kind:

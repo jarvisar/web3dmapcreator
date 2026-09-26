@@ -22,6 +22,7 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import bpy
 
+from ..blender.collections import GENERATED_KEY
 from ..blender.mesh_utils import (
     MeshBuilder,
     projected_polygon_rings,
@@ -301,7 +302,7 @@ def generate_trees(
                     mesh.materials.append(material)
             obj = bpy.data.objects.new(f"TREE_{index:06d}", mesh)
             collection.objects.link(obj)
-            obj["jarvizar_generated"] = True
+            obj[GENERATED_KEY] = True
             obj["feature_type"] = "trees"
             obj.location = (x, y, base)
             obj.scale = (factor, factor, factor)

@@ -1478,8 +1478,8 @@ default change, building detector or city-specific exception was added.
 `download_lidar.prepare` now supplies `rejection_counts` for **unique final
 rejected buildings**. Historical `counts` still counts individual observations
 across surveys and must not be presented as the number of skipped buildings.
-`data.lidar.measurement_summary` derives the same breakdown from cached final
-rejections, and the preparation status displays the three footprint checks
+`external.lidar_reuse.summarize_prepared` derives the same breakdown from cached
+final rejections, and the preparation status displays the three footprint checks
 separately from source/survey conflicts.
 
 Algorithm **7** invalidates prior measurement checkpoints and results.

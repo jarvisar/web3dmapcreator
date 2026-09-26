@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
-from .cache import CacheBundle, PHASE1_TYPES
+from .cache import BUILDING_TYPES, CacheBundle
 
 
 class OvertureDownloadError(RuntimeError):
@@ -61,25 +61,26 @@ def _last_json_line(stdout: str) -> Dict[str, Any]:
     raise OvertureDownloadError("Downloader returned no machine-readable result")
 
 
-def probe_client(python_path: Path) -> Dict[str, Any]:
+def _run_helper(command, timeout: int, failure: str = "") -> Dict[str, Any]:
+    """Run a downloader script and return its final JSON result line."""
     result = subprocess.run(
-        [str(python_path), str(_helper_path()), "--probe"],
+        command,
         capture_output=True,
         text=True,
         check=False,
-        timeout=60,
+        timeout=timeout,
     )
     payload = _last_json_line(result.stdout)
     if result.returncode or not payload.get("ok"):
         detail = payload.get("detail") or result.stderr.strip() or "unknown error"
-        raise OvertureDownloadError(str(detail))
+        raise OvertureDownloadError(f"{failure}{detail}")
     return payload
 
 
 def download_to_cache(
     python_path: Path,
     bundle: CacheBundle,
-    feature_types: Iterable[str] = PHASE1_TYPES,
+    feature_types: Iterable[str] = BUILDING_TYPES,
 ) -> Dict[str, Any]:
     """Atomically replace a cache bundle after all downloads succeed."""
     feature_types = tuple(feature_types)
@@ -99,17 +100,7 @@ def download_to_cache(
             "--types",
             *feature_types,
         ]
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=1800,
-        )
-        payload = _last_json_line(result.stdout)
-        if result.returncode or not payload.get("ok"):
-            detail = payload.get("detail") or result.stderr.strip() or "unknown error"
-            raise OvertureDownloadError(str(detail))
+        payload = _run_helper(command, timeout=1800)
         for feature_type in feature_types:
             source = temporary / f"{feature_type}.geojson"
             if not source.is_file():
@@ -162,17 +153,7 @@ def download_dem_to_cache(
         "--target-spacing-m",
         f"{float(target_spacing_m):.4f}",
     ]
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
-    payload = _last_json_line(result.stdout)
-    if result.returncode or not payload.get("ok"):
-        detail = payload.get("detail") or result.stderr.strip() or "unknown error"
-        raise OvertureDownloadError(f"Elevation download failed: {detail}")
+    payload = _run_helper(command, timeout=timeout, failure="Elevation download failed: ")
     if not bundle.has_dem():
         raise OvertureDownloadError("Elevation downloader did not write a terrain grid")
     return bundle.merge_manifest(

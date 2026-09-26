@@ -21,9 +21,6 @@ WATER_TYPES = ("water",)
 LAND_TYPES = ("land", "land_use", "land_cover")
 INFRASTRUCTURE_TYPES = ("infrastructure",)
 
-# Retained under its original name because it is the documented Phase 1 set.
-PHASE1_TYPES = BUILDING_TYPES
-
 ALL_TYPES = (
     BUILDING_TYPES + ROAD_TYPES + WATER_TYPES + LAND_TYPES + INFRASTRUCTURE_TYPES
 )
@@ -84,7 +81,7 @@ class CacheBundle:
             return {}
         return value if isinstance(value, dict) else {}
 
-    def is_complete(self, feature_types: Iterable[str] = PHASE1_TYPES) -> bool:
+    def is_complete(self, feature_types: Iterable[str] = BUILDING_TYPES) -> bool:
         manifest = self.read_manifest()
         if manifest.get("cache_format") != CACHE_FORMAT_VERSION:
             return False

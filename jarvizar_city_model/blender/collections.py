@@ -95,21 +95,21 @@ def generated_roots(scene: bpy.types.Scene) -> List[bpy.types.Collection]:
 
 def hierarchy_data(roots):
     """Return owned objects, their meshes, and tagged collections by reference."""
-    generated_objects = set()
-    generated_meshes = set()
-    generated_collections = set()
+    owned_objects = set()
+    owned_meshes = set()
+    owned_collections = set()
     for root in roots:
         collections = _walk_collections(root)
         for collection in collections:
             if collection.get(GENERATED_KEY) is True:
-                generated_collections.add(collection)
+                owned_collections.add(collection)
             for obj in list(collection.objects):
                 if obj.get(GENERATED_KEY) is True:
-                    generated_objects.add(obj)
+                    owned_objects.add(obj)
                     if obj.type == "MESH" and obj.data is not None:
-                        generated_meshes.add(obj.data)
+                        owned_meshes.add(obj.data)
 
-    return generated_objects, generated_meshes, generated_collections
+    return owned_objects, owned_meshes, owned_collections
 
 
 def preserve_user_links(scene, objects, collections, links=None):

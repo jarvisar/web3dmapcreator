@@ -4,8 +4,8 @@ The convex envelope supports shed, gable, hip and broad sloping crowns. It
 does not triangulate the cloud. Ambiguous/concave roofs retain the fallback.
 """
 import numpy as np
-from shapely.geometry import Polygon, box, mapping
-from shapely.ops import unary_union
+from shapely import contains_xy
+from shapely.geometry import MultiPoint, Polygon, box
 
 
 def polygon_pieces(geometry):
@@ -92,13 +92,11 @@ def fit_roof_planes(footprint, samples, min_width, min_rise, tolerance=0.45):
         for polygon in polygon_pieces(region):
             if polygon.area < min_width**2 or polygon.buffer(-min_width*0.35).is_empty:
                 return None
-            from shapely import contains_xy
             mask = contains_xy(polygon.buffer(0.1), samples[:, 0], samples[:, 1])
             if (mask & (owner == i)).sum() < minimum:
                 return None
             # Prevent an apparently supported plane extending far beyond its
             # observations on a narrow scan strip.
-            from shapely.geometry import MultiPoint
             hull = MultiPoint(samples[mask & (owner == i), :2]).convex_hull
             if hull.area < polygon.area*0.45:
                 return None

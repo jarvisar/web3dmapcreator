@@ -16,6 +16,8 @@ from typing import Dict, Tuple
 
 import bpy
 
+from .collections import GENERATED_KEY
+
 
 PALETTE: Dict[str, Tuple[float, float, float, float]] = {
     "terrain": (0.36, 0.38, 0.38, 1.0),
@@ -62,7 +64,7 @@ def get_or_create_material(name: str, color, roughness: float = _DEFAULT_ROUGHNE
         principled.inputs["Base Color"].default_value = rgba
         if "Roughness" in principled.inputs:
             principled.inputs["Roughness"].default_value = roughness
-    material["jarvizar_generated"] = True
+    material[GENERATED_KEY] = True
     return material
 
 
@@ -77,8 +79,3 @@ def model_materials(*, staging=False) -> Dict[str, bpy.types.Material]:
     for role, material in materials.items():
         material["jarvizar_material_role"] = role
     return materials
-
-
-# Retained for callers written against the Phase 1 API.
-def phase1_materials() -> Dict[str, bpy.types.Material]:
-    return model_materials()

@@ -1,6 +1,11 @@
-"""Request-bound, explicit consent for a finite set of LAZ gap tiles (stdlib)."""
+"""Request-bound, explicit consent for a finite set of LAS/LAZ gap or upgrade tiles (stdlib)."""
 import hashlib
 import json
+
+try:
+    from .lidar_records import RESULT_FILE
+except ImportError:
+    from lidar_records import RESULT_FILE
 
 
 def offer_token(request, offers):
@@ -12,7 +17,7 @@ def approved_offers(bundle, request, token):
     if not token:
         return []
     try:
-        payload = json.loads((bundle / 'lidar_buildings.json').read_text(encoding='utf-8'))
+        payload = json.loads((bundle / RESULT_FILE).read_text(encoding='utf-8'))
         offers = payload['laz_offers']
         if (payload['request'] == request and offers
                 and token == offer_token(request, offers)):

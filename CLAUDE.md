@@ -31,7 +31,7 @@ retain explicitly stored values when defaults change.
 | Roads / decks | Both default to 0.6 mm; widths constrained to 0.45–0.7 mm |
 | Ground surfaces | 0.4 mm rise, 0.15 mm embed; roads and ground-founded buildings use that embed too; beaches slope to the waterline over 1.5 mm |
 | Buildings | Height multiplier 1.1; minimum height 0.8 mm, gated by a 0.6 mm footprint setting |
-| Source building detail | Minimum effective width 0.08 mm; slenderness limit 30 below 0.45 mm width |
+| Source building detail | Width and slenderness filters off (0); the direct `generate_buildings` helper defaults to 0.08 mm and 30 below 0.45 mm width |
 | LiDAR | Opt-in; Prefer LiDAR on Conflicts enabled; automatic Roof Envelope; legacy Terraces width 0.1 mm / step 0.05 mm |
 | LiDAR building selection | Minimum printed footprint area 0.7 mm²; 0 disables this pre-acquisition filter |
 | Ponds / fountains | Recess enabled, depth 1.0 mm, water thickness 0.8 mm (0.2 mm below the lowest sampled bank) |

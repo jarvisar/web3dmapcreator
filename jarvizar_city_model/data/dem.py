@@ -1,7 +1,7 @@
 """Cached elevation grid loading and sampling inside Blender.
 
 The heavy work (tile download, PNG decode, resampling) happens in
-:mod:`jarvizar_city_model.external.download_dem`.  Blender only memory-maps a
+:mod:`jarvizar_city_model.external.download_dem`.  Blender only reads a
 small regular grid of float32 metres and interpolates it, so this module needs
 nothing beyond the standard library.
 
@@ -17,7 +17,7 @@ import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence, Tuple
+from typing import Iterable, Tuple
 
 from .terrain import TerrainSampler
 
@@ -174,19 +174,6 @@ class DEMTerrain(TerrainSampler):
     def relief_m(self) -> float:
         """Total modelled vertical relief after exaggeration."""
         return (self.grid.maximum_m - self.grid.minimum_m) * self.exaggeration
-
-    @property
-    def minimum_m(self) -> float:
-        return (self.grid.minimum_m - self.reference_m) * self.exaggeration
-
-    @property
-    def maximum_m(self) -> float:
-        return (self.grid.maximum_m - self.reference_m) * self.exaggeration
-
-    def sample_many(
-        self, coordinates: Iterable[Tuple[float, float]]
-    ) -> Sequence[float]:
-        return [self.sample_m(lon, lat) for lon, lat in coordinates]
 
     def minimum_over(self, coordinates: Iterable[Tuple[float, float]]) -> float:
         """Return the lowest sampled elevation, or 0.0 for an empty input.

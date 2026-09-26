@@ -438,7 +438,7 @@ def _clip_convex(bm, geom, opening, transform, *, preserve_contour=False):
         bm.normal_update()
 
 
-def _clip_concave(bm, vertices, edges, faces, opening, transform, collection, materials):
+def _clip_concave(bm, vertices, faces, opening, transform, collection, materials):
     """Bounded fallback: intersect an individual shell with the opening volume."""
     objects, meshes = [], []
     try:
@@ -549,7 +549,7 @@ def _clip_shell(vertices, edges, faces, opening, transform, collection, material
                 stats['retried_shells'] += 1
                 _clip_convex(work, _geometry(work), opening, transform, preserve_contour=True)
         else:
-            _clip_concave(work, list(work.verts), list(work.edges), list(work.faces),
+            _clip_concave(work, list(work.verts), list(work.faces),
                           opening, transform, collection, materials)
         if not work.faces or (discard_tangent and _zero_volume(work)):
             return None

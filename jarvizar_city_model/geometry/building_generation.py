@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..blender.mesh_utils import MeshBuilder, projected_polygon_rings
-from ..data.geojson import feature_id, feature_properties, first_osm_id, geometry_polygons
+from ..data.geojson import feature_id, feature_properties, first_osm_id, geometry_polygons, positive_number
 from .buildings import (
     footprint_admits_minimum_height,
     is_above_ground,
@@ -42,16 +42,6 @@ def _needs_ground(rings, heightfield, spacing_mm: float = 0.5) -> bool:
     return any(
         heightfield.over_open_water(x, y) for x, y in densify_ring(rings[0], spacing_mm)
     )
-
-
-def _positive(value: Any) -> Optional[float]:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) and number > 0.0 else None
 
 
 def _safe_property(obj, key: str, value: Any) -> None:
@@ -351,7 +341,7 @@ def generate_buildings(
     height_only_profiles = {key: {'height_m':height}
                             for parent_id,record in (lidar_profiles or {}).items() if record.get('method')=='height_only'
                             for key,height in record.get('source_heights', {}).items()
-                            if _positive(height) is not None and (key==parent_id
+                            if positive_number(height) is not None and (key==parent_id
                                 or any(feature_id(part)==key for part in parts_by_parent.get(parent_id, ())))}
     height_only_groups = defaultdict(list)
     counts["lidar_buildings"] = 0
@@ -494,7 +484,7 @@ def generate_buildings(
         parent_id = str(properties.get("building_id") or "") if is_part else ""
         parent = parent_lookup.get(parent_id) if parent_id else None
         parent_top_m = (
-            _positive(feature_properties(parent).get("height")) if parent is not None else None
+            positive_number(feature_properties(parent).get("height")) if parent is not None else None
         )
         height_group = source_id
         height_segments = []

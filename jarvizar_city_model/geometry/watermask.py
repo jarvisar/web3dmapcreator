@@ -95,7 +95,6 @@ class WaterMask:
         self.max_x = self.min_x + self.step_x * (self.columns - 1)
         self.max_y = self.min_y + self.step_y * (self.rows - 1)
         self.wet = bytearray(self.columns * self.rows)
-        self.polygons = 0
         # The polygons that define the cut, exactly as the terrain solid uses them.
         self.water_polygons: List[List[List[Point]]] = []
         self.ground_polygons: List[List[List[Point]]] = []
@@ -137,7 +136,6 @@ class WaterMask:
         polygon = len(self._is_water)
         self._is_water.append(water)
         (self.water_polygons if water else self.ground_polygons).append(usable)
-        self.polygons += 1
         changed = self._scan_rows(usable, window, 1 if water else 0)
         self._file_edges(usable, polygon, _WATER_EDGE if water else _GROUND_EDGE)
         return changed if water else max(changed, 1)

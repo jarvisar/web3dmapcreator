@@ -6,6 +6,9 @@ from shapely.ops import transform
 # Measurements consume footprint.buffer(25). Keep the existing 30 m acquisition
 # margin (5 m guard) while excluding empty space between unrelated footprints.
 SUPPORT_HALO_M = 30.0
+# How far beyond the selected buildings any acquisition may reach. The query
+# bounds, each batch and each tile plan must share it.
+SELECTION_HALO_M = 75.0
 
 
 def building_tile_plan(source, features, geometries, to_geographic, selection):
@@ -13,7 +16,7 @@ def building_tile_plan(source, features, geometries, to_geographic, selection):
     bounds = [box(*tile['bbox']) for tile in tiles]
     tree = STRtree(bounds)
     selected = {}
-    limit = selection.buffer(75)
+    limit = selection.buffer(SELECTION_HALO_M)
     for feature in features:
         identifier = feature['id']
         footprint = geometries[identifier]

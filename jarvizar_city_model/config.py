@@ -16,7 +16,7 @@ from bpy.props import (
 from bpy.types import AddonPreferences, PropertyGroup
 
 from .data.export_plates import DEFAULT_PRINTER, MAX_BED_DIMENSION, PRINTERS
-from .data.land import DEFAULT_SURFACE_PRIORITY
+from .data.land import DEFAULT_SURFACE_PRIORITY, MINIMUM_WATER_CUT_AREA_M2
 from .external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS
 from .external.lidar_footprint import DEFAULT_MINIMUM_FOOTPRINT_AREA_MM2
 from .external.lidar_storage import DEFAULT_CACHE_GIB, DEFAULT_FREE_GIB
@@ -653,7 +653,7 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
             "a body is left as a surface slab, which keeps ponds and fountains "
             "from punching holes through the base"
         ),
-        default=5000.0,
+        default=MINIMUM_WATER_CUT_AREA_M2,
         min=0.0,
         soft_max=200000.0,
         precision=0,

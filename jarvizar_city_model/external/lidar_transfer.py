@@ -1,6 +1,7 @@
 """Stream and resume staged tiles without changing acquisition/measurements."""
 import json
 import re
+import sys
 import time
 import urllib.request
 from urllib.error import HTTPError
@@ -123,6 +124,5 @@ def stream_tile(url, temporary, limit, progress, cancel=None, validate_prefix=No
             # Unvalidated partials cannot safely be appended to on a later job.
             metadata.unlink(missing_ok=True)
             # Successful transfers without ETag are still promoted by caller.
-            import sys
             if sys.exc_info()[0] is not None:
                 temporary.unlink(missing_ok=True)

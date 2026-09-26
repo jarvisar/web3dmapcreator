@@ -13,11 +13,11 @@ import os
 from pathlib import Path
 import textwrap
 
-import bpy
 from bpy.types import Menu, Panel
 
+from .config import preferred_python_path
 from .data.bounds_presets import load_presets
-from .data.projection import WGS84Bounds
+from .data.projection import WGS84_SEMI_MAJOR_AXIS_M, WGS84Bounds
 from .blender.generation_modal import active_session, is_generating
 
 
@@ -98,14 +98,12 @@ def _scale_summary(settings):
         return [f"Ratio {ratio}", "Bounding box is not valid decimal degrees", *roads]
 
     latitude = math.radians(bounds.center_latitude)
-    width_m = math.radians(bounds.width_degrees) * 6_378_137.0 * math.cos(latitude)
-    height_m = math.radians(bounds.height_degrees) * 6_378_137.0
+    width_m = math.radians(bounds.width_degrees) * WGS84_SEMI_MAJOR_AXIS_M * math.cos(latitude)
+    height_m = math.radians(bounds.height_degrees) * WGS84_SEMI_MAJOR_AXIS_M
     return [f"{width_m * scale:.0f} x {height_m * scale:.0f} mm at {ratio}", *roads]
 
 
 def _python_configured(settings):
-    from .config import preferred_python_path
-
     return bool(settings.overture_python_path.strip() or preferred_python_path().strip()
                 or os.environ.get("JARVIZAR_OVERTURE_PYTHON", "").strip())
 
@@ -505,8 +503,6 @@ class JARVIZAR_PT_setup(_SubPanel, Panel):
     bl_idname = "JARVIZAR_PT_setup"
 
     def draw(self, context):
-        from .config import preferred_python_path
-
         layout, settings = _panel(self, context)
         _labelled(layout, settings, "cache_directory")
 

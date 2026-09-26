@@ -6,7 +6,7 @@ Cache misses, large tiles and unavailable temporary storage retain streaming.
 Readers remain sequential; download threads never access these caches.
 """
 from collections import OrderedDict
-from contextlib import closing
+from contextlib import closing, nullcontext
 import tempfile
 import shutil
 
@@ -115,5 +115,4 @@ def tile_chunks(fetch, reader, path, chunk_size):
     cache = getattr(fetch, 'decoded_cache', None)
     if isinstance(cache, DecodedPointCache):
         return closing(cache.tile_chunks(reader, path, chunk_size))
-    from contextlib import nullcontext
     return nullcontext(reader.chunk_iterator(chunk_size))

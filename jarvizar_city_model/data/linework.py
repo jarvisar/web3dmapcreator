@@ -17,6 +17,8 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Sequence, Tuple
 
+from .geojson import positive_number
+
 
 Point = Tuple[float, float]
 
@@ -112,10 +114,6 @@ class SubSegment:
     @property
     def is_tunnel(self) -> bool:
         return "is_tunnel" in self.flags
-
-    @property
-    def length_m(self) -> float:
-        return polyline_length(self.points)
 
 
 def linestring_coordinates(geometry: Mapping[str, Any]) -> List[Tuple[float, float]]:
@@ -264,16 +262,6 @@ def active_flag_values(rules: Any, midpoint: float) -> FrozenSet[str]:
     return frozenset(active)
 
 
-def _finite_positive(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) and number > 0.0 else None
-
-
 def resolve_width_m(
     properties: Mapping[str, Any],
     midpoint: float,
@@ -283,7 +271,7 @@ def resolve_width_m(
     """Apply the documented width precedence: explicit rule, then class default."""
     rule = active_rule(properties.get("width_rules"), midpoint)
     if rule is not None:
-        explicit = _finite_positive(rule.get("value"))
+        explicit = positive_number(rule.get("value"))
         if explicit is not None:
             return explicit, "width_rules"
     defaults = DEFAULT_ROAD_WIDTH_M if class_defaults is None else class_defaults

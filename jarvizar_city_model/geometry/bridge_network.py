@@ -110,21 +110,7 @@ def split_at_open_water(
     intervals = _run_intervals(points, runs, minimum_length, extension)
     if not intervals:
         return [(list(points), False)]
-
-    cuts: List[float] = []
-    for low, high in intervals:
-        cuts.extend((low, high))
-    pieces = split_polyline_at_distances(points, cuts)
-
-    result: List[Tuple[List[Point], bool]] = []
-    travelled = 0.0
-    for piece in pieces:
-        length = polyline_length(piece)
-        midpoint = travelled + length * 0.5
-        crossing = any(low - 1.0e-9 <= midpoint <= high + 1.0e-9 for low, high in intervals)
-        result.append((piece, crossing))
-        travelled += length
-    return result
+    return _classified_pieces(points, intervals)
 
 
 def open_water_corridors(
@@ -145,18 +131,24 @@ def open_water_corridors(
     if not runs:
         return []
     intervals = _run_intervals(points, runs, 0.0, overlap)
+    return [piece for piece, crossing in _classified_pieces(points, intervals) if crossing]
+
+
+def _classified_pieces(
+    points: Sequence[Point], intervals: Sequence[Tuple[float, float]]
+) -> List[Tuple[List[Point], bool]]:
+    """Split at every interval end, flagging the pieces inside an interval."""
     cuts: List[float] = []
     for low, high in intervals:
         cuts.extend((low, high))
-    pieces = split_polyline_at_distances(points, cuts)
-    corridors: List[List[Point]] = []
+    result: List[Tuple[List[Point], bool]] = []
     travelled = 0.0
-    for piece in pieces:
+    for piece in split_polyline_at_distances(points, cuts):
         length = polyline_length(piece)
         midpoint = travelled + length * 0.5
-        if any(low - 1.0e-9 <= midpoint <= high + 1.0e-9 for low, high in intervals):
-            corridors.append(piece)
+        crossing = any(low - 1.0e-9 <= midpoint <= high + 1.0e-9 for low, high in intervals)
+        result.append((piece, crossing))
         travelled += length
-    return corridors
+    return result
 
 

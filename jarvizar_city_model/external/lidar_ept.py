@@ -1,4 +1,4 @@
-"""Bounded USGS EPT/LAZ reader, used only by the external downloader.
+"""Bounded EPT reader and the shared HTTP Fetcher, used only by the external downloader.
 
 EPT nodes are additive: include intersecting ancestors as well as leaves.
 Only JSON hierarchies and laszip nodes are supported. No regional mesh or
@@ -28,13 +28,13 @@ try:
     from .lidar_transfer import BudgetExceeded, stream_tile
     from .lidar_normalize import vertical_factor as declared_vertical_factor, classifications, RETAINED_CLASSES
     from .lidar_decode_cache import DecodedPointCache
-    from .lidar_downloads import ept_node_data
+    from .lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, ept_node_data
 except ImportError:
     from lidar_selection import gps_capture_years
     from lidar_transfer import BudgetExceeded, stream_tile
     from lidar_normalize import vertical_factor as declared_vertical_factor, classifications, RETAINED_CLASSES
     from lidar_decode_cache import DecodedPointCache
-    from lidar_downloads import ept_node_data
+    from lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, ept_node_data
 
 CATALOG_URL = "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson"
 
@@ -54,7 +54,7 @@ class Fetcher:
         self._download_failures = {}
         self._download_budget = threading.Lock()
         self.decoded_cache = DecodedPointCache()
-        self.download_workers = 4
+        self.download_workers = DEFAULT_DOWNLOAD_WORKERS
         self.storage = None
 
     def _write_cache(self, path, data):
@@ -68,7 +68,6 @@ class Fetcher:
     def get(self, url, limit=32 * 1024 * 1024, fresh=False, body=None,
             ttl=None, timeout=45, attempts=3, content_type='application/json'):
         """Coalesce concurrent node reads, retaining exact cache/budget accounting."""
-        from contextlib import nullcontext
         encoded = (body.encode() if isinstance(body, str) else json.dumps(body, sort_keys=True).encode()) if body is not None else None
         key = url + ('#POST=' + encoded.decode() +
                      ('#Content-Type=' + content_type if content_type != 'application/json' else '')
@@ -132,7 +131,6 @@ class Fetcher:
         Explicit total byte budgets retain serial admission/accounting. Normal
         preparation has no total byte cap and keeps the per-file size guard.
         """
-        from contextlib import nullcontext
         key = url + ('#revision='+str(revision) if revision else '')
         with self._download_state:
             lock = self._download_keys.setdefault(key, threading.Lock())
@@ -184,7 +182,7 @@ class Fetcher:
         return path
 
     def range(self, url, start, size):
-        """Read bounded header metadata only; a server must honor HTTP Range."""
+        """Read one bounded byte range (a header, index row or COPC chunk); a server must honor HTTP Range."""
         if urlparse(url).scheme != 'https' or start < 0 or not 0 < size <= 4 * 1024 ** 2:
             raise ValueError('Invalid LiDAR header range')
         key = f'{url}#range={start}:{size}'

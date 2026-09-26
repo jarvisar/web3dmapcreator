@@ -24,7 +24,7 @@ underneath it so its piers have ground.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..blender.mesh_utils import MeshBuilder, projected_polygon_rings
@@ -57,8 +57,8 @@ from .planar import (
     oriented_ring,
     signed_area,
 )
-from .road_network import NetworkSettings, tidy_network
-from .support import CUT_WATER_DROP_MM
+from .road_network import BOUNDARY_TOLERANCE_MM, NetworkSettings, tidy_network
+from .support import CUT_WATER_DROP_MM, SUPPORT_MINIMUM_THICKNESS_MM
 
 
 # Flags that mean the feature is not a visible surface in a printed miniature.
@@ -74,11 +74,6 @@ EVIDENCE_CROSSING = "crosses_cut_water"
 # out: a helipad a few tenths of a millimetre across is a blob, not a pad.
 AIRPORT_MINIMUM_AREA_MM2 = 0.25
 AIRPORT_CLASS = "airport"
-
-# How close to the selection rectangle a deck end has to be to count as cut
-# off by it rather than ending there.  Clipping puts the vertex on the edge
-# to floating-point precision; the slack is a fraction of a road width.
-BOUNDARY_TOLERANCE_MM = 0.05
 
 
 @dataclass
@@ -221,24 +216,6 @@ def _metric_ring_to_model(ring, transform) -> List[Tuple[float, float]]:
     ]
 
 
-def _replace(piece: SubSegment, **changes) -> SubSegment:
-    values = {
-        "source_id": piece.source_id,
-        "points": piece.points,
-        "start_t": piece.start_t,
-        "end_t": piece.end_t,
-        "road_class": piece.road_class,
-        "subclass": piece.subclass,
-        "width_m": piece.width_m,
-        "width_source": piece.width_source,
-        "flags": piece.flags,
-        "level": piece.level,
-        "evidence": piece.evidence,
-    }
-    values.update(changes)
-    return SubSegment(**values)
-
-
 def _clipped(piece: SubSegment, metric_bounds):
     return clip_polyline_to_rectangle(
         piece.points,
@@ -311,12 +288,12 @@ def _subsegments(features, transform, settings: RoadSettings, counts: RoadCounts
             if skipped:
                 if left_out is not None:
                     left_out.extend(
-                        _replace(piece, points=tuple(clipped))
+                        replace(piece, points=tuple(clipped))
                         for clipped in _clipped(piece, metric_bounds)
                     )
                 continue
             for clipped in _clipped(piece, metric_bounds):
-                yield _replace(
+                yield replace(
                     piece,
                     points=tuple(clipped),
                     width_source=(
@@ -400,7 +377,7 @@ def _recover_crossings(
             if crossing:
                 counts.crossings_recovered += 1
                 result.append(
-                    _replace(
+                    replace(
                         piece,
                         points=tuple(points),
                         flags=frozenset(piece.flags | {"is_bridge"}),
@@ -408,7 +385,7 @@ def _recover_crossings(
                     )
                 )
             else:
-                result.append(_replace(piece, points=tuple(points)))
+                result.append(replace(piece, points=tuple(points)))
     return result
 
 
@@ -709,12 +686,13 @@ def generate_roads(
         # has that gap beneath it; a pier on a taller pedestal is buried in it.
         if ground_support is not None and heightfield.in_cut_water(x, y):
             return max(height - ground_support.top_offset_mm - CUT_WATER_DROP_MM,
-                       ground_support.bottom_z + 0.05)
+                       ground_support.bottom_z + SUPPORT_MINIMUM_THICKNESS_MM)
         if ground_support is not None:
             physical = ground_support.heightfield.height_mm(x, y)
             if physical < height - 1e-6:
                 if ground_support.heightfield.is_supported(x, y):
-                    return max(height - ground_support.top_offset_mm, ground_support.bottom_z + 0.05)
+                    return max(height - ground_support.top_offset_mm,
+                               ground_support.bottom_z + SUPPORT_MINIMUM_THICKNESS_MM)
                 return physical
         return height
 

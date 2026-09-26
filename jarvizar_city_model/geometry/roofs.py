@@ -30,6 +30,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple
 
+from ..data.geojson import positive_number
 from .buildings import VerticalProfile, length_metres
 from .planar import EPSILON, clean_ring, ear_clip, oriented_ring, signed_area
 
@@ -97,16 +98,6 @@ class RoofProfile:
         return self.kind not in ("flat", "unsupported")
 
 
-def _positive(value: Any) -> Optional[float]:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) and number > 0.0 else None
-
-
 def _finite(value: Any) -> Optional[float]:
     if isinstance(value, bool):
         return None
@@ -146,7 +137,7 @@ def resolve_roof(
     if kind == "unsupported":
         return RoofProfile(kind, shape, top, top, None, None, f"unsupported:{shape}")
 
-    roof_height = _positive(length_metres(properties.get("roof_height", properties.get("roof:height"))))
+    roof_height = positive_number(length_metres(properties.get("roof_height", properties.get("roof:height"))))
     explicit_roof = roof_height is not None
     if roof_height is None:
         if kind in ("pyramid", "dome"):

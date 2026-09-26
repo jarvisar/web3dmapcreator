@@ -18,6 +18,7 @@ from .blender.collections import (
     generated_objects,
 )
 from .blender.generation import GenerationTransaction
+from .blender.generation_modal import GenerationSession, active_session, is_generating
 from .data.generation_job import GenerationCancelled
 from .data.cache import (
     ALL_TYPES,
@@ -85,6 +86,18 @@ def _cache_bundle(settings) -> CacheBundle:
     return CacheBundle(cache_root, _bounds_from_settings(settings))
 
 
+def _transform_from_settings(settings, bounds: Bounds):
+    """The print transform for these bounds under the scene's scale mode."""
+    if settings.scale_mode == "FIXED":
+        return create_fixed_scale_transform(*bounds.as_tuple(), mm_per_metre=settings.mm_per_metre)
+    return create_miniature_transform(
+        *bounds.as_tuple(),
+        target_width_mm=settings.target_width_mm,
+        target_height_mm=settings.target_height_mm,
+        preserve_aspect=settings.preserve_aspect_ratio,
+    )
+
+
 def _needs_water_data(settings) -> bool:
     """Whether the source water layer is needed, for a slab or for the cut."""
     return bool(settings.generate_water) or _cuts_water(settings) or _recesses_water(settings)
@@ -126,19 +139,43 @@ def _required_types(settings) -> tuple:
 def _essential_types(settings) -> tuple:
     """The types generation refuses to run without.
 
-    Infrastructure only refines the water cut, so a cache made before it was
-    downloaded still generates; the download operator fetches it next time.
+    Infrastructure only refines the model (piers and quays for the water cut,
+    polygon fountains for basins, airport paving for roads), so a cache made
+    before it was downloaded still generates; the download operator fetches it
+    next time.
     """
     return tuple(
         item for item in _required_types(settings) if item not in INFRASTRUCTURE_TYPES
     )
 
 
-def _load_polygons(bundle: CacheBundle, feature_type: str):
+def _load_features(bundle: CacheBundle, feature_type: str):
     path = bundle.data_path(feature_type)
     if not path.is_file():
         return []
-    return list(polygon_features(load_feature_collection(path)))
+    return load_feature_collection(path)
+
+
+def _load_polygons(bundle: CacheBundle, feature_type: str):
+    return list(polygon_features(_load_features(bundle, feature_type)))
+
+
+def _bridge_lines(bundle: CacheBundle, transform):
+    """Model-space centerlines of every bridge-flagged road or rail segment."""
+    lines = []
+    for feature in _load_features(bundle, "segment"):
+        geometry = feature.get("geometry") or {}
+        if geometry.get("type") == "LineString":
+            parts = [geometry.get("coordinates") or []]
+        elif geometry.get("type") == "MultiLineString":
+            parts = geometry.get("coordinates") or []
+        else:
+            continue
+        if parts and has_bridge_flag(feature_properties(feature)):
+            lines.extend(
+                [transform.geographic_to_model(point[0], point[1], 0.0)[:2] for point in line]
+                for line in parts)
+    return lines
 
 
 def _resolve_downloader(context, settings):
@@ -156,13 +193,6 @@ def _resolve_downloader(context, settings):
         if addon is not None and hasattr(addon.preferences, "overture_python_path"):
             addon.preferences.overture_python_path = str(resolved)
     return resolved
-
-
-def _load_features(bundle: CacheBundle, feature_type: str):
-    path = bundle.data_path(feature_type)
-    if not path.is_file():
-        return []
-    return load_feature_collection(path)
 
 
 class JARVIZAR_OT_paste_bounds(Operator):
@@ -248,7 +278,6 @@ class JARVIZAR_OT_download_cache(Operator):
 
     @classmethod
     def poll(cls, context):
-        from .blender.generation_modal import is_generating
         return not is_generating()
 
     def execute(self, context):
@@ -320,12 +349,7 @@ class JARVIZAR_OT_download_cache(Operator):
 
 def _lidar_signature(settings, bundle, transform=None):
     if transform is None:
-        if settings.scale_mode == "FIXED":
-            transform = create_fixed_scale_transform(*bundle.bounds.as_tuple(), mm_per_metre=settings.mm_per_metre)
-        else:
-            transform = create_miniature_transform(*bundle.bounds.as_tuple(),
-                target_width_mm=settings.target_width_mm, target_height_mm=settings.target_height_mm,
-                preserve_aspect=settings.preserve_aspect_ratio)
+        transform = _transform_from_settings(settings, bundle.bounds)
     return request_signature(bundle, min(transform.scale_x_mm_per_m, transform.scale_y_mm_per_m),
         transform.scale_z_mm_per_m * settings.building_height_scale,
         settings.lidar_minimum_width_mm, settings.lidar_minimum_step_mm, settings.lidar_source_url,
@@ -349,7 +373,6 @@ class JARVIZAR_OT_prepare_lidar(Operator):
 
     @classmethod
     def poll(cls, context):
-        from .blender.generation_modal import is_generating
         return not cls._running and not is_generating()
 
     def finish(self, context, result):
@@ -485,15 +508,14 @@ class JARVIZAR_OT_prepare_lidar(Operator):
             settings.lidar_elapsed_seconds = settings.lidar_update_seconds = 0
             python_path = _resolve_downloader(context, settings)
             cache_gib, free_gib = storage_limits()
+            refresh = settings.force_redownload and not laz_approval
+            job_options = dict(download_workers=settings.lidar_download_workers, laz_approval=laz_approval,
+                               cache_gib=cache_gib, free_gib=free_gib)
             if bpy.app.background:
-                return self.finish(context, prepare_lidar(python_path, bundle, signature, settings.force_redownload and not laz_approval,
-                                   download_workers=settings.lidar_download_workers, laz_approval=laz_approval,
-                                   cache_gib=cache_gib, free_gib=free_gib))
+                return self.finish(context, prepare_lidar(python_path, bundle, signature, refresh, **job_options))
             self._signature = signature
             self._settings, self._scene = settings, context.scene
-            self._job = LidarPreparation(python_path, bundle, signature, settings.force_redownload and not laz_approval,
-                                         download_workers=settings.lidar_download_workers, laz_approval=laz_approval,
-                                         cache_gib=cache_gib, free_gib=free_gib)
+            self._job = LidarPreparation(python_path, bundle, signature, refresh, **job_options)
             self._timer = context.window_manager.event_timer_add(0.5, window=context.window)
             context.window_manager.modal_handler_add(self)
             settings.lidar_preparing = True
@@ -529,11 +551,9 @@ class JARVIZAR_OT_cancel_generation(Operator):
 
     @classmethod
     def poll(cls, context):
-        from .blender.generation_modal import is_generating
         return is_generating()
 
     def execute(self, context):
-        from .blender.generation_modal import active_session
         session = active_session()
         if session is not None:
             session.request_cancel()
@@ -568,13 +588,11 @@ class JARVIZAR_OT_generate_model(Operator):
 
     @classmethod
     def poll(cls, context):
-        from .blender.generation_modal import is_generating
         return not is_generating() and not JARVIZAR_OT_prepare_lidar._running
 
     def execute(self, context):
         if bpy.app.background:
             return JARVIZAR_OT_generate_model.execute_sync(self, context)
-        from .blender.generation_modal import GenerationSession
         try:
             self._session = GenerationSession(context)
             self._session.start()
@@ -650,17 +668,7 @@ class JARVIZAR_OT_generate_model(Operator):
                     + ". Run Download / Cache Data first."
                 )
 
-            if settings.scale_mode == "FIXED":
-                transform = create_fixed_scale_transform(
-                    *bounds.as_tuple(), mm_per_metre=settings.mm_per_metre
-                )
-            else:
-                transform = create_miniature_transform(
-                    *bounds.as_tuple(),
-                    target_width_mm=settings.target_width_mm,
-                    target_height_mm=settings.target_height_mm,
-                    preserve_aspect=settings.preserve_aspect_ratio,
-                )
+            transform = _transform_from_settings(settings, bounds)
             # ------------------------------------------------ terrain surface
             progress(0.01, "Preparing terrain heights")
             terrain_metadata = {}
@@ -690,8 +698,8 @@ class JARVIZAR_OT_generate_model(Operator):
                     smoothing=settings.terrain_smoothing,
                 )
             else:
-                # A cut can only follow the grid it is rasterised onto, so a
-                # flat base that has to lose its rivers still needs a real one.
+                # The cut follows exact outlines, but whole-cell water queries
+                # need a real grid, so a flat base losing its rivers gets one.
                 heightfield = ModelHeightField.flat(
                     transform,
                     resolution=(
@@ -744,9 +752,9 @@ class JARVIZAR_OT_generate_model(Operator):
             if _needs_water_data(settings):
                 water_features = _load_polygons(bundle, "water")
                 if surface_settings.recess_ponds_and_fountains:
-                    known = {first_osm_id(f.get("properties") or {}) for f in water_features}
+                    known = {first_osm_id(feature_properties(f)) for f in water_features}
                     for feature in _load_polygons(bundle, "infrastructure"):
-                        osm = first_osm_id(feature.get("properties") or {})
+                        osm = first_osm_id(feature_properties(feature))
                         if recessed_water_kind(feature) and (not osm or osm not in known):
                             water_features.append(feature)
                             if osm:
@@ -844,16 +852,7 @@ class JARVIZAR_OT_generate_model(Operator):
 
             if settings.generate_land_surfaces:
                 # A bridge way crossing a bridge-tagged plaza is its deck.
-                bridge_lines = []
-                for feature in _load_features(bundle, "segment"):
-                    geometry = feature.get("geometry") or {}
-                    lines = ([geometry.get("coordinates") or []] if geometry.get("type") == "LineString"
-                             else geometry.get("coordinates") or [] if geometry.get("type") == "MultiLineString"
-                             else [])
-                    if lines and has_bridge_flag(feature_properties(feature)):
-                        bridge_lines.extend(
-                            [transform.geographic_to_model(point[0], point[1], 0.0)[:2] for point in line]
-                            for line in lines)
+                bridge_lines = _bridge_lines(bundle, transform)
                 counts.update(
                     generate_land_surfaces(
                         [
@@ -1005,7 +1004,7 @@ class JARVIZAR_OT_generate_model(Operator):
                     generate_buildings(
                         [f for f in _load_polygons(bundle, "building") if feature_id(f) not in rock_covered],
                         [f for f in _load_polygons(bundle, "building_part") if
-                         str((f.get('properties') or {}).get('building_id') or '') not in rock_covered],
+                         str(feature_properties(f).get('building_id') or '') not in rock_covered],
                         transform,
                         heightfield,
                         floor_height_m=settings.floor_height_m,
@@ -1110,7 +1109,6 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
 
     @classmethod
     def poll(cls, context):
-        from .blender.generation_modal import is_generating
         return not is_generating()
 
     def execute(self, context):
@@ -1192,7 +1190,6 @@ class JARVIZAR_OT_cache_storage(Operator):
 
     @classmethod
     def poll(cls, context):
-        from .blender.generation_modal import is_generating
         return not is_generating() and not JARVIZAR_OT_prepare_lidar._running
 
     def invoke(self, context, event):
@@ -1250,7 +1247,6 @@ class JARVIZAR_OT_clear_model(Operator):
 
     @classmethod
     def poll(cls, context):
-        from .blender.generation_modal import is_generating
         return not is_generating()
 
     def execute(self, context):

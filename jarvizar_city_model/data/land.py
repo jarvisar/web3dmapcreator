@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional, Tuple
 
-from .geojson import feature_properties
+from .geojson import feature_properties, geometry_polygons
+from .linework import FLAG_FIELDS
 
 
 # Printable surface categories.  Each maps to one material and one draped slab.
@@ -124,17 +125,7 @@ MAXIMUM_EXTENT_RATIO = 8.0
 
 def geometry_extent(geometry: Mapping[str, Any]) -> Optional[Tuple[float, float]]:
     """Return a Polygon/MultiPolygon's ``(width, height)`` extent in degrees."""
-    geometry_type = geometry.get("type")
-    coordinates = geometry.get("coordinates")
-    if not isinstance(coordinates, list):
-        return None
-    if geometry_type == "Polygon":
-        polygons = [coordinates]
-    elif geometry_type == "MultiPolygon":
-        polygons = coordinates
-    else:
-        return None
-
+    polygons = geometry_polygons(geometry)
     longitudes = []
     latitudes = []
     for polygon in polygons:
@@ -191,7 +182,7 @@ def classify_surface(feature_type: str, feature: Mapping[str, Any]) -> Optional[
     ``feature_type`` is the Overture type the feature was downloaded as, since
     the same class string means different things in different types.
     """
-    properties = feature_properties(dict(feature))
+    properties = feature_properties(feature)
     class_name, subtype = _class_and_subtype(properties)
 
     if feature_type == "land":
@@ -215,7 +206,7 @@ def is_tree_point(feature: Mapping[str, Any]) -> bool:
     geometry = feature.get("geometry") or {}
     if geometry.get("type") != "Point":
         return False
-    properties = feature_properties(dict(feature))
+    properties = feature_properties(feature)
     class_name, subtype = _class_and_subtype(properties)
     return "tree" in (class_name, subtype)
 
@@ -243,7 +234,7 @@ def is_printable_water(feature: Mapping[str, Any]) -> bool:
     geometry = feature.get("geometry") or {}
     if geometry.get("type") not in {"Polygon", "MultiPolygon"}:
         return False
-    properties = feature_properties(dict(feature))
+    properties = feature_properties(feature)
     class_name, _subtype = _class_and_subtype(properties)
     return class_name not in EXCLUDED_WATER_CLASSES
 
@@ -278,7 +269,7 @@ def is_bridge_area(properties: Mapping[str, Any]) -> bool:
 
 def has_bridge_flag(properties: Mapping[str, Any]) -> bool:
     """Whether any stretch of a transportation segment is flagged a bridge."""
-    for key in ("road_flags", "rail_flags"):
+    for key in FLAG_FIELDS:
         for rule in properties.get(key) or ():
             values = rule.get("values") if isinstance(rule, Mapping) else None
             if values and "is_bridge" in values:
@@ -290,7 +281,7 @@ def is_untyped_water(feature: Mapping[str, Any]) -> bool:
     """Generic polygonal water eligible for a size-checked recess fallback."""
     if (feature.get('geometry') or {}).get('type') not in {'Polygon', 'MultiPolygon'}:
         return False
-    properties = feature_properties(dict(feature))
+    properties = feature_properties(feature)
     class_name, subtype = _class_and_subtype(properties)
     tags = _water_tags(properties)
     return (class_name in {'', 'water'} and subtype in {'', 'water'}
@@ -310,7 +301,7 @@ def recessed_water_kind(feature: Mapping[str, Any]) -> Optional[str]:
     """
     if (feature.get("geometry") or {}).get("type") not in {"Polygon", "MultiPolygon"}:
         return None
-    properties = feature_properties(dict(feature))
+    properties = feature_properties(feature)
     tags = _water_tags(properties)
     # A tagged river/canal/etc. must not become a basin through a fallback.
     if tags.get("waterway") in {"river", "stream", "canal", "drain", "ditch"}:
@@ -342,7 +333,7 @@ def is_water_deck(feature_type: str, feature: Mapping[str, Any]) -> bool:
     geometry = feature.get("geometry") or {}
     if geometry.get("type") not in {"Polygon", "MultiPolygon"}:
         return False
-    properties = feature_properties(dict(feature))
+    properties = feature_properties(feature)
     class_name, subtype = _class_and_subtype(properties)
     return class_name in WATER_DECK_CLASSES or subtype in WATER_DECK_CLASSES
 

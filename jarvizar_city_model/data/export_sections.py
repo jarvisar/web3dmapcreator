@@ -76,7 +76,7 @@ def section_grid(bounds, max_width=210.0, max_height=210.0, *,
     rows = math.ceil((north - south) / max_height)
     if rows * columns > BAMBU_MAX_PLATES:
         raise ValueError(f"The cutout needs a {rows} x {columns} grid; Bambu Studio supports "
-                         "at most 36 plates. Increase the maximum section dimensions")
+                         f"at most {BAMBU_MAX_PLATES} plates. Increase the maximum section dimensions")
     xs = [west + (east - west) * i / columns for i in range(columns)] + [east]
     ys = [north - (north - south) * i / rows for i in range(rows)] + [south]
     # All cells must snap near-plane vertices using the *same* tolerance.

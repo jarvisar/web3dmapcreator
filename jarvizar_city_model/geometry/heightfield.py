@@ -24,6 +24,18 @@ from .watermask import WaterMask, _line_crossings
 Ring = Sequence[Tuple[float, float]]
 
 
+def _grid_shape(bounds, resolution) -> Tuple[int, int]:
+    """Columns and rows with *resolution* cells across the longer axis."""
+    resolution = max(2, min(1024, int(resolution)))
+    if bounds.width_mm >= bounds.height_mm:
+        columns = resolution
+        rows = max(2, int(round(resolution * bounds.height_mm / bounds.width_mm)))
+    else:
+        rows = resolution
+        columns = max(2, int(round(resolution * bounds.width_mm / bounds.height_mm)))
+    return columns, rows
+
+
 class ModelHeightField:
     """A regular grid of terrain heights in model millimetres."""
 
@@ -84,13 +96,7 @@ class ModelHeightField:
         sampled grid; see :meth:`smooth`.
         """
         bounds = transform.model_bounds
-        resolution = max(2, min(1024, int(resolution)))
-        if bounds.width_mm >= bounds.height_mm:
-            columns = resolution
-            rows = max(2, int(round(resolution * bounds.height_mm / bounds.width_mm)))
-        else:
-            rows = resolution
-            columns = max(2, int(round(resolution * bounds.width_mm / bounds.height_mm)))
+        columns, rows = _grid_shape(bounds, resolution)
 
         values: List[float] = []
         step_x = (bounds.max_x_mm - bounds.min_x_mm) / (columns - 1)
@@ -162,17 +168,13 @@ class ModelHeightField:
         """Return a constant height field, used when DEM terrain is disabled.
 
         The default 2x2 grid is all a featureless base needs.  A caller that
-        intends to cut water out of the base must ask for a real resolution,
-        because a cut can only follow the grid it is rasterised onto.
+        intends to cut water out of the base must ask for a real resolution:
+        the cut follows the exact outlines at any resolution, but the
+        conservative whole-cell queries (:meth:`is_void`, shore raising)
+        would treat a 2x2 grid as one cell spanning the model.
         """
         bounds = transform.model_bounds
-        resolution = max(2, min(1024, int(resolution)))
-        if bounds.width_mm >= bounds.height_mm:
-            columns = resolution
-            rows = max(2, int(round(resolution * bounds.height_mm / bounds.width_mm)))
-        else:
-            rows = resolution
-            columns = max(2, int(round(resolution * bounds.width_mm / bounds.height_mm)))
+        columns, rows = _grid_shape(bounds, resolution)
         return cls(
             bounds.min_x_mm,
             bounds.min_y_mm,
@@ -505,9 +507,3 @@ class ModelHeightField:
             self.values[row * self.columns : (row + 1) * self.columns]
             for row in range(self.rows)
         ]
-
-    def sample_ring(
-        self, ring: Sequence[Tuple[float, float]]
-    ) -> List[Tuple[float, float, float]]:
-        """Return ``(x, y, terrain_z)`` for each ring vertex."""
-        return [(x, y, self.height_mm(x, y)) for x, y in ring]

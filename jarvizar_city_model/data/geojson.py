@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -38,6 +39,21 @@ def polygon_features(features: Iterable[Dict[str, Any]]) -> Iterable[Dict[str, A
 def feature_properties(feature: Dict[str, Any]) -> Dict[str, Any]:
     properties = feature.get("properties")
     return properties if isinstance(properties, dict) else {}
+
+
+def positive_number(value: Any) -> float | None:
+    """Read a property value as a finite number above zero, else ``None``.
+
+    Booleans are refused although Python treats them as numbers: a tag of
+    ``true`` is not a height of one metre.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0.0 else None
 
 
 def feature_id(feature: Dict[str, Any]) -> str:

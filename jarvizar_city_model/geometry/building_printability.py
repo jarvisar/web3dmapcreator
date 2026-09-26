@@ -5,7 +5,7 @@ from collections import defaultdict
 
 from ..data.geojson import feature_id, feature_properties
 from .buildings import resolve_vertical_profile
-from .planar import EPSILON, effective_width, ring_bounds, signed_area
+from .planar import EPSILON, effective_width, polygon_area, ring_bounds, signed_area
 
 
 def _edges(rings):
@@ -93,8 +93,7 @@ def adjoining_part_widths(masses, minimum_width=0.08, maximum_slenderness=30.0):
     for group, indices in members.items():
         if len(indices) < 2:
             continue
-        area = sum(abs(signed_area(rings[0])) - sum(abs(signed_area(r)) for r in rings[1:])
-                   for rings, _, _ in (masses[i] for i in indices))
+        area = sum(polygon_area(rings) for rings, _, _ in (masses[i] for i in indices))
         perimeter = sum(math.dist(a, b) for i in indices for a, b in edges[i]) - internal[group]
         if area <= 0 or perimeter <= EPSILON:
             continue

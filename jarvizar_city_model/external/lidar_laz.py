@@ -1,7 +1,8 @@
 """Staged LAS/LAZ acquisition adapter. No building processing lives here.
 
 Output matches read_ept: WGS84 XY, metre Z, class, single return, capture
-year and date confidence. A manifest is spatially indexed using LAS headers.
+year and date confidence. Tiles arrive already located by their catalog or
+index bounds; no header is read to find them.
 """
 from __future__ import annotations
 

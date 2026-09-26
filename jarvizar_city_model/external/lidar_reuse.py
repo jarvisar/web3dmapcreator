@@ -7,10 +7,10 @@ from pathlib import Path
 import uuid
 
 try:
-    from .lidar_records import validate_records
+    from .lidar_records import MAX_RESULT_BYTES, RESULT_FILE, RESULT_FORMAT_VERSION, validate_records
     from .lidar_candidates import SOURCE_FIELDS
 except ImportError:
-    from lidar_records import validate_records
+    from lidar_records import MAX_RESULT_BYTES, RESULT_FILE, RESULT_FORMAT_VERSION, validate_records
     from lidar_candidates import SOURCE_FIELDS
 
 REUSE_VERSION = 1
@@ -76,12 +76,12 @@ def reusable_prepared(bundle_path, signature, now=None):
     unrelated provider warnings do not invalidate a completed local survey.
     """
     bundle_path = Path(bundle_path)
-    path = bundle_path/'lidar_buildings.json'
+    path = bundle_path/RESULT_FILE
     try:
-        if path.stat().st_size > 512 * 1024 * 1024:
+        if path.stat().st_size > MAX_RESULT_BYTES:
             return None
         payload = json.loads(path.read_text(encoding='utf-8'))
-        if payload.get('format') != 1 or payload.get('request') != signature:
+        if payload.get('format') != RESULT_FORMAT_VERSION or payload.get('request') != signature:
             return None
         validate_records(payload['buildings'])
         prepared = datetime.fromisoformat(payload['prepared_at_utc'])

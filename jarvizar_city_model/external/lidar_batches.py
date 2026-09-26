@@ -5,6 +5,11 @@ import math
 from shapely.geometry import box
 from shapely.ops import unary_union
 
+try:
+    from .lidar_tiles import SELECTION_HALO_M, SUPPORT_HALO_M
+except ImportError:
+    from lidar_tiles import SELECTION_HALO_M, SUPPORT_HALO_M
+
 
 def building_batches(features, geometries, size=400.0):
     groups = defaultdict(list)
@@ -15,11 +20,11 @@ def building_batches(features, geometries, size=400.0):
     return [groups[key] for key in sorted(groups)]
 
 
-def batch_bounds(features, geometries, selection, halo=75.0):
+def batch_bounds(features, geometries, selection, halo=SELECTION_HALO_M):
     # Include complete roofs and surrounding ground, but never escape the
     # selected map's established halo to chase an enormous regional feature.
     bounds = unary_union([geometries[f['id']] for f in features]).bounds
-    return box(*bounds).buffer(30, join_style=2).intersection(selection.buffer(halo)).bounds
+    return box(*bounds).buffer(SUPPORT_HALO_M, join_style=2).intersection(selection.buffer(halo)).bounds
 
 
 def split_batch(features, geometries):

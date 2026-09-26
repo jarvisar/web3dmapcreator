@@ -9,7 +9,6 @@ than the geometry itself warrants.
 
 from __future__ import annotations
 
-import math
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import bpy
@@ -17,9 +16,9 @@ from mathutils import Vector
 from mathutils.geometry import delaunay_2d_cdt, tessellate_polygon
 
 from ..data.geojson import geometry_polygons
+from .collections import GENERATED_KEY
 from ..geometry.planar import (
     EPSILON,
-    clean_ring,
     clip_ring_to_rectangle,
     ear_clip,
     orient_faces_outward,
@@ -31,12 +30,6 @@ from ..geometry.planar import (
 from ..geometry.roofs import apex_solid_geometry
 from ..geometry.tree_geometry import tree_solid_geometry
 
-
-# Re-exported for callers that historically imported these from this module.
-_signed_area = signed_area
-_clean_ring = clean_ring
-_oriented_ring = oriented_ring
-_clip_ring_to_rectangle = clip_ring_to_rectangle
 
 # A prism ring vertex carries its own bottom and top height so a single ribbon
 # or polygon can follow terrain instead of being forced flat.
@@ -51,12 +44,6 @@ Refinement = Tuple[float, Callable[[float, float], Sequence[float]]]
 # exactly; the slack only absorbs float32 rounding.
 TESSELLATION_AREA_TOLERANCE = 0.01
 
-# A cap triangle thinner than this in XY carries no shape.  It is one micron at
-# model scale, forty times finer than a 0.4 mm nozzle, so discarding it costs
-# nothing printable while removing the sliver triangles that a near-collinear
-# run of densified vertices provokes.
-CAP_SLIVER_THICKNESS_MM = 1.0e-3
-
 
 def _triangle_face(indices, vertices, upward: bool):
     a, b, c = indices
@@ -67,21 +54,6 @@ def _triangle_face(indices, vertices, upward: bool):
     if is_upward != upward:
         return c, b, a
     return a, b, c
-
-
-def _triangle_thickness(a: PrismVertex, b: PrismVertex, c: PrismVertex) -> float:
-    """Return a triangle's smallest XY altitude: twice its area over its base."""
-    longest = max(
-        math.dist((a[0], a[1]), (b[0], b[1])),
-        math.dist((b[0], b[1]), (c[0], c[1])),
-        math.dist((c[0], c[1]), (a[0], a[1])),
-    )
-    if longest <= 0.0:
-        return 0.0
-    area = abs(
-        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-    ) * 0.5
-    return 2.0 * area / longest
 
 
 def _tessellate_rings(
@@ -463,7 +435,7 @@ class MeshBuilder:
             return None
         slots = list(materials) if materials else ([material] if material is not None else [])
         mesh = bpy.data.meshes.new(f"{self.name}_MESH")
-        mesh["jarvizar_generated"] = True
+        mesh[GENERATED_KEY] = True
         mesh.from_pydata(self.vertices, [], self.faces)
         for slot in slots:
             mesh.materials.append(slot)
@@ -473,7 +445,7 @@ class MeshBuilder:
         mesh.update(calc_edges=True)
         obj = bpy.data.objects.new(self.name, mesh)
         collection.objects.link(obj)
-        obj["jarvizar_generated"] = True
+        obj[GENERATED_KEY] = True
         obj["solid_count"] = self.solids
         return obj
 
@@ -535,65 +507,6 @@ def projected_polygon_rings(
     return polygons
 
 
-def create_extruded_geojson_object(
-    name: str,
-    geometry: Dict[str, Any],
-    transform,
-    bottom_m: float,
-    height_m: float,
-    collection: bpy.types.Collection,
-    material: bpy.types.Material | None = None,
-) -> bpy.types.Object | None:
-    """Create one watertight mesh object from Polygon/MultiPolygon geometry."""
-    builder = MeshBuilder(name)
-    bottom_z = transform.vertical_meters_to_model_mm(bottom_m)
-    top_z = transform.vertical_meters_to_model_mm(bottom_m + height_m)
-    for rings in projected_polygon_rings(geometry, transform):
-        builder.add_flat_prism(rings[0], bottom_z, top_z, rings[1:])
-    return builder.build(collection, material)
-
-
-def create_box_object(
-    name: str,
-    min_x: float,
-    min_y: float,
-    max_x: float,
-    max_y: float,
-    bottom_z: float,
-    top_z: float,
-    collection: bpy.types.Collection,
-    material: bpy.types.Material | None = None,
-) -> bpy.types.Object:
-    vertices = [
-        (min_x, min_y, bottom_z),
-        (max_x, min_y, bottom_z),
-        (max_x, max_y, bottom_z),
-        (min_x, max_y, bottom_z),
-        (min_x, min_y, top_z),
-        (max_x, min_y, top_z),
-        (max_x, max_y, top_z),
-        (min_x, max_y, top_z),
-    ]
-    faces = [
-        (3, 2, 1, 0),
-        (4, 5, 6, 7),
-        (0, 1, 5, 4),
-        (1, 2, 6, 5),
-        (2, 3, 7, 6),
-        (3, 0, 4, 7),
-    ]
-    mesh = bpy.data.meshes.new(f"{name}_MESH")
-    mesh["jarvizar_generated"] = True
-    mesh.from_pydata(vertices, [], faces)
-    mesh.update(calc_edges=True)
-    obj = bpy.data.objects.new(name, mesh)
-    collection.objects.link(obj)
-    obj["jarvizar_generated"] = True
-    if material is not None:
-        mesh.materials.append(material)
-    return obj
-
-
 def tree_mesh_datablock(
     name: str,
     canopy_radius_mm: float,
@@ -612,7 +525,7 @@ def tree_mesh_datablock(
         canopy_radius_mm, height_mm, sides, embed_mm,
     )
     mesh = bpy.data.meshes.new(name)
-    mesh["jarvizar_generated"] = True
+    mesh[GENERATED_KEY] = True
     mesh['tree_shape'] = shape
     mesh.from_pydata(vertices, [], faces)
     mesh.validate(clean_customdata=False)

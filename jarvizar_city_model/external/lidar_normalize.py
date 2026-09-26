@@ -14,8 +14,6 @@ SEMANTICS = {'ground': 2, 'building': 6, 'buildings': 6,
 # reconstruction admits those only where the structural envelope already
 # reaches that level. Noise and withheld returns are never retained.
 RETAINED_CLASSES = (1, 2, 3, 4, 5, 6)
-STRUCTURAL_CLASSES = (1, 2, 6)
-SECONDARY_CLASSES = (3, 4, 5)
 
 
 def vertical_factor(metadata):

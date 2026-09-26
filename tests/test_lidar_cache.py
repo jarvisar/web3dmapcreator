@@ -6,7 +6,8 @@ import tempfile
 import unittest
 
 from jarvizar_city_model.data.cache import Bounds, CacheBundle
-from jarvizar_city_model.data.lidar import load_measurements, request_signature, measurement_summary
+from jarvizar_city_model.data.lidar import load_measurements, request_signature
+from jarvizar_city_model.external.lidar_reuse import summarize_prepared
 
 
 class LidarCacheTests(unittest.TestCase):
@@ -165,7 +166,7 @@ class LidarCacheTests(unittest.TestCase):
                                  'rejected':'footprint_roof_mismatch',
                                  'ground':'observed_ground_in_footprint'})
         path.write_text(json.dumps(payload))
-        self.assertEqual(measurement_summary(self.bundle)['rejection_counts'],
+        self.assertEqual(summarize_prepared(json.loads(path.read_text()))['rejection_counts'],
                          {'footprint_roof_mismatch':1, 'observed_ground_in_footprint':1})
 
     def test_empty_tier_polygon_is_not_silently_dropped_to_podium(self):

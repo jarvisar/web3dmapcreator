@@ -40,7 +40,7 @@ def _bounds(points):
             max(p[0] for p in points), max(p[1] for p in points))
 
 
-def _overlap(a, b):
+def bounds_overlap(a, b):
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
@@ -122,7 +122,7 @@ class FootprintIndex:
             candidates.update(self.cells.get(cell, ()))
         for index in candidates:
             box, planes = self.cutters[index]
-            if not _overlap(bounds, box):
+            if not bounds_overlap(bounds, box):
                 continue
             intersection = poly
             for plane in planes:
@@ -133,6 +133,10 @@ class FootprintIndex:
                 return True
         return False
 
+    def covered_area(self, poly):
+        """Area of a polygon that lies inside the indexed footprints."""
+        return area_xy(poly) - sum(area_xy(p) for p in self.difference(poly))
+
     def difference(self, poly):
         bounds = _bounds(poly)
         candidates = set()
@@ -142,12 +146,12 @@ class FootprintIndex:
         piece_bounds = [bounds]
         for index in sorted(candidates):
             cut_bounds, planes = self.cutters[index]
-            if not _overlap(bounds, cut_bounds):
+            if not bounds_overlap(bounds, cut_bounds):
                 continue
             remaining = []
             remaining_bounds = []
             for piece, box in zip(pieces, piece_bounds):
-                if _overlap(box, cut_bounds):
+                if bounds_overlap(box, cut_bounds):
                     parts = subtract_convex(piece, planes)
                     remaining.extend(parts)
                     remaining_bounds.extend(box if p is piece else _bounds(p) for p in parts)

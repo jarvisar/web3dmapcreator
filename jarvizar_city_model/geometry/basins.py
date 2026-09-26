@@ -10,8 +10,9 @@ from collections import Counter
 import bpy
 from mathutils.bvhtree import BVHTree
 
+from ..blender.collections import GENERATED_KEY
 from ..blender.mesh_utils import MeshBuilder, _prism_geometry
-from .footprint_cut import FootprintIndex, area_xy
+from .footprint_cut import FootprintIndex, area_xy, bounds_overlap
 from .planar import EPSILON, ring_bounds
 from .surface_priority import _cutter, _grow, _rebuild_surface
 
@@ -69,9 +70,8 @@ def _align_overlapping_basins(basins):
         index = FootprintIndex(clearance=0)
         caps = list(_caps(body))
         for j, other in enumerate(indexes):
-            a, b = bounds[i], bounds[j]
-            if a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]:
-                if any(area_xy(cap) - sum(area_xy(p) for p in other.difference(cap)) > 1e-7 for cap in caps):
+            if bounds_overlap(bounds[i], bounds[j]):
+                if any(other.covered_area(cap) > 1e-7 for cap in caps):
                     parents[root(i)] = root(j)
         for cap in caps:
             index.add(cap)
@@ -146,8 +146,7 @@ def recess_terrain_basins(heightfield, bodies, collection, base_thickness_mm):
                 open_water.add(cap)
     rejected = []
     for body in basins:
-        if any(area_xy(cap) - sum(area_xy(p) for p in open_water.difference(cap)) > 1e-7
-               for cap in _caps(body)):
+        if any(open_water.covered_area(cap) > 1e-7 for cap in _caps(body)):
             rejected.append(body)
     basins = [body for body in basins if body not in rejected]
     if rejected:
@@ -173,7 +172,7 @@ def recess_terrain_basins(heightfield, bodies, collection, base_thickness_mm):
         raise ValueError("Pond/fountain recess could not produce closed terrain with the requested floors")
     old_mesh = terrain.data
     terrain.data = result
-    result["jarvizar_generated"] = True
+    result[GENERATED_KEY] = True
     if old_mesh.users == 0:
         bpy.data.meshes.remove(old_mesh)
     if clearance:

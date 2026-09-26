@@ -6,8 +6,7 @@ from ..data.geojson import feature_id
 from ..external.lidar_records import envelope_rings, has_roof_surface
 from .buildings import footprint_admits_minimum_height, resolve_vertical_profile
 from .building_printability import source_part_widths
-from .planar import clean_ring, densify_ring, effective_width, signed_area, EPSILON
-from .planar import clip_ring_to_rectangle
+from .planar import clean_ring, clip_ring_to_rectangle, densify_ring, effective_width, polygon_area, EPSILON
 from .lidar_envelope import clip_cap, envelope_solid
 from .roofs import resolve_roof
 
@@ -195,10 +194,10 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
                 prism.append(vertices)
             if not builder.add_prism(prism):
                 return None
-            roof_area += abs(signed_area(rings[0])) - sum(abs(signed_area(r)) for r in rings[1:])
+            roof_area += polygon_area(rings)
             roof_count += 1
     if surfaces and not joined:
-        footprint_area = sum(abs(signed_area(rings[0]))-sum(abs(signed_area(r)) for r in rings[1:]) for rings in outlines)
+        footprint_area = sum(polygon_area(rings) for rings in outlines)
         if abs(roof_area-footprint_area) > max(0.001, footprint_area*0.01):
             return None
     return builder, {"terrain_base_mm": terrain, "terrain_top_mm": terrain_top,
