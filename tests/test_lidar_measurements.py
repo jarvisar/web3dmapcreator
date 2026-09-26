@@ -374,6 +374,50 @@ class MeasurementsTests(unittest.TestCase):
             result, _ = measure_building(box(0,0,60,60), PointIndex(cloud), 6, 3)
             self.assertIsNone(result)
 
+    def dense(self, roof, classes, extent=(0, 30), step=.4, ground=0.):
+        """A dense survey over a 30 m footprint: roof(x, y) and classes(x, y) inside, ground outside."""
+        lo, hi = extent
+        xx, yy = np.meshgrid(np.arange(lo-25+.2, hi+25, step), np.arange(lo-25+.2, hi+25, step))
+        x, y = xx.ravel(), yy.ravel()
+        inside = (x > lo) & (x < hi) & (y > lo) & (y < hi)
+        z = np.where(inside, ground+roof(x, y), ground)
+        cls = np.where(inside, classes(x, y), 2)
+        return np.column_stack((x, y, z, cls, np.ones(len(x))))
+
+    def test_roof_filed_as_vegetation_continues_the_classified_roof(self):
+        # Cook County files half the roof of many towers as vegetation; the
+        # coverage test counted only the building classes and rejected them.
+        cloud = self.dense(lambda x, y: np.full_like(x, 90.), lambda x, y: np.where(x < 15, 6, 5))
+        result, reason = measure_building(box(0, 0, 30, 30), PointIndex(cloud), 1.43, .65, ground_m=0,
+                                          roof_mode='FACETED')
+        self.assertIsNotNone(result, reason)
+        from lidar_envelope_test_utils import height_at
+        self.assertAlmostEqual(height_at(result, 25, 15), 90, delta=.5)
+        # A few ground returns under that roof (through glazing) are not an empty lot.
+        ground = np.array([(x+.5, y+.5, 0., 2, 1) for x in range(16, 29, 3) for y in range(1, 29, 3)
+                           for _ in range(3)])
+        result, reason = measure_building(box(0, 0, 30, 30), PointIndex(np.concatenate((cloud, ground))),
+                                          1.43, .65, ground_m=0, roof_mode='FACETED')
+        self.assertIsNotNone(result, reason)
+
+    def test_tree_over_a_low_roof_never_joins_it(self):
+        # A crown filed as vegetation rises from the roof's height at its edge
+        # to 16 m over the rest of the footprint, among trees as tall around.
+        crown = lambda x, y: np.clip(8.5+(x-12)*.8, 8.5, 16.)
+        roof = lambda x, y: np.where(x < 12, 8., crown(x, y))
+        cloud = self.dense(roof, lambda x, y: np.where(x < 12, 6, 5))
+        trees = np.array([(x, y, 16., 5, 1) for x in np.arange(33, 50, .5) for y in np.arange(-10, 40, .5)])
+        points = np.concatenate((cloud, trees))
+        result, reason = measure_building(box(0, 0, 30, 30), PointIndex(points), 1.43, .65, ground_m=0,
+                                          roof_mode='FACETED')
+        self.assertIsNone(result, 'the crown became a roof')
+        # Without the canopy floor the crown climbs onto the roof cell by cell.
+        from unittest.mock import patch
+        with patch('jarvizar_city_model.external.lidar_measurements.local_canopy', lambda *args: -100.):
+            grown, _ = measure_building(box(0, 0, 30, 30), PointIndex(points), 1.43, .65, ground_m=0,
+                                        roof_mode='FACETED')
+        self.assertIsNotNone(grown)
+
     def test_unclassified_planar_roof_can_be_measured(self):
         result, _ = measure_building(box(0,0,60,60), PointIndex(self.cloud(lambda x,y:30,class_id=1)), 6, 3)
         self.assertAlmostEqual(result["height_m"], 30)

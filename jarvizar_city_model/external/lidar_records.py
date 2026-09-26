@@ -5,7 +5,7 @@ never turn a missing upper roof into an apparently valid podium-only model.
 """
 import math
 
-ALGORITHM_VERSION = 26
+ALGORITHM_VERSION = 27
 MAX_ROOF_FACETS = 1024
 # A roof envelope costs about one face per print-scale cell, so a downtown
 # outline needs several times the earlier budget to keep its plan resolution

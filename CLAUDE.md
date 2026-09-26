@@ -681,6 +681,21 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   Every retry keeps the three-return cell minimum, 85% component coverage and
   all ground/roof/printability checks; already accepted fits stay identical.
   Ground fitting is reused across retries and no additional points are fetched.
+  **Roofs filed as vegetation:** coverage and the ground-inside test count only
+  class 6 and single-return class 1, and Cook County files half the roof and
+  most of the facade of many towers as vegetation (303 East Wacker, 321 North
+  Clark, Block 37 stayed source boxes). A Roof Envelope that every
+  building-class attempt rejects (`VEGETATION_ROOF_REASONS`) gets one last pass
+  (`_continue_with_vegetation`): a vegetation cell's upper band joins the roof
+  where it lies within a cell's height of a roof cell beside it, grown from
+  cells the building classes support, and only above `local_canopy` (95th
+  percentile of vegetation cell tops 3–30 m outside the footprint and every
+  mapped neighbour) plus the admission band. Without that floor, trees rising
+  from a low roof's edge gave Oak Park's houses tree-shaped roofs; a planarity
+  test did not separate them. Admitted cells feed the envelope as ordinary
+  returns and cover the ground test's cells. Neighbours are gathered within
+  30 m for that ring; the outside-roof ring (2–6 m) sees the same ones as at
+  7 m. Buildings the first attempts accept are byte-identical.
 - **Correct Heights Only** is opt-in and uses a separate `HEIGHT_ONLY` cache
   identity. It keeps acquisition/ground/coverage/epoch checks, samples a fixed
   3 m grid, and skips roof surfaces, terraces, infill and mapped rock. Connected

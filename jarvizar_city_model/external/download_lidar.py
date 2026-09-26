@@ -162,7 +162,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     total_candidates = len(features)
     features, footprint_rejected = select_footprints(
         features, geometries, request.get('min_footprint_area_m2', 0.0))
-    neighbors_by_id = {key:[geometries[geometry_ids[i]] for i in tree.query(geometry.buffer(7), predicate='intersects')
+    neighbors_by_id = {key:[geometries[geometry_ids[i]] for i in tree.query(geometry.buffer(30), predicate='intersects')
                             if geometry_ids[i] != key]
                        for key, geometry in ((f['id'], geometries[f['id']]) for f in features)}
     parts_by_parent = {}

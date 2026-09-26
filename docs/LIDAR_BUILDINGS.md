@@ -356,6 +356,57 @@ Evidence (`scratchpad/micropolitan_compare`, README "Algorithm 26"):
 
 Run **Prepare LiDAR Buildings** with Refresh off, then **Generate Model**.
 
+### Roofs filed as vegetation: the buildings left as boxes (algorithm 27, 0.25.5)
+
+About 380 Chicago buildings stayed source boxes: 136 `footprint_roof_mismatch`,
+107 `observed_ground_in_footprint`, 67 `roof_extends_outside_footprint`, 39
+`sparse_or_noisy_roof`, and a few ground, halo and underground cases. The
+first three coverage-style reasons share one cause. The coverage and ground
+tests count only class 6 and single-return class 1, and Cook County files half
+the roof and most of the facade of many towers as vegetation: 303 East Wacker's
+roof cells are 51% class 5, the American Medical Association building's 79%.
+With vegetation counted, their coverage goes from 32-83% to 92-100%, and every
+"ground inside" cell has returns more than 10 m above it: the ground returns
+are strays beneath a roof, not an empty lot.
+
+Vegetation cannot simply count as roof. Trees rise from a low roof's edge in
+steps a cell apart, and a first version that grew roofs through them gave half
+of Oak Park's rescued houses tree-shaped roofs. Neither a tighter step (0.5 m)
+nor a ceiling at the building's own classified top nor a local planarity test
+separated them. What does is height above the trees: `_continue_with_vegetation`
+admits a vegetation cell's upper band where it lies within a cell's height of a
+roof cell beside it, grown from cells the building classes support, and only
+above `local_canopy` (95th percentile of vegetation cell tops 3-30 m outside the
+footprint and every mapped neighbour, which is why neighbours are now gathered
+within 30 m) plus the admission band (4 m). It runs as a last pass, only after
+every building-class attempt (including the half-cell offset retries) has
+failed, so a building accepted before is byte-identical (all 654 Chicago and
+738 Oak Park re-measured accepted buildings). Admitted cells feed the envelope
+as ordinary returns; a failed envelope on this pass falls back to the source
+building, never to terraces.
+
+Results, re-measured from cached points (`scratchpad/micropolitan_compare`,
+README "Algorithm 27"):
+
+- Chicago: 75 of the 245 rejected buildings with cached points become LiDAR
+  buildings (1,082 against 1,010, 0 fallbacks). Each was rendered against its
+  source box and, for the 22 inside the Micropolitan STL, the reference: towers
+  gain their real setbacks, podiums and crowns, and match the reference far
+  better than the boxes. Park pavilions under trees (Buckingham Fountain comfort
+  stations, Fountain Cafe, the Carousel) stay rejected.
+- Oak Park (a leafy test area on the same survey): 4 of 157 rejects rescued,
+  an apartment tower on low wings, a 68 m tower, two large flat blocks; no house.
+- Magic Kingdom (Florida survey, dense trees): no change; its roofs are classified.
+
+Left alone: `roof_extends_outside_footprint`. It fires falsely where roofs
+adjoin at the same height (the Fine Arts Building's row, Harbor Point's podium
+around a footprint drawn at the tower) but also catches real cases (St. Regis
+Chicago was a construction site with two cranes in the 2017 survey). About 170
+Chicago rejects, Willis Tower among them, have no cached points left and are
+re-evaluated on the next Prepare.
+
+Run **Prepare LiDAR Buildings** with Refresh off, then **Generate Model**.
+
 ## Tiers: real walls inside a footprint (algorithm 20, superseded)
 
 Reconstruction algorithm 20; superseded by the edge collapse above. Run **Prepare LiDAR Buildings** with Refresh off,

@@ -52,8 +52,12 @@ def occupied_area(keys, region, cell):
                for x,y in keys)
 
 
-def observed_empty_area(footprint, points, ground):
-    """Positive ground observations, not missing returns, indicate absence."""
+def observed_empty_area(footprint, points, ground, covered=()):
+    """Positive ground observations, not missing returns, indicate absence.
+
+    `covered` holds 3 m cells a roof already occupies although no building-class
+    return stands in them (see `_continue_with_vegetation`).
+    """
     interior = footprint.buffer(-1.5)
     if interior.is_empty:
         return False
@@ -65,9 +69,88 @@ def observed_empty_area(footprint, points, ground):
             ground_cells[key] += 1
         elif row[3] in (1, 6) and row[2]-ground > 2:
             roof_cells.add(key)
-    empty = [key for key,count in ground_cells.items() if count >= 3 and key not in roof_cells]
+    empty = [key for key,count in ground_cells.items() if count >= 3 and key not in roof_cells
+             and key not in covered]
     return (len(empty) >= 4 and len(empty)*9 >= interior.area*.2
             and occupied_area(empty, interior, 3) >= interior.area*.2)
+
+
+def local_canopy(footprint, index, ground, neighbours=()):
+    """How high the trees around a building reach, in metres above its ground.
+
+    The 95th percentile of 3 m cell tops of vegetation-class returns 3-30 m outside
+    the footprint and outside every mapped neighbour, 0 where there are no trees.
+    """
+    ring = footprint.buffer(30).difference(footprint.buffer(3))
+    if neighbours:
+        ring = ring.difference(unary_union(neighbours).buffer(3))
+    if ring.is_empty:
+        return 0.
+    near = index.query(ring.bounds)
+    near = near[np.isin(near[:, 3], (3, 4, 5)) & contains_xy(ring, near[:, 0], near[:, 1])]
+    if len(near) < 20:
+        return 0.
+    keys = np.floor(near[:, :2] / 3).astype(np.int64)
+    order = np.lexsort((near[:, 2], keys[:, 1], keys[:, 0]))
+    keys, heights = keys[order], near[order, 2]
+    last = np.flatnonzero(np.r_[np.any(keys[1:] != keys[:-1], axis=1), True])
+    return float(np.quantile(heights[last] - ground, .95))
+
+
+def _continue_with_vegetation(secondary, uv, x0, y0, cell, rotated, pieces, cells, facet_samples,
+                              boundary_samples, supported_by_piece, supported_area_by_piece, floor):
+    """Admit roof cells a survey filed under a vegetation class where they continue the roof.
+
+    Cook County files half the roof and most of the facade of many towers as
+    vegetation, and the coverage and ground tests, which count only building-class
+    returns, then rejected 303 East Wacker, 321 North Clark and Block 37 as
+    missing roofs. A vegetation cell counts as roof where its upper band lies
+    within a cell's height of a roof cell beside it, grown outward from cells the
+    building classes support, and only above `floor`: the local canopy plus the
+    admission band. A tree over or beside a low building stands at the canopy
+    height and never joins its roof; without that floor Oak Park's houses came
+    out with tree-shaped roofs. Admitted cells also feed the envelope as ordinary
+    returns. `secondary` heights are ground-relative.
+    """
+    groups = {}
+    for row, pos in zip(secondary, uv):
+        groups.setdefault((math.floor((pos[0] - x0) / cell), math.floor((pos[1] - y0) / cell)), []).append(row)
+    bands = {}
+    for key, rows in groups.items():
+        if key in cells or len(rows) < 3:
+            continue
+        rows = np.asarray(rows)
+        z = np.sort(rows[:, 2])
+        ends = np.searchsorted(z, z + max(0.8, cell * 0.4), side="right")
+        support = ends - np.arange(len(z))
+        starts = np.flatnonzero(support >= max(3, int(math.ceil(support.max() * 0.25))))
+        if not len(starts):
+            continue
+        start = starts[-1]
+        height = float(np.median(z[start:ends[start]]))
+        if height > floor:
+            bands[key] = (height, rows, z[start], z[ends[start]-1])
+    frontier = list(cells)
+    while frontier:
+        x, y = frontier.pop()
+        for other in ((x-1, y), (x+1, y), (x, y-1), (x, y+1)):
+            if other not in bands or abs(bands[other][0] - cells[(x, y)]) > cell:
+                continue
+            height, rows, low, high = bands.pop(other)
+            tile = box(x0 + other[0] * cell, y0 + other[1] * cell, x0 + (other[0] + 1) * cell, y0 + (other[1] + 1) * cell)
+            area = tile.intersection(rotated).area
+            if area < cell * cell * 0.25:
+                continue
+            component = 0 if len(pieces) == 1 else max(range(len(pieces)), key=lambda i: tile.intersection(pieces[i]).area)
+            cells[other] = height
+            band = rows[(rows[:, 2] >= low) & (rows[:, 2] <= high)]
+            band = band[np.lexsort((band[:, 2], band[:, 1], band[:, 0]))]
+            facet_samples[other] = [float(np.mean(band[:, 0])), float(np.mean(band[:, 1])), float(np.mean(band[:, 2]))]
+            boundary_samples.append(rows[:, :3].copy())
+            supported_by_piece[component] += 1
+            supported_area_by_piece[component] += (area if len(pieces) == 1
+                                                   else tile.intersection(pieces[component]).area)
+            frontier.append(other)
 
 
 def polygons(geometry):
@@ -127,6 +210,9 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
     printability checks. Missing roofs are never interpolated. Preserve the
     initial fit exactly when it works; use the first complete retry otherwise.
     Retry only near misses (at least 80% supported area in every component).
+    A Roof Envelope the building classes cannot establish gets one last pass
+    in which vegetation-class returns may continue their roof
+    (`_continue_with_vegetation`).
     """
     if footprint.geom_type not in ('Polygon', 'MultiPolygon'):
         footprint = unary_union(polygons(footprint))
@@ -159,19 +245,31 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
             record['ground_anchor'] = [anchor[0], anchor[1], 0.]
             record['ground_reference'] = 'surrounding_ground_anchor'
         return record
-    if reason != 'footprint_roof_mismatch' or coverage.get('minimum_component', 0) < .8:
-        return aligned(result), reason
-    for offset in ((.5, 0), (0, .5), (.5, .5)):
-        details = {}
-        recovered, recovered_reason = _measure_building(footprint, index, min_width_m, min_step_m,
-                                                       grid_offset=offset, coverage_out=details, **options)
-        if recovered:
-            recovered['coverage_grid_offset'] = list(offset)
-            return aligned(recovered), recovered_reason
+    if reason == 'footprint_roof_mismatch' and coverage.get('minimum_component', 0) >= .8:
+        for offset in ((.5, 0), (0, .5), (.5, .5)):
+            details = {}
+            recovered, recovered_reason = _measure_building(footprint, index, min_width_m, min_step_m,
+                                                           grid_offset=offset, coverage_out=details, **options)
+            if recovered:
+                recovered['coverage_grid_offset'] = list(offset)
+                return aligned(recovered), recovered_reason
+    # Only once every attempt with the building classes has failed may a roof
+    # filed as vegetation continue theirs, so a roof they already support
+    # keeps exactly the fit it had.
+    if result is None and reason in VEGETATION_ROOF_REASONS and options['detailed_surfaces']:
+        rescued, rescued_reason = _measure_building(footprint, index, min_width_m, min_step_m,
+                                                    vegetation=True, **options)
+        if rescued:
+            return aligned(rescued), rescued_reason
     return aligned(result), reason
 
 
-def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, grid_offset=(0, 0), coverage_out=None, detailed_surfaces=False, boundary_refinement=True, surface_scale=None, height_only=False, height_targets=None, prefer_lidar=False):
+# The rejections a roof filed under a vegetation class can cause.
+VEGETATION_ROOF_REASONS = frozenset({'footprint_roof_mismatch', 'observed_ground_in_footprint',
+                                     'sparse_or_noisy_roof'})
+
+
+def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, grid_offset=(0, 0), coverage_out=None, detailed_surfaces=False, boundary_refinement=True, surface_scale=None, height_only=False, height_targets=None, prefer_lidar=False, vegetation=False):
     """Measure the whole roof envelope; hidden undersides stay source-derived.
 
     Roof Envelope uses supported upper returns before the legacy terrace
@@ -187,7 +285,9 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
     if len(points) < 20:
         return None, "insufficient_roof_points"
     inside = contains_xy(footprint, points[:, 0], points[:, 1])
-    if observed_empty_area(footprint, points, ground):
+    everything = points
+    empty = observed_empty_area(footprint, points, ground)
+    if empty and not vegetation:
         return None, 'observed_ground_in_footprint'
     # Class 6 and single-return unclassified points are usable only
     # when the subsequent coverage/flatness tests corroborate a broad surface.
@@ -203,7 +303,7 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
     points = points[candidate]
     points = points[points[:, 2] - ground > 2.0]
     if len(points) < 20:
-        return None, "insufficient_roof_points"
+        return None, 'observed_ground_in_footprint' if empty else "insufficient_roof_points"
     rectangle = footprint.minimum_rotated_rectangle
     corners = list(rectangle.exterior.coords)
     edge = max(zip(corners, corners[1:]), key=lambda ab: math.dist(*ab))
@@ -222,7 +322,7 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
     y0 -= cell * grid_offset[1]
     nx, ny = math.ceil((x1 - x0) / cell), math.ceil((y1 - y0) / cell)
     if nx * ny > 40000:
-        return None, "footprint_cell_budget"
+        return None, 'observed_ground_in_footprint' if empty else "footprint_cell_budget"
     groups = {}
     for row, pos in zip(points, uv):
         key = (math.floor((pos[0] - x0) / cell), math.floor((pos[1] - y0) / cell))
@@ -288,6 +388,30 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             facet_band = rows[(rows[:,2]-ground >= z[start]) & (rows[:,2]-ground <= z[ends[start]-1])]
             facet_band = facet_band[np.lexsort((facet_band[:,2], facet_band[:,1], facet_band[:,0]))]
             facet_samples[(ix, iy)] = [float(np.mean(facet_band[:,0])), float(np.mean(facet_band[:,1])), float(np.mean(facet_band[:,2])-ground)]
+    if vegetation and len(secondary):
+        # A roof filed as vegetation also leaves the ground returns below it
+        # looking unroofed, so the ground test waits for it (see measure_building).
+        try:
+            from .lidar_envelope import envelope_parameters
+        except ImportError:
+            from lidar_envelope import envelope_parameters
+        rel = secondary[:, :2] - origin
+        _continue_with_vegetation(
+            secondary, np.column_stack((rel[:, 0] * cosine + rel[:, 1] * sine,
+                                        -rel[:, 0] * sine + rel[:, 1] * cosine)) + origin,
+            x0, y0, cell, rotated, pieces, cells, facet_samples, boundary_samples,
+            supported_by_piece, supported_area_by_piece,
+            local_canopy(footprint, index, ground, neighboring_footprints)
+            + envelope_parameters(surface_scale or (.07, .077))[2])
+    if empty:
+        # Only reached on the vegetation pass.
+        covered = set()
+        for ix, iy in cells:
+            u, v = x0 + (ix + .5) * cell - origin[0], y0 + (iy + .5) * cell - origin[1]
+            covered.add((math.floor((origin[0] + u * cosine - v * sine) / 3),
+                         math.floor((origin[1] + u * sine + v * cosine) / 3)))
+        if observed_empty_area(footprint, everything, ground, covered):
+            return None, 'observed_ground_in_footprint'
     coverage = len(cells) / max(expected, 1)
     area_coverage = False
     if coverage < 0.65 or len(cells) < 4:
@@ -388,6 +512,8 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             return {**stats, **fitted}, 'faceted_roof'
         # Failure is explicit and transactional. The established terrace path
         # remains a conservative fallback; it is not an input to surface fitting.
+        if vegetation:
+            return None, surface_fallback
 
     # Flood-fill *continuous* surfaces, then test each region's flatness.
     # A pitched roof remains connected across its small successive rises.
