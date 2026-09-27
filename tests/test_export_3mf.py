@@ -156,6 +156,29 @@ class PlateWriterTests(unittest.TestCase):
                          [175 - 50, 160 - 50, 0])
         self.assertTrue(part_name_map)
 
+    def test_filament_lines_select_matching_presets(self):
+        vertices, triangles = box(0, 0, 0, 10, 10, 1)
+        parts = [('Terrain', vertices, triangles, [0] * 12, [('#FFFFFF', 'PLA Matte')]),
+                 ('Buildings', vertices, triangles, [0] * 12, [('#AE835B', 'PLA Matte')]),
+                 ('Roads', vertices, triangles, [0] * 12, ['#545454']),
+                 # The same colour in another line is another filament.
+                 ('Paths', vertices, triangles, [0] * 12, [('#FFFFFF', 'PLA Basic')])]
+        _model, config, project, *_ = self.write('P1S', [('Map', parts, None)])
+        self.assertEqual(project['filament_colour'], ['#FFFFFF', '#AE835B', '#545454', '#FFFFFF'])
+        self.assertEqual(project['filament_settings_id'], [
+            'Bambu PLA Matte @BBL P1S 0.4 nozzle', 'Bambu PLA Matte @BBL P1S 0.4 nozzle',
+            'Bambu PLA Basic @BBL P1S 0.4 nozzle', 'Bambu PLA Basic @BBL P1S 0.4 nozzle'])
+        self.assertEqual(project['filament_ids'], ['GFA01', 'GFA01', 'GFA00', 'GFA00'])
+        self.assertEqual(project['filament_type'], ['PLA'] * 4)
+        self.assertEqual([p.find("metadata[@key='extruder']").get('value') for p in config.findall('object/part')],
+                         ['1', '2', '3', '4'])
+        _model, _config, project, *_ = self.write('A1M', [('Map', parts[:1], None)])
+        self.assertEqual(project['filament_settings_id'], ['Bambu PLA Matte @BBL A1M'])
+        with tempfile.TemporaryDirectory() as folder:
+            with PlateWriter(Path(folder) / 'model.xml', PRINTERS['P1S']) as writer:
+                with self.assertRaises(ValueError):
+                    writer.add_plate('Map', [('Terrain', vertices, triangles, [0] * 12, [('#FFFFFF', 'PLA Silk')])])
+
     def test_rejects_invalid_parts_and_leaves_no_project(self):
         vertices, triangles = box(0, 0, 0, 1, 1, 1)
         good = ('Terrain', vertices, triangles, [0] * 12, ['#5C6161'])

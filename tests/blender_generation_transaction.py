@@ -84,6 +84,7 @@ class TransactionTests(unittest.TestCase):
         settings.generate_border_rim = True
         settings.use_lidar_buildings = True  # Exercise missing optional data fallback.
         settings.maximum_trees = 4
+        settings.cut_roads_at_export = False  # Cut roads during generation, as a phase.
         self.bundle = CacheBundle(Path(self.temp.name), bounds)
         self.bundle.ensure_directory()
         for kind in ALL_TYPES:

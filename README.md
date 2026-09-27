@@ -161,16 +161,20 @@ collection (`Terrain`, `Roads (Residential)`, `Greenery`, …), every relative
 height intact, at true millimetres whatever the scene's unit settings. Each
 part is assigned its own filament rather than a colour left for the import
 dialog to map: the project starts with one filament per distinct colour, in
-order of first use, so the Filament list shows charcoal for roads, white for
-buildings, and so on, and every part already points at one of them. Parts
+order of first use, and every part already points at one of them. The
+palette uses Bambu's own colours and presets for the main layers: PLA Matte
+Caramel for buildings, PLA Matte Ivory White for terrain and its supports, PLA
+Basic Bambu Green for parks, and PLA Basic Dark Gray for roads, bridges, piers
+and paving. Forest, trees, water, sand, rock and the rim keep their own
+colours on PLA Basic presets. Parts
 that mix materials keep the filament of their main material and carry the
 others as painted faces. Open the file **as a project** (File ▸ Open Project,
 or drag it in and choose to open the project) so Bambu keeps the plates, part
 names, and filaments; importing it as geometry only discards them.
 
 Pick your **Bambu Printer** above the button first. It sets the bed size,
-the plate layout, and the starting printer, process, and Bambu PLA Basic
-presets (P1S by default; A1 mini, A1, P1P, P2S, X1 Carbon, X1E, X2D, A2L,
+the plate layout, and the starting printer, process, and Bambu PLA Basic or
+Matte presets (P1S by default; A1 mini, A1, P1P, P2S, X1 Carbon, X1E, X2D, A2L,
 H2C, H2S, H2D, and H2D Pro are available). Select your real filaments in
 Bambu and recalculate flushing volumes before slicing; the project starts
 with Bambu's 280 mm³ default purge for every pair.
@@ -288,6 +292,19 @@ carrying its source properties (`overture_id`, `height_source`,
 `roof_geometry`, `terrain_base_source`, `underside`) and one linked duplicate
 per tree; `BUILDING_PARTS` is only populated then. Roads, decks, piers, and
 terrain supports are batched either way.
+
+**Roads and paths can be edited before export.** With **Cut Roads at Export**
+(Roads panel, on by default) the parks and other land cover stay whole under
+the ground roads in Blender, and each export cuts out the roads that exist at
+that moment, from copies, before the cutout crop. Deleting or moving a road or
+path therefore leaves no hole in the surface around it; the scene itself is
+never changed by an export. Roads are batched one object per class, and each
+piece is its own solid: in Edit Mode, hover over a piece and press L to select
+it, then delete it. A long path is usually several pieces. An unedited map
+exports the same triangles as when the cut happened during generation. Turn the
+toggle off to cut during generation instead; either way the setting takes
+effect on the next **Generate Model**. Hidden objects are still exported, and
+regenerating replaces every manual edit.
 
 ## How the pieces fit together
 

@@ -15,6 +15,7 @@ from mathutils.bvhtree import BVHTree
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root))
+import jarvizar_city_model
 from jarvizar_city_model import operators
 from jarvizar_city_model.geometry.surface_priority import _top_triangles
 
@@ -59,5 +60,13 @@ def audited(surfaces, roads, thickness, **kwargs):
     return result
 
 
+def register_cutting_at_generation():
+    # The audit wraps the cut Generate makes, which the default leaves to Export.
+    register()
+    bpy.context.scene.jarvizar_city_model.cut_roads_at_export = False
+
+
+register = jarvizar_city_model.register
+jarvizar_city_model.register = register_cutting_at_generation
 operators.cut_road_footprints = audited
 runpy.run_path(str(root/'tests/blender_live_full.py'), run_name='__main__')

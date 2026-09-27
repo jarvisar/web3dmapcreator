@@ -140,7 +140,8 @@ independently:
    Then build the optional rim and initialize `SupportBuilder` with that bottom.
 5. Build draped land slabs, resolve category priority, and remove water
    footprints except supported paving. Build optional water fills. Generate roads/bridges with causeway
-   registration before pier placement; subtract ground-road footprints from slabs.
+   registration before pier placement; subtract ground-road footprints from slabs,
+   or, with **Cut Roads at Export** (default), tag the slabs and leave that cut to export.
 6. Place trees directly on terrain. Generate source or prepared LiDAR
    buildings and their foundations. Emit accumulated `TERRAIN_SUPPORTS` last.
    Store counts on the staged root, validate ownership/attachment and finite mesh
@@ -416,6 +417,16 @@ colors, overwriting manual palette edits.
   nearly coincident vertices, and the walk then spreads ±2 errors. Ground-road cuts
   use 0.005 mm XY clearance and built road outlines to avoid huge cutter sets
   from refined caps. Elevated bridges retain land beneath them.
+- **Cut Roads at Export** (default on) lets roads be deleted or moved in
+  Blender without holes: `defer_road_cut` tags the whole slabs
+  (`road_cut_at_export`, `slab_thickness_mm`), and `export_geometry` cuts
+  world-space copies with `cut_roads_at_export` from the `surface_road` objects
+  present, before the crop, never touching the scene. The tags, not the current
+  setting, decide at export, so a toggle between Generate and Export cannot
+  double-cut or skip. A copy keeps its source's cached `bound_box` even after a
+  new mesh, so the export cut reads bounds from the vertices. An unedited
+  export has the same triangles as cutting during generation; on cached cities
+  a slab's vertex order can differ, most likely from Generate's stale box.
 - Trees combine mapped `land` points and deterministic forest scatter, including
   satellite forest by default. They avoid open water and recessed basins and embed their broad bases
   directly in the terrain, not raised land/road caps. Trunkless three-tier crowns
@@ -990,9 +1001,13 @@ irrelevant. `data/export_plates.py` streams each plate's parts into the model
 XML as they arrive, so memory is bounded by the largest part, then adds
 `Metadata/model_settings.config`, `Metadata/project_settings.config`, content
 types and relationships. Every part is a named `normal_part` whose `extruder`
-metadata assigns its filament: one filament per distinct colour in order of
-first use, taken from each material's Principled base colour (else viewport
-colour) as raw linear bytes. A part mixing materials takes the filament of
+metadata assigns its filament: one filament per distinct colour and Bambu PLA
+line in order of first use, taken from each material's Principled base colour
+(else viewport colour) as raw linear bytes and its `jarvizar_filament` line
+(PLA Basic or Matte, which picks the preset and `filament_ids`). The palette
+uses Bambu's exact codes: PLA Matte Caramel buildings, PLA Matte Ivory White
+terrain and supports, PLA Basic Bambu Green parks, PLA Basic Dark Gray roads,
+bridges, piers and paving. A part mixing materials takes the filament of
 its most common one; only its other triangles carry Bambu `paint_color`
 states. Coordinates are model millimetres at six decimals. The `BambuStudio-`
 Application prefix is required: Bambu gates project loading on it and
@@ -1008,7 +1023,7 @@ one Z datum: the model's lowest point rests on the bed.
 
 **Bambu Printer** selects the bed (A1 mini 180; A1, P1P, P1S, P2S, X1C, X1E
 and X2D 256; A2L and H2C 330×320; H2S 340×320; H2D and H2D Pro 350×320) and
-the starting printer, process and Bambu PLA Basic filament preset names as
+the starting printer, process and Bambu PLA Basic/Matte filament preset names as
 bundled with Bambu Studio 2.8; P1S is the default. Changing it clamps the
 section maxima to the bed, and export rejects maxima above it. Users pick
 their actual filaments and recalculate the 280 mm³ default flushing matrix
@@ -1090,7 +1105,7 @@ Select focused checks based on the change:
 | --- | --- |
 | Core pipeline | `test_*.py`, `blender_smoke.py`; smoke exercises merged/unmerged geometry, heights, roofs, and cleanup. `blender_generation_transaction.py` checks rollback/ownership. `blender_generation_modal.py` exercises real worker cancellation at each phase, import, retries and cleanup; windowed `blender_generation_gui.py` checks real Esc/Cancel and event-loop responsiveness. |
 | Water / supports | `blender_water_cut.py`, `blender_ground_support.py`, `blender_pond_basins.py`, `blender_basin_support.py`, `blender_water_surfaces.py`, `blender_visible_supports.py`, `blender_paved_supports.py`; cached `blender_water_cut_live.py`, `blender_coastline_live.py`, `blender_pond_basins_live.py` |
-| Roads / surface ownership | `test_road_network.py`, `test_airports.py`, `blender_airport_paving.py`, `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_shore_roads.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
+| Roads / surface ownership | `test_road_network.py`, `test_airports.py`, `blender_airport_paving.py`, `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_road_cut_export.py`, `blender_shore_roads.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
 | Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_envelope.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
 | Anchored LiDAR / mapped rock | `test_lidar_relief.py`, `test_lidar_offer.py`, `blender_lidar_relief.py`; verify anchor alignment, class/coverage rejection, transactional fallback, source suppression, and unchanged disabled-LiDAR mesh fingerprints |
 | Export / trees / clipboard | `test_export_3mf.py`, `test_export_sections.py`, `blender_export_cutout.py`, `blender_export_plates.py`, installed Bambu `bambu_export_plates.py` and the live crop script; `blender_tree_printability.py`, `blender_tree_road_clearance.py`; `test_projection.py`, `test_bounds_presets.py` and windowed `blender_gui_paste.py` |

@@ -5,9 +5,12 @@ shading most modelling work happens in, and as a Principled BSDF base colour so
 Material Preview and render output agree with it.  Setting only one of the two
 makes the model look completely different depending on the shading mode.
 
-The palette pairs white buildings with ash-grey terrain, charcoal roads and
-paving, dark-green vegetation, and desert-tan sand and rock. Values are linear
-RGB, shared by the viewport and shader materials.
+The palette pairs caramel buildings with white terrain, dark-grey roads and
+paving, green parks, dark-green forest and trees, and desert-tan sand and rock.
+Values are linear RGB, shared by the viewport and shader materials. Export
+writes them unchanged as filament bytes, so a Bambu filament's colour is its
+hex code over 255; Blender's colour management displays it differently from
+the printed filament.
 """
 
 from __future__ import annotations
@@ -19,22 +22,35 @@ import bpy
 from .collections import GENERATED_KEY
 
 
+def _bambu(code: str) -> Tuple[float, float, float, float]:
+    return (*(int(code[i:i + 2], 16) / 255 for i in (1, 3, 5)), 1.0)
+
+
+# Bambu filament colours, from Bambu Studio's filaments_color_codes.json.
+MATTE_CARAMEL = _bambu("#AE835B")
+MATTE_IVORY_WHITE = _bambu("#FFFFFF")
+BASIC_BAMBU_GREEN = _bambu("#00AE42")
+BASIC_DARK_GRAY = _bambu("#545454")
+
 PALETTE: Dict[str, Tuple[float, float, float, float]] = {
-    "terrain": (0.36, 0.38, 0.38, 1.0),
-    "building": (1.0, 1.0, 1.0, 1.0),
-    "building_part": (1.0, 1.0, 1.0, 1.0),
-    "road": (0.06, 0.06, 0.06, 1.0),
-    "bridge": (0.06, 0.06, 0.06, 1.0),
-    "bridge_support": (0.06, 0.06, 0.06, 1.0),
+    "terrain": MATTE_IVORY_WHITE,
+    "building": MATTE_CARAMEL,
+    "building_part": MATTE_CARAMEL,
+    "road": BASIC_DARK_GRAY,
+    "bridge": BASIC_DARK_GRAY,
+    "bridge_support": BASIC_DARK_GRAY,
     "water": (0.36, 0.70, 0.82, 1.0),
-    "surface_green": (0.06, 0.18, 0.08, 1.0),
+    "surface_green": BASIC_BAMBU_GREEN,
     "surface_forest": (0.06, 0.18, 0.08, 1.0),
     "surface_sand": (0.55, 0.39, 0.22, 1.0),
     "surface_rock": (0.55, 0.39, 0.22, 1.0),
-    "surface_paved": (0.06, 0.06, 0.06, 1.0),
+    "surface_paved": BASIC_DARK_GRAY,
     "tree": (0.06, 0.18, 0.08, 1.0),
     "rim": (0.16, 0.16, 0.17, 1.0),
 }
+# The Bambu PLA line exported for each role's filament; the rest are PLA Basic.
+FILAMENT_KEY = "jarvizar_filament"
+MATTE_ROLES = {"terrain", "building", "building_part"}
 
 _ROUGHNESS = {
     "water": 0.15,
@@ -78,4 +94,5 @@ def model_materials(*, staging=False) -> Dict[str, bpy.types.Material]:
     }
     for role, material in materials.items():
         material["jarvizar_material_role"] = role
+        material[FILAMENT_KEY] = "PLA Matte" if role in MATTE_ROLES else "PLA Basic"
     return materials

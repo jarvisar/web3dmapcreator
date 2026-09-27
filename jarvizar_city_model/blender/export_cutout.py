@@ -19,8 +19,10 @@ from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
 from mathutils import Matrix, Vector
 import numpy as np
 
-from ..data.export_plates import DEFAULT_COLOR
+from ..data.export_plates import DEFAULT_COLOR, DEFAULT_LINE, FILAMENT_LINES
 from ..geometry.planar import ear_clip, point_in_ring, signed_area
+from ..geometry.surface_priority import ROAD_CUT_AT_EXPORT_KEY, cut_roads_at_export
+from .materials import FILAMENT_KEY
 from .mesh_utils import _prism_geometry
 
 
@@ -592,15 +594,80 @@ def clip_mesh(mesh, matrix_world, opening, collection, stats, *, discard_tangent
             bpy.data.meshes.remove(addition)
 
 
+def _world_mesh(obj, depsgraph):
+    """*obj*'s evaluated mesh in world coordinates; its own data when unmoved."""
+    evaluated = obj.evaluated_get(depsgraph)
+    if not obj.modifiers and not obj.data.shape_keys and evaluated.matrix_world == Matrix.Identity(4):
+        return obj.data
+    mesh = bpy.data.meshes.new_from_object(evaluated, depsgraph=depsgraph)
+    mesh.transform(evaluated.matrix_world)
+    return mesh
+
+
+def _cut_deferred_roads(context, sources, depsgraph, objects, meshes, stats):
+    """Swap slabs Generate left whole for copies cut by the roads there are now.
+
+    Roads deleted or moved in Blender therefore leave no hole. The copies are
+    in world coordinates and linked to the scene, so the crop evaluates them
+    like any source; they and every mesh made here are added to *objects*
+    and *meshes* even on failure. Returns the sources with the cut copies in
+    their slabs' places, less any slab the roads covered entirely.
+    """
+    slabs = [source for source in sources
+             if source.get('feature_type') == 'land_surface' and source.get(ROAD_CUT_AT_EXPORT_KEY)]
+    if not slabs:
+        return sources
+    started = time.perf_counter()
+    known_objects = {obj.as_pointer() for obj in bpy.data.objects}
+    known_meshes = {mesh.as_pointer() for mesh in bpy.data.meshes}
+    try:
+        roads = [_world_mesh(source, depsgraph) for source in sources
+                 if source.get('feature_type') == 'surface_road']
+        copies = []
+        for slab in slabs:
+            copy = slab.copy()
+            copies.append(copy)
+            copy.data = _world_mesh(slab, depsgraph)
+            copy.parent = None
+            copy.matrix_world = Matrix.Identity(4)
+            copy.modifiers.clear()
+            copy.animation_data_clear()
+            copy.constraints.clear()
+            copy.hide_viewport = False
+        counts, kept = cut_roads_at_export(copies, roads)
+        kept = {id(copy) for copy in kept}
+        replacements = {}
+        for slab, copy in zip(slabs, copies):
+            if id(copy) in kept:
+                context.scene.collection.objects.link(copy)
+                replacements[slab.name] = copy
+    finally:
+        # A slab the roads covered entirely was deleted with its mesh; only
+        # what still exists is collected for removal.
+        objects.extend(obj for obj in bpy.data.objects if obj.as_pointer() not in known_objects)
+        meshes.extend(mesh for mesh in bpy.data.meshes if mesh.as_pointer() not in known_meshes)
+    stats['road_cut_surfaces'] = counts['land_surface_road_cut_objects']
+    print(f"3MF road cut: {counts['land_surface_road_cut_objects']} of {len(slabs)} surfaces, "
+          f"{time.perf_counter() - started:.2f} s", flush=True)
+    slab_names = {slab.name for slab in slabs}
+    return [replacements.get(source.name, source) for source in sources
+            if source.name not in slab_names or source.name in replacements]
+
+
 @contextmanager
 def export_geometry(context, sources):
     """Yield export-only objects; evaluated meshes and helpers have one owner."""
     temporary, meshes = [], []
+    road_cut = []
     stats = defaultdict(int)
     try:
         depsgraph = context.evaluated_depsgraph_get()
         cutout = context.scene.objects.get('cutout')
         opening = Opening.from_object(cutout, depsgraph) if cutout is not None else None
+        cut_sources = _cut_deferred_roads(context, sources, depsgraph, road_cut, meshes, stats)
+        if cut_sources is not sources:
+            sources = cut_sources
+            depsgraph = context.evaluated_depsgraph_get()
         for source in sources:
             if source == cutout:
                 continue
@@ -638,7 +705,7 @@ def export_geometry(context, sources):
             context.scene.collection.objects.link(obj)
         yield temporary, stats, opening
     finally:
-        for obj in reversed(temporary):
+        for obj in reversed(temporary + road_cut):
             bpy.data.objects.remove(obj, do_unlink=True)
         for mesh in meshes:
             if mesh.users == 0:
@@ -852,8 +919,14 @@ def material_color(material):
     return "#%02X%02X%02X" % tuple(min(255, max(0, round(c * 255))) for c in color[:3])
 
 
+def material_filament(material):
+    """A material's (#RRGGBB colour, Bambu PLA line); PLA Basic unless it names another."""
+    line = material.get(FILAMENT_KEY) if material is not None else None
+    return material_color(material), line if line in FILAMENT_LINES else DEFAULT_LINE
+
+
 def part_arrays(obj, depsgraph):
-    """One export copy as writer arrays: world-space vertex rows, triangles, materials, colours."""
+    """One export copy as writer arrays: world-space vertex rows, triangles, materials, filaments."""
     evaluated = obj.evaluated_get(depsgraph)
     mesh = evaluated.to_mesh()
     try:
@@ -873,7 +946,7 @@ def part_arrays(obj, depsgraph):
         mesh.loop_triangles.foreach_get('material_index', materials)
     finally:
         evaluated.to_mesh_clear()
-    colors = [material_color(slot.material) for slot in obj.material_slots] or [DEFAULT_COLOR]
+    colors = [material_filament(slot.material) for slot in obj.material_slots] or [DEFAULT_COLOR]
     materials = np.where((materials >= 0) & (materials < len(colors)), materials, 0)
     return (list(zip(*points.T.tolist())), list(zip(*triangles.T.tolist())),
             materials.tolist(), colors)

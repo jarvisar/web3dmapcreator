@@ -549,6 +549,16 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         soft_max=2.0,
         precision=2,
     )
+    cut_roads_at_export: BoolProperty(
+        name="Cut Roads at Export",
+        description=(
+            "Leave parks and other land cover whole under roads and paths, and "
+            "cut the road footprints out of them only when exporting. Roads and "
+            "paths deleted or moved in Blender then leave no hole. Takes effect "
+            "on the next Generate"
+        ),
+        default=True,
+    )
 
     # ---------------------------------------------------------------- bridges
     bridge_deck_thickness_mm: FloatProperty(

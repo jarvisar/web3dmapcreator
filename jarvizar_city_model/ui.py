@@ -360,6 +360,7 @@ class JARVIZAR_PT_transport(_SubPanel, Panel):
         row = layout.row()
         row.enabled = settings.tidy_road_network
         row.prop(settings, "road_gap_mm")
+        layout.prop(settings, "cut_roads_at_export")
 
 
 class JARVIZAR_PT_bridges(_SubPanel, Panel):

@@ -32,10 +32,17 @@ Blender's float32 vertices.
 
 ## Filaments and colours
 
-Filaments are one per distinct colour, numbered in order of first use across
-all parts and plates. A material's colour is its Principled BSDF base colour,
-or its viewport colour without nodes, scaled to bytes without gamma
-conversion, the convention every previous export used. A part whose triangles
+Filaments are one per distinct colour and Bambu PLA line, numbered in order of
+first use across all parts and plates. A material's colour is its Principled
+BSDF base colour, or its viewport colour without nodes, scaled to bytes
+without gamma conversion, the convention every previous export used. Its line
+is its `jarvizar_filament` property, `PLA Basic` or `PLA Matte`, else PLA
+Basic; the palette sets PLA Matte on terrain and buildings. Each filament gets
+that line's preset for the printer (`Bambu PLA Matte @BBL P1S 0.4 nozzle`) and
+its `filament_ids` (`GFA00` Basic, `GFA01` Matte). Palette colours that are
+Bambu filaments (Caramel, Ivory White, Bambu Green, Dark Gray) are their hex
+codes from Bambu Studio's `filaments_color_codes.json`, over 255, so they
+export as exactly those codes. A part whose triangles
 share one colour is simply assigned that filament. A part mixing materials is
 assigned the filament of its most common material, lowest slot on a tie, and
 each other triangle carries Bambu's `paint_color` state for its own filament,
@@ -52,7 +59,8 @@ than parts with filaments. The marker makes it a project: keep it.
 
 `PRINTERS` lists each model's bed, height, and the `default_print_profile` and
 `default_filament_profile` (Bambu PLA Basic) of its "0.4 nozzle" machine
-profile as bundled with Bambu Studio 2.8. The bed sets the section maxima, the
+profile as bundled with Bambu Studio 2.8; the PLA Matte preset has the same
+name with the line replaced. The bed sets the section maxima, the
 plate stride and centring, and `printable_area`. Bambu re-lays plates when the
 user switches printers, so a project made for one bed still opens on another;
 the presets only choose the starting point. Front-left exclusion zones

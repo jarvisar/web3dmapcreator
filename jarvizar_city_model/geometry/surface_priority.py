@@ -2,6 +2,7 @@
 
 import bpy
 import math
+from array import array
 from collections import defaultdict
 
 from mathutils import Vector
@@ -15,6 +16,9 @@ from .planar import EPSILON, clean_ring, densify_ring, ear_clip
 
 
 ROAD_SURFACE_CLEARANCE_MM = 0.005
+# Generate left these slabs whole under the ground roads; Export cuts the
+# roads there are then from its copies (cut_roads_at_export).
+ROAD_CUT_AT_EXPORT_KEY = 'road_cut_at_export'
 # A cut edge gets vertices at the slab drape spacing, so a long straight road
 # or bank edge still follows the ground instead of bridging a slope.
 CUT_EDGE_SPACING_MM = 1.5
@@ -411,7 +415,7 @@ def _solid(out_points, kept, height, thickness, flat=False):
     return vertices, polygons, len({_find(shells, t) for t in range(len(kept))})
 
 
-def _rebuild_surface(obj, cutters, thickness, outline=None, progress_callback=None):
+def _rebuild_surface(obj, cutters, thickness, outline=None, progress_callback=None, bounds=None):
     """Subtract cutter rings from a slab and rebuild it as welded shells.
 
     The slab outlines, the cutter rings and a regular lattice of interior
@@ -424,12 +428,14 @@ def _rebuild_surface(obj, cutters, thickness, outline=None, progress_callback=No
     per cap fragment.
 
     Returns ``(removed_area, shells)``. An object with nothing to remove is
-    left unchanged; one with nothing left is deleted.
+    left unchanged; one with nothing left is deleted. *bounds* replaces the
+    object's cached bounding box, which a copy given a new mesh still has
+    from its source.
     """
     mesh = obj.data
     report = progress_callback or (lambda fraction: None)
-    left, low, right, high = (min(p[0] for p in obj.bound_box), min(p[1] for p in obj.bound_box),
-                              max(p[0] for p in obj.bound_box), max(p[1] for p in obj.bound_box))
+    left, low, right, high = bounds or (min(p[0] for p in obj.bound_box), min(p[1] for p in obj.bound_box),
+                                        max(p[0] for p in obj.bound_box), max(p[1] for p in obj.bound_box))
     cutters = [ring for ring in cutters if ring
                and min(p[0] for p in ring) < right and left < max(p[0] for p in ring)
                and min(p[1] for p in ring) < high and low < max(p[1] for p in ring)]
@@ -523,33 +529,86 @@ def cut_road_footprints(surface_collection, road_collection, thickness, progress
     roads = list(road_collection.objects)
     for index, obj in enumerate(roads):
         if obj.type == 'MESH' and obj.get('feature_type') == 'surface_road':
-            for ring in _outline_loops(obj.data):
-                cutters.append(_cutter(_drop_collinear(ring), ROAD_SURFACE_CLEARANCE_MM))
+            cutters.extend(_road_cutters(obj.data))
         if progress_callback:
             progress_callback(.2 * ((index+1) / max(1, len(roads))))
+    objects = [obj for obj in surface_collection.objects
+               if obj.type == 'MESH' and obj.get('feature_type') == 'land_surface']
+    counts, _kept = _cut_slabs(objects, cutters, lambda obj: thickness, progress_callback)
+    return counts
+
+
+def defer_road_cut(surface_collection, thickness):
+    """Leave the slabs whole under ground roads, for Export to cut instead.
+
+    Roads and paths can then be deleted or moved in Blender without leaving
+    holes; the roads stand above the slabs, so the model looks the same.
+    """
+    objects = [obj for obj in surface_collection.objects
+               if obj.type == 'MESH' and obj.get('feature_type') == 'land_surface']
+    for obj in objects:
+        obj[ROAD_CUT_AT_EXPORT_KEY] = True
+        obj['slab_thickness_mm'] = thickness
+    return {'land_surface_road_cut': 'at export',
+            'land_surface_road_cut_deferred_objects': len(objects)}
+
+
+def cut_roads_at_export(slabs, road_meshes, progress_callback=None):
+    """Cut the ground roads there are now from slabs Generate left whole.
+
+    *slabs* are Export's own copies, rebuilt in place exactly as Generate
+    would have, and *road_meshes* share their coordinates. Bounds come from
+    the vertices, as a copy's cached bounding box is still its source's.
+    Returns the counts and the slabs left, in order; a slab the roads cover
+    entirely is deleted.
+    """
+    cutters = [ring for mesh in road_meshes for ring in _road_cutters(mesh)]
+    return _cut_slabs(slabs, cutters, lambda obj: obj['slab_thickness_mm'], progress_callback,
+                      exact_bounds=True)
+
+
+def _road_cutters(mesh):
+    return [_cutter(_drop_collinear(ring), ROAD_SURFACE_CLEARANCE_MM) for ring in _outline_loops(mesh)]
+
+
+def _mesh_bounds(mesh):
+    if not mesh.vertices:
+        return 0.0, 0.0, 0.0, 0.0
+    coords = array('f', [0.0]) * (3*len(mesh.vertices))
+    mesh.vertices.foreach_get('co', coords)
+    return min(coords[0::3]), min(coords[1::3]), max(coords[0::3]), max(coords[1::3])
+
+
+def _cut_slabs(objects, cutters, thickness, progress_callback=None, exact_bounds=False):
     removed_area = 0.0
     clipped_objects = 0
     fragments = 0
-    objects = [obj for obj in surface_collection.objects
-               if obj.type == 'MESH' and obj.get('feature_type') == 'land_surface']
-    if cutters:
-        for index, obj in enumerate(objects):
-            def report(fraction):
-                if progress_callback:
-                    progress_callback(.2 + .8*(index+fraction)/len(objects))
-            name = obj.name
-            removed, shells = _rebuild_surface(obj, cutters, thickness, progress_callback=report)
-            if removed > 1e-8:
-                if name in surface_collection.objects:
-                    obj['road_cut_area_mm2'] = removed
-                    obj['road_clearance_mm'] = ROAD_SURFACE_CLEARANCE_MM
-                removed_area += removed
-                clipped_objects += 1
-                fragments += shells
-            report(1.0)
+    kept = []
+    for index, obj in enumerate(objects):
+        if not cutters:
+            kept.append(obj)
+            continue
+
+        def report(fraction):
+            if progress_callback:
+                progress_callback(.2 + .8*(index+fraction)/len(objects))
+        bounds = _mesh_bounds(obj.data) if exact_bounds else None
+        removed, shells = _rebuild_surface(obj, cutters, thickness(obj), progress_callback=report,
+                                           bounds=bounds)
+        if removed > 1e-8:
+            # No shells: nothing was left, and the slab has been deleted.
+            if shells:
+                obj['road_cut_area_mm2'] = removed
+                obj['road_clearance_mm'] = ROAD_SURFACE_CLEARANCE_MM
+            removed_area += removed
+            clipped_objects += 1
+            fragments += shells
+        if removed <= 1e-8 or shells:
+            kept.append(obj)
+        report(1.0)
     if progress_callback:
         progress_callback(1.0)
-    return {'land_surface_road_cut_objects': clipped_objects,
-            'land_surface_road_cut_area_mm2': round(removed_area, 4),
-            'land_surface_road_cut_fragments': fragments,
-            'land_surface_road_clearance_mm': ROAD_SURFACE_CLEARANCE_MM}
+    return ({'land_surface_road_cut_objects': clipped_objects,
+             'land_surface_road_cut_area_mm2': round(removed_area, 4),
+             'land_surface_road_cut_fragments': fragments,
+             'land_surface_road_clearance_mm': ROAD_SURFACE_CLEARANCE_MM}, kept)

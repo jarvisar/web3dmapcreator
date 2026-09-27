@@ -57,7 +57,7 @@ from .geometry.dem_terrain import generate_border_rim, generate_terrain_solid
 from .geometry.heightfield import ModelHeightField
 from .geometry.roads import RoadSettings, generate_roads
 from .geometry.support import SupportBuilder
-from .geometry.surface_priority import cut_road_footprints
+from .geometry.surface_priority import cut_road_footprints, defer_road_cut
 from .geometry.surfaces import (
     SurfaceSettings,
     cut_water_from_terrain,
@@ -943,7 +943,14 @@ class JARVIZAR_OT_generate_model(Operator):
                         ),
                     )
                 )
-                if settings.generate_land_surfaces:
+                if settings.generate_land_surfaces and settings.cut_roads_at_export:
+                    # Roads stand above the slabs, so leaving these whole looks
+                    # the same, and a road deleted in Blender leaves no hole.
+                    counts.update(defer_road_cut(
+                        hierarchy["land_surfaces"],
+                        surface_settings.surface_rise_mm + surface_settings.surface_embed_mm,
+                    ))
+                elif settings.generate_land_surfaces:
                     progress(.50, "Cutting road footprints")
                     counts.update(cut_road_footprints(
                         hierarchy["land_surfaces"], hierarchy["surface_roads"],
