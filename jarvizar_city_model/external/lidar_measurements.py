@@ -500,7 +500,7 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             footprint, np.array([facet_samples[key] for key in sorted(facet_samples)]),
             cell, scale=surface_scale or (.07, .077),
             boundary_samples=np.concatenate(boundary_samples) if boundary_samples else np.empty((0, 3)),
-            secondary_samples=secondary)
+            secondary_samples=secondary, neighbours=neighboring_footprints)
         if fitted:
             stats = {"ground_m": ground, "roof_points": len(points), "coverage": round(coverage, 4),
                      "cell_m": cell, "classified_fraction": float(np.mean(points[:, 3] == 6)),

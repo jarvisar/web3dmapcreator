@@ -407,6 +407,84 @@ re-evaluated on the next Prepare.
 
 Run **Prepare LiDAR Buildings** with Refresh off, then **Generate Model**.
 
+### A neighbour's facade inside the outline (algorithm 28, 0.25.7)
+
+First comparison outside Chicago: Philadelphia (`bbox_54cc57cf8a70`, USGS
+Delaware Valley 2015) against Micropolitan's Philadelphia STL. That STL is a
+200-unit print rotated to square the street grid, not metres like Chicago's;
+a similarity fit (0.1857 units per metre, +9.2 degrees, vertical scale equal
+within 1%) aligns it (`scratchpad/micropolitan_compare/philly`, README). Per
+building over the 0.5 m rasters, envelope buildings sit 0.26 m below the
+reference in the median (0.77 m absolute). The largest disagreements are
+data, not reconstruction: The Laurel, the Josephine and The Beacon postdate
+the 2015 survey and their source records describe the old buildings too.
+
+The visible defect was needles: The Shops at Liberty Place, an 18 m podium,
+stood blades a cell or two wide up to 244 m against One Liberty Place. Where
+two buildings meet, the taller one's wall stands on the shared outline, and
+its returns, from the whole height of the wall, fill the last metre or two
+inside the lower one's outline. Two stages keep them. The rank median of a
+rim cell sees mostly that band; and the dip rule lifts a rim cell to the
+highest cell beside it, including the cell outside the outline, whose own
+median is made only of the band. The mirror of the dip rule does not work
+from the raster alone: a narrow raised band along an outline is also a
+parapet, a front wall or a themed false front (half a metre thick, 8 m above
+a Magic Kingdom roof), and an outline-only version lowered those too, and
+where the facade reached unevenly into the roof behind (55 East Monroe's
+garage against the tower) it notched the band instead of removing it.
+
+What decides it is mapped data. `_neighbour_facades` acts only within 4 m of
+a mapped neighbour's outline (the neighbours measurement already gathers
+within 30 m): a cell of the 1.5 m band inside ours standing more than the
+admission band above every cell behind the band near it takes that roof's
+height. Distance to the neighbour's *outline* matters, not its area: Two
+Liberty Place's footprint lies inside the Shops', and the tower drawn in the
+podium's cap keeps its height. A candidate whose raised mass (8-connected,
+above that level) reaches behind the band is ours and stays whole; without
+that test a West Loop building's front wall lost the stretches beyond the mass
+it turns into and came out notched. Returns are still not filtered, and
+nothing changes where no mapped neighbour is near: the facade band of 55 East
+Monroe's garage lies 11 m from the tower's mapped outline and is left as
+before, as are the Magic Kingdom false front and a small Miami building's
+raised corner.
+
+Regression dumps (85 buildings: Philadelphia, the Chicago Loop set, Magic
+Kingdom, West Loop, Miami), re-fitted with their production neighbour lists:
+75 byte-identical. Of the ten changed, four lose needles or plates standing
+against a neighbour's wall (the Shops, the Windsor at Ontario Place's four
+needles, the InterContinental's plate, a 14 m plate on a West Loop block);
+the other six move under 5 m, over a few square metres at most.
+
+City re-measure from cached points, HEAD against this rule, production
+neighbour lists (`philly/remeasure30.py`, `recdiff.py`):
+
+- Philadelphia: 467 of 2,357 records change, 311 by under 5 m anywhere
+  (collapse ripple). 156 lose more than 5 m somewhere, a median of a few
+  square metres each; two rise more than 5 m, over 0.2 m² at most. Every one
+  of the 156 was rendered alone before/after at its largest change, and in the
+  city beside the reference where it covers them (47): blades, combs and
+  needles along party walls go, a few leave a stub, none loses a mass of its
+  own. In the city most were hidden against the neighbour's wall; they showed
+  where they stood above or beside it. Against the reference, over those 47,
+  the area of ours standing 5 m above anything it has within 1.5 m falls from
+  430 to 344 m²; the area 5 m below everything it has there is flat (1,661 to
+  1,671 m²), the rise being neighbours' walls it draws a metre inside our
+  outlines.
+- Chicago (162 buildings still with cached points): 41 change, 27 by more
+  than 5 m, the same kind: Wabash Jewelers Mall, Columbia College, Saks Off
+  5th, Spertus and the Fine Arts Building Annex lose walls or needles against
+  their neighbours.
+
+Run **Prepare LiDAR Buildings** with Refresh off, then **Generate Model**.
+
+Not changed, for the record: the skipped small buildings. At the default
+0.7 mm² minimum footprint Philadelphia's rowhouses (43-128 m²) keep source
+heights, and those stand a median 3.4 m above the reference (the "USGS
+Lidar" heights Overture carries look like maximum heights, a median 8 m
+above the reference's roofs on the buildings we do measure; the 0.8 mm
+minimum height lifts the rest).
+Lowering **Minimum Building Footprint** is a setting, not a code change.
+
 ## Tiers: real walls inside a footprint (algorithm 20, superseded)
 
 Reconstruction algorithm 20; superseded by the edge collapse above. Run **Prepare LiDAR Buildings** with Refresh off,

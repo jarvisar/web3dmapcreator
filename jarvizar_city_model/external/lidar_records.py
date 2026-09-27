@@ -5,7 +5,7 @@ never turn a missing upper roof into an apparently valid podium-only model.
 """
 import math
 
-ALGORITHM_VERSION = 27
+ALGORITHM_VERSION = 28
 # The published result in each cache bundle: the layout the worker writes and
 # both readers (Prepare's reuse check and Blender generation) accept, and the
 # largest file either will parse.

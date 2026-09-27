@@ -772,7 +772,16 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   teeth. They still count, because a shadow beside a tower can be a real
   low roof and dropping them filled it from the tower. A rim cell more than
   two cells below a neighbour is a facade return, not roof, and takes that
-  neighbour's height. Returns filed under a vegetation class (3–5) are
+  neighbour's height. The mirror case needs mapped data: a taller
+  neighbour's facade stands on a shared outline and its returns fill our
+  last metre or two, and The Shops at Liberty Place stood needles to 244 m
+  up One Liberty Place. Within `NEIGHBOUR_FACADE_M` (4 m) of a mapped
+  neighbour's outline, a cell of the 1.5 m band inside ours standing more
+  than the admission band above the roof behind it takes that roof's height
+  (`_neighbour_facades`), unless its raised mass reaches behind the band
+  (a parapet, front wall or light-court wall is ours; trimming its stretches
+  notched it). Away from mapped neighbours nothing changes, so a false front
+  on a street stays. Returns filed under a vegetation class (3–5) are
   admitted up to the band above the structural envelope and join each
   cell's upper return, but **never lower a cell the building classes
   observed**: the Cook County survey files most of every tower's facade as

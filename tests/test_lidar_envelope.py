@@ -90,6 +90,38 @@ class UpperEnvelopeTests(unittest.TestCase):
         self.assertIsNotNone(record, reason)
         self.assertGreater(min(height_at(record, x, 23.99) for x in np.arange(1, 29, .5)), 79)
 
+    def tower_facade(self, x0, x1, y0, y1, top):
+        """A neighbouring tower's facade returns falling inside our outline."""
+        return np.array([(x, y, z) for x in np.arange(x0+.05, x1, .1) for y in np.arange(y0+.05, y1, .25)
+                         for z in np.arange(22, top, .5)])
+
+    def test_neighbours_facade_inside_outline_is_not_a_blade_up_its_wall(self):
+        # A podium drawn up to a mapped tower: the tower's facade returns
+        # fill its last metre, and the podium stood a blade up the tower's
+        # wall (The Shops at Liberty Place against One Liberty Place).
+        footprint, tower = box(0, 0, 30, 24), box(0, 24, 30, 40)
+        roof = self.cloud(footprint, lambda x, y: np.full_like(x, 20.))
+        returns = np.concatenate((roof, self.tower_facade(0, 30, 23, 24, 150)))
+        record, reason = fit_roof_envelope(footprint, roof, 1.5, (.07, .077), returns)
+        self.assertIsNotNone(record, reason)
+        self.assertGreater(height_at(record, 15, 23.5), 100)
+        record, reason = fit_roof_envelope(footprint, roof, 1.5, (.07, .077), returns, neighbours=[tower])
+        self.assertIsNotNone(record, reason)
+        self.assertLess(max(height_at(record, x, 23.9) for x in np.arange(.5, 30, .5)), 21)
+        self.assertLess(max(v[2] for s in record['roof_surfaces'] for v in s['geometry']['coordinates'][0]), 21)
+
+    def test_raised_edge_reaching_the_roof_inside_stays_whole_beside_a_neighbour(self):
+        # A front wall along the neighbour's line that turns into a mass on
+        # the roof is ours: trimming the stretch beyond the mass notched it.
+        footprint, neighbour = box(0, 0, 30, 24), box(0, 24, 30, 40)
+        raised = box(0, 22.5, 30, 24).union(box(0, 14, 6, 24))
+        roof = self.cloud(footprint, lambda x, y: np.where(contains_xy(raised, x, y), 30., 20.))
+        record, reason = fit_roof_envelope(footprint, roof, 1.5, (.07, .077), roof, neighbours=[neighbour])
+        self.assertIsNotNone(record, reason)
+        self.assertGreater(min(height_at(record, x, 23.4) for x in np.arange(1, 29, 1.)), 29)
+        self.assertAlmostEqual(height_at(record, 3, 18), 30, delta=.6)
+        self.assertAlmostEqual(height_at(record, 18, 10), 20, delta=.6)
+
     def test_isolated_high_return_is_removed_but_supported_cap_survives(self):
         footprint = box(0, 0, 30, 30)
         cap = box(12, 12, 18, 18)

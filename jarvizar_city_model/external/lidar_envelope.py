@@ -14,7 +14,9 @@ curved face as a coherent fan of facets and a flared base as a smooth slope,
 while real steps, setbacks and rooftop plant above the tolerance survive. The
 collapsed faces are clipped to the footprint, so the cap covers the outline
 exactly. Nothing detects tiers, setbacks or architecture: the returns alone
-say where the walls are. Native dependencies stay in the preparation worker.
+say where the walls are. The one thing mapped data decides is whose wall
+stands on a shared outline: a taller neighbour's facade inside ours is not
+our roof. Native dependencies stay in the preparation worker.
 """
 import math
 import warnings
@@ -56,6 +58,11 @@ SPIRE_SHARE = .8
 # moves further than the reach.
 FAIR_WINDOW_MM = .6
 FAIR_REACH_MM = .14
+# Ground distances of `_neighbour_facades`: a mapped neighbour's facade stands
+# within the first of its outline (either outline drawn a little off, and the
+# scatter of its returns), and its returns reach the second inside ours.
+NEIGHBOUR_FACADE_M = 4.
+FACADE_BAND_M = 1.5
 
 
 def envelope_parameters(scale, density=None):
@@ -323,7 +330,79 @@ def _rank(grid, pitch, window):
     return _fill(heights, observed), observed
 
 
-def _component_surface(polygon, samples, pitch, window, secondary=()):
+def _reach_max(data, reach):
+    """The highest value within `reach` cells either way along both axes."""
+    for axis in (0, 1):
+        padded = np.pad(data, [(reach, reach) if a == axis else (0, 0) for a in (0, 1)],
+                        constant_values=-np.inf)
+        size = data.shape[axis]
+        data = np.maximum.reduce([padded[k:k+size] if axis == 0 else padded[:, k:k+size]
+                                  for k in range(2*reach+1)])
+    return data
+
+
+def _reaches_core(seeds, heights, level, within, core):
+    """Seeds whose raised mass reaches the core: the cells inside the outline
+    8-connected to a seed and standing above that seed's `level`."""
+    nx, ny = seeds.shape
+    reached = np.zeros(seeds.shape, dtype=bool)
+    done = np.zeros(seeds.shape, dtype=bool)
+    for i, j in zip(*np.nonzero(seeds)):
+        if done[i, j]:
+            continue
+        floor, mass, stack, real = level[i, j], {(i, j)}, [(i, j)], False
+        while stack and not real:
+            a, b = stack.pop()
+            for p in range(max(a-1, 0), min(a+2, nx)):
+                for q in range(max(b-1, 0), min(b+2, ny)):
+                    if (p, q) not in mass and within[p, q] and heights[p, q] > floor:
+                        real |= bool(core[p, q])
+                        mass.add((p, q))
+                        stack.append((p, q))
+        for a, b in mass:
+            if seeds[a, b]:
+                done[a, b] = True
+                reached[a, b] = real
+    return reached
+
+
+def _neighbour_facades(heights, within, zone, pitch, rise):
+    """Bring a mapped neighbour's facade standing inside our outline down to our roof.
+
+    Where two buildings meet, the taller one's wall stands on the shared
+    line, and its returns, from the whole height of the wall, fall a metre
+    or two inside our outline wherever either outline is drawn a little off.
+    Filling the last cells along the outline, they outvote our roof in the
+    rank median, and the dip rule lifts the rim to them again from the cells
+    outside: a podium came out with blades up the tower beside it. The Shops
+    at Liberty Place (Philadelphia) stood needles a cell wide to 244 m against
+    One Liberty Place. A cell in the band along our outline, within reach of
+    a mapped neighbour's outline (`zone`), that stands `rise` above every
+    cell behind the band near it takes that roof's height. Its raised mass
+    must stay inside the band: a parapet, front wall or light-court wall
+    along the same line reaches behind it somewhere and stays whole, where
+    trimming its stretches beyond the roof behind notched it. Away from
+    mapped neighbours nothing changes, so a false front on a street keeps
+    standing (half a metre thick, 8 m above a Magic Kingdom roof).
+    """
+    band = max(1, int(round(FACADE_BAND_M/pitch)))
+    core = within.copy()
+    for _ in range(band):
+        shrunk = core.copy()
+        for offset in CROSS:
+            shrunk &= np.roll(core, offset, axis=(0, 1))
+        core = shrunk
+    edge = within & ~core & zone
+    if not edge.any() or not core.any():
+        return heights
+    roof = _reach_max(np.where(core, heights, -np.inf), 2*band)
+    facade = edge & np.isfinite(roof) & (heights > roof+rise)
+    if facade.any():
+        facade &= ~_reaches_core(facade, heights, roof+rise, within, core)
+    return np.where(facade, roof, heights)
+
+
+def _component_surface(polygon, samples, pitch, window, secondary=(), zone=None, rise=None):
     """Upper returns, rank filtered, over one connected footprint component.
 
     `secondary` returns (a vegetation class) join each cell's upper return
@@ -362,11 +441,13 @@ def _component_surface(polygon, samples, pitch, window, secondary=()):
     rim = within & ~interior
     highest = _stack(heights, _disc(pitch, pitch)).max(axis=0)
     heights = np.where(rim & (highest-heights > 2*pitch), highest, heights)
+    if zone is not None:
+        heights = _neighbour_facades(heights, within, contains_xy(zone, gx, gy), pitch, rise)
     return _fill(heights, within), raster, observed
 
 
-def _has_spires(polygon, samples, pitch, window, rise):
-    heights, raster, _ = _component_surface(polygon, samples, pitch, window)
+def _has_spires(polygon, samples, pitch, window, rise, zone=None):
+    heights, raster, _ = _component_surface(polygon, samples, pitch, window, zone=zone, rise=rise)
     return bool((_spires(heights, rise) & contains_xy(polygon, *raster.corners())).any())
 
 
@@ -479,20 +560,23 @@ def _ring_area(ring):
                    for a, b in zip(ring, ring[1:])))/2
 
 
-def _envelope(components, observed, secondary, pitch, window, tolerance, budget, threshold, fairing):
+def _envelope(components, observed, secondary, pitch, window, tolerance, budget, threshold, fairing,
+              zone=None):
     """The clipped cap faces of every component, and the fit diagnostics."""
     rings, faces, cells, admitted, residuals = [], 0, 0, 0, []
     total = sum(polygon.area for polygon in components)
     for polygon in components:
         usable, extra = observed, ()
         if len(secondary):
-            established, raster, _ = _component_surface(polygon, observed, pitch, window)
+            established, raster, _ = _component_surface(polygon, observed, pitch, window,
+                                                        zone=zone, rise=tolerance)
             ix, iy = raster.cells(secondary)
             keep = secondary[:, 2] <= established[ix, iy]+tolerance
             admitted += int(keep.sum())
             extra = secondary[keep]
             usable = np.concatenate((observed, extra))
-        heights, raster, seen_cells = _component_surface(polygon, observed, pitch, window, extra)
+        heights, raster, seen_cells = _component_surface(polygon, observed, pitch, window, extra,
+                                                         zone=zone, rise=tolerance)
         cells += int(seen_cells.sum())
         # Comparing an upper envelope to individual returns measures the
         # building, not the reconstruction: under one facade cell the returns
@@ -562,7 +646,7 @@ def _turn(points, angle, origin):
 
 
 def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samples=(),
-                      secondary_samples=()):
+                      secondary_samples=(), neighbours=()):
     """Return a complete continuous envelope, or an explicit fallback reason.
 
     `samples` are the per-cell upper observations proven by the coverage tests;
@@ -571,7 +655,9 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
     class; they are admitted only where the structural envelope already reaches
     that level, so a canopy can never lift a roof while a facade misfiled as
     vegetation is still used, and they never lower a cell the building classes
-    observed.
+    observed. `neighbours` are the mapped footprints around this one, in the
+    same frame: a taller one's facade standing inside this outline where they
+    meet is not this roof (`_neighbour_facades`).
     """
     samples = np.asarray(samples, dtype=float)
     returns = np.asarray(boundary_samples, dtype=float)
@@ -597,9 +683,14 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
         angle = (math.atan2(end[1]-start[1], end[0]-start[0])+math.pi/4) % (math.pi/2)-math.pi/4
         angle = 0. if abs(angle) < 1e-9 else angle
         origin = footprint.centroid.coords[0]
+        near = footprint.buffer(NEIGHBOUR_FACADE_M)
+        edges = [n.boundary for n in neighbours if n.is_valid and n.intersects(near)]
+        zone = unary_union(edges).buffer(NEIGHBOUR_FACADE_M) if edges else None
         if angle:
             footprint = rotate(footprint, -angle, origin=origin, use_radians=True)
             observed, secondary = _turn(observed, -angle, origin), _turn(secondary, -angle, origin)
+            if zone is not None:
+                zone = rotate(zone, -angle, origin=origin, use_radians=True)
         components = pieces(footprint)
         # The band reading grids a steep roof coarser too, where nothing is
         # noisy, and slender free-standing masses are what a coarse grid
@@ -607,7 +698,7 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
         # filled. Every other cap keeps the pitch the band reading gave it.
         scatter = _scatter_density(footprint, observed) if pitch > envelope_parameters(scale, 1e9)[0] else None
         if scatter and envelope_parameters(scale, scatter)[0] < pitch and any(
-                _has_spires(polygon, observed, pitch, window, tolerance) for polygon in components):
+                _has_spires(polygon, observed, pitch, window, tolerance, zone) for polygon in components):
             density = scatter
             pitch, window, tolerance = envelope_parameters(scale, density)
         budget = facet_budget(pitch)
@@ -615,7 +706,7 @@ def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samp
         # the error that merges them scales with the pitch squared.
         surfaces, faces, cells, admitted, residuals = _envelope(
             components, observed, secondary, pitch, window, tolerance, budget,
-            COLLAPSE_TOLERANCE*pitch*pitch, (FAIR_WINDOW_MM/scale[0], FAIR_REACH_MM/scale[0]))
+            COLLAPSE_TOLERANCE*pitch*pitch, (FAIR_WINDOW_MM/scale[0], FAIR_REACH_MM/scale[0]), zone)
         if len(surfaces) > MAX_ENVELOPE_FACETS:
             raise UnsupportedFit('upper surface facet budget')
         # Publication rounds heights to the millimetre-scale precision this
