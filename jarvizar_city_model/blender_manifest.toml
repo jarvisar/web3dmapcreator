@@ -9,5 +9,6 @@ blender_version_min = "4.2.0"
 license = ["SPDX:GPL-3.0-or-later"]
 
 [permissions]
-network = "Download selected Overture map data, elevation tiles, and optional public LiDAR crops"
+network = "Download Overture map data, elevation tiles and public LiDAR"
 files = "Cache downloaded map data for model generation"
+clipboard = "Paste bounding box coordinates"

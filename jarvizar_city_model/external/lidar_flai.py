@@ -50,6 +50,8 @@ def discover_flai(fetch, bbox, failures, progress):
             if area and not box(area.west, area.south, area.east, area.north).intersects(roi):
                 continue
             prefix = dataset['path'].rsplit('/', 1)[0] + '/shp/'
+            authority = ('ea' if dataset['path'].startswith('data/UK/DEFRA/') else
+                         'pnoa' if dataset['path'].startswith('data/ES/CNIG/') else '')
             progress(f"Locating Flai COPC tiles: {dataset['name']}")
             listing = xml_root(fetch.get(BUCKET_URL + '?' + urlencode({
                 'list-type': 2, 'prefix': prefix, 'max-keys': 100}), fresh=True, limit=1024**2))
@@ -74,8 +76,6 @@ def discover_flai(fetch, bbox, failures, progress):
                     if not isinstance(name, str) or '/' in name or '\\' in name or not name.lower().endswith('.copc.laz'):
                         raise ValueError('Flai tile index lacks a COPC filename')
                     tile_url = BUCKET_URL + quote(dataset['path'] + '/' + name, safe='/')
-                    authority = ('ea' if dataset['path'].startswith('data/UK/DEFRA/') else
-                                 'pnoa' if dataset['path'].startswith('data/ES/CNIG/') else '')
                     tiles.append({'url': tile_url, 'bbox': list(geometry.bounds),
                                   'original_asset_id': original_asset_id(authority, name),
                                   'horizontal_crs': f"EPSG:{int(row['epsg'])}" if positive(row.get('epsg')) else dataset['horizontal_crs'],

@@ -1,7 +1,7 @@
 """Bounded STAC API/static-catalog discovery; only metadata is fetched here."""
 import hashlib
 import json
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urljoin
 
 from pyproj import CRS
 from shapely.geometry import box, shape
@@ -10,9 +10,11 @@ from shapely.ops import unary_union
 try:
     from .lidar_candidates import candidate, asset_format, https_url
     from .lidar_metadata import normalized_metadata, aggregate_metadata, positive
+    from .lidar_services import query_url
 except ImportError:
     from lidar_candidates import candidate, asset_format, https_url
     from lidar_metadata import normalized_metadata, aggregate_metadata, positive
+    from lidar_services import query_url
 
 MAX_DOCUMENTS = 256
 
@@ -159,7 +161,7 @@ def discover_stac(fetch, bbox, endpoint, failures, progress, provider='STAC'):
                     query['bbox'] = ','.join(map(str, bbox))
                     if 'collections' in query:
                         query['collections'] = ','.join(query['collections'])
-                    pending.append((target + ('&' if '?' in target else '?') + urlencode(query), None, inherited))
+                    pending.append((query_url(target, query), None, inherited))
             else:
                 for link in links:
                     rel = link.get('rel')
@@ -167,7 +169,7 @@ def discover_stac(fetch, bbox, endpoint, failures, progress, provider='STAC'):
                         continue
                     target = https_url(urljoin(url, link['href']))
                     if rel == 'items':
-                        target += ('&' if '?' in target else '?') + urlencode({'bbox': ','.join(map(str, bbox)), 'limit': 100})
+                        target = query_url(target, {'bbox': ','.join(map(str, bbox)), 'limit': 100})
                     method = link.get('method', 'GET')
                     if method not in ('GET', 'POST'):
                         raise ValueError('Unsupported STAC pagination method')

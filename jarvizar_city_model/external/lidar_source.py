@@ -135,8 +135,9 @@ def check_source(feature, parts, record, footprint):
         check = height_decision(props, observed, strong_measurement(record))
         if check in ('source_height_conflict', 'weak_height_correction'):
             return check
-        if (height_metres(props) and not estimated_height(props)
-                and abs(height_metres(props)-observed_top) <= max(10, observed_top*.1)
+        explicit = height_metres(props)
+        if (explicit and not estimated_height(props)
+                and abs(explicit-observed_top) <= max(10, observed_top*.1)
                 and exposed.intersection(footprint).area >= footprint.area*.03):
             corroborated = True
     return height_decision(feature.get('properties') or {}, observed_top,

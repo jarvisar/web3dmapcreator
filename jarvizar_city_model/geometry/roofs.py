@@ -30,7 +30,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple
 
-from ..data.geojson import positive_number
+from ..data.geojson import finite_number, positive_number
 from .buildings import VerticalProfile, length_metres
 from .planar import EPSILON, clean_ring, ear_clip, oriented_ring, signed_area
 
@@ -98,16 +98,6 @@ class RoofProfile:
         return self.kind not in ("flat", "unsupported")
 
 
-def _finite(value: Any) -> Optional[float]:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
-
-
 def resolve_roof(
     properties: Mapping[str, Any],
     profile: VerticalProfile,
@@ -148,7 +138,7 @@ def resolve_roof(
     else:
         source = "roof_height"
 
-    direction = _finite(properties.get("roof_direction", properties.get("roof:direction")))
+    direction = finite_number(properties.get("roof_direction", properties.get("roof:direction")))
     orientation = properties.get("roof_orientation", properties.get("roof:orientation"))
     orientation = str(orientation).strip().lower() if orientation else None
 

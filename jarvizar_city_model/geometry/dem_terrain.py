@@ -52,9 +52,10 @@ def _cut_terrain_geometry(heightfield, thickness_mm: float):
         for rings in polygons:
             for index, ring in enumerate(rings):
                 ring = clean_ring([(min(max(x, left), right), min(max(y, low), high)) for x, y in ring])
-                if len(ring) < 3 or area_xy(ring) == 0:
+                area = area_xy(ring)  # 0 for fewer than three points
+                if area == 0:
                     continue
-                if (area_xy(ring) < 0) != (index > 0):
+                if (area < 0) != (index > 0):
                     ring.reverse()
                 ring = densify_ring(ring, spacing)
                 loops.append((group, list(range(len(points), len(points) + len(ring)))))

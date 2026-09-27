@@ -122,9 +122,10 @@ def input_metadata_url(base, value):
     if not isinstance(value, str):
         raise ValueError('Missing EPT input metadata link')
     url = urljoin(base, value)
-    if (urlparse(url).scheme != 'https' or not url.startswith(base)
-            or urlparse(url).query or not urlparse(url).path.endswith('.json')
-            or '..' in unquote(urlparse(url).path).split('/') or '\\' in unquote(value)):
+    parsed = urlparse(url)
+    if (parsed.scheme != 'https' or not url.startswith(base)
+            or parsed.query or not parsed.path.endswith('.json')
+            or '..' in unquote(parsed.path).split('/') or '\\' in unquote(value)):
         raise ValueError('EPT input metadata link escapes ept-sources')
     return url
 

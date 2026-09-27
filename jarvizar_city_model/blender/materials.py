@@ -50,6 +50,7 @@ PALETTE: Dict[str, Tuple[float, float, float, float]] = {
 }
 # The Bambu PLA line exported for each role's filament; the rest are PLA Basic.
 FILAMENT_KEY = "jarvizar_filament"
+MATERIAL_ROLE_KEY = "jarvizar_material_role"
 MATTE_ROLES = {"terrain", "building", "building_part"}
 
 _ROUGHNESS = {
@@ -65,7 +66,8 @@ def _material_name(key: str) -> str:
 
 
 def get_or_create_material(name: str, color, roughness: float = _DEFAULT_ROUGHNESS, *, staging=False):
-    material = bpy.data.materials.get(name)
+    # Local data only: a linked library material of this name is not ours to edit.
+    material = bpy.data.materials.get((name, None))
     if staging:
         material = material.copy() if material is not None else bpy.data.materials.new(name=name)
         material.name = "_JCM_STAGING_" + name
@@ -93,6 +95,6 @@ def model_materials(*, staging=False) -> Dict[str, bpy.types.Material]:
         for key, color in PALETTE.items()
     }
     for role, material in materials.items():
-        material["jarvizar_material_role"] = role
+        material[MATERIAL_ROLE_KEY] = role
         material[FILAMENT_KEY] = "PLA Matte" if role in MATTE_ROLES else "PLA Basic"
     return materials

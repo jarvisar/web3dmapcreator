@@ -251,7 +251,6 @@ def build_mosaic(
     north: float,
     zoom: int,
     timeout: float = 60.0,
-    progress=None,
 ) -> Dict[str, object]:
     """Fetch every covering tile and decode it into one elevation mosaic."""
     x0, y0, x1, y1 = _tile_range(west, south, east, north, zoom)
@@ -260,13 +259,8 @@ def build_mosaic(
     mosaic = array.array("f", [0.0]) * (columns * rows)
     covered = 0
     missing = 0
-    total = (x1 - x0 + 1) * (y1 - y0 + 1)
-    index = 0
     for tile_y in range(y0, y1 + 1):
         for tile_x in range(x0, x1 + 1):
-            index += 1
-            if progress is not None:
-                progress(index / total)
             payload = _fetch_tile(zoom, tile_x, tile_y, timeout)
             if payload is None:
                 missing += 1

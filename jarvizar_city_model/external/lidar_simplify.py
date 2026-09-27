@@ -150,14 +150,15 @@ def collapse(vertices, faces, threshold, budget, deviation=math.inf, fine=()):
         if version[a] != seen_a or version[b] != seen_b:
             continue
         shared = vf[a] & vf[b]
+        around_a, around_b = neighbours(a), neighbours(b)
         # Link condition: the only common neighbours are the apexes of the
         # faces on this edge, so the collapse cannot pinch the cap.
-        if (neighbours(a) & neighbours(b)) != {v for index in shared for v in F[index]}-{a, b}:
+        if (around_a & around_b) != {v for index in shared for v in F[index]}-{a, b}:
             continue
         if any(folds(index, a, b, position) for index in (vf[a] | vf[b])-shared):
             continue
         if any((V[u][0]-position[0])**2+(V[u][1]-position[1])**2 < MIN_GAP*MIN_GAP
-               for u in (neighbours(a) | neighbours(b))-{a, b}):
+               for u in (around_a | around_b)-{a, b}):
             continue
         V[a] = position
         for index in shared:

@@ -111,16 +111,19 @@ class FootprintIndex:
         for cell in self._cells(bounds):
             self.cells[cell].append(index)
 
+    def _candidates(self, bounds):
+        candidates = set()
+        for cell in self._cells(bounds):
+            candidates.update(self.cells.get(cell, ()))
+        return candidates
+
     def overlaps(self, poly):
         """Whether a polygon has positive-area contact with any indexed footprint.
 
         Stop at the first hit; existence checks need no fragment subtraction.
         """
         bounds = _bounds(poly)
-        candidates = set()
-        for cell in self._cells(bounds):
-            candidates.update(self.cells.get(cell, ()))
-        for index in candidates:
+        for index in self._candidates(bounds):
             box, planes = self.cutters[index]
             if not bounds_overlap(bounds, box):
                 continue
@@ -139,12 +142,9 @@ class FootprintIndex:
 
     def difference(self, poly):
         bounds = _bounds(poly)
-        candidates = set()
-        for cell in self._cells(bounds):
-            candidates.update(self.cells.get(cell, ()))
         pieces = [poly]
         piece_bounds = [bounds]
-        for index in sorted(candidates):
+        for index in sorted(self._candidates(bounds)):
             cut_bounds, planes = self.cutters[index]
             if not bounds_overlap(bounds, cut_bounds):
                 continue

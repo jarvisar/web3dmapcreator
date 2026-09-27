@@ -81,21 +81,20 @@ class CacheBundle:
             return {}
         return value if isinstance(value, dict) else {}
 
+    def _is_current(self, manifest: Dict[str, Any]) -> bool:
+        """Whether a manifest was written in this format for these bounds."""
+        return manifest.get("cache_format") == CACHE_FORMAT_VERSION and manifest.get(
+            "bbox"
+        ) == list(self.bounds.as_tuple())
+
     def is_complete(self, feature_types: Iterable[str] = BUILDING_TYPES) -> bool:
-        manifest = self.read_manifest()
-        if manifest.get("cache_format") != CACHE_FORMAT_VERSION:
-            return False
-        if manifest.get("bbox") != list(self.bounds.as_tuple()):
+        if not self._is_current(self.read_manifest()):
             return False
         return all(self.data_path(item).is_file() for item in feature_types)
 
     def missing_types(self, feature_types: Iterable[str]) -> Tuple[str, ...]:
         """Return the requested types that are not cached for these bounds."""
-        manifest = self.read_manifest()
-        stale = manifest.get("cache_format") != CACHE_FORMAT_VERSION or manifest.get(
-            "bbox"
-        ) != list(self.bounds.as_tuple())
-        if stale:
+        if not self._is_current(self.read_manifest()):
             return tuple(feature_types)
         return tuple(
             item for item in feature_types if not self.data_path(item).is_file()

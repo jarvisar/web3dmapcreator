@@ -7,11 +7,10 @@ import numpy as np
 from shapely import contains_xy
 from shapely.geometry import MultiPoint, Polygon, box
 
-
-def polygon_pieces(geometry):
-    if geometry.geom_type == 'Polygon':
-        return [geometry] if not geometry.is_empty else []
-    return [p for g in getattr(geometry, 'geoms', ()) for p in polygon_pieces(g)]
+try:
+    from .lidar_facets import pieces as polygon_pieces
+except ImportError:
+    from lidar_facets import pieces as polygon_pieces
 
 
 def half_plane(bounds, coef):

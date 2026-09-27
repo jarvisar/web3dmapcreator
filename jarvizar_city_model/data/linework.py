@@ -238,11 +238,16 @@ def collect_boundaries(
     return collapsed
 
 
+def _covers(rule: Mapping[str, Any], midpoint: float) -> bool:
+    """Whether the rule's scope contains *midpoint*."""
+    start, end = _between(rule)
+    return start - 1.0e-9 <= midpoint <= end + 1.0e-9
+
+
 def active_rule(rules: Any, midpoint: float) -> Dict[str, Any] | None:
     """Return the first rule whose scope contains *midpoint*."""
     for rule in _rules(rules):
-        start, end = _between(rule)
-        if start - 1.0e-9 <= midpoint <= end + 1.0e-9:
+        if _covers(rule, midpoint):
             return rule
     return None
 
@@ -251,8 +256,7 @@ def active_flag_values(rules: Any, midpoint: float) -> FrozenSet[str]:
     """Return the union of ``values`` from every rule active at *midpoint*."""
     active = set()
     for rule in _rules(rules):
-        start, end = _between(rule)
-        if not (start - 1.0e-9 <= midpoint <= end + 1.0e-9):
+        if not _covers(rule, midpoint):
             continue
         values = rule.get("values")
         if isinstance(values, str):

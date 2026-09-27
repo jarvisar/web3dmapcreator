@@ -32,12 +32,12 @@ except ImportError:
 try:
     from .lidar_usgs import TNM_URL, DISCOVERY_ERRORS, tnm_tiles, manifest_tiles, grouped_laz, discover_usgs
     from .lidar_stac import discover_stac
-    from .lidar_candidates import candidate, asset_format, discovery_settings, SOURCE_FIELDS
+    from .lidar_candidates import candidate, asset_format, discovery_settings, staged, SOURCE_FIELDS, STREAM_FORMATS
     from .lidar_copc import read_copc
 except ImportError:
     from lidar_usgs import TNM_URL, DISCOVERY_ERRORS, tnm_tiles, manifest_tiles, grouped_laz, discover_usgs
     from lidar_stac import discover_stac
-    from lidar_candidates import candidate, asset_format, discovery_settings, SOURCE_FIELDS
+    from lidar_candidates import candidate, asset_format, discovery_settings, staged, SOURCE_FIELDS, STREAM_FORMATS
     from lidar_copc import read_copc
 
 def _provider(module, function):
@@ -67,7 +67,7 @@ def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambd
     settings = discovery_settings(**{k: v for k, v in (discovery or {}).items() if k != 'version'})
     if source_url:
         format = asset_format(source_url)
-        if format not in ('EPT', 'COPC'):
+        if format not in STREAM_FORMATS:
             raise ValueError('Explicit streaming source must be EPT or COPC')
         sources.append(candidate('Explicit', source_url, source_url.split('/')[-2] if format == 'EPT' else source_url.rsplit('/', 1)[-1],
                                  source_url, format, box(*bbox)))
@@ -134,7 +134,7 @@ def discover_sources(fetch, bbox, source_url='', manifest_url='', progress=lambd
 
 
 def read_source(fetch, source, bbox):
-    if source['format'] in ('LAZ', 'LAS'):
+    if staged(source):
         points, info = lidar_laz.read_laz(fetch, source, bbox)
     elif source['format'] == 'COPC':
         points, info = read_copc(fetch, source, bbox)

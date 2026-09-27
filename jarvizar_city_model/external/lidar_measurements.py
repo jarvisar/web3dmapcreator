@@ -18,8 +18,14 @@ from shapely.affinity import rotate
 from shapely.geometry import MultiPoint, Polygon, box, mapping, shape
 from shapely.ops import transform as map_geometry, unary_union
 try:
+    from .lidar_envelope import DEFAULT_SURFACE_SCALE
+    from .lidar_facets import pieces as polygons
+    from .lidar_ground import surrounding_ground
     from .lidar_selection import construction_year, top_height
 except ImportError:
+    from lidar_envelope import DEFAULT_SURFACE_SCALE
+    from lidar_facets import pieces as polygons
+    from lidar_ground import surrounding_ground
     from lidar_selection import construction_year, top_height
 
 
@@ -153,22 +159,8 @@ def _continue_with_vegetation(secondary, uv, x0, y0, cell, rotated, pieces, cell
             frontier.append(other)
 
 
-def polygons(geometry):
-    if geometry.geom_type == "Polygon":
-        return [geometry] if not geometry.is_empty else []
-    if geometry.geom_type in ("MultiPolygon", "GeometryCollection"):
-        return [p for child in geometry.geoms for p in polygons(child)]
-    return []
-
-
 def ground_reference(footprint, index, margin=25.0):
-    neighborhood = footprint.buffer(margin)
-    samples = index.query(neighborhood.bounds)
-    if not len(samples):
-        return None
-    mask = ((samples[:, 3] == 2) & contains_xy(neighborhood, samples[:, 0], samples[:, 1])
-            & ~contains_xy(footprint, samples[:, 0], samples[:, 1]))
-    ground = samples[mask]
+    ground = surrounding_ground(footprint, index, margin)
     if len(ground) < 20:
         return None
     # Equal-weight 4 m ground cells prevent a dense scan strip from dominating.
@@ -232,7 +224,7 @@ def measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, r
     if ground_m is None:
         return None, 'insufficient_ground'
     if roof_planes and roof_mode == 'FACETED':
-        sx, sz = surface_scale or (.07, .077)
+        sx, sz = surface_scale or DEFAULT_SURFACE_SCALE
         min_width_m, min_step_m = .1 / sx, max(.25, .05 / sz)
     options = dict(ground_m=ground_m, roof_planes=roof_planes, part_footprints=part_footprints,
                    neighboring_footprints=neighboring_footprints, allow_complex_height=allow_complex_height,
@@ -269,7 +261,7 @@ VEGETATION_ROOF_REASONS = frozenset({'footprint_roof_mismatch', 'observed_ground
                                      'sparse_or_noisy_roof'})
 
 
-def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, grid_offset=(0, 0), coverage_out=None, detailed_surfaces=False, boundary_refinement=True, surface_scale=None, height_only=False, height_targets=None, prefer_lidar=False, vegetation=False):
+def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, roof_planes=True, part_footprints=(), neighboring_footprints=(), allow_complex_height=False, grid_offset=(0, 0), coverage_out=None, detailed_surfaces=False, surface_scale=None, height_only=False, height_targets=None, prefer_lidar=False, vegetation=False):
     """Measure the whole roof envelope; hidden undersides stay source-derived.
 
     Roof Envelope uses supported upper returns before the legacy terrace
@@ -311,9 +303,14 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
     cosine, sine = math.cos(angle), math.sin(angle)
     origin = footprint.centroid.coords[0]
     rotated = rotate(footprint, -angle, origin=origin, use_radians=True)
-    xy = points[:, :2] - origin
-    uv = np.column_stack((xy[:, 0] * cosine + xy[:, 1] * sine,
-                          -xy[:, 0] * sine + xy[:, 1] * cosine)) + origin
+
+    def to_grid(xy):
+        """World XY rows in the frame of `rotated`."""
+        rel = xy - origin
+        return np.column_stack((rel[:, 0] * cosine + rel[:, 1] * sine,
+                                -rel[:, 0] * sine + rel[:, 1] * cosine)) + origin
+
+    uv = to_grid(points[:, :2])
     # Scalar heights need broad roof support, not a detailed outline. A fixed
     # 3 m grid cuts cell work to a quarter of the envelope's coverage grid.
     cell = 3.0 if height_only else 1.5 if detailed_surfaces else max(1.5, min_width_m / 3)
@@ -323,6 +320,12 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
     nx, ny = math.ceil((x1 - x0) / cell), math.ceil((y1 - y0) / cell)
     if nx * ny > 40000:
         return None, 'observed_ground_in_footprint' if empty else "footprint_cell_budget"
+
+    def cell_centre(ix, iy):
+        """World XY of a grid cell's centre."""
+        u, v = x0 + (ix + .5) * cell - origin[0], y0 + (iy + .5) * cell - origin[1]
+        return origin[0] + u * cosine - v * sine, origin[1] + u * sine + v * cosine
+
     groups = {}
     for row, pos in zip(points, uv):
         key = (math.floor((pos[0] - x0) / cell), math.floor((pos[1] - y0) / cell))
@@ -364,7 +367,7 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
                 continue
             start = starts[-1]
             cells[(ix, iy)] = float(np.median(z[start:ends[start]]))
-            if detailed_surfaces and boundary_refinement:
+            if detailed_surfaces:
                 # The coarse band proves coverage only. Let the upper-envelope
                 # fitter see all usable returns in a supported cell: trimming
                 # to that one band erased small caps and the lower parts of
@@ -395,21 +398,18 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             from .lidar_envelope import envelope_parameters
         except ImportError:
             from lidar_envelope import envelope_parameters
-        rel = secondary[:, :2] - origin
         _continue_with_vegetation(
-            secondary, np.column_stack((rel[:, 0] * cosine + rel[:, 1] * sine,
-                                        -rel[:, 0] * sine + rel[:, 1] * cosine)) + origin,
+            secondary, to_grid(secondary[:, :2]),
             x0, y0, cell, rotated, pieces, cells, facet_samples, boundary_samples,
             supported_by_piece, supported_area_by_piece,
             local_canopy(footprint, index, ground, neighboring_footprints)
-            + envelope_parameters(surface_scale or (.07, .077))[2])
+            + envelope_parameters(surface_scale or DEFAULT_SURFACE_SCALE)[2])
     if empty:
         # Only reached on the vegetation pass.
         covered = set()
         for ix, iy in cells:
-            u, v = x0 + (ix + .5) * cell - origin[0], y0 + (iy + .5) * cell - origin[1]
-            covered.add((math.floor((origin[0] + u * cosine - v * sine) / 3),
-                         math.floor((origin[1] + u * sine + v * cosine) / 3)))
+            x, y = cell_centre(ix, iy)
+            covered.add((math.floor(x / 3), math.floor(y / 3)))
         if observed_empty_area(footprint, everything, ground, covered):
             return None, 'observed_ground_in_footprint'
     coverage = len(cells) / max(expected, 1)
@@ -452,12 +452,12 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             if area >= max(36, footprint.area*.08) and area >= ring.area*.25:
                 return None, 'roof_extends_outside_footprint'
 
+    classified = float(np.mean(points[:, 3] == 6))
     if height_only:
         try:
             from .lidar_height import supported_height
         except ImportError:
             from lidar_height import supported_height
-        classified = float(np.mean(points[:, 3] == 6))
         scalar = supported_height(cells, cell, classified)
         if scalar is None:
             return None, 'unsupported_scalar_roof'
@@ -476,8 +476,7 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
                 from lidar_height import source_heights
             locations = []
             for (ix,iy),z in cells.items():
-                u,v = x0+(ix+.5)*cell-origin[0], y0+(iy+.5)*cell-origin[1]
-                locations.append(((ix,iy),origin[0]+u*cosine-v*sine,origin[1]+u*sine+v*cosine,z))
+                locations.append(((ix,iy),*cell_centre(ix, iy),z))
             feature, parts = height_targets
             corrections = source_heights(feature, parts, footprint, locations, cell, classified, record, prefer_lidar)
             if not corrections:
@@ -498,12 +497,12 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             from lidar_envelope import fit_roof_envelope
         fitted, surface_fallback = fit_roof_envelope(
             footprint, np.array([facet_samples[key] for key in sorted(facet_samples)]),
-            cell, scale=surface_scale or (.07, .077),
+            cell, scale=surface_scale or DEFAULT_SURFACE_SCALE,
             boundary_samples=np.concatenate(boundary_samples) if boundary_samples else np.empty((0, 3)),
             secondary_samples=secondary, neighbours=neighboring_footprints)
         if fitted:
             stats = {"ground_m": ground, "roof_points": len(points), "coverage": round(coverage, 4),
-                     "cell_m": cell, "classified_fraction": float(np.mean(points[:, 3] == 6)),
+                     "cell_m": cell, "classified_fraction": classified,
                      'roof_support_density_m2': supported_points/footprint.area,
                      'explained_fraction': min(1.0, fitted['surface_diagnostics']
                          ['surface_retained_samples'] / max(expected, 1))}
@@ -554,7 +553,7 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
         regions.append((float(np.median(elevations)), group))
 
     stats = {"ground_m": ground, "roof_points": len(points), "coverage": round(coverage, 4),
-             "cell_m": cell, "classified_fraction": float(np.mean(points[:, 3] == 6)),
+             "cell_m": cell, "classified_fraction": classified,
              'roof_support_density_m2': supported_points/footprint.area,
              'explained_fraction': sum(len(group) for _,group in regions)/max(expected,1)}
     if surface_fallback:
@@ -648,8 +647,7 @@ def _measure_building(footprint, index, min_width_m, min_step_m, ground_m=None, 
             contour_regularized = not candidate.equals(region)
             region = candidate
         region = rotate(region, angle, origin=origin, use_radians=True)
-        if (detailed_surfaces and boundary_refinement
-                and height-lower >= max(2.0, min_step_m * 4)):
+        if detailed_surfaces and height-lower >= max(2.0, min_step_m * 4):
             try:
                 from .lidar_boundaries import measured_tier_boundary
             except ImportError:
@@ -851,14 +849,16 @@ def _reconstruct(feature, footprint, local, reason, min_width_m, min_step_m, roo
     """CPU-bound part of one building's measurement; pure, so it may run in a worker process."""
     props = feature.get("properties") or {}
     measured = None
+    # Read-only: one index serves the whole reconstruction and its source-part fallback.
+    index = PointIndex(local) if reason is None else None
     if reason is None and props.get('lidar_surface_kind') == 'rock':
         try:
             from .lidar_rock import measure_rock_surface
         except ImportError:
             from lidar_rock import measure_rock_surface
-        measured, reason = measure_rock_surface(footprint, PointIndex(local), surface_scale or (.07, .077))
+        measured, reason = measure_rock_surface(footprint, index, surface_scale or DEFAULT_SURFACE_SCALE)
     elif reason is None:
-        measured, reason = measure_building(footprint, PointIndex(local), min_width_m, min_step_m,
+        measured, reason = measure_building(footprint, index, min_width_m, min_step_m,
             roof_planes=roof_planes, roof_mode=roof_mode, surface_scale=surface_scale, part_footprints=part_footprints,
             neighboring_footprints=neighboring_footprints,
             height_targets=(feature, source_parts) if roof_mode=='HEIGHT_ONLY' else None,
@@ -872,7 +872,7 @@ def _reconstruct(feature, footprint, local, reason, min_width_m, min_step_m, roo
         incomplete = unary_union([g for _,g in source_parts]).intersection(footprint).area < footprint.area*.85
         if (incomplete or shaped) and (not prefer_lidar or measured is None):
             supplement, supplement_reason = measure_source_parts(feature, source_parts, footprint,
-                PointIndex(local), min_width_m, min_step_m, roof_planes=roof_planes, prefer_lidar=prefer_lidar)
+                index, min_width_m, min_step_m, roof_planes=roof_planes, prefer_lidar=prefer_lidar)
             if supplement or supplement_reason == 'source_height_conflict':
                 measured, reason = supplement, supplement_reason
     # Comparing a cap with its mapped parts intersects every roof face with
@@ -914,15 +914,16 @@ def measure_features(features, points, to_metric, to_geographic, min_width_m, mi
         footprint = entry['footprint'] = map_geometry(to_metric, shape(feature["geometry"]))
         # Avoid lowering an entire building based on a clipped corner of its
         # roof. The halo permits buildings just outside the selected boundary.
-        if not roi.covers(footprint.buffer(25)):
+        halo = footprint.buffer(25)
+        if not roi.covers(halo):
             entry['early'] = "incomplete_footprint_or_ground_halo"
             return entry
         props = feature.get("properties") or {}
         if props.get("is_underground") or (props.get("min_height") or props.get("min_floor")):
             entry['early'] = "elevated_or_underground"
             return entry
-        local = index.query(footprint.buffer(25).bounds)
-        local = local[contains_xy(footprint.buffer(25), local[:,0], local[:,1])]
+        local = index.query(halo.bounds)
+        local = local[contains_xy(halo, local[:,0], local[:,1])]
         dated = entry['dated']
         reason = None
         if local.shape[1] >= 7 and len(local) and np.any(local[:,5] > 0):

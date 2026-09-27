@@ -204,17 +204,16 @@ class ModelHeightField:
         interpolate towards it and the base has to stay below them.
         """
         mask = self.void_mask
-        if mask is None or not mask.any_wet:
-            return min([self.minimum_mm] + [floor for _bounds, _rings, floor in self.basins])
         lowest = None
-        for row in range(self.rows):
-            offset = row * self.columns
-            for column in range(self.columns):
-                if mask.is_wet(column, row) and not self._borders_dry(column, row):
-                    continue
-                value = self.values[offset + column]
-                if lowest is None or value < lowest:
-                    lowest = value
+        if mask is not None and mask.any_wet:
+            for row in range(self.rows):
+                offset = row * self.columns
+                for column in range(self.columns):
+                    if mask.is_wet(column, row) and not self._borders_dry(column, row):
+                        continue
+                    value = self.values[offset + column]
+                    if lowest is None or value < lowest:
+                        lowest = value
         return min([self.minimum_mm if lowest is None else lowest]
                    + [floor for _bounds, _rings, floor in self.basins])
 
@@ -234,10 +233,7 @@ class ModelHeightField:
 
     @property
     def cell_size_mm(self) -> float:
-        return min(
-            (self.max_x - self.min_x) / (self.columns - 1),
-            (self.max_y - self.min_y) / (self.rows - 1),
-        )
+        return min(self.step_x, self.step_y)
 
     @property
     def step_x(self) -> float:
@@ -396,7 +392,7 @@ class ModelHeightField:
         """
         columns, rows = self.columns, self.rows
         inside = [(body, set(self.nodes_inside(body.rings))) for body in bodies]
-        wet = set().union(*(nodes for _body, nodes in inside)) if inside else set()
+        wet = set().union(*(nodes for _body, nodes in inside))
         for other in others:
             wet.update(self.nodes_inside(other.rings))
         step = min(self.step_x, self.step_y) * 0.5

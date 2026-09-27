@@ -48,6 +48,11 @@ def _finite_float(value: Any, name: str) -> float:
     return number
 
 
+def _validate_boundary_samples(value: Any) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 2:
+        raise ValueError("boundary_samples must be an integer of at least 2")
+
+
 @dataclass(frozen=True)
 class WGS84Bounds:
     """A validated, non-antimeridian-crossing WGS84 bounding box."""
@@ -396,12 +401,7 @@ class LocalENUProjection:
         corners, while remaining negligible work for a one-time transform.
         """
 
-        if (
-            isinstance(boundary_samples, bool)
-            or not isinstance(boundary_samples, int)
-            or boundary_samples < 2
-        ):
-            raise ValueError("boundary_samples must be an integer of at least 2")
+        _validate_boundary_samples(boundary_samples)
 
         east_values = []
         north_values = []
@@ -457,12 +457,7 @@ class MiniatureTransform:
             raise TypeError("projection must be a LocalENUProjection instance")
         if not isinstance(self.preserve_aspect, bool):
             raise ValueError("preserve_aspect must be a boolean")
-        if (
-            isinstance(self.boundary_samples, bool)
-            or not isinstance(self.boundary_samples, int)
-            or self.boundary_samples < 2
-        ):
-            raise ValueError("boundary_samples must be an integer of at least 2")
+        _validate_boundary_samples(self.boundary_samples)
 
         fixed_scale = self.fixed_scale_mm_per_m
         if fixed_scale is not None:

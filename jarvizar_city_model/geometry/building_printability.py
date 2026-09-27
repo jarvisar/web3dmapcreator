@@ -4,7 +4,7 @@ import math
 from collections import defaultdict
 
 from ..data.geojson import feature_id, feature_properties
-from .buildings import resolve_vertical_profile
+from .buildings import is_above_ground, resolve_vertical_profile
 from .planar import EPSILON, effective_width, polygon_area, ring_bounds, signed_area
 
 
@@ -111,7 +111,7 @@ def source_part_widths(parts, project, vertical, floor_height, default_height,
         props = feature_properties(part)
         parent = str(props.get('building_id') or '')
         profile = resolve_vertical_profile(props, floor_height, default_height)
-        if not parent or profile.thickness_m <= 0 or props.get('is_underground') is True:
+        if not parent or profile.thickness_m <= 0 or not is_above_ground(part):
             continue
         for index, rings in enumerate(project(part.get('geometry') or {})):
             groups[parent].append(((feature_id(part), index),

@@ -130,13 +130,13 @@ def _frame_profile(source, normal):
                 samples.extend((low + tolerance * 2, (low + high) / 2, high - tolerance * 2))
         if not samples or len(samples) > 192:
             raise CutoutError("cutout needs a planar frame with a consistent through opening")
+        a = Opening(ring, Matrix.Identity(4), tolerance * 8)
         for z in samples:
             candidate = _section(bm, z, tolerance * 4)
-            a = Opening(ring, Matrix.Identity(4), tolerance * 8)
-            b = Opening(candidate, Matrix.Identity(4), tolerance * 8)
             if all(a.contains(p) for p in candidate):
                 ring = candidate
-            elif not all(b.contains(p) for p in ring):
+                a = Opening(ring, Matrix.Identity(4), tolerance * 8)
+            elif not all(Opening(candidate, Matrix.Identity(4), tolerance * 8).contains(p) for p in ring):
                 raise CutoutError("cutout's opening changes shape through its thickness")
         return ring, basis, tolerance
     finally:
@@ -200,12 +200,13 @@ class Opening:
 
     def contains(self, point):
         x, y = point[:2]
+        flat = Vector((x, y, 0))
         if self.convex:
-            return all((Vector((x, y, 0)) - co).dot(no) <= self.tolerance for co, no in self.planes)
+            return all((flat - co).dot(no) <= self.tolerance for co, no in self.planes)
         if point_in_ring((x, y), self.ring):
             return True
         for i, (co, no) in enumerate(self.planes):
-            if abs((Vector((x, y, 0)) - co).dot(no)) <= self.tolerance:
+            if abs((flat - co).dot(no)) <= self.tolerance:
                 a, b = self.ring[i], self.ring[(i + 1) % len(self.ring)]
                 if min(a[0], b[0]) - self.tolerance <= x <= max(a[0], b[0]) + self.tolerance and min(a[1], b[1]) - self.tolerance <= y <= max(a[1], b[1]) + self.tolerance:
                     return True
@@ -370,9 +371,10 @@ def _fill_section(bm, edges, normal):
 def _clip_convex(bm, geom, opening, transform, *, preserve_contour=False):
     """Cut one closed shell and fill all its section loops together (holes)."""
     inverse = transform.inverted()
+    normal_matrix = transform.to_3x3().transposed()
     for co, no in opening.planes:
         plane_co = inverse @ co
-        plane_no = transform.to_3x3().transposed() @ no
+        plane_no = normal_matrix @ no
         length = plane_no.length
         plane_no.normalize()
         vertices = [e for e in geom if isinstance(e, bmesh.types.BMVert)]
@@ -604,6 +606,30 @@ def _world_mesh(obj, depsgraph):
     return mesh
 
 
+def _detach(obj, data):
+    """Give an export copy *data* at the identity, without parent, modifiers, animation or constraints."""
+    obj.data = data
+    obj.parent = None
+    obj.matrix_world = Matrix.Identity(4)
+    obj.modifiers.clear()
+    obj.animation_data_clear()
+    obj.constraints.clear()
+
+
+def _remove_temporary(objects, meshes):
+    """Remove export-only objects, newest first, then any of *meshes* left without users."""
+    for obj in reversed(objects):
+        bpy.data.objects.remove(obj, do_unlink=True)
+    for mesh in meshes:
+        if mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+
+
+def _grid_rotation(angle):
+    """World XY to grid coordinates: a rotation by -angle about Z."""
+    return Matrix.Rotation(-angle, 4, 'Z') if angle else Matrix.Identity(4)
+
+
 def _cut_deferred_roads(context, sources, depsgraph, objects, meshes, stats):
     """Swap slabs Generate left whole for copies cut by the roads there are now.
 
@@ -627,12 +653,7 @@ def _cut_deferred_roads(context, sources, depsgraph, objects, meshes, stats):
         for slab in slabs:
             copy = slab.copy()
             copies.append(copy)
-            copy.data = _world_mesh(slab, depsgraph)
-            copy.parent = None
-            copy.matrix_world = Matrix.Identity(4)
-            copy.modifiers.clear()
-            copy.animation_data_clear()
-            copy.constraints.clear()
+            _detach(copy, _world_mesh(slab, depsgraph))
             copy.hide_viewport = False
         counts, kept = cut_roads_at_export(copies, roads)
         kept = {id(copy) for copy in kept}
@@ -705,11 +726,7 @@ def export_geometry(context, sources):
             context.scene.collection.objects.link(obj)
         yield temporary, stats, opening
     finally:
-        for obj in reversed(temporary + road_cut):
-            bpy.data.objects.remove(obj, do_unlink=True)
-        for mesh in meshes:
-            if mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
+        _remove_temporary(temporary + road_cut, meshes)
 
 
 def export_grid(context, parts, opening, max_width, max_height, printer):
@@ -727,7 +744,7 @@ def export_grid(context, parts, opening, max_width, max_height, printer):
         raise CutoutError("Multi-Plate Export needs a cutout frame defining the final boundary")
     ring = [opening.matrix_world @ Vector((x, y, 0)) for x, y in opening.ring]
     angle = grid_angle([(p.x, p.y) for p in ring])
-    rotation = Matrix.Rotation(-angle, 4, 'Z') if angle else Matrix.Identity(4)
+    rotation = _grid_rotation(angle)
     axis = opening.matrix_world.to_3x3() @ Vector((0, 0, 1))
     if math.hypot(axis.x, axis.y) <= abs(axis.z) * 1e-6:
         points = [rotation @ p for p in ring]
@@ -862,8 +879,7 @@ def export_sections(context, sources, grid):
     identity with its cell's geometry in its own mesh. Original meshes and
     the first crop remain untouched.
     """
-    angle = grid[0].angle if grid else 0.0
-    rotation = Matrix.Rotation(-angle, 4, 'Z') if angle else Matrix.Identity(4)
+    rotation = _grid_rotation(grid[0].angle if grid else 0.0)
     temporary, meshes = [], []
     stats = defaultdict(int)
     results = {section: [] for section in grid}
@@ -888,23 +904,14 @@ def export_sections(context, sources, grid):
                 meshes.append(piece)
                 obj = source.copy()
                 temporary.append(obj)
-                obj.data = piece
-                obj.parent = None
-                obj.modifiers.clear()
-                obj.animation_data_clear()
-                obj.constraints.clear()
-                obj.matrix_world = Matrix.Identity(4)
+                _detach(obj, piece)
                 context.scene.collection.objects.link(obj)
                 results[section].append(obj)
             print(f"3MF sections {source.name}: {len(pieces)} cells, "
                   f"{time.perf_counter() - started:.2f} s", flush=True)
         yield [(section, results[section]) for section in grid if results[section]]
     finally:
-        for obj in reversed(temporary):
-            bpy.data.objects.remove(obj, do_unlink=True)
-        for mesh in meshes:
-            if mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
+        _remove_temporary(temporary, meshes)
 
 
 def material_color(material):

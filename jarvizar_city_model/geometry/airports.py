@@ -66,7 +66,7 @@ def _tag(properties: Mapping[str, Any], key: str) -> Any:
 
 def is_airport_area(feature: Mapping[str, Any]) -> bool:
     """Whether *feature* is an apron or helipad polygon."""
-    properties = feature_properties(dict(feature))
+    properties = feature_properties(feature)
     geometry = feature.get("geometry") or {}
     return (
         _is_airport(properties)

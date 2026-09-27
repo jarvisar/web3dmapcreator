@@ -169,6 +169,10 @@ def is_regional_feature(
     return extent_ratio(geometry, bounds) > maximum_ratio
 
 
+def _is_polygonal(feature: Mapping[str, Any]) -> bool:
+    return (feature.get("geometry") or {}).get("type") in {"Polygon", "MultiPolygon"}
+
+
 def _class_and_subtype(properties: Mapping[str, Any]) -> Tuple[str, str]:
     return (
         str(properties.get("class") or "").strip().lower(),
@@ -231,8 +235,7 @@ def is_printable_water(feature: Mapping[str, Any]) -> bool:
     and points, which carry no printable extent, and small human-made basins
     that would read as noise at this scale.
     """
-    geometry = feature.get("geometry") or {}
-    if geometry.get("type") not in {"Polygon", "MultiPolygon"}:
+    if not _is_polygonal(feature):
         return False
     properties = feature_properties(feature)
     class_name, _subtype = _class_and_subtype(properties)
@@ -279,7 +282,7 @@ def has_bridge_flag(properties: Mapping[str, Any]) -> bool:
 
 def is_untyped_water(feature: Mapping[str, Any]) -> bool:
     """Generic polygonal water eligible for a size-checked recess fallback."""
-    if (feature.get('geometry') or {}).get('type') not in {'Polygon', 'MultiPolygon'}:
+    if not _is_polygonal(feature):
         return False
     properties = feature_properties(feature)
     class_name, subtype = _class_and_subtype(properties)
@@ -299,7 +302,7 @@ def recessed_water_kind(feature: Mapping[str, Any]) -> Optional[str]:
     water types take precedence over the normalized class/subtype fallback.
     A point fountain carries no basin footprint and cannot recess terrain.
     """
-    if (feature.get("geometry") or {}).get("type") not in {"Polygon", "MultiPolygon"}:
+    if not _is_polygonal(feature):
         return None
     properties = feature_properties(feature)
     tags = _water_tags(properties)
@@ -330,8 +333,7 @@ def is_water_deck(feature_type: str, feature: Mapping[str, Any]) -> bool:
     """Return whether a mapped feature is a structure standing over open water."""
     if feature_type not in WATER_DECK_TYPES:
         return False
-    geometry = feature.get("geometry") or {}
-    if geometry.get("type") not in {"Polygon", "MultiPolygon"}:
+    if not _is_polygonal(feature):
         return False
     properties = feature_properties(feature)
     class_name, subtype = _class_and_subtype(properties)

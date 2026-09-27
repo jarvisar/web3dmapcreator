@@ -835,13 +835,44 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         ),
         default=True,
     )
-    generate_terrain: BoolProperty(name="Terrain", default=True)
-    generate_buildings: BoolProperty(name="Buildings", default=True)
-    generate_roads: BoolProperty(name="Roads", default=True)
-    generate_bridges: BoolProperty(name="Bridges", default=True)
-    generate_water: BoolProperty(name="Water", default=True)
-    generate_land_surfaces: BoolProperty(name="Parks and Land Cover", default=True)
-    generate_trees: BoolProperty(name="Trees", default=True)
+    generate_terrain: BoolProperty(
+        name="Terrain",
+        description="Build the elevation base the rest of the model stands on",
+        default=True,
+    )
+    generate_buildings: BoolProperty(
+        name="Buildings",
+        description="Build building masses from mapped footprints, or prepared LiDAR when used",
+        default=True,
+    )
+    generate_roads: BoolProperty(
+        name="Roads",
+        description="Build roads, paths, rail and airport paving on the terrain",
+        default=True,
+    )
+    generate_bridges: BoolProperty(
+        name="Bridges",
+        description="Raise mapped bridges as decks standing on piers",
+        default=True,
+    )
+    generate_water: BoolProperty(
+        name="Water",
+        description=(
+            "Fill rivers, lakes and basins with water. Off leaves the terrain cuts "
+            "and pond recesses open"
+        ),
+        default=True,
+    )
+    generate_land_surfaces: BoolProperty(
+        name="Parks and Land Cover",
+        description="Drape parks, forest, sand, rock and paving over the terrain",
+        default=True,
+    )
+    generate_trees: BoolProperty(
+        name="Trees",
+        description="Place mapped trees and scatter trees through forests",
+        default=True,
+    )
 
     # ------------------------------------------------------------------ cache
     cache_directory: StringProperty(

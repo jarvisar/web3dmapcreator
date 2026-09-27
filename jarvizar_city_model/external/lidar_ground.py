@@ -7,6 +7,17 @@ from shapely.geometry import MultiPoint
 ANCHOR_COVERAGE = .9
 
 
+def surrounding_ground(footprint, index, margin=25.):
+    """Ground-class returns within `margin` of the footprint, outside it."""
+    neighborhood = footprint.buffer(margin)
+    points = index.query(neighborhood.bounds)
+    if not len(points):
+        return points
+    return points[(points[:, 3] == 2) &
+        contains_xy(neighborhood, points[:, 0], points[:, 1]) &
+        ~contains_xy(footprint, points[:, 0], points[:, 1])]
+
+
 def ground_anchor(footprint, index, margin=25.):
     """Return a low ground cell and retain its XY, without extrapolating a plane.
 
@@ -19,11 +30,7 @@ def ground_anchor(footprint, index, margin=25.):
     location to its DEM, so a hillside's vertical variation is retained
     rather than interpreted as noise around an invented flat base.
     """
-    neighborhood = footprint.buffer(margin)
-    points = index.query(neighborhood.bounds)
-    samples = points[(points[:, 3] == 2) &
-        contains_xy(neighborhood, points[:, 0], points[:, 1]) &
-        ~contains_xy(footprint, points[:, 0], points[:, 1])]
+    samples = surrounding_ground(footprint, index, margin)
     if len(samples) < 20:
         return None
     groups = {}

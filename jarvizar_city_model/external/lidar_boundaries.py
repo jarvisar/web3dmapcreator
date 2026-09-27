@@ -54,9 +54,13 @@ def _fit_ring(ring, cell):
     return list(LineString(fitted).simplify(cell * .1).coords)
 
 
+def _parts(geometry):
+    return list(geometry.geoms) if geometry.geom_type == 'MultiPolygon' else [geometry]
+
+
 def _remove_unprintable_noise(geometry, original, min_width):
-    parts = list(geometry.geoms) if geometry.geom_type == 'MultiPolygon' else [geometry]
-    old_parts = list(original.geoms) if original.geom_type == 'MultiPolygon' else [original]
+    parts = _parts(geometry)
+    old_parts = _parts(original)
     protected = unary_union([Polygon(h) for p in old_parts for h in p.interiors])
     cleaned = []
     for part in parts:
@@ -80,7 +84,7 @@ def measured_tier_boundary(region, samples, threshold, cell, min_width):
             or not math.isfinite(cell) or cell <= 0
             or not math.isfinite(min_width) or min_width <= 0):
         return region
-    initial_parts = list(region.geoms) if region.geom_type == 'MultiPolygon' else [region]
+    initial_parts = _parts(region)
     if all(len(p.simplify(cell * 1e-6).exterior.coords) <= 5 for p in initial_parts):
         return region  # Resolved rectangular walls need no contour reconstruction.
     try:
@@ -138,7 +142,7 @@ def measured_tier_boundary(region, samples, threshold, cell, min_width):
         observed = coverage_union_all(triangles)
         candidate = region.difference(observed).union(coverage_union_all(roof))
         candidate = _remove_unprintable_noise(candidate, region, min_width)
-        candidate_parts = list(candidate.geoms) if candidate.geom_type == 'MultiPolygon' else [candidate]
+        candidate_parts = _parts(candidate)
         if any(p.geom_type != 'Polygon' for p in candidate_parts):
             return region
         fitted_parts = []
@@ -160,8 +164,8 @@ def measured_tier_boundary(region, samples, threshold, cell, min_width):
         if not unsupported.is_empty:
             preserve = unsupported.buffer(cell * 1.5)
             candidate = candidate.difference(preserve).union(region.intersection(preserve))
-        old_parts = list(region.geoms) if region.geom_type == 'MultiPolygon' else [region]
-        new_parts = list(candidate.geoms) if candidate.geom_type == 'MultiPolygon' else [candidate]
+        old_parts = initial_parts
+        new_parts = _parts(candidate)
         if (candidate.geom_type not in ('Polygon', 'MultiPolygon') or not candidate.is_valid
                 or len(old_parts) != len(new_parts)
                 or sorted(len(p.interiors) for p in old_parts) != sorted(len(p.interiors) for p in new_parts)

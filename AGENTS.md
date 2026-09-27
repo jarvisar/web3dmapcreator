@@ -10,7 +10,7 @@ Treat the current implementation, configuration, and tests as the source of trut
 - This project is primarily intended for FDM 3D printing.
 - Use the addon's default output scale as the reference for printability.
 - Test known regression areas when modifying related systems.
-- After all changes are complete and all tests pass, install the updated add-on by running `scripts/install_addon.ps1` and reporting only its three summary lines. Blender may stay open.
+- After all changes are complete and all tests pass, install the updated add-on by running `scripts/install_addon.ps1` and reporting only its summary lines (it installs into Blender 3.6 and the newest Blender 4.2+). Blender may stay open.
 
 For add-on installation, follow [.claude/commands/install-addon.md](.claude/commands/install-addon.md).
 Changes only to documentation outside the packaged add-on do not require

@@ -57,6 +57,12 @@ class Fetcher:
         self.download_workers = DEFAULT_DOWNLOAD_WORKERS
         self.storage = None
 
+    def _cache_path(self, key):
+        path = self.cache / hashlib.sha256(key.encode()).hexdigest()
+        if self.storage:
+            self.storage.touch(path)
+        return path
+
     def _write_cache(self, path, data):
         if self.storage:
             self.storage.write_bytes(path, data)
@@ -80,9 +86,7 @@ class Fetcher:
     def _get(self, url, key, encoded, limit, fresh, ttl, timeout, attempts, content_type):
         if urlparse(url).scheme != "https":
             raise ValueError("LiDAR downloads require HTTPS")
-        path = self.cache / hashlib.sha256(key.encode()).hexdigest()
-        if self.storage:
-            self.storage.touch(path)
+        path = self._cache_path(key)
         # Neighboring building batches share additive EPT ancestors. Count
         # each resource once per preparation, including with Refresh enabled.
         repeated = key in self.seen
@@ -141,12 +145,12 @@ class Fetcher:
             if key in self._download_failures:
                 raise OSError('Earlier download failed in this preparation: ' + self._download_failures[key])
             try:
-                return self._download(url, limit, revision, cancel, validate_prefix)
+                return self._download(url, key, limit, cancel, validate_prefix)
             except OSError as exc:
                 self._download_failures[key] = str(exc)
                 raise
 
-    def _download(self, url, limit, revision, cancel, validate_prefix):
+    def _download(self, url, key, limit, cancel, validate_prefix):
         """Stream a staged tile to disk; never allocate its compressed contents."""
         def check_cancelled():
             if cancel is not None and cancel.is_set():
@@ -155,10 +159,7 @@ class Fetcher:
         check_cancelled()
         if urlparse(url).scheme != 'https':
             raise ValueError('LiDAR downloads require HTTPS')
-        key = url + ('#revision='+str(revision) if revision else '')
-        path = self.cache / hashlib.sha256(key.encode()).hexdigest()
-        if self.storage:
-            self.storage.touch(path)
+        path = self._cache_path(key)
         repeated = key in self.seen
         remaining = min(limit, self.max_bytes-self.bytes) if self.max_bytes is not None and not repeated else limit
         if path.is_file() and (not self.refresh or repeated):
@@ -186,9 +187,7 @@ class Fetcher:
         if urlparse(url).scheme != 'https' or start < 0 or not 0 < size <= 4 * 1024 ** 2:
             raise ValueError('Invalid LiDAR header range')
         key = f'{url}#range={start}:{size}'
-        path = self.cache / hashlib.sha256(key.encode()).hexdigest()
-        if self.storage:
-            self.storage.touch(path)
+        path = self._cache_path(key)
         repeated = key in self.seen
         if self.max_bytes is not None and not repeated and self.bytes+size > self.max_bytes:
             raise BudgetExceeded('LiDAR header exceeds byte budget')

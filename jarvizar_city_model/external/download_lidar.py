@@ -206,6 +206,13 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
                 resolved.add(identifier)
     checkpoints = bundle / 'lidar_jobs'
     checkpoints.mkdir(exist_ok=True)
+    def write_published(path, data, partial_suffix):
+        if storage:
+            storage.write_bytes(path, data, managed=False)
+        else:
+            temporary = path.with_suffix(partial_suffix)
+            temporary.write_bytes(data)
+            temporary.replace(path)
     cache_stats = {'checkpoint_batches': 0, 'cached_buildings': 0, 'point_batches': 0, 'measured_batches': 0}
     dependencies = []
     def progress(message, **fields):
@@ -257,15 +264,17 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
             if not candidates:
                 continue
             tiles = building_tile_plan(source, candidates, geometries, to_geographic, selected)
-            extras = [f for identifier, f in plan.features.items()
+            admissions = {identifier: plan.admission(identifier, source, shared_tiles=True)
+                for identifier, f in plan.features.items()
                 if not plan.pending_preferred(identifier, source, pending_offers) and source['url'] not in plan.tried[identifier]
                 and any(s['url'] == source['url'] for s, _ in plan.orders[identifier])
-                and eligible_staged(f) and plan.admission(identifier, source, shared_tiles=True)[0]]
+                and eligible_staged(f)}
+            extras = [plan.features[identifier] for identifier, (admitted, _) in admissions.items() if admitted]
             extras = shared_tile_features(source, extras, tiles, geometries, to_geographic, selected)
             for feature in extras:
                 identifier = feature['id']
                 plan.tried[identifier].add(source['url'])
-                plan.selection_reasons[identifier, source['url']] = plan.admission(identifier, source, shared_tiles=True)[1]
+                plan.selection_reasons[identifier, source['url']] = admissions[identifier][1]
             if extras:
                 candidates.extend(extras)
                 tiles = building_tile_plan(source, candidates, geometries, to_geographic, selected)
@@ -436,12 +445,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
             provenance.append(info)
             checkpoint_data = json.dumps({'records': records, 'reasons': reasons,
                 'rejected': rejected_features, 'info': info, 'observations':evidence}, allow_nan=False).encode('utf-8')
-            if storage:
-                storage.write_bytes(checkpoint, checkpoint_data, managed=False)
-            else:
-                temporary = checkpoint.with_suffix('.partial')
-                temporary.write_bytes(checkpoint_data)
-                temporary.replace(checkpoint)
+            write_published(checkpoint, checkpoint_data, '.partial')
             del points
         source['acquired_buildings'] = len(attempted)
     for source in sources:
@@ -488,12 +492,7 @@ def _prepare(bundle, request, refresh, progress_path, download_workers, laz_appr
     payload['candidate_buildings'] = total_candidates
     destination = bundle / RESULT_FILE
     result_data = json.dumps(payload, allow_nan=False).encode('utf-8')
-    if storage:
-        storage.write_bytes(destination, result_data, managed=False)
-    else:
-        temporary = destination.with_suffix('.json.partial')
-        temporary.write_bytes(result_data)
-        temporary.replace(destination)
+    write_published(destination, result_data, '.json.partial')
     progress(f'Prepared {len(measured)} buildings; cached work is ready to reuse', stage='Complete', completed=1, total=1, force=True)
     return summarize_prepared(payload)
 

@@ -9,19 +9,20 @@ import re
 import zipfile
 from urllib.parse import urljoin
 
-from pyproj import Transformer
+from pyproj import CRS, Transformer
 from shapely.geometry import box
 from shapely.ops import transform
 
 try:
-    from .lidar_services import metadata, grouped, tile
+    from .lidar_services import metadata, grouped, tile, METADATA_TTL
     from .lidar_metadata import xml_root
 except ImportError:
-    from lidar_services import metadata, grouped, tile
+    from lidar_services import metadata, grouped, tile, METADATA_TTL
     from lidar_metadata import xml_root
 
 NRW_INDEX = 'https://www.opengeodata.nrw.de/produkte/geobasis/hm/3dm_l_las/3dm_l_las/'
 BAVARIA_INDEX = 'https://geoservices.bayern.de/services/poly2metalink/metalink/laser'
+NRW_TILE = r'3dm_32_(?P<x>\d{3})_(?P<y>\d{4})_1_nw\.laz'
 
 
 def grid_polygon(name, pattern, crs=25832):
@@ -35,7 +36,6 @@ def grid_polygon(name, pattern, crs=25832):
 
 def discover_nrw(fetch, bbox, failures, progress):
     # EPSG area-of-use pruning; not a country override or a city-specific test.
-    from pyproj import CRS
     a = CRS(25832).area_of_use
     if not box(a.west, a.south, a.east, a.north).intersects(box(*bbox)):
         return
@@ -46,13 +46,13 @@ def discover_nrw(fetch, bbox, failures, progress):
         name = node.get('name', '')
         if not name.endswith('.laz'):
             continue
-        match = re.fullmatch(r'3dm_32_(\d{3})_(\d{4})_1_nw\.laz', name)
+        match = re.fullmatch(NRW_TILE, name)
         if not match:
             raise ValueError('NRW official grid schema changed')
-        x, y = [int(v) * 1000 for v in match.groups()]
+        x, y = int(match['x']) * 1000, int(match['y']) * 1000
         if not box(x, y, x + 1000, y + 1000).intersects(local):
             continue
-        geom = grid_polygon(name, r'3dm_32_(?P<x>\d{3})_(?P<y>\d{4})_1_nw\.laz')
+        geom = grid_polygon(name, NRW_TILE)
         if geom.intersects(box(*bbox)):
             selected.append((name, node, geom))
     if not selected:
@@ -92,7 +92,7 @@ def discover_bavaria(fetch, bbox, failures, progress):
     polygon = box(*bbox)
     body = 'SRID=4326;' + polygon.wkt
     data = fetch.get(BAVARIA_INDEX, body=body, content_type='text/plain',
-                     ttl=86400, timeout=20, attempts=1, limit=4 * 1024**2)
+                     ttl=METADATA_TTL, timeout=20, attempts=1, limit=4 * 1024**2)
     root = xml_root(data)
     if root.tag != 'metalink':
         raise ValueError('Bavarian spatial service did not return a Metalink index')

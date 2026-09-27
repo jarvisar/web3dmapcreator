@@ -170,13 +170,14 @@ def rank_sources(sources, thresholds=None, geometry=None):
             return 1, f"{source['format']} preferred for efficient spatial acquisition"
         if preferred is None:
             return 0, 'no suitable EPT coverage (or COPC)'
-        equivalent = next((ept for ept in epts if same_survey(source, ept, geometry)), None)
-        if equivalent is not None:
-            return 2, f"same survey as {equivalent['format']} ({same_survey(source, equivalent, geometry)}); delivery-gap fallback only"
+        for ept in epts:
+            match = same_survey(source, ept, geometry)
+            if match:
+                return 2, f"same survey as {ept['format']} ({match}); delivery-gap fallback only"
         reasons = material_advantages(source, preferred, thresholds)
         return (0, '; '.join(reasons)) if reasons else (2, f"{preferred['format']} preferred; staged data reserved for unresolved gaps")
-    ordered.sort(key=lambda s: priority(s)[0])  # stable within each tier
-    return [(source, priority(source)[1] + ('; official original source (quality ties)' if source.get('authoritative') else '')) for source in ordered]
+    ranked = sorted(((source, priority(source)) for source in ordered), key=lambda item: item[1][0])  # stable within each tier
+    return [(source, reason + ('; official original source (quality ties)' if source.get('authoritative') else '')) for source, (_, reason) in ranked]
 
 
 class AcquisitionPlan:

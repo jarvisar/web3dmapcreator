@@ -7,11 +7,10 @@ creation lives in :mod:`jarvizar_city_model.blender.mesh_utils`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 import re
 from typing import Any, Dict, List, Mapping, Sequence, Set, Tuple
 
-from ..data.geojson import feature_id, feature_properties, geometry_polygons, positive_number
+from ..data.geojson import feature_id, feature_properties, finite_number, geometry_polygons, positive_number
 from .planar import (
     effective_width,
     interior_grid_points,
@@ -29,6 +28,10 @@ DUPLICATE_COVERAGE = 0.9
 # Two partless footprints that each cover this much of the other are one
 # building mapped twice.
 MUTUAL_COVERAGE = 0.85
+# Fixed floor and fallback heights for part/parent selection, independent of
+# the scene's generation settings.
+_SELECTION_FLOOR_HEIGHT_M = 3.0
+_SELECTION_DEFAULT_HEIGHT_M = 10.0
 
 
 # How tall a building of each Overture class is when the source says nothing.
@@ -148,13 +151,8 @@ class BuildingSelection:
 
 
 def _nonnegative_number(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) and number >= 0.0 else None
+    number = finite_number(value)
+    return number if number is not None and number >= 0.0 else None
 
 
 def length_metres(value: Any) -> float | None:
@@ -231,7 +229,8 @@ def resolve_vertical_profile(
 def part_has_useful_vertical_data(feature: Mapping[str, Any]) -> bool:
     """Return whether Phase 1 can derive meaningful variable-height geometry."""
     properties = feature_properties(dict(feature))
-    profile = resolve_vertical_profile(properties, 3.0, 10.0)
+    profile = resolve_vertical_profile(
+        properties, _SELECTION_FLOOR_HEIGHT_M, _SELECTION_DEFAULT_HEIGHT_M)
     return profile.thickness_m > 0.0 and profile.height_source in ("height", "num_floors")
 
 
@@ -301,13 +300,6 @@ def _samples(rings: Sequence[Sequence[Tuple[float, float]]]) -> List[Tuple[float
     if spacing <= 0.0:
         return []
     return interior_grid_points([ring], spacing, limit=200)
-
-
-def _coverage(points, rings) -> float:
-    if not points:
-        return 0.0
-    inside = sum(1 for p in points if any(point_in_polygon(p, [r]) for r in rings))
-    return inside / len(points)
 
 
 def _footprint_polygons(feature):
@@ -395,6 +387,13 @@ def find_duplicate_outlines(
             part_polygons[parent_id] = collected
             part_boxes[parent_id] = _bounds([polygon[0] for polygon in collected])
 
+    sample_cache: Dict[str, List[Tuple[float, float]]] = {}
+
+    def samples_of(identifier: str) -> List[Tuple[float, float]]:
+        if identifier not in sample_cache:
+            sample_cache[identifier] = _footprint_samples(polygons[identifier])
+        return sample_cache[identifier]
+
     duplicates: Set[str] = set()
     partless = [
         identifier
@@ -409,7 +408,7 @@ def find_duplicate_outlines(
             if parent_id == identifier or _overlap_fraction(box, parent_box) < 0.5:
                 continue
             if points is None:
-                points = _footprint_samples(polygons[identifier])
+                points = samples_of(identifier)
             if _footprint_coverage(points, part_polygons[parent_id]) >= DUPLICATE_COVERAGE:
                 duplicates.add(identifier)
                 break
@@ -437,8 +436,8 @@ def find_duplicate_outlines(
                 if min(_overlap_fraction(a, b), _overlap_fraction(b, a)) < 0.7:
                     continue
                 if (
-                    _footprint_coverage(_footprint_samples(polygons[first]), polygons[second]) >= MUTUAL_COVERAGE
-                    and _footprint_coverage(_footprint_samples(polygons[second]), polygons[first]) >= MUTUAL_COVERAGE
+                    _footprint_coverage(samples_of(first), polygons[second]) >= MUTUAL_COVERAGE
+                    and _footprint_coverage(samples_of(second), polygons[first]) >= MUTUAL_COVERAGE
                 ):
                     # On a tie the later id goes, so a rerun makes the same choice.
                     poorer = min(
@@ -461,7 +460,8 @@ def _parent_supplies_main_mass(building, parts) -> bool:
     from ..external.lidar_source import estimated_height
 
     properties = feature_properties(building)
-    profile = resolve_vertical_profile(properties, 3.0, 10.0)
+    profile = resolve_vertical_profile(
+        properties, _SELECTION_FLOOR_HEIGHT_M, _SELECTION_DEFAULT_HEIGHT_M)
     if (profile.height_source != "height" or profile.thickness_m <= 0
             or estimated_height(properties)):
         return False
@@ -470,7 +470,8 @@ def _parent_supplies_main_mass(building, parts) -> bool:
         return False
     part_rings = []
     for part in parts:
-        top = resolve_vertical_profile(feature_properties(part), 3.0, 10.0)
+        top = resolve_vertical_profile(
+            feature_properties(part), _SELECTION_FLOOR_HEIGHT_M, _SELECTION_DEFAULT_HEIGHT_M)
         if top.height_source.split("+", 1)[0] not in ("height", "num_floors"):
             continue
         if top.thickness_m <= 0:
@@ -484,7 +485,8 @@ def _parent_supplies_main_mass(building, parts) -> bool:
             return False
         part_rings.extend(rings)
     samples = _samples(outlines)
-    return bool(samples) and _coverage(samples, part_rings) < MUTUAL_COVERAGE
+    return bool(samples) and _footprint_coverage(
+        samples, [[ring] for ring in part_rings]) < MUTUAL_COVERAGE
 
 
 def _sparse_parts_leave_main_mass(building, parts):
@@ -494,7 +496,8 @@ def _sparse_parts_leave_main_mass(building, parts):
     ambiguous, so any part hole opts out; parent holes remain in its geometry.
     Count every part footprint, including those without height information.
     """
-    profile = resolve_vertical_profile(feature_properties(building), 3., 10.)
+    profile = resolve_vertical_profile(
+        feature_properties(building), _SELECTION_FLOOR_HEIGHT_M, _SELECTION_DEFAULT_HEIGHT_M)
     if profile.thickness_m <= 0 or profile.bottom_m > 0:
         return False
     parent_polygons = _footprint_polygons(building)

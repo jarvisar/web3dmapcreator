@@ -8,6 +8,7 @@ import bpy
 
 
 ROOT_COLLECTION_NAME = "CITY_MODEL"
+STAGING_ROOT_NAME = "_CITY_MODEL_STAGING"
 GENERATED_KEY = "jarvizar_generated"
 ROOT_KEY = "jarvizar_city_root"
 STAGING_KEY = "jarvizar_staging"
@@ -22,7 +23,7 @@ def _new_child(name: str, parent: bpy.types.Collection) -> bpy.types.Collection:
 
 
 def create_city_hierarchy(scene: bpy.types.Scene, *, staging=False) -> Dict[str, bpy.types.Collection]:
-    root = bpy.data.collections.new("_CITY_MODEL_STAGING" if staging else ROOT_COLLECTION_NAME)
+    root = bpy.data.collections.new(STAGING_ROOT_NAME if staging else ROOT_COLLECTION_NAME)
     root[GENERATED_KEY] = True
     root[ROOT_KEY] = True
     root[STAGING_KEY] = staging

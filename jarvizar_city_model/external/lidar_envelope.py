@@ -63,6 +63,8 @@ FAIR_REACH_MM = .14
 # scatter of its returns), and its returns reach the second inside ours.
 NEIGHBOUR_FACADE_M = 4.
 FACADE_BAND_M = 1.5
+# Printed millimetres per ground metre (horizontal, vertical) when none is given.
+DEFAULT_SURFACE_SCALE = (.07, .077)
 
 
 def envelope_parameters(scale, density=None):
@@ -413,12 +415,13 @@ def _component_surface(polygon, samples, pitch, window, secondary=(), zone=None,
     vegetation keeps its slope.
     """
     raster = _Raster(polygon.bounds, pitch, window)
-    inside = samples[contains_xy(polygon.buffer(pitch), samples[:, 0], samples[:, 1])]
+    reach = polygon.buffer(pitch)
+    inside = samples[contains_xy(reach, samples[:, 0], samples[:, 1])]
     if len(inside) < 4:
         raise UnsupportedFit('insufficient upper surface support')
     grid = raster.upper(inside, rank=UPPER_RANK)
     if len(secondary):
-        extra = secondary[contains_xy(polygon.buffer(pitch), secondary[:, 0], secondary[:, 1])]
+        extra = secondary[contains_xy(reach, secondary[:, 0], secondary[:, 1])]
         if len(extra):
             both = raster.upper(np.concatenate((inside, extra)), rank=UPPER_RANK)
             grid = np.where(np.isfinite(grid), np.maximum(grid, both), both)
@@ -645,7 +648,7 @@ def _turn(points, angle, origin):
     return turned
 
 
-def fit_roof_envelope(footprint, samples, cell, scale=(.07, .077), boundary_samples=(),
+def fit_roof_envelope(footprint, samples, cell, scale=DEFAULT_SURFACE_SCALE, boundary_samples=(),
                       secondary_samples=(), neighbours=()):
     """Return a complete continuous envelope, or an explicit fallback reason.
 

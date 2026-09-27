@@ -303,11 +303,21 @@ def _subsegments(features, transform, settings: RoadSettings, counts: RoadCounts
                 )
 
 
+def _has_open_water(heightfield) -> bool:
+    """Whether *heightfield* has cut-out water to test against."""
+    return getattr(heightfield, "void_mask", None) is not None and hasattr(
+        heightfield, "over_open_water"
+    )
+
+
+def _water_probe_spacing(heightfield) -> float:
+    """Model-space sampling fine enough to find a deck's water edge."""
+    return max(0.5, heightfield.cell_size_mm * 0.25)
+
+
 def _is_over_open_water(points, transform, heightfield) -> bool:
     """Whether every vertex of a metric centerline stands over cut-out water."""
-    if getattr(heightfield, "void_mask", None) is None or not hasattr(
-        heightfield, "over_open_water"
-    ):
+    if not _has_open_water(heightfield):
         return False
     for east, north in points:
         x = east * transform.scale_x_mm_per_m
@@ -324,6 +334,10 @@ def _half_width_m(piece: SubSegment, transform, settings: RoadSettings) -> float
         settings.maximum_width_mm,
         transform.scale_x_mm_per_m,
     )
+
+
+def _half_width_mm(piece: SubSegment, transform, settings: RoadSettings) -> float:
+    return _half_width_m(piece, transform, settings) * transform.scale_x_mm_per_m
 
 
 def _is_deck(piece: SubSegment, settings: RoadSettings) -> bool:
@@ -412,11 +426,9 @@ def _stands_over_open_water(centerline, heightfield) -> bool:
     Sampled finely enough to resolve a creek narrower than the centerline's
     own vertex spacing, the same way the causeway corridors are found.
     """
-    if getattr(heightfield, "void_mask", None) is None or not hasattr(
-        heightfield, "over_open_water"
-    ):
+    if not _has_open_water(heightfield):
         return False
-    dense = densify_polyline(centerline, max(0.5, heightfield.cell_size_mm * 0.25))
+    dense = densify_polyline(centerline, _water_probe_spacing(heightfield))
     return any(heightfield.over_open_water(x, y) for x, y in dense)
 
 
@@ -445,28 +457,26 @@ def _solve_deck_heights(
     of the decks that never rise a printed layer above the road surface,
     which the caller builds as ordinary roads instead.
     """
-    scale_x = transform.scale_x_mm_per_m
-    scale_y = transform.scale_y_mm_per_m
     blocked: Set = set()
     roads = SegmentIndex(max(2.0, settings.maximum_width_mm * 4.0))
     for piece in surface_pieces:
-        model = [(east * scale_x, north * scale_y) for east, north in piece.points]
-        blocked.add(node_key(model[0]))
-        blocked.add(node_key(model[-1]))
-        roads.add_polyline(model, piece.road_class)
+        line = _metric_ring_to_model(piece.points, transform)
+        blocked.add(node_key(line[0]))
+        blocked.add(node_key(line[-1]))
+        roads.add_polyline(line, piece.road_class)
     ground = getattr(heightfield, "ground_height_mm", heightfield.height_mm)
     # A deck the selection rectangle cut through goes on past the edge; its
     # end there is the only kind of loose end allowed to stay in the air.
-    model = transform.model_bounds
+    bounds = transform.model_bounds
     open_ends: Set = set()
     for _piece, centerline in decks:
         for point in (centerline[0], centerline[-1]):
-            if _on_boundary(point, model, BOUNDARY_TOLERANCE_MM):
+            if _on_boundary(point, bounds, BOUNDARY_TOLERANCE_MM):
                 open_ends.add(node_key(point))
     solution = solve_deck_network(
         [centerline for _piece, centerline in decks],
         [piece.level for piece, _centerline in decks],
-        [_half_width_m(piece, transform, settings) * scale_x for piece, _centerline in decks],
+        [_half_width_mm(piece, transform, settings) for piece, _centerline in decks],
         heightfield.height_mm,
         ground,
         blocked,
@@ -597,7 +607,8 @@ def generate_roads(
     )
     # Bridge anchors use surviving banks over a cut. Supported surface roads
     # below use the continuous field shared with their foundations instead.
-    if ground_support is not None and settings.support_over_water:
+    supported = ground_support is not None and settings.support_over_water
+    if supported:
         heightfield = ground_support.structure_heightfield
     ground_height = getattr(heightfield, "ground_height_mm", heightfield.height_mm)
 
@@ -652,7 +663,7 @@ def generate_roads(
     support_obstacles = SegmentIndex(max(2.0, settings.maximum_width_mm * 4.0))
     obstacle_width = 0.0
     for piece in surface:
-        width = _half_width_m(piece, transform, settings) * transform.scale_x_mm_per_m
+        width = _half_width_mm(piece, transform, settings)
         obstacle_width = max(obstacle_width, width)
         line = _metric_ring_to_model(piece.points, transform)
         support_obstacles.add_polyline(line, width)
@@ -661,7 +672,7 @@ def generate_roads(
     for deck, ((piece, line), profile) in enumerate(zip(decks, deck_heights)):
         if deck in demoted:
             continue
-        width = _half_width_m(piece, transform, settings) * transform.scale_x_mm_per_m
+        width = _half_width_mm(piece, transform, settings)
         for a, b, za, zb in zip(line, line[1:], profile, profile[1:]):
             lower_decks.add_segment(a, b, (deck, width, za, zb))
 
@@ -700,7 +711,7 @@ def generate_roads(
         if index in demoted:
             tick()
             continue
-        half_width_mm = _half_width_m(piece, transform, settings) * transform.scale_x_mm_per_m
+        half_width_mm = _half_width_mm(piece, transform, settings)
         builder = bridge_builders.setdefault(
             piece.road_class, MeshBuilder(f"BRIDGE_{piece.road_class}")
         )
@@ -717,17 +728,11 @@ def generate_roads(
         # the bank under the deck, it dammed the pond in front of the water.
         # The causeway is built before the piers are placed, so a pier station
         # over the water finds ground under it.
-        if (
-            ground_support is not None
-            and settings.support_over_water
-            and getattr(heightfield, "void_mask", None) is not None
-        ):
+        if supported and getattr(heightfield, "void_mask", None) is not None:
             # The deck centerline is only as dense as draping needs; the
             # water's edge has to be found more finely than that, or the
             # causeway could stop short of the bank.
-            corridor_line = densify_polyline(
-                centerline, max(0.5, heightfield.cell_size_mm * 0.25)
-            )
+            corridor_line = densify_polyline(centerline, _water_probe_spacing(heightfield))
             for corridor in open_water_corridors(
                 corridor_line, heightfield.over_open_water, settings.causeway_overlap_mm
             ):
@@ -825,7 +830,7 @@ def generate_roads(
                 continue
             model_rings.append(model_ring)
         minimum_ground = None
-        if ground_support is not None and settings.support_over_water:
+        if supported:
             minimum_ground = max((z for ring in model_rings
                                   if (z := ground_support.minimum_ground([ring], 'road')) is not None),
                                  default=None)
@@ -835,9 +840,7 @@ def generate_roads(
             # are for bridge anchors over a cut: switching to them at the
             # shoreline makes surface roads jagged and lifts them off their
             # supports. Keep the same grade as the solid underneath instead.
-            height = (heightfield.height_mm(x, y)
-                      if ground_support is not None and settings.support_over_water
-                      else ground_height(x, y))
+            height = heightfield.height_mm(x, y) if supported else ground_height(x, y)
             return max(height, minimum_ground) if minimum_ground is not None else height
 
         def draped(x, y):
@@ -856,7 +859,7 @@ def generate_roads(
             # ground along its whole length, not only at its vertices.
             if builder.add_prism([prism], refine=(settings.drape_spacing_mm, draped)):
                 added = True
-                if (ground_support is not None and settings.support_over_water
+                if (supported
                         and (minimum_ground is not None
                              or ground_support.overlaps_basin([model_ring])
                              or (heightfield.void_mask is not None

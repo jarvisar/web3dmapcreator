@@ -273,6 +273,18 @@ def _alongside_sq(point: Point, a: Point, b: Point) -> Optional[float]:
     return ex * ex + ey * ey
 
 
+def _cells_crossed(
+    a: Point, b: Point, cell: float, key: Callable[[float, float], Tuple[int, int]]
+) -> Set[Tuple[int, int]]:
+    """The *key* of every cell segment ``a -> b`` passes through, sampled per cell."""
+    steps = int(math.hypot(b[0] - a[0], b[1] - a[1]) / cell) + 1
+    seen = set()
+    for step in range(steps + 1):
+        t = step / steps
+        seen.add(key(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    return seen
+
+
 class _Grid:
     """Uniform grid over tagged segments, for "what is near this point" queries.
 
@@ -297,12 +309,7 @@ class _Grid:
                 continue
             self.empty = False
             item = (a, b, direction) + tag
-            steps = int(math.hypot(b[0] - a[0], b[1] - a[1]) / self.cell) + 1
-            seen = set()
-            for step in range(steps + 1):
-                t = step / steps
-                seen.add(self._key(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
-            for key in seen:
+            for key in _cells_crossed(a, b, self.cell, self._key):
                 self.cells.setdefault(key, []).append(item)
 
     def near(self, point: Point) -> List[Tuple[Any, ...]]:
@@ -660,7 +667,7 @@ def _cull(
                 return True
         return False
 
-    def drop(item: _Item, whole: float) -> None:
+    def drop(whole: float) -> None:
         counts.culled_pieces += 1
         counts.culled_length_mm += whole
 
@@ -706,8 +713,8 @@ def _cull(
                 # in chain order; either member may be reversed in it.
                 run_points = _run_points(chain, items, start, end)
                 if covered(run_points[0], run[0].deck) and covered(run_points[-1], run[-1].deck):
-                    for item, (_part, whole) in zip(run, fractions[start:end + 1]):
-                        drop(item, whole)
+                    for _part, whole in fractions[start:end + 1]:
+                        drop(whole)
                 else:
                     for item in run:
                         keep(item)
@@ -721,8 +728,7 @@ def _cull(
                 # an end in the air over the water.
                 shadowed, total = fraction(item)
                 if total > 0.0 and shadowed / total >= settings.shadow_fraction:
-                    counts.culled_pieces += 1
-                    counts.culled_length_mm += total
+                    drop(total)
                 else:
                     keep(item)
                 continue
@@ -1196,17 +1202,9 @@ def _prune(
     def key(x: float, y: float) -> Tuple[int, int]:
         return int(math.floor(x / cell)), int(math.floor(y / cell))
 
-    def cells(a: Point, b: Point) -> Set[Tuple[int, int]]:
-        steps = int(math.hypot(b[0] - a[0], b[1] - a[1]) / cell) + 1
-        seen = set()
-        for step in range(steps + 1):
-            t = step / steps
-            seen.add(key(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
-        return seen
-
     for number, chain in enumerate(chains):
         for a, b in zip(chain.points[:-1], chain.points[1:]):
-            for k in cells(a, b):
+            for k in _cells_crossed(a, b, cell, key):
                 buckets.setdefault(k, []).append((number, a, b))
 
     def supporters(number: int, point: Point) -> Set[int]:
@@ -1425,7 +1423,7 @@ def _prune(
                 held.add(number)
             for a, b in zip(chain.points[:-1], chain.points[1:]):
                 seen: Set[int] = set()
-                for k in cells(a, b):
+                for k in _cells_crossed(a, b, cell, key):
                     for other, c, d in buckets.get(k, ()):
                         if other == number or other in seen or removed[other]:
                             continue
@@ -1534,7 +1532,7 @@ def tidy_network(
     # Which ends met nothing in the source network.  Overture repeats a
     # connector's coordinates on every segment meeting it, mid-span included,
     # so the node tolerance is enough.
-    source = _Grid(max(spacing, quantum * 4.0))
+    source = _Grid(spacing)
     for index, item in enumerate(items):
         source.add(item.points, index)
     for number, piece in enumerate(context):

@@ -42,14 +42,15 @@ from .planar import (
     EPSILON,
     buffer_polyline,
     buffer_polyline_convex_pieces,
-    clean_ring,
     densify_ring,
     offset_is_safe,
     ring_bounds,
     signed_area,
 )
-from .surface_priority import _lattice, _solid, _triangulate
-from .water_geometry import _clip_segment
+from .surface_priority import (
+    _lattice, _ring_loops, _solid, _top_cap_triangles, _top_heights, _triangulate,
+)
+from .water_geometry import _clip_segment, _cross
 
 Point = Tuple[float, float]
 Ring = Sequence[Point]
@@ -86,8 +87,11 @@ class _FoundationHeightField:
     maximum_over = ModelHeightField.maximum_over
 
 
-def _cross(o, a, b) -> float:
-    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+def _unit_prism_caps(vertices, faces):
+    """Top cap faces, as vertex lists, of a unit prism (tops at Z 1)."""
+    for face in faces:
+        if all(vertices[i][2] == 1.0 for i in face):
+            yield [vertices[i] for i in face]
 
 
 def _segment_crosses_triangle(p, q, triangle, margin=EPSILON) -> bool:
@@ -157,10 +161,8 @@ class SupportBuilder:
             if body.cut or body.basin_kind:
                 continue
             mask = FootprintIndex(clearance=0)
-            vertices, faces = body.geometry
-            for face in faces:
-                if all(vertices[i][2] == 1.0 for i in face):
-                    mask.add([vertices[i] for i in face])
+            for cap in _unit_prism_caps(*body.geometry):
+                mask.add(cap)
             self._water_levels.append((ring_bounds(body.rings[0]), mask, body.top_mm))
         if heightfield.basins:
             self.structure_heightfield = copy(heightfield)
@@ -215,14 +217,7 @@ class SupportBuilder:
                 continue
             mesh = obj.data
             coords = [vertex.co[:] for vertex in mesh.vertices]
-            tops = {}
-            for x, y, z in coords:
-                if z > tops.get((x, y), -math.inf):
-                    tops[x, y] = z
-            mesh.calc_loop_triangles()
-            caps = [tuple(t.vertices) for t in mesh.loop_triangles
-                    if all(coords[i][2] >= tops[coords[i][:2]] - 1e-6 for i in t.vertices)
-                    and abs(area_xy([coords[i] for i in t.vertices])) > 1e-12]
+            caps = _top_cap_triangles(mesh, coords, _top_heights(coords))
             points = [c[:2] for c in coords]
             grade = {i: coords[i][2] - rise for cap in caps for i in cap}
             lifted = {i for i, z in grade.items() if z - embed > field.height_mm(*points[i]) + 1e-5}
@@ -255,11 +250,8 @@ class SupportBuilder:
 
     @staticmethod
     def _footprint_caps(rings):
-        vertices, faces = _prism_geometry(
-            [[(x, y, 0.0, 1.0) for x, y in ring] for ring in rings])
-        for face in faces:
-            if all(vertices[i][2] == 1.0 for i in face):
-                yield [vertices[i] for i in face]
+        return _unit_prism_caps(*_prism_geometry(
+            [[(x, y, 0.0, 1.0) for x, y in ring] for ring in rings]))
 
     @staticmethod
     def _with_neighbours(triangles, needed):
@@ -374,17 +366,10 @@ class SupportBuilder:
         overlap, the second lies under its own structure.
         """
         spacing = self.drape_spacing_mm
-        points, loops = [], []
-        for index, ring in enumerate(rings):
-            dense = clean_ring(densify_ring(ring, spacing), EPSILON)
-            if len(dense) < 3 or signed_area(dense) == 0:
-                if index == 0:
-                    return [], []
-                continue
-            if (signed_area(dense) < 0) != (index > 0):
-                dense.reverse()
-            loops.append((0, list(range(len(points), len(points) + len(dense)))))
-            points.extend(dense)
+        loaded = _ring_loops(rings, spacing)
+        if loaded is None:
+            return [], []
+        points, loops = loaded
         bounds = ring_bounds(points[:len(loops[0][1])])
         box = (bounds[0] - spacing, bounds[1] - spacing, bounds[2] + spacing, bounds[3] + spacing)
         for a, b in self._outline_edges(box):
@@ -419,13 +404,13 @@ class SupportBuilder:
                     height(i) > ground(*out_points[i]) + clearance for i in face) \
                     or top(x, y) > ground(x, y) + clearance:
                 needed.append(face)
+        inside_area = sum(abs(area_xy([out_points[i] for i in f])) for f in inside)
         if not needed:
-            self.buried_area_mm2 += sum(abs(area_xy([out_points[i] for i in f])) for f in inside)
+            self.buried_area_mm2 += inside_area
             return None
         kept = self._with_neighbours(inside, needed)
-        self.buried_area_mm2 += sum(abs(area_xy([out_points[i] for i in f]))
-                                    for f in inside) - sum(abs(area_xy([out_points[i] for i in f]))
-                                                           for f in kept)
+        self.buried_area_mm2 += inside_area - sum(abs(area_xy([out_points[i] for i in f]))
+                                                  for f in kept)
         banded = self._band_height(needed, height)
         low = min(banded(i) for face in kept for i in face)
         vertices, faces, _shells = _solid(out_points, kept, banded, low - self.bottom_z, flat=True)

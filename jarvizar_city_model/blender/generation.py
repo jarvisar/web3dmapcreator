@@ -6,10 +6,14 @@ from math import isfinite
 import bpy
 
 from .collections import (
-    GENERATED_KEY, ROOT_COLLECTION_NAME, STAGING_KEY, ROLE_KEY, _walk_collections, create_city_hierarchy,
-    generated_roots, hierarchy_data, preserve_user_links, removable_meshes,
+    GENERATED_KEY, ROOT_COLLECTION_NAME, STAGING_KEY, STAGING_ROOT_NAME, ROLE_KEY, _walk_collections,
+    create_city_hierarchy, generated_roots, hierarchy_data, preserve_user_links, removable_meshes,
 )
-from .materials import _material_name, model_materials
+from .materials import MATERIAL_ROLE_KEY, _material_name, model_materials
+
+
+# Previous output keeps its data under these names until the final removal.
+_PREVIOUS_PREFIX = "_JCM_PREVIOUS_"
 
 
 class GenerationTransaction:
@@ -57,7 +61,7 @@ class GenerationTransaction:
         reserved = (self.previous_objects | self.previous_collections
                     | removable_meshes(self.previous_objects, self.previous_meshes)) - set(self.roots)
         for datablock in sorted(reserved, key=lambda item: item.name):
-            self._rename(datablock, "_JCM_PREVIOUS_" + datablock.name)
+            self._rename(datablock, _PREVIOUS_PREFIX + datablock.name)
 
     def begin(self):
         self._reserve_names()
@@ -85,7 +89,7 @@ class GenerationTransaction:
                     raise ValueError("The worker model has no generated root")
                 target.collections = [root_name]
             root = target.collections[0]
-            root.name = "_CITY_MODEL_STAGING"
+            root.name = STAGING_ROOT_NAME
             root[STAGING_KEY] = True
             root.hide_viewport = root.hide_render = True
             self.scene.collection.children.link(root)
@@ -94,7 +98,7 @@ class GenerationTransaction:
             if len(self.hierarchy) != len(imported) or self.hierarchy.get("root") != root:
                 raise ValueError("Invalid worker collection roles")
             for material in set(bpy.data.materials) - before_materials:
-                role = material.get("jarvizar_material_role")
+                role = material.get(MATERIAL_ROLE_KEY)
                 if role not in self.materials:
                     raise ValueError("Invalid worker material role")
                 material.user_remap(self.materials[role])
@@ -144,6 +148,7 @@ class GenerationTransaction:
             mesh.vertices.foreach_get("co", coordinates)
             if not all(map(isfinite, coordinates)):
                 raise ValueError(f"Non-finite generated coordinates: {obj.name}")
+        return owned
 
     def _restore_selection(self):
         layer = self.context.view_layer
@@ -164,22 +169,21 @@ class GenerationTransaction:
         restore_collection(layer.layer_collection)
 
     def commit(self, *, message, lidar_status, set_scene_units):
-        self.validate()
-        owned = self._new_data()
+        owned = self.validate()
         # Everything above the final batch removal is reversible, including
         # remapping shared material users and making user helpers reachable.
         retired_materials = set()
         for key, material in self.materials.items():
             name = _material_name(key)
-            previous = bpy.data.materials.get(name)
+            previous = bpy.data.materials.get((name, None))
             if previous is not None:
-                self._rename(previous, "_JCM_PREVIOUS_" + name)
+                self._rename(previous, _PREVIOUS_PREFIX + name)
                 self.remapped.append((previous, material))
                 previous.user_remap(material)
                 retired_materials.add(previous)
             material.name = name
         for root in self.roots:
-            self._rename(root, "_JCM_PREVIOUS_" + ROOT_COLLECTION_NAME)
+            self._rename(root, _PREVIOUS_PREFIX + ROOT_COLLECTION_NAME)
         root = self.hierarchy["root"]
         root.name = ROOT_COLLECTION_NAME
         root[STAGING_KEY] = False

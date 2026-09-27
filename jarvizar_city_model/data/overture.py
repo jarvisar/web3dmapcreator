@@ -17,12 +17,9 @@ class OvertureDownloadError(RuntimeError):
     pass
 
 
-def _helper_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "external" / "download_overture.py"
-
-
-def _dem_helper_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "external" / "download_dem.py"
+def _external_script(name: str) -> Path:
+    """Path of a script in the add-on's ``external`` directory."""
+    return Path(__file__).resolve().parent.parent / "external" / name
 
 
 def resolve_python(configured_path: str, fallback_path: str = "") -> Path:
@@ -50,7 +47,7 @@ def resolve_python(configured_path: str, fallback_path: str = "") -> Path:
     return path
 
 
-def _last_json_line(stdout: str) -> Dict[str, Any]:
+def last_json_line(stdout: str) -> Dict[str, Any]:
     for line in reversed(stdout.splitlines()):
         try:
             value = json.loads(line)
@@ -70,7 +67,7 @@ def _run_helper(command, timeout: int, failure: str = "") -> Dict[str, Any]:
         check=False,
         timeout=timeout,
     )
-    payload = _last_json_line(result.stdout)
+    payload = last_json_line(result.stdout)
     if result.returncode or not payload.get("ok"):
         detail = payload.get("detail") or result.stderr.strip() or "unknown error"
         raise OvertureDownloadError(f"{failure}{detail}")
@@ -85,7 +82,7 @@ def download_to_cache(
     """Atomically replace a cache bundle after all downloads succeed."""
     feature_types = tuple(feature_types)
     bundle.cache_root.mkdir(parents=True, exist_ok=True)
-    helper = _helper_path()
+    helper = _external_script("download_overture.py")
     with tempfile.TemporaryDirectory(
         prefix="jarvizar_download_", dir=str(bundle.cache_root)
     ) as temporary_name:
@@ -143,7 +140,7 @@ def download_dem_to_cache(
     bundle.ensure_directory()
     command = [
         str(python_path),
-        str(_dem_helper_path()),
+        str(_external_script("download_dem.py")),
         "--bbox",
         *(f"{value:.8f}" for value in bundle.bounds.as_tuple()),
         "--output-dir",

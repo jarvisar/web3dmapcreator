@@ -238,12 +238,21 @@ def generate_buildings(
     embed = float(embed_mm)
     spacing = float(drape_spacing_mm)
 
+    def family(parent_id):
+        """A building's parent footprint, if loaded, followed by its parts."""
+        parent = parent_lookup.get(parent_id)
+        return ([parent] if parent is not None else []) + list(parts_by_parent.get(parent_id, ()))
+
+    def foundation(minimum_ground):
+        if ground_support is not None:
+            return ground_support.foundation_field(minimum_ground)
+        return heightfield
+
     def family_floor(parent_id):
         if ground_support is None:
             return None
         if parent_id not in foundation_cache:
-            parent = parent_lookup.get(parent_id)
-            features = ([parent] if parent is not None else []) + list(parts_by_parent.get(parent_id, ()))
+            features = family(parent_id)
             levels = [ground_support.minimum_ground(rings, 'building')
                       for feature in features
                       for rings in projected_polygon_rings(feature.get('geometry') or {}, transform)]
@@ -262,11 +271,8 @@ def generate_buildings(
             return ground_cache[parent_id]
         bases: List[float] = []
         ceilings: List[float] = []
-        parent = parent_lookup.get(parent_id)
-        features = [parent] if parent is not None else []
-        features.extend(parts_by_parent.get(parent_id, []))
-        ground_field = ground_support.foundation_field(family_floor(parent_id)) if ground_support else heightfield
-        for feature in features:
+        ground_field = foundation(family_floor(parent_id))
+        for feature in family(parent_id):
             for rings in projected_polygon_rings(feature.get("geometry") or {}, transform):
                 bases.append(ground_field.minimum_over(rings[0]))
                 ceilings.append(ground_field.maximum_over(rings[0]))
@@ -389,7 +395,7 @@ def generate_buildings(
             if ground is None:
                 continue
             minimum_ground = family_floor(identifier)
-            ground_field = ground_support.foundation_field(minimum_ground) if ground_support else heightfield
+            ground_field = foundation(minimum_ground)
             try:
                 built = measured_builder(feature, record, transform, ground_field, ground, vertical,
                     embed, spacing, minimum_width_mm, maximum_slenderness,
@@ -503,11 +509,24 @@ def generate_buildings(
         # building part must keep its real underside.
         grounded = profile.bottom_m <= 0.0
         minimum_ground = family_floor(parent_id or source_id)
-        ground_field = ground_support.foundation_field(minimum_ground) if ground_support else heightfield
+        ground_field = foundation(minimum_ground)
         # Slenderness is judged on the mass's own extent, not its height above
         # the street.  A tower's crown section is a squat block that happens to
         # start 140 m up, and measuring it from the ground would discard it.
         thickness_mm = vertical(profile.thickness_m)
+
+        def too_thin(width: float, thickness_mm: float = thickness_mm) -> Optional[str]:
+            """Why a mass this wide cannot print at this thickness, or ``None``."""
+            if width < minimum_width_mm:
+                return "narrow"
+            if (
+                maximum_slenderness > 0.0
+                and width < slenderness_exempt_width_mm
+                and thickness_mm > width * maximum_slenderness
+            ):
+                return "slender"
+            return None
+
         polygons = projected_polygon_rings(feature.get("geometry") or {}, transform)
         for polygon_index, rings in enumerate(polygons):
             vertex_start = len(builder.vertices)
@@ -521,19 +540,14 @@ def generate_buildings(
             # for the unchanged roof and minimum-height rules below.
             width_mm = effective_width(rings[0])
             filter_width = part_widths.get((source_id, polygon_index), width_mm) if is_part else width_mm
-            if filter_width < minimum_width_mm:
+            rejection = too_thin(filter_width)
+            if rejection == "narrow":
                 narrow = True
                 continue
-            if (
-                maximum_slenderness > 0.0
-                and filter_width < slenderness_exempt_width_mm
-                and thickness_mm > filter_width * maximum_slenderness
-            ):
+            if rejection == "slender":
                 slender = True
                 continue
-            kept_by_adjacency = is_part and (width_mm < minimum_width_mm or (
-                    maximum_slenderness > 0 and width_mm < slenderness_exempt_width_mm
-                    and thickness_mm > width_mm * maximum_slenderness))
+            kept_by_adjacency = is_part and too_thin(width_mm) is not None
             ground = shared_ground(parent_id) if parent_id else None
             if ground is None:
                 terrain_mm = ground_field.minimum_over(rings[0])

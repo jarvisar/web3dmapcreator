@@ -1,5 +1,6 @@
-# Build, back up, replace and verify the installed Blender 3.6 add-on in one
-# quiet step. Prints a short summary only; run from the repository root.
+# Build, back up, replace and verify the installed Blender 3.6 add-on, and the
+# extension in the newest Blender 4.2+ found, in one quiet step. Prints a short
+# summary only; run from the repository root.
 # Blender may stay open: Python source files are not locked on Windows, and a
 # running session keeps using its already imported copy until restarted.
 $ErrorActionPreference = "Stop"
@@ -39,6 +40,55 @@ bpy.ops.wm.save_userpref()
 $output = & $blender --background --python-exit-code 1 --python $verify 2>&1
 $line = $output | Select-String -Pattern "^INSTALLED " | Select-Object -First 1
 if ($LASTEXITCODE -ne 0 -or -not $line) { $output | Select-Object -Last 15; throw "Verification failed; rollback copy in $backup" }
-"$line"
+$installed = @("$line")
+$versions = @("3.6")
+
+# The newest installed Blender 4.2+ also gets the extension build, in its
+# user_default repository (package bl_ext.user_default.jarvizar_city_model).
+$latest = Get-ChildItem -Directory "C:\Program Files\Blender Foundation" |
+    Where-Object { $_.Name -match '^Blender \d+\.\d+$' -and [version]($_.Name -replace '^Blender ', '') -ge [version]"4.2" } |
+    Sort-Object { [version]($_.Name -replace '^Blender ', '') } -Descending | Select-Object -First 1
+if ($latest) {
+    $version = $latest.Name -replace '^Blender ', ''
+    $blenderLatest = Join-Path $latest.FullName "blender.exe"
+    $extension = Join-Path $repo "dist\jarvizar_city_model-$manifest-extension.zip"
+    if (-not (Test-Path -LiteralPath $extension)) { throw "Archive not built: $extension" }
+    $userLatest = Join-Path $env:APPDATA "Blender Foundation\Blender\$version"
+    $extensionTarget = Join-Path $userLatest "extensions\user_default\jarvizar_city_model"
+    $latestBackup = Join-Path $backup "blender-$version"
+    New-Item -ItemType Directory -Path $latestBackup | Out-Null
+    if (Test-Path -LiteralPath $extensionTarget) { Copy-Item -LiteralPath $extensionTarget -Destination $latestBackup -Recurse }
+    $latestPref = Join-Path $userLatest "config\userpref.blend"
+    if (Test-Path -LiteralPath $latestPref) { Copy-Item -LiteralPath $latestPref -Destination $latestBackup }
+
+    $output = & $blenderLatest --command extension install-file -r user_default -e $extension 2>&1
+    if ($LASTEXITCODE -ne 0) { $output | Select-Object -Last 15; throw "Blender $version install failed; rollback copy in $latestBackup" }
+
+    # A new Blender version starts without the downloader preference; carry
+    # over the one Blender 3.6 uses, never replacing one already set.
+    $downloader = "$line" -replace '^.* downloader: ', ''
+    $env:JCM_DOWNLOADER = if ($downloader -ne "unset") { $downloader } else { "" }
+    $verifyLatest = Join-Path $env:TEMP "jcm_verify_extension.py"
+    @'
+import os, sys, tomllib, bpy, addon_utils
+from pathlib import Path
+name = "bl_ext.user_default.jarvizar_city_model"
+addon_utils.enable(name, default_set=True, handle_error=None)
+prefs = bpy.context.preferences.addons[name].preferences
+if not prefs.overture_python_path and os.environ.get("JCM_DOWNLOADER"):
+    prefs.overture_python_path = os.environ["JCM_DOWNLOADER"]
+addon = sys.modules[name]
+# Extensions drop bl_info; their version is the installed manifest's.
+version = tomllib.loads(Path(addon.__file__).with_name("blender_manifest.toml").read_text(encoding="utf-8"))["version"]
+print("INSTALLED", addon.__file__, version, "downloader:", prefs.overture_python_path or "unset")
+bpy.ops.wm.save_userpref()
+'@ | Set-Content -Path $verifyLatest -Encoding UTF8
+    $output = & $blenderLatest --background --python-exit-code 1 --python $verifyLatest 2>&1
+    $line = $output | Select-String -Pattern "^INSTALLED " | Select-Object -First 1
+    if ($LASTEXITCODE -ne 0 -or -not $line) { $output | Select-Object -Last 15; throw "Blender $version verification failed; rollback copy in $latestBackup" }
+    $installed += "$line"
+    $versions += $version
+}
+$installed
 "BACKUP $backup"
-"INSTALL_OK $manifest"
+"INSTALL_OK $manifest Blender $($versions -join ', ')"

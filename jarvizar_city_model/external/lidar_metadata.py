@@ -263,13 +263,17 @@ def read_report(fetch, url, remaining=None, identities=None):
     return fgdc_metadata(data)
 
 
+def _report_url(member):
+    return member.get('metadata_url') or member.get('vendorMetaUrl') or ''
+
+
 def enrich_sources(fetch, sources, failures, progress):
     """Read small metadata documents once, before any LAZ transfer is scheduled."""
     reports, report_identities = {}, {}
     for source in sources:
         progress(f"Reading {source['format']} survey metadata: {source['name']}")
         members = source.get('tiles', [source])
-        urls = sorted({m.get('metadata_url') or m.get('vendorMetaUrl') or '' for m in members} - {''})
+        urls = sorted({_report_url(m) for m in members} - {''})
         remaining = [MAX_REPORTS]
         for url in urls[:MAX_REPORTS]:
             if url not in reports:
@@ -280,7 +284,7 @@ def enrich_sources(fetch, sources, failures, progress):
                     failures.append({'source': url, 'reason': f'Survey metadata unavailable: {exc}', 'buildings': 0})
         records, identities = [], []
         for member in members:
-            url = member.get('metadata_url') or member.get('vendorMetaUrl') or ''
+            url = _report_url(member)
             records.append({**reports.get(url, {}), **normalized_metadata(member)})
             identities.append(merge_identities(metadata_identity(member), report_identities.get(url, {})))
         source['survey_metadata'] = {**source.get('survey_metadata', {}), **aggregate_metadata(records)}

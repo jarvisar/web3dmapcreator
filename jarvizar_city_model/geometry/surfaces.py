@@ -39,7 +39,7 @@ from ..data.geojson import feature_properties
 from .planar import (EPSILON, clean_ring, densify_ring, interior_grid_points, polygon_area,
                      polyline_meets_polygon, ring_bounds, signed_area)
 from .support import CUT_WATER_DROP_MM
-from .surface_priority import _lattice, _solid, _triangulate, cut_surface_overlaps
+from .surface_priority import _lattice, _ring_loops, _solid, _triangulate, cut_surface_overlaps
 from .water_geometry import projected_water_polygons, valid_water_polygon
 
 # Cut water is never solved below the lowest tenth of its shoreline.  Nine in
@@ -94,19 +94,6 @@ class SurfaceSettings:
             raise ValueError("Pond/fountain water thickness must be positive and not exceed recess depth")
 
 
-def _densified(ring: Sequence[Tuple[float, float]], spacing: float):
-    """Densify a ring for draping, then re-clean it at float32 tolerance.
-
-    Densifying can place inserted vertices closer together than Blender's
-    float32 mesh coordinates can distinguish, and any such pair degenerates a
-    cap triangle.  A dropped triangle leaves a hole, and the "watertight" solid
-    silently stops being watertight -- so the ring is cleaned in the frame it
-    will actually be built in.
-    """
-    cleaned = clean_ring(densify_ring(ring, spacing), EPSILON)
-    return cleaned if len(cleaned) >= 3 else None
-
-
 def _draped_slab(rings, draped, thickness: float, spacing: float):
     """Build one slab over a polygon, draped at its outline and a fixed lattice.
 
@@ -116,18 +103,17 @@ def _draped_slab(rings, draped, thickness: float, spacing: float):
     instead split its long slivers into hundreds of thousands of faces on a
     large park. Later cuts find the same lattice points already on the surface.
     Returns ``(vertices, faces)`` or ``None``.
+
+    Densifying can place inserted vertices closer together than Blender's
+    float32 mesh coordinates can distinguish, and any such pair degenerates a
+    cap triangle.  A dropped triangle leaves a hole, and the "watertight" solid
+    silently stops being watertight -- so each ring is cleaned in the frame it
+    will actually be built in.
     """
-    points, loops = [], []
-    for index, ring in enumerate(rings):
-        dense = _densified(ring, spacing)
-        if dense is None:
-            if index == 0:
-                return None
-            continue
-        if (signed_area(dense) < 0) != (index > 0):
-            dense.reverse()
-        loops.append((0, list(range(len(points), len(points) + len(dense)))))
-        points.extend(dense)
+    loaded = _ring_loops(rings, spacing)
+    if loaded is None:
+        return None
+    points, loops = loaded
     points.extend(_lattice(points, ring_bounds(points[:len(loops[0][1])]), spacing))
     out_points, out_faces, _origins, winding = _triangulate(points, loops, 1)
     kept = [tuple(face) for face, (inside,) in zip(out_faces, winding) if inside > 0]
@@ -136,10 +122,6 @@ def _draped_slab(rings, draped, thickness: float, spacing: float):
     vertices, faces, _shells = _solid(
         out_points, kept, lambda index: draped(*out_points[index])[1], thickness)
     return vertices, faces
-
-
-def _ring_area(ring: Sequence[Tuple[float, float]]) -> float:
-    return abs(signed_area(ring))
 
 
 def generate_land_surfaces(
@@ -219,7 +201,7 @@ def generate_land_surfaces(
         added = False
         bridge_area = bridge_lines and is_bridge_area(feature_properties(feature))
         for rings in projected_polygon_rings(feature.get("geometry") or {}, transform):
-            if _ring_area(rings[0]) < settings.minimum_area_mm2:
+            if abs(signed_area(rings[0])) < settings.minimum_area_mm2:
                 continue
             if bridge_area and carried_by_bridge(rings):
                 bridge_decks += 1
@@ -298,6 +280,12 @@ def _source_water_area(geometry, transform):
         return math.inf
 
 
+def _canonical_ring(ring):
+    """A ring rotated to start at its least vertex, for duplicate detection."""
+    start = min(range(len(ring)), key=ring.__getitem__)
+    return tuple(ring[start:] + ring[:start])
+
+
 def solve_water_bodies(
     features: Iterable[Dict[str, Any]],
     transform,
@@ -359,10 +347,8 @@ def solve_water_bodies(
             if model_area < settings.minimum_area_mm2:
                 continue
             if basin_kind:
-                def canonical(ring):
-                    start = min(range(len(ring)), key=ring.__getitem__)
-                    return tuple(ring[start:] + ring[:start])
-                key = (canonical(rings[0]), tuple(sorted(canonical(ring) for ring in rings[1:])))
+                key = (_canonical_ring(rings[0]),
+                       tuple(sorted(_canonical_ring(ring) for ring in rings[1:])))
                 if key in seen_basins:
                     basin_duplicates += 1
                     added = True
@@ -374,19 +360,20 @@ def solve_water_bodies(
             if not geometry[0] or not geometry[1]:
                 failed_meshes += 1
                 continue
-            interior = interior_grid_points(rings, settings.water_sample_spacing_mm)
-            samples = (
-                interior
-                if len(interior) >= 8
-                else densify_ring(rings[0], settings.drape_spacing_mm)
-            )
-            bed = heightfield.percentile_over(samples, settings.water_level_percentile)
             if basin_kind:
                 bank = heightfield.minimum_over(
                     point for ring in rings for point in densify_ring(ring, settings.drape_spacing_mm)
                 )
                 bed = bank - settings.pond_recess_depth_mm
                 seen_basins.add(key)
+            else:
+                interior = interior_grid_points(rings, settings.water_sample_spacing_mm)
+                samples = (
+                    interior
+                    if len(interior) >= 8
+                    else densify_ring(rings[0], settings.drape_spacing_mm)
+                )
+                bed = heightfield.percentile_over(samples, settings.water_level_percentile)
             area_m2 = model_area / area_scale
             cut = (not basin_kind and settings.cut_from_terrain
                    and area_m2 >= settings.minimum_cut_area_m2)
@@ -528,6 +515,7 @@ def cut_water_from_terrain(
     heightfield.restored_footprints = []
 
     decks = 0
+    grounded = 0
     if transform is not None:
         for feature_type, features in deck_features:
             for feature in features:
@@ -542,8 +530,6 @@ def cut_water_from_terrain(
                     if mask.remove_polygon(rings):
                         decks += 1
 
-    grounded = 0
-    if transform is not None:
         for feature in footprints:
             for rings in projected_polygon_rings(
                 feature.get("geometry") or {}, transform

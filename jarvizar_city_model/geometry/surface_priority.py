@@ -11,8 +11,8 @@ from mathutils.geometry import barycentric_transform, delaunay_2d_cdt
 
 from ..blender.collections import GENERATED_KEY
 from ..data.land import DEFAULT_SURFACE_PRIORITY
-from .footprint_cut import area_xy
-from .planar import EPSILON, clean_ring, densify_ring, ear_clip
+from .footprint_cut import area_xy, bounds_overlap
+from .planar import EPSILON, clean_ring, densify_ring, ear_clip, ring_bounds, signed_area
 
 
 ROAD_SURFACE_CLEARANCE_MM = 0.005
@@ -76,7 +76,7 @@ def cut_surface_overlaps(surface_collection, thickness, priority_order=DEFAULT_S
             'land_surface_overlap_cut_fragments': fragments}
 
 
-def _top_triangles(mesh, progress_callback=None):
+def _top_triangles(mesh):
     # Every draped prism pairs its top and underside at identical XY. Tiny
     # cap slivers can have an unreliable XY winding after float32 conversion;
     # identify the top by height too, so they cannot extrude a second bottom.
@@ -85,15 +85,27 @@ def _top_triangles(mesh, progress_callback=None):
         x, y, z = vertex.co
         tops[x, y] = max(tops.get((x, y), z), z)
     mesh.calc_loop_triangles()
-    total = max(1, len(mesh.loop_triangles))
-    for index, triangle in enumerate(mesh.loop_triangles):
-        if progress_callback and index % 2048 == 0:
-            progress_callback(index / total)
+    for triangle in mesh.loop_triangles:
         points = [tuple(mesh.vertices[i].co) for i in triangle.vertices]
         if area_xy(points) > 1e-12 and all(p[2] >= tops[p[0], p[1]]-1e-6 for p in points):
             yield points
-    if progress_callback:
-        progress_callback(1.0)
+
+
+def _top_heights(coords):
+    """The highest Z at each XY of a mesh's ``co`` tuples."""
+    tops = {}
+    for x, y, z in coords:
+        if z > tops.get((x, y), -math.inf):
+            tops[x, y] = z
+    return tops
+
+
+def _top_cap_triangles(mesh, coords, tops):
+    """Vertex index triples of the positive-area loop triangles on a slab's top."""
+    mesh.calc_loop_triangles()
+    return [t.vertices[:] for t in mesh.loop_triangles
+            if all(coords[i][2] >= tops[coords[i][:2]]-1e-6 for i in t.vertices)
+            and abs(area_xy([coords[i] for i in t.vertices])) > 1e-12]
 
 
 def _drop_collinear(ring):
@@ -277,6 +289,27 @@ def _lattice(anchors, bounds, spacing=CUT_EDGE_SPACING_MM):
             if (i, j) not in blocked]
 
 
+def _ring_loops(rings, spacing):
+    """Drape-spaced rings of one polygon as ``(points, loops)`` in group 0.
+
+    Each ring is densified to *spacing*, cleaned at the geometry epsilon and
+    wound with its filled area on its left. A degenerate hole is dropped;
+    a degenerate outer ring returns ``None``.
+    """
+    points, loops = [], []
+    for index, ring in enumerate(rings):
+        dense = clean_ring(densify_ring(ring, spacing), EPSILON)
+        if not dense:
+            if index == 0:
+                return None
+            continue
+        if (signed_area(dense) < 0) != (index > 0):
+            dense.reverse()
+        loops.append((0, list(range(len(points), len(points) + len(dense)))))
+        points.extend(dense)
+    return points, loops
+
+
 def _triangulate(points, loops, groups, epsilon=_CDT_EPSILON):
     """Triangulate points and closed rings, with a winding number per ring group.
 
@@ -436,9 +469,8 @@ def _rebuild_surface(obj, cutters, thickness, outline=None, progress_callback=No
     report = progress_callback or (lambda fraction: None)
     left, low, right, high = bounds or (min(p[0] for p in obj.bound_box), min(p[1] for p in obj.bound_box),
                                         max(p[0] for p in obj.bound_box), max(p[1] for p in obj.bound_box))
-    cutters = [ring for ring in cutters if ring
-               and min(p[0] for p in ring) < right and left < max(p[0] for p in ring)
-               and min(p[1] for p in ring) < high and low < max(p[1] for p in ring)]
+    cutters = [ring for ring in cutters
+               if ring and bounds_overlap(ring_bounds(ring), (left, low, right, high))]
     if not cutters:
         return 0.0, 0
     if outline is None:
@@ -448,10 +480,7 @@ def _rebuild_surface(obj, cutters, thickness, outline=None, progress_callback=No
     report(.2)
 
     coords = [v.co[:] for v in mesh.vertices]
-    tops = {}
-    for x, y, z in coords:
-        if z > tops.get((x, y), -math.inf):
-            tops[x, y] = z
+    tops = _top_heights(coords)
     keys = list({p for ring in outline for p in ring})
     lookup = {key: index for index, key in enumerate(keys)}
     points = list(keys)
@@ -487,10 +516,7 @@ def _rebuild_surface(obj, cutters, thickness, outline=None, progress_callback=No
         if known:
             return max(known)
         if not sampler:
-            mesh.calc_loop_triangles()
-            triangles = [t.vertices[:] for t in mesh.loop_triangles
-                         if all(coords[i][2] >= tops[coords[i][:2]]-1e-6 for i in t.vertices)
-                         and abs(area_xy([coords[i] for i in t.vertices])) > 1e-12]
+            triangles = _top_cap_triangles(mesh, coords, tops)
             flat = [Vector((x, y, 0.0)) for x, y, _z in coords]
             sampler.extend((triangles, flat, BVHTree.FromPolygons(flat, triangles, all_triangles=True)))
         triangles, flat, tree = sampler

@@ -41,8 +41,8 @@ def feature_properties(feature: Dict[str, Any]) -> Dict[str, Any]:
     return properties if isinstance(properties, dict) else {}
 
 
-def positive_number(value: Any) -> float | None:
-    """Read a property value as a finite number above zero, else ``None``.
+def finite_number(value: Any) -> float | None:
+    """Read a property value as a finite number, else ``None``.
 
     Booleans are refused although Python treats them as numbers: a tag of
     ``true`` is not a height of one metre.
@@ -53,7 +53,13 @@ def positive_number(value: Any) -> float | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number if math.isfinite(number) and number > 0.0 else None
+    return number if math.isfinite(number) else None
+
+
+def positive_number(value: Any) -> float | None:
+    """Read a property value as a finite number above zero, else ``None``."""
+    number = finite_number(value)
+    return number if number is not None and number > 0.0 else None
 
 
 def feature_id(feature: Dict[str, Any]) -> str:

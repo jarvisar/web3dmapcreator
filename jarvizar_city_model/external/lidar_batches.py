@@ -20,11 +20,11 @@ def building_batches(features, geometries, size=400.0):
     return [groups[key] for key in sorted(groups)]
 
 
-def batch_bounds(features, geometries, selection, halo=SELECTION_HALO_M):
+def batch_bounds(features, geometries, selection):
     # Include complete roofs and surrounding ground, but never escape the
     # selected map's established halo to chase an enormous regional feature.
     bounds = unary_union([geometries[f['id']] for f in features]).bounds
-    return box(*bounds).buffer(SUPPORT_HALO_M, join_style=2).intersection(selection.buffer(halo)).bounds
+    return box(*bounds).buffer(SUPPORT_HALO_M, join_style=2).intersection(selection.buffer(SELECTION_HALO_M)).bounds
 
 
 def split_batch(features, geometries):

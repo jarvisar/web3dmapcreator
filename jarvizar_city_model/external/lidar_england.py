@@ -9,10 +9,10 @@ from urllib.parse import quote
 from shapely.geometry import box, mapping
 
 try:
-    from .lidar_services import features, grouped, tile
+    from .lidar_services import features, grouped, tile, METADATA_TTL
     from .lidar_identity import original_asset_id
 except ImportError:
-    from lidar_services import features, grouped, tile
+    from lidar_services import features, grouped, tile, METADATA_TTL
     from lidar_identity import original_asset_id
 
 INDEX = 'https://environment.data.gov.uk/spatialdata/survey-index-files/wfs'
@@ -26,7 +26,7 @@ PRODUCTS = {
 
 def discover_england(fetch, bbox, failures, progress):
     result = json.loads(fetch.get(SEARCH, body=mapping(box(*bbox)),
-        content_type='application/geo+json', ttl=86400, timeout=20, attempts=1, limit=4 * 1024**2))
+        content_type='application/geo+json', ttl=METADATA_TTL, timeout=20, attempts=1, limit=4 * 1024**2))
     if not isinstance(result.get('results'), list) or result.get('count') != len(result['results']):
         raise ValueError('Incomplete Environment Agency tile search')
     deliveries = [r for r in result['results'] if r['product']['id'] in PRODUCTS]

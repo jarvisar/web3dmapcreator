@@ -1,7 +1,6 @@
 """Foreground lifecycle for offline generation in an isolated Blender process."""
 
 from pathlib import Path
-import subprocess
 import time
 from types import SimpleNamespace
 
@@ -178,12 +177,7 @@ def shutdown_generation(*_args):
         return
     session.request_cancel()
     if session.job is not None:
-        process = session.job.process
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=2)
+        session.job.wait_or_kill()
     if session.transaction is not None:
         session.transaction.rollback()
     session._finish(False)
@@ -196,7 +190,9 @@ def register_handlers():
 
 
 def unregister_handlers():
-    shutdown_generation()
-    for handlers in (bpy.app.handlers.load_pre, bpy.app.handlers.undo_pre, bpy.app.handlers.redo_pre):
-        if shutdown_generation in handlers:
-            handlers.remove(shutdown_generation)
+    try:
+        shutdown_generation()
+    finally:
+        for handlers in (bpy.app.handlers.load_pre, bpy.app.handlers.undo_pre, bpy.app.handlers.redo_pre):
+            if shutdown_generation in handlers:
+                handlers.remove(shutdown_generation)

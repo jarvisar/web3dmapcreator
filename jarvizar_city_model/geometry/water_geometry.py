@@ -228,9 +228,10 @@ def projected_water_polygons(geometry, transform):
                         ring.append(p)
                 if len(ring) > 1 and ring[-1] == ring[0]:
                     ring.pop()
-                if len(ring) < 3 or abs(signed_area(ring)) <= _TOL * _TOL:
+                area = signed_area(ring)
+                if len(ring) < 3 or abs(area) <= _TOL * _TOL:
                     raise ValueError("degenerate ring")
-                if (signed_area(ring) > 0) != (len(rings) == 0):
+                if (area > 0) != (len(rings) == 0):
                     ring.reverse()
                 rings.append(ring)
             extent = ring_bounds(rings[0])

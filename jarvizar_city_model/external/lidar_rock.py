@@ -8,15 +8,17 @@ import hashlib
 
 import numpy as np
 from shapely import contains_xy, STRtree
-from shapely.geometry import box, mapping, shape
+from shapely.geometry import mapping, shape
 from shapely.ops import unary_union
 
 try:
-    from .lidar_envelope import fit_roof_envelope, envelope_parameters
+    from .lidar_envelope import DEFAULT_SURFACE_SCALE, fit_roof_envelope, envelope_parameters
     from .lidar_ground import ground_anchor
+    from .lidar_measurements import occupied_area
 except ImportError:
-    from lidar_envelope import fit_roof_envelope, envelope_parameters
+    from lidar_envelope import DEFAULT_SURFACE_SCALE, fit_roof_envelope, envelope_parameters
     from lidar_ground import ground_anchor
+    from lidar_measurements import occupied_area
 
 
 def rock_features(features):
@@ -54,7 +56,7 @@ def rock_features(features):
     return sorted(results, key=lambda f: f['id'])
 
 
-def measure_rock_surface(footprint, index, scale=(.07, .077)):
+def measure_rock_surface(footprint, index, scale=DEFAULT_SURFACE_SCALE):
     """Validate coverage and use surrounding ground to align a measured relief.
 
     An irregular hillside cannot be represented by one fitted ground plane.
@@ -84,9 +86,7 @@ def measure_rock_surface(footprint, index, scale=(.07, .077)):
         for row in local:
             groups.setdefault(tuple(np.floor(row[:2]/pitch).astype(int)), []).append(row)
         supported = {key: np.array(rows) for key, rows in sorted(groups.items()) if len(rows) >= 3}
-        area = sum(box(x*pitch, y*pitch, (x+1)*pitch, (y+1)*pitch).intersection(domain).area
-                   for x, y in supported)
-        coverage.append(area/domain.area)
+        coverage.append(occupied_area(supported, domain, pitch)/domain.area)
         bands.extend(supported.values())
     if not coverage or min(coverage) < .85 or len(bands) < 4:
         return None, 'footprint_roof_mismatch'

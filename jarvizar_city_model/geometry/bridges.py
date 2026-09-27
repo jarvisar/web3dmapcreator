@@ -67,12 +67,12 @@ def add_bridge_deck(
     Disjoint per-span slabs used to leave a wedge missing on the outside of
     every bend, where a pier could stand under nothing.
     """
-    positions = cumulative_positions(points)
     if offset_is_safe(points, half_width):
         vertices, faces = deck_strip_geometry(points, half_width, deck_heights, thickness)
         if vertices and builder.add_raw(vertices, faces):
             return True
 
+    positions = cumulative_positions(points)
     added = False
     for ring in buffer_polyline_convex_pieces(
         points, half_width, arc_segments=4, epsilon=EPSILON

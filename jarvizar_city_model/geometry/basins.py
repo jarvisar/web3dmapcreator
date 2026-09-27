@@ -14,7 +14,7 @@ from ..blender.collections import GENERATED_KEY
 from ..blender.mesh_utils import MeshBuilder, _prism_geometry
 from .footprint_cut import FootprintIndex, area_xy, bounds_overlap
 from .planar import EPSILON, ring_bounds
-from .surface_priority import _cutter, _grow, _rebuild_surface
+from .surface_priority import _cutter, _find, _grow, _rebuild_surface
 
 
 def _caps(body):
@@ -58,13 +58,6 @@ def _align_overlapping_basins(basins):
     """Overlapping mapped parts of one basin share a floor and water level."""
     indexes, bounds = [], []
     parents = list(range(len(basins)))
-
-    def root(i):
-        while parents[i] != i:
-            parents[i] = parents[parents[i]]
-            i = parents[i]
-        return i
-
     for i, body in enumerate(basins):
         bounds.append(ring_bounds(body.rings[0]))
         index = FootprintIndex(clearance=0)
@@ -72,17 +65,17 @@ def _align_overlapping_basins(basins):
         for j, other in enumerate(indexes):
             if bounds_overlap(bounds[i], bounds[j]):
                 if any(other.covered_area(cap) > 1e-7 for cap in caps):
-                    parents[root(i)] = root(j)
+                    parents[_find(parents, i)] = _find(parents, j)
         for cap in caps:
             index.add(cap)
         indexes.append(index)
     floors = {}
     for i, body in enumerate(basins):
-        key = root(i)
+        key = _find(parents, i)
         floors[key] = min(floors.get(key, body.bed_mm), body.bed_mm)
     for i, body in enumerate(basins):
         thickness = body.top_mm - body.bed_mm
-        body.bed_mm = floors[root(i)]
+        body.bed_mm = floors[_find(parents, i)]
         body.top_mm = body.bed_mm + thickness
     return len(floors)
 

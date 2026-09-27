@@ -377,7 +377,8 @@ def solve_deck_network(
             for second in owners:
                 if first != second:
                     joined.add((first, second))
-    index = SegmentIndex(max(1.0, 2.0 * (max(half_widths) if half_widths else 1.0)))
+    widest = max(half_widths) if half_widths else 1.0
+    index = SegmentIndex(max(1.0, 2.0 * widest))
     for deck, indices in enumerate(graph.deck_nodes):
         for position in range(len(indices) - 1):
             index.add_segment(
@@ -391,15 +392,21 @@ def solve_deck_network(
             return None
         return ((b[0] - a[0]) / length, (b[1] - a[1]) / length)
 
+    def heading_at(indices: Sequence[int], position: int) -> Optional[Point]:
+        return direction(
+            graph.nodes[indices[max(0, position - 1)]],
+            graph.nodes[indices[min(len(indices) - 1, position + 1)]],
+        )
+
+    def too_parallel(heading: Point, across: Point) -> bool:
+        return abs(heading[0] * across[1] - heading[1] * across[0]) < MINIMUM_CROSSING_SINE
+
     stacked: List[Tuple[int, int, int, float]] = []
     for deck, indices in enumerate(graph.deck_nodes):
         level = int(levels[deck])
-        reach = half_widths[deck] + max(half_widths) + CROSSING_MARGIN
+        reach = half_widths[deck] + widest + CROSSING_MARGIN
         for position, node in enumerate(indices):
-            heading = direction(
-                graph.nodes[indices[max(0, position - 1)]],
-                graph.nodes[indices[min(len(indices) - 1, position + 1)]],
-            )
+            heading = heading_at(indices, position)
             for distance, (other, other_position), t in index.within(graph.nodes[node], reach):
                 if other == deck or (deck, other) in joined:
                     continue
@@ -412,10 +419,8 @@ def solve_deck_network(
                     graph.nodes[lower_nodes[other_position]],
                     graph.nodes[lower_nodes[other_position + 1]],
                 )
-                if heading is not None and across is not None:
-                    sine = abs(heading[0] * across[1] - heading[1] * across[0])
-                    if sine < MINIMUM_CROSSING_SINE:
-                        continue
+                if heading is not None and across is not None and too_parallel(heading, across):
+                    continue
                 stacked.append((node, other, other_position, t))
 
     # An isolated short bridge has only its two approaches to gain height.
@@ -458,15 +463,10 @@ def solve_deck_network(
             for position, node in enumerate(indices):
                 if node in anchors:
                     continue
-                heading = direction(
-                    graph.nodes[indices[max(0, position - 1)]],
-                    graph.nodes[indices[min(len(indices) - 1, position + 1)]],
-                )
+                heading = heading_at(indices, position)
                 for _distance, (a, b, _tag), t in roads.nearby_segments(graph.nodes[node], reach):
                     across = direction(a, b)
-                    if heading is None or across is None:
-                        continue
-                    if abs(heading[0] * across[1] - heading[1] * across[0]) < MINIMUM_CROSSING_SINE:
+                    if heading is None or across is None or too_parallel(heading, across):
                         continue
                     road_point = (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
                     needed = anchor_height(*road_point) + road_thickness + clearance + deck_thickness

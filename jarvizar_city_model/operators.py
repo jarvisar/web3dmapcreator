@@ -7,6 +7,7 @@ import time
 import subprocess
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import bpy
 from bpy.types import Operator
@@ -81,9 +82,17 @@ def _bounds_from_settings(settings) -> Bounds:
     return Bounds(*values).validate()
 
 
+def _cache_root(settings) -> Path:
+    return Path(bpy.path.abspath(settings.cache_directory)).expanduser()
+
+
 def _cache_bundle(settings) -> CacheBundle:
-    cache_root = Path(bpy.path.abspath(settings.cache_directory)).expanduser()
-    return CacheBundle(cache_root, _bounds_from_settings(settings))
+    return CacheBundle(_cache_root(settings), _bounds_from_settings(settings))
+
+
+def _offline() -> bool:
+    """Whether Blender's online access preference forbids network use."""
+    return hasattr(bpy.app, "online_access") and not bpy.app.online_access
 
 
 def _transform_from_settings(settings, bounds: Bounds):
@@ -129,11 +138,7 @@ def _required_types(settings) -> tuple:
         # know which ground out over the water is real.  Runways, taxiways
         # and aprons are here too, and print with the roads.
         required.extend(INFRASTRUCTURE_TYPES)
-    ordered = []
-    for item in ALL_TYPES:
-        if item in required and item not in ordered:
-            ordered.append(item)
-    return tuple(ordered)
+    return tuple(item for item in ALL_TYPES if item in required)
 
 
 def _essential_types(settings) -> tuple:
@@ -216,7 +221,7 @@ class JARVIZAR_OT_paste_bounds(Operator):
     # runs, so without it the second click of the button would silently reapply
     # the text typed into the dialog on the first instead of reading the
     # clipboard again.
-    text: bpy.props.StringProperty(
+    text: StringProperty(
         name="Coordinates",
         description="west,south,east,north in WGS84 decimal degrees",
         default="",
@@ -283,7 +288,7 @@ class JARVIZAR_OT_download_cache(Operator):
     def execute(self, context):
         settings = context.scene.jarvizar_city_model
         try:
-            if hasattr(bpy.app, "online_access") and not bpy.app.online_access:
+            if _offline():
                 raise OvertureDownloadError(
                     "Blender online access is disabled; enable it before downloading"
                 )
@@ -363,6 +368,14 @@ def _lidar_signature(settings, bundle, transform=None):
         vertical_units='' if settings.lidar_vertical_units == 'AUTO' else settings.lidar_vertical_units)
 
 
+def _scene_named(context, name):
+    """The scene called *name*, looked up again: undo replaces every ID, so a
+    scene held across events can already have been removed."""
+    if context.scene is not None and context.scene.name == name:
+        return context.scene
+    return bpy.data.scenes.get(name)
+
+
 class JARVIZAR_OT_prepare_lidar(Operator):
     bl_idname = "jarvizar.prepare_lidar"
     bl_label = "Prepare LiDAR Buildings"
@@ -429,11 +442,25 @@ class JARVIZAR_OT_prepare_lidar(Operator):
         finally:
             type(self)._running = False
             type(self)._cancel_requested = False
-            self._settings.lidar_preparing = False
+            scene = _scene_named(context, self._scene_name)
+            if scene is not None:
+                scene.jarvizar_city_model.lidar_preparing = False
             context.window_manager.progress_end()
 
+    def cancel(self, context):
+        # Blender drops the modal handler without another event when a file
+        # is loaded or the window closes. Stop the worker rather than leave it
+        # unowned, and release Prepare and Generate for the next file.
+        try:
+            self._job.cancel()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f'LiDAR preparation could not be stopped: {exc}')
+        self.cleanup(context)
+
     def modal(self, context, event):
-        settings = self._settings
+        scene = _scene_named(context, self._scene_name)
+        # Progress for a scene deleted or renamed meanwhile has nowhere to go.
+        settings = scene.jarvizar_city_model if scene is not None else SimpleNamespace()
         if event.type == 'ESC' or type(self)._cancel_requested:
             type(self)._cancel_requested = False
             try:
@@ -453,6 +480,8 @@ class JARVIZAR_OT_prepare_lidar(Operator):
         if event.type != 'TIMER':
             return {'PASS_THROUGH'}
         if self._job.process.poll() is None:
+            # Undo restores the scene as it was before preparation started.
+            settings.lidar_preparing = True
             status = self._job.status()
             settings.lidar_preparation_status = status.get('message', 'Preparing LiDAR')
             total = max(0, int(status.get('total', 0)))
@@ -475,7 +504,8 @@ class JARVIZAR_OT_prepare_lidar(Operator):
             result = self._job.result()
             # Settings may have changed while the worker ran. Its cache stays
             # valid for the original request, never silently for a new area.
-            if context.scene != self._scene or _lidar_signature(settings, _cache_bundle(settings)) != self._signature:
+            if (scene is None or context.scene != scene
+                    or _lidar_signature(settings, _cache_bundle(settings)) != self._signature):
                 settings.lidar_preparation_status = 'Prepared previous selection/settings; prepare again for current settings'
                 self.report({'WARNING'}, settings.lidar_preparation_status)
                 return {'FINISHED'}
@@ -497,7 +527,7 @@ class JARVIZAR_OT_prepare_lidar(Operator):
                 cached = reusable_prepared(bundle.path, signature)
                 if cached is not None:
                     return self.finish(context, summarize_prepared(cached, reused=True))
-            if hasattr(bpy.app, "online_access") and not bpy.app.online_access:
+            if _offline():
                 raise ValueError("Blender online access is disabled; no current prepared result matches these settings")
             settings.lidar_preparation_status = 'Preparing LiDAR buildings... (Esc to cancel)'
             settings.lidar_progress = 0.
@@ -514,7 +544,7 @@ class JARVIZAR_OT_prepare_lidar(Operator):
             if bpy.app.background:
                 return self.finish(context, prepare_lidar(python_path, bundle, signature, refresh, **job_options))
             self._signature = signature
-            self._settings, self._scene = settings, context.scene
+            self._scene_name = context.scene.name
             self._job = LidarPreparation(python_path, bundle, signature, refresh, **job_options)
             self._timer = context.window_manager.event_timer_add(0.5, window=context.window)
             context.window_manager.modal_handler_add(self)
@@ -736,6 +766,7 @@ class JARVIZAR_OT_generate_model(Operator):
                 pond_water_thickness_mm=settings.pond_water_thickness_mm,
                 skip_ponds_and_fountains=settings.skip_ponds_and_fountains,
             )
+            slab_thickness_mm = surface_settings.surface_rise_mm + surface_settings.surface_embed_mm
 
             # Water is solved before anything else reads the height field.  The
             # elevation dataset is noisy over open water, so the terrain under
@@ -875,7 +906,7 @@ class JARVIZAR_OT_generate_model(Operator):
 
             counts.update(cut_water_land_surfaces(
                 hierarchy["land_surfaces"], water_bodies,
-                surface_settings.surface_rise_mm + surface_settings.surface_embed_mm,
+                slab_thickness_mm,
                 preserve_paved=ground_support is not None,
                 beach_rise_mm=surface_settings.surface_rise_mm if settings.taper_beaches else 0.0,
                 beach_width_mm=settings.beach_taper_width_mm,
@@ -948,13 +979,13 @@ class JARVIZAR_OT_generate_model(Operator):
                     # the same, and a road deleted in Blender leaves no hole.
                     counts.update(defer_road_cut(
                         hierarchy["land_surfaces"],
-                        surface_settings.surface_rise_mm + surface_settings.surface_embed_mm,
+                        slab_thickness_mm,
                     ))
                 elif settings.generate_land_surfaces:
                     progress(.50, "Cutting road footprints")
                     counts.update(cut_road_footprints(
                         hierarchy["land_surfaces"], hierarchy["surface_roads"],
-                        surface_settings.surface_rise_mm + surface_settings.surface_embed_mm,
+                        slab_thickness_mm,
                         progress_callback=lambda f: progress(0.50 + f * 0.05),
                     ))
             progress(0.55, "Placing trees")
@@ -1112,7 +1143,7 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
     bl_options = {"REGISTER"}
 
     filename_ext = ".3mf"
-    filter_glob: bpy.props.StringProperty(default="*.3mf", options={"HIDDEN"})
+    filter_glob: StringProperty(default="*.3mf", options={"HIDDEN"})
 
     @classmethod
     def poll(cls, context):
@@ -1137,6 +1168,10 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
         from .data.export_3mf import part_name_map
         from .data.export_plates import PRINTERS, PlateWriter
 
+        def plate_parts(objects, depsgraph):
+            names = part_name_map(objects)
+            return ((names[obj.name], *part_arrays(obj, depsgraph)) for obj in objects)
+
         printer = PRINTERS[settings.bambu_printer]
         try:
             with export_geometry(context, objects) as (parts, stats, opening):
@@ -1157,16 +1192,13 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
                                 depsgraph = context.evaluated_depsgraph_get()
                                 part_count = 0
                                 for section, section_parts in sections:
-                                    names = part_name_map(section_parts)
-                                    writer.add_plate(section.name, ((names[obj.name], *part_arrays(obj, depsgraph))
-                                                                    for obj in section_parts), section.bounds)
+                                    writer.add_plate(section.name, plate_parts(section_parts, depsgraph),
+                                                     section.bounds)
                                     part_count += len(section_parts)
                             export_status = f"{writer.plate_count} Bambu plates"
                         else:
                             depsgraph = context.evaluated_depsgraph_get()
-                            names = part_name_map(parts)
-                            writer.add_plate("Map", ((names[obj.name], *part_arrays(obj, depsgraph))
-                                                     for obj in parts))
+                            writer.add_plate("Map", plate_parts(parts, depsgraph))
                             part_count = len(parts)
                             export_status = "one Bambu plate"
                         writer.close(staged)
@@ -1202,7 +1234,7 @@ class JARVIZAR_OT_cache_storage(Operator):
     def invoke(self, context, event):
         from .external.lidar_storage import CacheStorage
         try:
-            self._root = Path(bpy.path.abspath(context.scene.jarvizar_city_model.cache_directory)).expanduser().resolve()
+            self._root = _cache_root(context.scene.jarvizar_city_model).resolve()
             if not self._root.is_dir():
                 raise ValueError('Cache folder does not exist yet')
             self._limits = storage_limits()

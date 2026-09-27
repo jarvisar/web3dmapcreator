@@ -27,7 +27,6 @@ from ..blender.mesh_utils import (
     MeshBuilder,
     projected_polygon_rings,
     tree_mesh_datablock,
-    tree_solid_geometry,
 )
 from ..data.geojson import feature_id
 from ..data.land import (
@@ -39,7 +38,7 @@ from ..data.land import (
     tree_point_coordinates,
 )
 from .planar import point_in_polygon, ring_bounds, signed_area
-from .tree_geometry import TreeClearance
+from .tree_geometry import TreeClearance, tree_solid_geometry
 from .tree_road_overlap import tree_road_footprints, TREE_ROAD_CLEARANCE_MM
 
 
@@ -273,9 +272,6 @@ def generate_trees(
                     remaining = settings.maximum_trees - len(placements)
                     if remaining <= 0:
                         break
-
-    if len(placements) > settings.maximum_trees:
-        placements = placements[: settings.maximum_trees]
 
     total = max(1, len(placements))
     # Trees grow directly from terrain, even beneath raised land/road slabs.

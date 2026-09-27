@@ -128,13 +128,17 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
         lift = max(0.0, minimum_height - (terrain + vertical(finished_height) - terrain_top))
     builder = MeshBuilder("LIDAR_BUILDING")
     top = terrain + vertical(base_height) + lift
+    # Tiers, roof prisms and the envelope start this far below their nominal
+    # base, overlapping the solid beneath them.
+    overlap = min(0.02, vertical(base_height) * 0.1)
+
+    def floor(x, y):
+        return min(heightfield.height_mm(x, y) - embed, top - 0.05)
     for rings in outlines:
         width = effective_width(rings[0])
         if width < minimum_width or (maximum_slenderness > 0 and width < exempt_width
                                      and vertical(total_height) > width * maximum_slenderness):
             return None
-        def floor(x, y):
-            return min(heightfield.height_mm(x, y) - embed, top - 0.05)
         dense = [clean_ring(densify_ring(ring, spacing), EPSILON) for ring in rings]
         if not builder.add_prism([[(x, y, floor(x, y), top) for x, y in ring] for ring in dense],
                                  refine=(spacing, lambda x,y: (floor(x,y), top))):
@@ -147,7 +151,7 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
         # A tier outside the map crop is simply absent; everything retained is
         # still nested inside the cropped supporting outline.
         for rings in rings_list:
-            bottom = terrain + vertical(tier["bottom_m"]) + lift - min(0.02, vertical(base_height) * 0.1)
+            bottom = terrain + vertical(tier["bottom_m"]) + lift - overlap
             top_tier = terrain + vertical(tier["top_m"]) + lift
             if not builder.add_flat_prism(rings[0], bottom, top_tier, rings[1:]):
                 return None
@@ -167,7 +171,7 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
                         bounds.max_x_mm, bounds.max_y_mm, epsilon=1e-10)
                     if clipped:
                         caps.append([(x, y, height(x, y)) for x, y in clipped])
-        bottom = terrain+vertical(base_height)+lift-min(.02, vertical(base_height)*.1)
+        bottom = top - overlap
         if caps:
             # A published corner is rounded to nine decimals in degrees, about
             # a tenth of a millimetre on the ground; the outline it is tested
@@ -181,7 +185,7 @@ def measured_builder(feature, record, transform, heightfield, ground, vertical,
             roof_count += len(caps)
         joined = True
     for surface, height, polygons in ([] if joined else projected_surfaces):
-        bottom = terrain + vertical(surface['bottom_m']) + lift - min(0.02, vertical(base_height)*0.1)
+        bottom = terrain + vertical(surface['bottom_m']) + lift - overlap
         for rings in polygons:
             prism = []
             for ring in rings:

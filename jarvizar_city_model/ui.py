@@ -19,6 +19,7 @@ from .config import preferred_python_path
 from .data.bounds_presets import load_presets
 from .data.projection import WGS84_SEMI_MAJOR_AXIS_M, WGS84Bounds
 from .blender.generation_modal import active_session, is_generating
+from .operators import JARVIZAR_OT_prepare_lidar
 
 
 def _wrapped(layout, text, region_width, limit=0, icon="NONE"):
@@ -49,6 +50,12 @@ def _labelled(layout, data, name, text=""):
     column = layout.column(align=True)
     column.label(text=text or data.bl_rna.properties[name].name)
     column.prop(data, name, text="")
+
+
+def _lidar_preparing(settings):
+    # The flag is saved with the scene, so a file saved mid-preparation would
+    # reopen with these rows locked; it counts only while a job is running.
+    return settings.lidar_preparing and JARVIZAR_OT_prepare_lidar._running
 
 
 def _lidar_progress(layout, settings, region_width):
@@ -152,7 +159,7 @@ class JARVIZAR_PT_city_model(Panel):
         settings = context.scene.jarvizar_city_model
         width = context.region.width
 
-        if settings.lidar_preparing:
+        if _lidar_preparing(settings):
             _lidar_progress(layout, settings, width)
 
         session = active_session()
@@ -439,7 +446,7 @@ class JARVIZAR_PT_lidar(_SubPanel, Panel):
         row = layout.row()
         row.scale_y = 1.2
         row.operator("jarvizar.prepare_lidar", icon="IMPORT")
-        if settings.lidar_preparing:
+        if _lidar_preparing(settings):
             layout.label(text='Preparing in background; Esc cancels', icon='TIME')
         else:
             layout.label(text="Prepare after caching buildings")
@@ -450,7 +457,7 @@ class JARVIZAR_PT_lidar(_SubPanel, Panel):
             _wrapped(offer, settings.lidar_laz_offer_summary
                      or settings.lidar_laz_offer_details.split('\n', 1)[0], width, limit=8)
             row = offer.row()
-            row.enabled = not settings.lidar_preparing
+            row.enabled = not _lidar_preparing(settings)
             row.operator('jarvizar.prepare_lidar', text='Download Offered Tiles', icon='IMPORT').laz_approval = settings.lidar_laz_offer_token
             _wrapped(offer, 'Optional; recovery is not guaranteed. Skip to keep current streamed coverage.', width)
             shown = settings.show_laz_offer_details
@@ -495,7 +502,7 @@ class JARVIZAR_PT_lidar_sources(_SubPanel, Panel):
         for name in ("lidar_source_url", "lidar_stac_urls", "lidar_manifest_url", "lidar_vertical_units"):
             _labelled(layout, settings, name)
         row = layout.row()
-        row.enabled = not settings.lidar_preparing
+        row.enabled = not _lidar_preparing(settings)
         row.prop(settings, "lidar_download_workers")
 
 

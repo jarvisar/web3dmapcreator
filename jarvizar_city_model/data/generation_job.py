@@ -124,14 +124,18 @@ class GenerationJob:
         self.cleaned = True
         atexit.unregister(self._shutdown)
 
-    def _shutdown(self):
-        """Normal application exit: only OS/process operations, never bpy."""
-        if self.cleaned:
-            return
-        self.cancel()
+    def wait_or_kill(self):
+        """Wait briefly for the worker to exit, killing it if it does not."""
         try:
             self.process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=2)
+
+    def _shutdown(self):
+        """Normal application exit: only OS/process operations, never bpy."""
+        if self.cleaned:
+            return
+        self.cancel()
+        self.wait_or_kill()
         self.cleanup()

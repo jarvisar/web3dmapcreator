@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from .overture import _external_script, last_json_line
 from ..external.lidar_records import (
     ALGORITHM_VERSION, MAX_RESULT_BYTES, RESULT_FILE, RESULT_FORMAT_VERSION, validate_records,
 )
@@ -102,7 +103,7 @@ class LidarPreparation:
         self.stdout_path, self.stderr_path = directory/'stdout.log', directory/'stderr.log'
         request = directory/'request.json'
         request.write_text(json.dumps(signature), encoding='utf-8')
-        helper = Path(__file__).resolve().parents[1] / 'external' / 'download_lidar.py'
+        helper = _external_script('download_lidar.py')
         command = [str(python_path), str(helper), '--bundle', str(bundle.path),
                    '--request', str(request), '--progress', str(self.progress_path),
                    '--download-workers', str(download_workers), '--parent-pid', str(os.getpid())]
@@ -139,10 +140,9 @@ class LidarPreparation:
         return {**self.last_progress, 'elapsed': max(0., time.monotonic()-self.started)}
 
     def result(self):
-        from .overture import _last_json_line
         try:
             code = self.process.wait()
-            payload = _last_json_line(self.stdout_path.read_text(encoding='utf-8', errors='replace'))
+            payload = last_json_line(self.stdout_path.read_text(encoding='utf-8', errors='replace'))
             if code or not payload.get('ok'):
                 raise ValueError(payload.get('detail') or self.stderr_path.read_text(encoding='utf-8', errors='replace')[-1000:] or 'LiDAR preparation failed')
             self.bundle.merge_manifest({'lidar': payload})

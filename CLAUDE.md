@@ -115,7 +115,10 @@ are errors; missing/stale/invalid optional LiDAR falls back to source buildings.
 
 Overture and DEM downloads use blocking `subprocess.run`; the UI waits. LiDAR
 uses a modal timer and an external worker in interactive Blender, with a progress
-panel and Esc/button cancellation. In background Blender, preparation waits synchronously.
+panel and Esc/button cancellation. A file load or window closure calls its `cancel()`,
+which stops the worker. Undo replaces every ID, so the operator looks its scene
+up by name on each event and re-asserts `lidar_preparing`; the saved flag counts
+in the UI only while a job runs. In background Blender, preparation waits synchronously.
 Interactive model generation also uses a modal timer and an offline background
 Blender process, launched from the same executable and exact add-on package.
 It runs all geometry on that process's main thread; no Blender API is accessed
@@ -1112,7 +1115,7 @@ Select focused checks based on the change:
 
 | Area | Existing checks under `tests/` |
 | --- | --- |
-| Core pipeline | `test_*.py`, `blender_smoke.py`; smoke exercises merged/unmerged geometry, heights, roofs, and cleanup. `blender_generation_transaction.py` checks rollback/ownership. `blender_generation_modal.py` exercises real worker cancellation at each phase, import, retries and cleanup; windowed `blender_generation_gui.py` checks real Esc/Cancel and event-loop responsiveness. |
+| Core pipeline | `test_*.py`, `blender_smoke.py`; smoke exercises merged/unmerged geometry, heights, roofs, and cleanup. `blender_generation_transaction.py` checks rollback/ownership. `blender_generation_modal.py` exercises real worker cancellation at each phase, import, retries and cleanup; windowed `blender_generation_gui.py` checks real Esc/Cancel and event-loop responsiveness; windowed `blender_lidar_modal_gui.py` (`--enable-event-simulate`) checks LiDAR progress across undo and worker shutdown on file load. |
 | Water / supports | `blender_water_cut.py`, `blender_ground_support.py`, `blender_pond_basins.py`, `blender_basin_support.py`, `blender_water_surfaces.py`, `blender_visible_supports.py`, `blender_paved_supports.py`; cached `blender_water_cut_live.py`, `blender_coastline_live.py`, `blender_pond_basins_live.py` |
 | Roads / surface ownership | `test_road_network.py`, `test_airports.py`, `blender_airport_paving.py`, `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_road_cut_export.py`, `blender_shore_roads.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
 | Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_envelope.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
@@ -1152,14 +1155,18 @@ under the add-on directory only, excluding bytecode; keep experiments elsewhere.
 
 After add-on changes and relevant passing checks, run `scripts/install_addon.ps1`
 as described in [install-addon](.claude/commands/install-addon.md) and report its
-three summary lines only; no file listings, tree diffs, or extra Blender sessions.
+summary lines only; no file listings, tree diffs, or extra Blender sessions. It
+installs into Blender 3.6 and, as an extension, into the newest Blender 4.2+.
 Blender may stay open. A documentation-only change outside
 the packaged add-on does not require rebuilding/reinstalling identical code.
 A running Blender keeps its imported copy until restarted. Never force-close an
 unsaved user session.
 
 The classic install is normally under
-`%APPDATA%\Blender Foundation\Blender\3.6\scripts\addons\jarvizar_city_model`.
+`%APPDATA%\Blender Foundation\Blender\3.6\scripts\addons\jarvizar_city_model`,
+the extension under
+`%APPDATA%\Blender Foundation\Blender\<version>\extensions\user_default\jarvizar_city_model`.
+Launch Blender 4.2+ from PowerShell; under Git Bash, 5.2 fails to load `sycl8.dll`.
 Verify actual installed paths/preferences/dependencies, not old installation notes.
 
 [README.md](README.md) covers user setup/use. Topic references:
