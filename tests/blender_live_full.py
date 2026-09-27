@@ -68,6 +68,9 @@ def main() -> int:
     settings.terrain_source = "DEM"
     settings.terrain_resolution = 192
     settings.generate_border_rim = True
+    settings.generate_bridges = True
+    settings.generate_trees = True
+    settings.tidy_road_network = True
     settings.scale_mode = "FIXED"
     settings.mm_per_metre = 0.07
 

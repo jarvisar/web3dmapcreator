@@ -19,14 +19,14 @@ The current release generates a complete miniature:
   space and nothing is extruded down to the build plate;
 - **Land cover** — parks, grass, gardens, forest floor, plazas, sand, and rock —
   as thin slabs that follow the ground and stop at the water's edge;
-- **Trees**, from Overture's individually mapped tree points plus a
+- **Trees** (off by default), from Overture's individually mapped tree points plus a
   deterministic scatter inside mapped forest polygons and, by default, the
   coarser satellite forest cover that fills in wooded hillsides;
 - **Roads and railways**, buffered from centerlines at rule-resolved widths and
   draped onto the terrain, with railway bridges read from `rail_flags`, and
   with sidewalks and crossings left out by default so a street prints as one
   ribbon rather than three;
-- **Bridges and overpasses**, solved as one network so every fork and joint
+- **Bridges and overpasses** (off by default), solved as one network so every fork and joint
   has one height, continuing the road surface where they meet it, lifted two
   layers clear of whatever they cross at a real road grade, and standing on
   piers that reach real ground -- the bank or the causeway;
@@ -241,7 +241,7 @@ before partitioning. No connectors or seam clearance are added. See
 3. Enable the features you want with the checkboxes on the sub-panel headers
    below the main panel (**Terrain**, **Parks and Land Cover**, **Water**,
    **Roads**, **Bridges**, **Trees**, **Buildings**); each sub-panel holds
-   that feature's settings. Each feature only downloads the Overture types it
+   that feature's settings. **Bridges** and **Trees** start off. Each feature only downloads the Overture types it
    actually needs.
 4. Under **Setup and Cache**, set **Cache Directory**. The **Overture Python**
    path comes from add-on preferences; only fill the override field to change
@@ -480,7 +480,7 @@ carriageways of a divided street, the cycle track laid along it, footways that
 are sidewalks in all but tag, and every fragment of a street that was split at
 a tag change. Buffered one by one those print as a double-wide ribbon with a
 lens-shaped seam where the two overlap, and as ribbons too close together for
-a strip of terrain to print between them. **Tidy Road Network** (on by
+a strip of terrain to print between them. **Tidy Road Network** (off by
 default) ranks every piece by class -- motorway down to footway, rail between
 the streets and the service roads -- welds pieces that meet end to end into
 routes, and drops a route that runs close to *and* parallel with a more

@@ -501,6 +501,11 @@ def main():
             settings.terrain_source = "DEM"
             settings.terrain_resolution = 64
             settings.generate_border_rim = True
+            # Bridges, trees and the road tidy are off by default; the
+            # checks below assert all three.
+            settings.generate_bridges = True
+            settings.generate_trees = True
+            settings.tidy_road_network = True
             # The checks below read per-building metadata and per-tree
             # placement, so the first pass keeps every feature its own object;
             # the merged output is checked in a second pass at the end.

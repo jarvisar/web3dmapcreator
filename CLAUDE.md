@@ -37,8 +37,8 @@ retain explicitly stored values when defaults change.
 | Ponds / fountains | Recess enabled, depth 1.0 mm, water thickness 0.8 mm (0.2 mm below the lowest sampled bank) |
 | Trees | Trunkless three-tier solids, minimum width 1.1 mm / height 1.6 mm; 26 m forest spacing, 18% variation, 0.2 mm crown clearance |
 
-All main feature toggles, including Water, default on; the border rim defaults
-off. Disable **Water** for the open-river appearance: terrain cuts and pond
+Main feature toggles, including Water, default on except **Bridges** and
+**Trees**; the border rim and **Tidy Road Network** also default off. Disable **Water** for the open-river appearance: terrain cuts and pond
 recesses remain. Preserve the fixed print-scale default. `FIT` is an existing
 optional mode; do not add automatic build-plate fitting. The export frame
 provides cropping without changing the geographic scale.
@@ -452,7 +452,7 @@ colors, overwriting manual palette edits.
   Buffer in metres, constrain printed width, and clean in millimetres. Tight
   turns fall back to overlapping convex pieces.
 - `geometry/road_network.py` (pure) tidies the clipped pieces before crossing
-  recovery when **Tidy Road Network** is on (default): rank by class (rail
+  recovery when **Tidy Road Network** is on (default off): rank by class (rail
   between residential and service), weld pieces of one class into routes for
   decisions only (pieces keep their attributes): at 2-valent nodes always, and
   through junctions along the single continuation within 25° of the heading,
@@ -784,7 +784,16 @@ as a shared envelope cap or legacy prisms; raw points never become Blender meshe
   (`_neighbour_facades`), unless its raised mass reaches behind the band
   (a parapet, front wall or light-court wall is ours; trimming its stretches
   notched it). Away from mapped neighbours nothing changes, so a false front
-  on a street stays. Returns filed under a vegetation class (3–5) are
+  on a street stays. A sparse survey needs the rim rule deeper: Delaware
+  Valley 2015 scans a facade with a couple of returns a cell from anywhere
+  down the wall, and where an outline runs a metre outside it two rows of
+  the band dip (Two Penn Center hung icicles and slots the height of the
+  wall). A patch of that band more than two cells below every cell behind
+  it, shorter than a nozzle's width (`NOTCH_MM`, 0.4 mm) along the outline
+  and somewhere deeper than twice the band, takes that roof's height
+  (`_rim_notches`). A dip going on behind the band, a ledge longer than
+  that, or a roof pitched less steeply than the rim rule's two cells a cell
+  (an eave between dormers) stays. Returns filed under a vegetation class (3–5) are
   admitted up to the band above the structural envelope and join each
   cell's upper return, but **never lower a cell the building classes
   observed**: the Cook County survey files most of every tower's facade as

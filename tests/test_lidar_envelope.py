@@ -122,6 +122,47 @@ class UpperEnvelopeTests(unittest.TestCase):
         self.assertAlmostEqual(height_at(record, 3, 18), 30, delta=.6)
         self.assertAlmostEqual(height_at(record, 18, 10), 20, delta=.6)
 
+    def test_sparse_facade_band_does_not_hang_icicles_down_the_wall(self):
+        # A survey with about two returns a cell, the outline drawn 1.1 m
+        # outside the north wall: the band beyond the roof holds only a few
+        # of the facade's returns a metre, from anywhere down the wall, and
+        # dipped along the outline in notches that hung icicles down it
+        # (Philadelphia's Two Penn Center).
+        noise = np.random.default_rng(7)
+        footprint = box(0, 0, 40, 24)
+        xx, yy = np.meshgrid(np.arange(.1, 40, .36), np.arange(.1, 22.9, .36))
+        xy = np.column_stack((xx.ravel(), yy.ravel()))+noise.uniform(-.12, .12, (xx.size, 2))
+        roof = np.column_stack((xy, np.full(len(xy), 60.)))
+        wall = np.column_stack((noise.uniform(0, 40, 240), noise.uniform(22.8, 23.3, 240),
+                                noise.uniform(3, 59, 240)))
+        record, reason = fit_roof_envelope(footprint, roof, 1.5, (.07, .077), np.concatenate((roof, wall)))
+        self.assertIsNotNone(record, reason)
+        self.assertGreater(min(height_at(record, x, 23.9) for x in np.arange(.5, 39.6, .25)), 58)
+
+    def test_ledge_light_well_and_eave_along_the_outline_are_not_notches(self):
+        # A ledge the length of a side before a setback tower, and a light
+        # well going on behind the band, are geometry.
+        footprint = box(0, 0, 40, 30)
+        tower = box(0, 0, 40, 28.8).difference(box(18, 0, 21, 7))
+        record = self.fit(footprint, self.cloud(
+            footprint, lambda x, y: np.where(contains_xy(tower, x, y), 60., 20.)))
+        for x, y in ((10, 29.6), (30, 29.6), (19.5, 1)):
+            self.assertAlmostEqual(height_at(record, x, y), 20, delta=.6)
+        # So is an eave: dormers cut this one into stretches shorter than a
+        # notch, but a roof pitched at 45 degrees falls only 1.5 m across the
+        # band.
+        footprint = box(0, 0, 30, 20)
+        dormers = [box(x, 0, x+1, 6) for x in (4, 9, 14, 19, 24)]
+
+        def pitched(x, y):
+            z = 30+np.minimum(y, 6.)
+            for dormer in dormers:
+                z[contains_xy(dormer, x, y)] = 36.
+            return z
+        record = self.fit(footprint, self.cloud(footprint, pitched))
+        for x in (2, 7, 12, 17, 22, 27):
+            self.assertLess(height_at(record, x, .3), 31.2)
+
     def test_isolated_high_return_is_removed_but_supported_cap_survives(self):
         footprint = box(0, 0, 30, 30)
         cap = box(12, 12, 18, 18)

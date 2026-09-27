@@ -16,7 +16,9 @@ collapsed faces are clipped to the footprint, so the cap covers the outline
 exactly. Nothing detects tiers, setbacks or architecture: the returns alone
 say where the walls are. The one thing mapped data decides is whose wall
 stands on a shared outline: a taller neighbour's facade inside ours is not
-our roof. Native dependencies stay in the preparation worker.
+our roof. Along the outline, a notch narrower than a nozzle is a facade
+scanned too sparsely to show its top. Native dependencies stay in the
+preparation worker.
 """
 import math
 import warnings
@@ -63,6 +65,9 @@ FAIR_REACH_MM = .14
 # scatter of its returns), and its returns reach the second inside ours.
 NEIGHBOUR_FACADE_M = 4.
 FACADE_BAND_M = 1.5
+# Printed length along the outline under which a dip in that band is a notch,
+# not geometry: a nozzle's width; see `_rim_notches`.
+NOTCH_MM = .4
 # Printed millimetres per ground metre (horizontal, vertical) when none is given.
 DEFAULT_SURFACE_SCALE = (.07, .077)
 
@@ -368,6 +373,18 @@ def _reaches_core(seeds, heights, level, within, core):
     return reached
 
 
+def _facade_band(within, pitch):
+    """The band's depth in cells and the core of the outline behind it."""
+    band = max(1, int(round(FACADE_BAND_M/pitch)))
+    core = within.copy()
+    for _ in range(band):
+        shrunk = core.copy()
+        for offset in CROSS:
+            shrunk &= np.roll(core, offset, axis=(0, 1))
+        core = shrunk
+    return band, core
+
+
 def _neighbour_facades(heights, within, zone, pitch, rise):
     """Bring a mapped neighbour's facade standing inside our outline down to our roof.
 
@@ -387,13 +404,7 @@ def _neighbour_facades(heights, within, zone, pitch, rise):
     mapped neighbours nothing changes, so a false front on a street keeps
     standing (half a metre thick, 8 m above a Magic Kingdom roof).
     """
-    band = max(1, int(round(FACADE_BAND_M/pitch)))
-    core = within.copy()
-    for _ in range(band):
-        shrunk = core.copy()
-        for offset in CROSS:
-            shrunk &= np.roll(core, offset, axis=(0, 1))
-        core = shrunk
+    band, core = _facade_band(within, pitch)
     edge = within & ~core & zone
     if not edge.any() or not core.any():
         return heights
@@ -404,7 +415,56 @@ def _neighbour_facades(heights, within, zone, pitch, rise):
     return np.where(facade, roof, heights)
 
 
-def _component_surface(polygon, samples, pitch, window, secondary=(), zone=None, rise=None):
+def _rim_notches(heights, within, pitch, width):
+    """Fill the notches of the band along the outline, patches shorter than `width`.
+
+    A sparse survey scans a facade with a few returns a cell, from anywhere
+    down the wall, and where the outline runs a little outside the wall they
+    are all the last cells hold. Philadelphia's Two Penn Center averaged 1.9
+    returns a cell, and along two rows of its outline the rank median read a
+    storey, half the wall or the sidewalk; the rim rule lifts only the
+    outermost row, to its highest neighbour, which was often as low. The cap
+    showed the dips as icicles hanging down the facade and as slots the
+    height of the wall. A patch of band cells more than two cells below
+    every cell behind the band near it, shorter than `width` along the
+    outline and deeper somewhere than twice the band, takes the height of
+    that roof. A dip that goes on behind the band (a light well, a
+    courtyard's mouth, a lower wing) is not below the roof behind it; one
+    longer than `width` (a ledge before a setback tower, a podium's edge) is
+    geometry; a roof sloping less steeply than the rim rule's two cells a
+    cell falls less than twice the band across it. All of them stay.
+    """
+    band, core = _facade_band(within, pitch)
+    edge = within & ~core
+    if not edge.any() or not core.any():
+        return heights
+    roof = -_reach_max(np.where(core, -heights, -np.inf), 2*band)
+    low = edge & np.isfinite(roof) & (heights < roof-2*pitch)
+    longest = max(1, int(round(width/pitch)))
+    nx, ny = heights.shape
+    filled, seen = heights.copy(), np.zeros(low.shape, dtype=bool)
+    for i, j in zip(*np.nonzero(low)):
+        if seen[i, j]:
+            continue
+        seen[i, j] = True
+        stack, cells = [(i, j)], []
+        while stack:
+            a, b = stack.pop()
+            cells.append((a, b))
+            for p in range(max(a-1, 0), min(a+2, nx)):
+                for q in range(max(b-1, 0), min(b+2, ny)):
+                    if low[p, q] and not seen[p, q]:
+                        seen[p, q] = True
+                        stack.append((p, q))
+        rows, cols = np.array(cells).T
+        # A notch is short along the outline, whichever way that runs.
+        if (max(rows.max()-rows.min(), cols.max()-cols.min()) < longest
+                and (roof[rows, cols]-heights[rows, cols]).max() > 2*band*pitch):
+            filled[rows, cols] = roof[rows, cols]
+    return filled
+
+
+def _component_surface(polygon, samples, pitch, window, secondary=(), zone=None, rise=None, notch=None):
     """Upper returns, rank filtered, over one connected footprint component.
 
     `secondary` returns (a vegetation class) join each cell's upper return
@@ -446,6 +506,8 @@ def _component_surface(polygon, samples, pitch, window, secondary=(), zone=None,
     heights = np.where(rim & (highest-heights > 2*pitch), highest, heights)
     if zone is not None:
         heights = _neighbour_facades(heights, within, contains_xy(zone, gx, gy), pitch, rise)
+    if notch:
+        heights = _rim_notches(heights, within, pitch, notch)
     return _fill(heights, within), raster, observed
 
 
@@ -564,7 +626,7 @@ def _ring_area(ring):
 
 
 def _envelope(components, observed, secondary, pitch, window, tolerance, budget, threshold, fairing,
-              zone=None):
+              zone=None, notch=None):
     """The clipped cap faces of every component, and the fit diagnostics."""
     rings, faces, cells, admitted, residuals = [], 0, 0, 0, []
     total = sum(polygon.area for polygon in components)
@@ -579,7 +641,7 @@ def _envelope(components, observed, secondary, pitch, window, tolerance, budget,
             extra = secondary[keep]
             usable = np.concatenate((observed, extra))
         heights, raster, seen_cells = _component_surface(polygon, observed, pitch, window, extra,
-                                                         zone=zone, rise=tolerance)
+                                                         zone=zone, rise=tolerance, notch=notch)
         cells += int(seen_cells.sum())
         # Comparing an upper envelope to individual returns measures the
         # building, not the reconstruction: under one facade cell the returns
@@ -709,7 +771,8 @@ def fit_roof_envelope(footprint, samples, cell, scale=DEFAULT_SURFACE_SCALE, bou
         # the error that merges them scales with the pitch squared.
         surfaces, faces, cells, admitted, residuals = _envelope(
             components, observed, secondary, pitch, window, tolerance, budget,
-            COLLAPSE_TOLERANCE*pitch*pitch, (FAIR_WINDOW_MM/scale[0], FAIR_REACH_MM/scale[0]), zone)
+            COLLAPSE_TOLERANCE*pitch*pitch, (FAIR_WINDOW_MM/scale[0], FAIR_REACH_MM/scale[0]), zone,
+            NOTCH_MM/scale[0])
         if len(surfaces) > MAX_ENVELOPE_FACETS:
             raise UnsupportedFit('upper surface facet budget')
         # Publication rounds heights to the millimetre-scale precision this

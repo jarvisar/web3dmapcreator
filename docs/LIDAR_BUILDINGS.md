@@ -485,6 +485,95 @@ above the reference's roofs on the buildings we do measure; the 0.8 mm
 minimum height lifts the rest).
 Lowering **Minimum Building Footprint** is a setting, not a code change.
 
+### Notches along a sparsely scanned facade (algorithm 29, 0.25.8)
+
+Second Philadelphia pass, on 48 buildings the first pass did not look at
+(named landmarks and the largest footprints across five height bands), and
+a fresh Prepare of western Chicago (Willis Tower to the Merchandise Mart,
+235 buildings, none of the usual Loop set), both beside the Micropolitan
+models (`scratchpad/micropolitan_compare/philly2`, README). Chicago matched
+closely. Philadelphia's massing matched too; the visible defect was icicles:
+teeth hanging down facades from the roof edge and slots the height of a
+wall (Two Penn Center, 1515 Market, Four and Five Penn Center, 1900 Arch
+Street, the String Theory school, the Masonic Temple), where Micropolitan's
+walls are clean.
+
+The cause is the survey's density, not the collapse: the uncollapsed raster
+already had them. Delaware Valley 2015 gives about two returns a 0.5 m cell
+on these towers (1.7-2.7; 84-95% of cells hold one) against five to twenty
+for Cook County 2017, and the pitch rule grids both at 0.5 m. Where an
+outline runs a metre outside a wall, its last two rows hold no roof, only a
+few of the facade's returns from anywhere down the wall, and the rank median
+there reads a storey, half the wall or the sidewalk, in runs a few cells
+long. The rim rule lifts only the outermost row, to its highest neighbour,
+which is usually as low (and of a three-cell run it lifts the ends and
+leaves the middle as a one-cell icicle).
+
+`_rim_notches` takes the same 1.5 m band as the neighbour rule. A patch of
+it (8-connected cells) more than two cells below every cell behind the band
+near it (the lowest core cell within twice the band) is a notch when it is
+shorter along the outline than a nozzle's width (`NOTCH_MM`, 0.4 mm printed,
+5.7 m at the default scale) and somewhere deeper than twice the band (3 m);
+it takes the height of that roof. What stays: a dip that goes on behind the
+band (a light well, a courtyard's mouth, a lower wing, whose roof behind is
+itself low); a ledge longer than a nozzle (Trump Tower's podium ledges are
+25-35 m); and any roof pitched less steeply than the rim rule's two cells a
+cell, which falls less than 3 m across the band (the unit test's 45° eave cut
+into 4 m stretches by dormers). Returns are still not filtered.
+
+Rejected on the way:
+
+- A run-based closing along grid lines (a run of low cells bounded by
+  higher cells on a line takes the lower bound): it leaves notches that
+  reach a corner, and where a tower's wall stands inside a long ledge and
+  jitters between rows it filled the inner row's gaps, narrowing a real
+  ledge (Trump's rim-sag number doubled with nothing visible). Regression
+  mean sag rose 1.82% → 1.90%.
+- A 0.3 mm limit (half the fairing window): the longest merged icicles of
+  Two Penn Center and one other tower are ten cells, one over it.
+- No depth test: lifted that 45° eave by 0.8 m.
+
+Evidence:
+
+- 14 dumped Philadelphia towers: rim sag (outline length more than 3 m below
+  the cap 1.5 m inside) 3.04% → 1.01%; over 2%: 8 → 2. Close-ups beside the
+  reference: Two Penn Center, 1515 Market, Four Penn Center, the String
+  Theory school and a tower's crown comb come out with clean walls; Kennedy
+  House's and Suburban Station's real recessed bays stay.
+- Regression dumps (85: Philadelphia, the Chicago Loop set, West Loop,
+  Magic Kingdom, Miami) with production neighbour lists: 39 byte-identical,
+  no fit failed; rim sag 1.82% → 1.40%, over 2%: 27 → 21. The largest change
+  is 16 m² moving more than 1 m (a Chicago tower's icicles filled); nowhere
+  does more than 2.6 m² drop more than 5 m (walls the collapse placed a cell
+  over). Five Penn Center loses all its icicles; the castle, Chase's flare,
+  Title's crown fins, Trump's terraces and the Magic Kingdom roofs look the
+  same.
+- 20 Philadelphia churches and City Hall (steep roofs, steeples, mansards
+  with dormers): 16 change; renders show City Hall's pavilions and every
+  steeple unchanged, icicles gone from the Masonic Temple and St. John the
+  Evangelist; the Wesley AMEZ front is as jumbled before as after.
+- City re-measure from cached points (`philly/remeasure30.py`, `recdiff.py`):
+  Philadelphia, 1,325 of 2,357 records byte-identical; of the 1,032 that
+  change, 706 move by more than 1 m over less than 1 m², 267 gain notch fills
+  (271 m² in all) and 11 lose more than 5 m over 6 m² in all (walls the
+  collapse placed a cell over; The Shops at Liberty Place and One Liberty
+  Place look the same). Faces 645,343 → 640,399. Rim sag 1.01% → 0.48%;
+  buildings over 2%: 368 → 159, over 5%: 128 → 57. Those whose number rose
+  (by at most 2.6 points) look the same: the collapse redrew the corners of
+  real recesses. Western Chicago: 103 of 235 byte-identical, faces
+  121,810 → 121,062, rim sag 2.06% → 1.32% (over 2%: 78 → 46); the most
+  changed (the Builders Building, Heitman Center, Franklin Center, UBS,
+  Chase, CME) look the same or cleaner, Chase's flare and CME's stepped
+  corners included.
+- The rule costs nothing measurable (City Hall's fit 11.2 s → 11.4 s).
+
+Not changed: rooftop screen walls. Micropolitan draws the louvred screens
+around rooftop plant (Two Penn Center, One Parkway, Family Court) as thin
+walls around a hollow; the raster reads their few returns as spikes and the
+collapse makes tents. They are a few decimetres thick, under a nozzle.
+
+Run **Prepare LiDAR Buildings** with Refresh off, then **Generate Model**.
+
 ## Tiers: real walls inside a footprint (algorithm 20, superseded)
 
 Reconstruction algorithm 20; superseded by the edge collapse above. Run **Prepare LiDAR Buildings** with Refresh off,

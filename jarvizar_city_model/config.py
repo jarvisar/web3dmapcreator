@@ -534,7 +534,7 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
             "and short stubs that lead nowhere are removed. Streets are kept "
             "or dropped whole, never broken in the middle"
         ),
-        default=True,
+        default=False,
     )
     road_gap_mm: FloatProperty(
         name="Minimum Road Gap (mm)",
@@ -853,7 +853,7 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     generate_bridges: BoolProperty(
         name="Bridges",
         description="Raise mapped bridges as decks standing on piers",
-        default=True,
+        default=False,
     )
     generate_water: BoolProperty(
         name="Water",
@@ -871,7 +871,7 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     generate_trees: BoolProperty(
         name="Trees",
         description="Place mapped trees and scatter trees through forests",
-        default=True,
+        default=False,
     )
 
     # ------------------------------------------------------------------ cache
