@@ -1,132 +1,76 @@
 # Jarvizar City Model
 
-Jarvizar City Model is a Blender add-on that turns an area of a map into a
-3D-printable city model. It downloads buildings, roads, water and land use from
-Overture Maps and terrain from public elevation data, and builds a model sized
-for FDM printing with a 0.4 mm nozzle.
+Turn any area of the map into a multicolour 3D printable city model, right in your browser. It builds terrain, water, parks, roads and buildings from [Overture Maps](https://overturemaps.org) data and public elevation tiles, sized for FDM printing with a 0.4 mm nozzle, and exports a Bambu Studio project with one filament per colour.
 
-![Chicago Loop at the default scale, 150 x 110 mm](docs/images/preview.png)
+Visit the [GitHub Pages site](https://jarvisar.github.io/web3dmapcreator/) to use the latest version.
+
+![The Chicago Loop at the default scale, 149 x 110 mm](docs/images/preview.png)
+
+This is the web version of my Blender add-on. It runs the same generation rules, ported to TypeScript, so there's nothing to install: no Blender and no Python downloader.
+
+## How to Use
+
+1. Search for a place, pick one of the `Presets`, or drag the box on the map. Drag a corner to resize it and the round handle to rotate it.
+2. Pick a shape (rectangle, rounded, circle or hexagon) and check the printed size under `Print size`. The default scale is 0.07 mm per metre, so a 2 km wide area prints 140 mm wide.
+3. Turn layers on or off under `Layers`, and pick filament colours under `Colours`. The Bambu PLA Basic and Matte colours are built in.
+4. Click `Generate model`. The map data downloads first, which takes a few seconds for a small area.
+5. Look the model over in the 3D view, then click `Download`.
+
+Open the 3MF in Bambu Studio with `File > Open Project`. Every part already has its filament, so check the filaments against what's loaded in your AMS, recalculate the flushing volumes and slice. For other slicers, pick a PrusaSlicer project, a 3MF with colours or an STL zip under `Export`.
+
+`Copy share link` copies a link that opens the same area.
 
 ## Features
 
-- Terrain from public elevation data, with rivers, lakes and the sea cut out
-- Buildings with mapped heights and gabled, hipped, pyramid and dome roofs
-- Optional LiDAR building heights and roofs from public surveys
-- Roads, paths, railways and airports, sized to print with a 0.4 mm nozzle
-- Optional bridges on piers and optional trees
-- Parks, forest, sand, rock and paving as separate colour layers
+- Terrain from public elevation data, with rivers, lakes and the sea cut through the base as separate water parts
 - Recessed ponds and fountains
-- Fixed print scale: 0.07 mm per metre (1:14,286) by default
-- Bambu Studio project export with one filament per colour
-- STL export for other slicers, one file per colour
-- Custom colour palettes, including a single-colour palette
-- Place search, presets, and areas sized to a print or printer bed
-- Crop to a rectangle, circle or hexagon frame
-- Split large models across several plates
-- Cached downloads; generation works offline
+- Parks, forest, sand, rock and paving, each as its own colour
+- Roads, paths, railways and airport paving, widened where needed so they print with a 0.4 mm nozzle
+- Buildings from mapped heights and building parts, with gabled, hipped, skillion, pyramid and dome roofs
+- Optional bridges on piers, trees and a border rim
+- Crop to a rectangle, rounded rectangle, circle or hexagon, rotated to follow the street grid
+- Fixed print scale, or fit the model to a size
+- Large models split into sections, one per plate
+- Exports a Bambu Studio project, a PrusaSlicer project, a 3MF with colours, or STL files
+- Colour presets, including a 4-colour AMS palette and a single-colour one
+- Runs entirely in the browser. Downloaded data is cached, so changing a setting regenerates quickly
 
-## Requirements
+## Printing Tips
 
-- Blender 4.2 or newer, or Blender 3.6. Tested on Blender 3.6 and 5.2.
-- Python 3.10 or newer, for the downloader (3.11 to 3.13 recommended)
-- An internet connection for downloading data
-- 8 GB of RAM or more; large areas need more
+- The defaults are made for a 0.4 mm nozzle and 0.2 mm layers. Roads stand 0.6 mm tall and parks 0.4 mm, whole numbers of layers.
+- Every colour is one filament. One AMS holds four, and the `4-Colour AMS` preset stays within that.
+- Most of the model prints without supports. Bridges and the odd building with an overhanging upper part are the exceptions, so let the slicer add supports only where it finds them.
+- A model bigger than your bed can be split with `Multi-plate export`. The sections fit back together with no gaps or connectors.
 
-## Installation
+## Local Installation
 
-1. Download the add-on ZIP:
-   - Blender 4.2 and newer: `jarvizar_city_model-<version>-extension.zip`
-   - Blender 3.6 to 4.1: `jarvizar_city_model-<version>-blender36.zip`
-2. Install it:
-   - Blender 4.2 and newer: drag the ZIP into Blender, or use
-     **Edit > Preferences > Get Extensions**, open the menu in the top right and
-     choose **Install from Disk...**
-   - Blender 3.6 to 4.1: **Edit > Preferences > Add-ons > Install...**, then
-     enable **Object: Jarvizar City Model**
-3. In the 3D Viewport press **N** and open the **City Model** tab.
+1. Install [Node.js](https://nodejs.org) 24 or newer.
+2. Clone the repository and run `npm install`.
+3. Run `npm run dev` and open the address it prints.
 
-Install only one of the two ZIPs in a given Blender. Each Blender version keeps
-its own preferences and cache folder; after switching versions, click
-**Detect** under **Setup and Cache**, and point **Cache Directory** at the old
-folder to reuse downloads.
+`npm test` runs the unit tests and `npm run build` builds the site into `build/`. See [development](docs/DEVELOPMENT.md) for the command-line tools and how the code is laid out.
 
-### Downloader setup
-
-Map data is downloaded by a separate Python environment, outside Blender. This
-is set up once per computer.
-
-1. Install Python 3.11, 3.12 or 3.13 if it is not installed.
-   - Windows: download it from [python.org](https://www.python.org/downloads/)
-     and tick **Add python.exe to PATH** in the installer.
-   - macOS: python.org, or `brew install python@3.12`.
-   - Linux: `sudo apt install python3 python3-venv`, or your distribution's
-     equivalent.
-2. In the City Model tab, click **Set Up Downloader**.
-3. Click **Copy Setup Command**, or **Copy with LiDAR** to include the LiDAR
-   packages.
-4. Paste the command into PowerShell (Windows) or Terminal (macOS/Linux) and
-   press Enter. It takes a few minutes. On Windows you can instead click
-   **Open Setup Folder** and double-click `setup_downloader.cmd`.
-5. Back in Blender, click **Detect**, then **Test Downloader**. Every row should
-   show a check mark.
-
-Nothing is installed into Blender. The environment is created in
-`%LOCALAPPDATA%\JarvizarCityModel\downloader-venv` on Windows,
-`~/Library/Application Support/JarvizarCityModel/downloader-venv` on macOS and
-`~/.local/share/jarvizar-city-model/downloader-venv` on Linux. Add-on updates do
-not remove it. Running the setup command again updates it.
-
-Note: Blender 4.2 and newer start with online access turned off. Turn it on in
-**Edit > Preferences > System > Network > Allow Online Access**.
-
-## Usage
-
-1. Choose an area: click **Find Place** and search for a city or landmark, pick
-   one of the **Presets**, or paste coordinates in west,south,east,north order.
-2. Check the model size shown under **Print Scale**.
-3. Turn features on or off with the checkboxes on the panel headers (Terrain,
-   Parks and Land Cover, Water, Roads, Bridges, Trees, Buildings).
-4. Pick colours in the **Colours** panel, or a preset such as **4-Colour AMS**
-   or **Single Colour**.
-5. Click **Download / Cache Data**.
-6. Click **Generate Model**.
-7. Optional: click **Add Frame** to crop the model to a rectangle, circle or
-   hexagon, and edit the model in Blender.
-8. Click **Export 3MF for Bambu** and open the file in Bambu Studio with
-   **File > Open Project**, or click **Export STL** for other slicers.
-
-See the [user guide](docs/USER_GUIDE.md) for all settings.
+Pushing to `main` deploys the site with GitHub Actions. Set `Settings > Pages > Source` to `GitHub Actions` once.
 
 ## Known Issues & Limitations
 
-- Areas that cross the 180° meridian are not supported.
-- Large areas take longer to download and generate and need more memory.
-- Map data varies by city. Buildings without a mapped height use a default
-  height, and some areas have few mapped buildings.
-- Bridges are schematic: decks on evenly spaced piers, without towers, arches or
-  trusses.
-- The model is built from separate overlapping solids. Slicers join them; other
-  tools may report them as intersecting.
-- LiDAR preparation for large areas can take a long time and download several
-  GB.
-- The downloader setup has had less testing on macOS and Linux than on Windows.
-  Blender installed from Flatpak or Snap on Linux cannot run the downloader.
+- Large areas take longer and need more memory. Around 25 km² at the default scale is comfortable on a desktop browser. Phones can manage small areas.
+- An area that needs more than 300 MB of map data is refused. Make it smaller or pick fewer layers.
+- Map data varies by city. Buildings without a mapped height get a typical height for their type, and some places have few mapped buildings.
+- Bridges are schematic: decks on evenly spaced piers, without towers, arches or trusses.
+- The model is made of separate overlapping parts, one per colour. Slicers join them, but other tools may report them as intersecting.
+- The Bambu Studio project is tested in Bambu Studio 2.8. It hasn't been tested in OrcaSlicer.
+- Areas that cross the 180th meridian aren't supported.
 
-## Troubleshooting
+###### Note: The project starts from Bambu's PLA Basic and Matte presets. Check the filament types before slicing.
 
-See [troubleshooting](docs/TROUBLESHOOTING.md). When reporting a problem, click
-**Copy Support Info** under **Setup and Cache** and include the text.
+See [troubleshooting](docs/TROUBLESHOOTING.md) if something goes wrong, and [how it works](docs/HOW_IT_WORKS.md) for how each layer is built.
 
-## Data and Attribution
+## Credits
 
-Map data © OpenStreetMap contributors, Overture Maps Foundation. Elevation data
-from the AWS Terrain Tiles open dataset. See [data sources](docs/DATA_SOURCES.md)
-for the full attribution and what to include with printed models.
+Map data © OpenStreetMap contributors, Overture Maps Foundation. Elevation from the AWS Terrain Tiles open dataset. Basemap © OpenFreeMap, OpenMapTiles, OpenStreetMap contributors. See [data sources](docs/DATA_SOURCES.md) for the full attribution, and what to include with printed models.
 
-## Development
-
-See [development](docs/DEVELOPMENT.md) for building, testing and the project
-layout, and [how it works](docs/HOW_IT_WORKS.md) for how each layer is built.
+Built with React, MapLibre GL, three.js, hyparquet and Clipper2.
 
 ## License
 

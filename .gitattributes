@@ -1,4 +1,2 @@
-# Setup scripts run on other systems: sh needs LF, cmd.exe expects CRLF.
-*.sh text eol=lf
-*.cmd text eol=crlf
+# The commit hook runs under sh, which needs LF line endings.
 .githooks/* text eol=lf

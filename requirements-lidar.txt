@@ -1,3 +1,0 @@
-# Optional external downloader additions; never install into Blender Python.
-# The pins live in the add-on package, which ships them to users.
--r jarvizar_city_model/setup/requirements-lidar.txt

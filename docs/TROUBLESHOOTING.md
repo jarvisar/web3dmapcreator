@@ -1,178 +1,44 @@
 # Troubleshooting
 
-Problems are listed by where they show up. When asking for help, click
-**Copy Support Info** under **Setup and Cache** and include the copied text.
-
-## Downloader setup
-
-**"First-time setup needed" / "Downloader not found"**
-Follow [Downloader setup](../README.md#downloader-setup). Then click **Detect**
-under **Setup and Cache**.
-
-**"Python 3.10 or newer was not found"**
-Install Python from [python.org](https://www.python.org/downloads/). On
-Windows tick **Add python.exe to PATH**. Open a new terminal and run the setup
-command again.
-
-**"Microsoft Store placeholder"**
-Windows has a `python` command that only opens the Microsoft Store. Install
-Python from python.org instead.
-
-**"running scripts is disabled on this system"**
-Use the command from **Copy Setup Command**; it runs the script with
-`-ExecutionPolicy Bypass`. Or double-click `setup_downloader.cmd` in the setup
-folder.
-
-**Linux: "could not create the environment"**
-Install the `python3-venv` package.
-
-**The installation fails with a pip error**
-Check the internet connection. If only Python 3.14 or newer is installed, some
-packages may not be available for it yet; install Python 3.12 and run the setup
-again.
-
-**"LiDAR packages missing"**
-LiDAR needs extra packages. Click **Copy with LiDAR** in the setup dialog and
-run that command.
-
-**Linux: Blender from Flatpak or Snap**
-These builds cannot start the system's Python, so downloads do not work. Use
-the blender.org download instead.
-
-## Downloading
-
-The status line under the buttons names the cause of a failed download. Each
-download also writes a log to `<Cache Directory>/logs/download-<date>.log`.
-
-**"Enable Allow Online Access"**
-Blender 4.2 and newer start with online access turned off. Turn it on in
-**Edit > Preferences > System > Network > Allow Online Access**. Areas that are
-already downloaded still generate offline.
-
-**"Could not reach the Overture servers" / "elevation tile server"**
-Check the internet connection. A VPN, firewall, proxy or antivirus can block the
-downloader's Python. Try again, or try another network.
-
-**"The downloader Python is missing overturemaps"** or
-**"The Overture Python cannot run the downloader"**
-The downloader environment is incomplete or uses Python older than 3.10. Run
-the downloader setup again (see [Downloader setup](../README.md#downloader-setup)).
-
-**"Not enough disk space"** or **"Cannot write to the cache folder"**
-Free some space, or choose another **Cache Directory** under
-**Setup and Cache**.
-
-**"... timed out after 30 minutes"**
-The area is too large for one download, or the connection is slow. Select a
-smaller area or try again.
-
-**"The downloader ran out of memory"** or **"stopped by the system"**
-Select a smaller area.
-
-**"The downloader stopped unexpectedly"**
-Try again. If it keeps happening, include the newest download log when asking
-for help.
-
-## Choosing an area
-
-**"West is not a number" / "use a point for decimals"**
-Coordinates are decimal degrees with a point: `-84.5337`, not `-84,5337`.
-
-**"West must be less than East" / "South must be less than North"**
-The coordinates are in the wrong order. The order is west, south, east, north.
-Areas that cross the 180° meridian are not supported.
-
-**"Cache Directory is empty" / "relative to a .blend file that is not saved"**
-Choose a full folder path for **Cache Directory** under **Setup and Cache**, or
-save the .blend file first.
-
-**"Cannot write to <folder>. Choose another folder."**
-Blender cannot create files there, for example inside Program Files. Choose a
-folder in your user folder.
-
 ## Generating
 
-**"No downloaded map data for this area"**
-The area or enabled features changed since the last download. Click
-**Download / Cache Data**, or press **Generate Model** and accept the offer to
-download first.
+**"Could not reach the map data server."** The map data comes straight from Overture's files on Amazon S3 and the elevation from AWS. Check your connection. Some ad blockers, school or work networks block `amazonaws.com`. Try again on another network or with the blocker paused for the site.
 
-**"The cached ... data is damaged"**
-A downloaded file is incomplete. Turn on **Refresh Existing Cache** and click
-**Download / Cache Data**.
+**"This area is too large to download in the browser."** The area needs more than 300 MB of map data. Make it smaller, or turn off layers you don't need (buildings and roads are the biggest). Dense city centres need the most data for their size.
 
-**"Cached elevation grid does not cover this bounding box"**
-Enable **Refresh Existing Cache** and download again.
+**It's slow or the tab runs out of memory.** Time and memory grow with the area and the number of buildings. Around 25 km² at the default scale is comfortable on a desktop browser. Close other heavy tabs, or split a large city into a few smaller models. Phones manage small areas only.
 
-**"No land left after cutting water"**
-The area is all water. Include some land, or turn off
-**Cut Water From Terrain** in the Water panel.
+**The same area downloads again.** The downloaded data is kept for the session and in the browser's storage (up to 400 MB). A private window, or clearing the site's data, starts over. Moving the area reads new parts of the files, but anything already downloaded is reused.
 
-**"Basin Water Thickness must be ... no more than Recess Depth"**
-In the Water panel, set **Basin Water Thickness** to at most **Recess Depth**.
+**Few or no buildings.** Overture's building data varies by place. Some towns only have footprints without heights, which get a typical height for their type (a house 7 m, an office 20 m, anything unknown 10 m).
 
-**Why did generation fail?**
-The worker's log is kept in `<Cache Directory>/logs/generation-<date>.log` and
-is listed by **Copy Support Info**.
+**The terrain looks flat.** At 1:14,286 a 30 m hill is only 2 mm tall, so most cities print nearly flat. Raise `Terrain > Exaggeration` to make hills read, or pick a hillier area.
 
-**Blender uses a lot of memory or closes during Generate**
-Large areas need a lot of memory: the new model is built in a separate Blender
-process while the previous model is kept, and both are in memory while the new
-one is loaded. Use a smaller area, turn off Trees, or clear the previous model
-first with **Clear Generated Model**.
+**Water is missing or looks wrong.**
+- Rivers and lakes at least 5,000 m² are cut through the base. Smaller water is a thin surface on the terrain, and ponds and fountains are recessed.
+- Turning `Water` off leaves the openings empty.
+- Water that isn't mapped as a polygon (only as a river line) doesn't show up.
 
-**Generation takes a long time**
-Time grows with the area and the number of buildings and roads. Terrain
-Resolution, Trees and Tidy Road Network also add time. Esc or
-**Cancel Generation** keeps the previous model.
+**Roads cross rivers as solid causeways.** With `Bridges` off, roads over water keep a strip of ground under them so they print. Turn `Bridges` on to raise them on piers instead.
 
-**Buildings are missing or have the wrong height**
-Map data varies by city. A building without a mapped height or floor count
-uses a default height for its type, then **Default Building Height**. Very
-small buildings can be dropped for printability (see the Buildings panel).
-Where public LiDAR exists, **LiDAR Buildings** can measure heights and roofs.
+## The map and 3D view
 
-**Small lakes or ponds are not cut through the base**
-Water smaller than **Minimum Cut Area** (5000 m² by default) is not cut through.
-Ponds, fountains and basins are recessed instead.
+**The map or the 3D view stays blank.** Both need WebGL. Turn on hardware acceleration in your browser's settings, update your graphics driver, or try another browser.
 
-## Exporting
+**"The 3D view stopped".** The browser reset the graphics, often because memory ran low. It usually comes back by itself. If it doesn't, reload the page and generate again. Your settings and area are kept.
 
-**"Nothing to export: generate a model first"**
-Only generated objects are exported. Generate the model first.
+## Exporting and slicing
 
-**"Nothing to export inside cutout's inner opening"**
-The `cutout` frame does not overlap the model. Move the frame over the model
-(top view, Numpad 7), or delete it to export the whole model.
+**Bambu Studio imports plain geometry without filaments.** Open the file with `File > Open Project`, not `Import`.
 
-**The cutout frame is not accepted**
-The frame must be a mesh named exactly `cutout` with one opening through it.
-Use **Add Frame** to create a valid one.
+**The colours in the slicer don't match my filaments.** The project starts from Bambu's PLA Basic and Matte presets in the colours you picked. Set each filament to what's loaded in your AMS before slicing, and recalculate the flushing volumes.
 
-**Heights are wrong in Bambu Studio / parts are scattered on the bed**
-The file was exported with Blender's File > Export, or opened with Import
-instead of **File > Open Project**. Use **Export 3MF for Bambu** and open the
-file as a project.
+**The slicer warns about floating regions.** Some buildings have parts that start above the ground, like an overhanging upper floor, and bridge decks span open water. Turn on supports in the slicer. They're only needed under those spots.
 
-**Too many filaments for the AMS**
-Each distinct colour is one filament. Use the **4-Colour AMS** or
-**Single Colour** preset in the **Colours** panel, or give several groups the
-same colour.
+**The model is bigger than the bed.** Turn on `Multi-plate export` under `Export`, or lower the scale. Each section goes on its own plate and the sections fit back together.
 
-**"the model is ... larger than the ... bed"**
-The export finished, but the model does not fit the selected printer. Add a
-cutout frame and enable **Multi-Plate Export**, or choose a smaller area or
-scale.
+**STL files load in the wrong place.** Load all the files from the zip at once. PrusaSlicer and OrcaSlicer ask whether to treat them as one object with several parts: answer yes. In Cura, open them together, set each one's extruder, then select all and use `Merge Models`.
 
-**"Close <name> in other programs or choose another name"**
-The file is open in the slicer or another program. Close it there, or export
-under another name.
+## Reporting a problem
 
-**Edits made in Edit Mode**
-Exports include changes made in Edit Mode, and objects whose faces were all
-deleted are skipped.
-
-## Blender versions
-
-The add-on is developed on Blender 3.6 and tested on Blender 5.2. On Blender
-4.2 and newer install the extension ZIP; on 3.6 to 4.1 install the classic ZIP.
+Open an issue on [GitHub](https://github.com/jarvisar/web3dmapcreator/issues) with the share link (`Copy share link`), your browser, and what you expected to happen.

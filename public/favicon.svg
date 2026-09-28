@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .base { fill: #334155; }
+    .top { fill: #475569; }
+    .a { fill: #818cf8; }
+    .b { fill: #4f46e5; }
+    .c { fill: #6366f1; }
+    @media (prefers-color-scheme: dark) {
+      .base { fill: #64748b; }
+      .top { fill: #94a3b8; }
+      .a { fill: #a5b4fc; }
+      .b { fill: #6366f1; }
+      .c { fill: #818cf8; }
+    }
+  </style>
+  <rect class="base" x="1" y="22" width="30" height="8" rx="2.4"/>
+  <rect class="top" x="1" y="22" width="30" height="2.4" rx="1.2"/>
+  <rect class="a" x="4" y="12.5" width="7.5" height="10.5" rx="1.3"/>
+  <rect class="b" x="12.5" y="2" width="7.5" height="21" rx="1.3"/>
+  <rect class="c" x="21" y="8" width="7" height="15" rx="1.3"/>
+</svg>

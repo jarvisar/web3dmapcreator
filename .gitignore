@@ -1,15 +1,22 @@
+node_modules/
+build/
+coverage/
+*.log
+.vite/
+*.tsbuildinfo
+
+# Local output of the generate script
+out/
+
+# Machine-local folders carried over from the Blender add-on
 __pycache__/
 *.py[cod]
 .venv-overture/
 dist/
-jarvizar_city_cache/
-_tmp_*/
-jcm_live_*/
-jcm_smoke_*/
-
-
 scratchpad/
+jarvizar_city_cache/
 examples_and_inspiration/Chicago,+IL_Solid_Small.stl
 examples_and_inspiration/Philadelphia,+PA+-+Small.stl
+
 AGENTS.md
 CLAUDE.md

@@ -1,0 +1,141 @@
+// Generate a model from the command line, for testing the pipeline on real
+// areas without the browser.
+//
+//   npx tsx scripts/generate.ts --bbox -87.64124,41.87626,-87.61552,41.89041 --out out/loop.3mf
+//   npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --format stl-zip
+//
+// Options: --bbox w,s,e,n | --preset name, --shape rectangle|rounded|circle|hexagon,
+// --rotation deg, --scale mm-per-metre, --fit mm, --format bambu|prusa|3mf|stl-zip|stl,
+// --printer P1S, --multi-plate, --section mm, --bridges, --trees, --flat, --out path,
+// --settings path.json (merged onto the defaults), --no-filter (download every row,
+// for checking that the row filter drops nothing generation uses).
+
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { fetchDem } from '../src/core/data/dem';
+import { fetchOverture } from '../src/core/data/overture';
+import { exportPlates } from '../src/core/export';
+import { areaFromBounds, parseBoundsText } from '../src/core/geo/area';
+import { Progress } from '../src/core/pipeline/context';
+import { rowFilter } from '../src/core/pipeline/filter';
+import { dataBoundsFor, generateModel, neededTypes } from '../src/core/pipeline/generate';
+import { PRESET_GROUPS } from '../src/app/data/presets';
+import { meshLayers, partsBounds } from '../src/core/pipeline/mesh';
+import { buildPlates } from '../src/core/pipeline/plates';
+import { edgeReport } from '../src/core/geometry/validate';
+import {
+  cloneSettings,
+  DEFAULT_PALETTE,
+  printerByKey,
+  type AreaShape,
+  type ExportFormat,
+  type ModelSettings,
+} from '../src/core/settings';
+
+function arg(name: string): string | undefined {
+  const i = process.argv.indexOf(`--${name}`);
+  return i >= 0 ? process.argv[i + 1] : undefined;
+}
+const flag = (name: string) => process.argv.includes(`--${name}`);
+
+function presetBounds(name: string): string {
+  for (const group of PRESET_GROUPS) {
+    for (const preset of group.presets) {
+      if (preset.name.toLowerCase() !== name.toLowerCase()) continue;
+      const b = preset.bounds;
+      return `${b.west},${b.south},${b.east},${b.north}`;
+    }
+  }
+  throw new Error(`Unknown preset: ${name}`);
+}
+
+function merge<T>(base: T, patch: unknown): T {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return (patch as T) ?? base;
+  const out = { ...(base as Record<string, unknown>) };
+  for (const [k, v] of Object.entries(patch as Record<string, unknown>)) {
+    out[k] = typeof v === 'object' && v && !Array.isArray(v) ? merge(out[k], v) : v;
+  }
+  return out as T;
+}
+
+async function main() {
+  const boundsText = arg('bbox') ?? (arg('preset') ? presetBounds(arg('preset')!) : undefined);
+  if (!boundsText) throw new Error('Pass --bbox w,s,e,n or --preset name');
+  const area = areaFromBounds(parseBoundsText(boundsText), (arg('shape') as AreaShape) ?? 'rectangle');
+  if (arg('rotation')) area.rotationDeg = Number(arg('rotation'));
+  let settings: ModelSettings = cloneSettings();
+  if (arg('settings')) settings = merge(settings, JSON.parse(readFileSync(arg('settings')!, 'utf8')));
+  if (arg('scale')) settings.scale.mmPerMetre = Number(arg('scale'));
+  if (arg('fit')) {
+    settings.scale.mode = 'fit';
+    settings.scale.fitMm = Number(arg('fit'));
+  }
+  if (flag('bridges')) settings.bridges.enabled = true;
+  if (flag('trees')) settings.trees.enabled = true;
+  if (flag('flat')) settings.terrain.elevation = false;
+
+  const t0 = performance.now();
+  const bounds = dataBoundsFor(area);
+  let lastLabel = '';
+  const log = (label: string) => {
+    if (label !== lastLabel) console.log(`  ${((performance.now() - t0) / 1000).toFixed(1)}s ${label}`);
+    lastLabel = label;
+  };
+  const [data, dem] = await Promise.all([
+    fetchOverture({ bounds, types: neededTypes(settings), keep: flag('no-filter') ? undefined : rowFilter(settings, bounds), onProgress: (p) => log(p.message) }),
+    settings.terrain.elevation
+      ? fetchDem({ bounds, targetSpacingM: Math.max(area.widthM, area.heightM) / settings.terrain.resolution })
+      : Promise.resolve(null),
+  ]);
+  const t1 = performance.now();
+  console.log(`data: ${(data.bytes / 1e6).toFixed(1)} MB in ${((t1 - t0) / 1000).toFixed(1)} s, release ${data.release}`);
+  for (const [type, s] of Object.entries(data.stats)) if (s.features) console.log(`  ${type}: ${s.features} features`);
+
+  const progress = new Progress((e) => log(e.label));
+  const spec = await generateModel({ area, settings, data, elevation: dem, progress });
+  const t2 = performance.now();
+  const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ });
+  const t3 = performance.now();
+  const b = partsBounds(meshed.parts);
+  console.log(`generate ${((t2 - t1) / 1000).toFixed(1)} s, mesh ${((t3 - t2) / 1000).toFixed(1)} s`);
+  console.log(`size ${(b[3] - b[0]).toFixed(1)} x ${(b[4] - b[1]).toFixed(1)} x ${(b[5] - b[2]).toFixed(1)} mm`);
+  for (const part of meshed.parts) {
+    const r = edgeReport(part.indices, part.positions.length / 3);
+    console.log(`  ${part.name.padEnd(16)} ${String(part.indices.length / 3).padStart(9)} tris  open ${r.open} repeated ${r.repeated}`);
+  }
+  if (meshed.failed) console.log(`  failed solids: ${meshed.failed}, fallbacks: ${meshed.fallbacks}`);
+  console.log(JSON.stringify(spec.stats));
+  for (const w of spec.warnings) console.log(`warning: ${w}`);
+
+  const out = arg('out');
+  if (out) {
+    const format = (arg('format') as ExportFormat) ?? 'bambu';
+    const printer = printerByKey(arg('printer') ?? 'P1S');
+    const section = Number(arg('section') ?? 210);
+    const plates = await buildPlates(spec, {
+      multiPlate: flag('multi-plate'),
+      sectionWidthMm: section,
+      sectionHeightMm: section,
+      bedWidth: printer.width,
+      bedDepth: printer.depth,
+    });
+    const result = exportPlates(plates, {
+      format,
+      printer: printer.key,
+      palette: DEFAULT_PALETTE,
+      multiPlate: flag('multi-plate'),
+      sectionWidthMm: section,
+      sectionHeightMm: section,
+      fileBase: 'model',
+    });
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, result.data);
+    console.log(`wrote ${out} (${(result.data.length / 1e6).toFixed(1)} MB, ${result.plates} plate(s))`);
+    for (const w of result.warnings) console.log(`warning: ${w}`);
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

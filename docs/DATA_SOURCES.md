@@ -1,15 +1,10 @@
 # Data Sources and Attribution
 
-The add-on downloads map data when **Download / Cache Data** is pressed. It does
-not include or redistribute any map data. Check the current terms of each source
-for your use.
+The site downloads map data from these sources when you generate a model. It doesn't include or redistribute any map data. Check the current terms of each source for your use.
 
 ## Overture Maps
 
-Buildings, roads, railways, water, land, land use, land cover and
-infrastructure come from the [Overture Maps Foundation](https://overturemaps.org)
-through the official `overturemaps` Python client. The release used is recorded
-in each cache bundle's `manifest.json`.
+Buildings, roads, railways, water, land, land use, land cover and infrastructure come from the latest [Overture Maps Foundation](https://overturemaps.org) release. They're read straight from Overture's GeoParquet files on Amazon S3. The release used is shown after a model is generated.
 
 | Overture theme | Used for | License |
 | --- | --- | --- |
@@ -30,16 +25,11 @@ Land cover also requires:
 © ESA WorldCover project 2020 / Contains modified Copernicus Sentinel data (2020) processed by ESA WorldCover consortium
 ```
 
-Some building footprints come from other sources (Esri Community Maps and Google
-Open Buildings under CC BY 4.0, Microsoft Global ML Building Footprints under
-ODbL). See Overture's [attribution page](https://docs.overturemaps.org/attribution/).
+Some building footprints come from other sources (Esri Community Maps and Google Open Buildings under CC BY 4.0, Microsoft Global ML Building Footprints under ODbL). See Overture's [attribution page](https://docs.overturemaps.org/attribution/).
 
 ## Elevation
 
-Terrain heights come from the AWS Terrain Tiles open dataset
-(`elevation-tiles-prod`, Terrarium encoding). Its
-[attribution list](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)
-covers the sources below; use the lines that apply to your area.
+Terrain heights come from the AWS Terrain Tiles open dataset (`elevation-tiles-prod`, Terrarium encoding). Its [attribution list](https://github.com/tilezen/joerd/blob/master/docs/attribution.md) covers the sources below. Use the lines that apply to your area.
 
 - ArcticDEM terrain data DEM(s) were created from DigitalGlobe, Inc., imagery and funded under National Science Foundation awards 1043681, 1559691, and 1542736
 - Australia terrain data © Commonwealth of Australia (Geoscience Australia) 2017
@@ -53,16 +43,12 @@ covers the sources below; use the lines that apply to your area.
 - United Kingdom terrain data © Environment Agency copyright and/or database right 2015. All rights reserved
 - United States 3DEP (formerly NED) and global GMTED2010 and SRTM terrain data courtesy of the U.S. Geological Survey
 
-## LiDAR (optional)
+## Map and place search
 
-Prepared LiDAR buildings use public surveys such as USGS 3DEP, IGN LiDAR HD,
-NRCan, Environment Agency England and others. Each survey's licence and
-attribution is stored with the prepared buildings and shown in the LiDAR offer
-details. See [official LiDAR sources](LIDAR_OFFICIAL_SOURCES.md).
+The map on the site uses [OpenFreeMap](https://openfreemap.org) vector tiles (© OpenFreeMap, © OpenMapTiles, data © OpenStreetMap contributors). The satellite option uses Esri World Imagery. Place search uses [Photon](https://photon.komoot.io) by komoot, which searches OpenStreetMap data. Your search text is sent to Photon.
 
 ## Printed models
 
-Under the ODbL a printed model made from this data is a Produced Work. If you
-sell or display one publicly, include the attribution with it, for example on
-the product listing, the packaging or a label on the base. This is not legal
-advice.
+Exported 3MF files carry the map-data attribution in their metadata, and STL files carry it in their header.
+
+Under the ODbL a printed model made from this data is a Produced Work. If you sell or display one publicly, include the attribution with it, for example on the product listing, the packaging or a label on the base. This is not legal advice.

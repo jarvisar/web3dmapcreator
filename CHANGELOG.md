@@ -1,71 +1,31 @@
 # Changelog
 
-## Unreleased
+## 1.0.0
+
+First web release, ported from the Jarvizar City Model Blender add-on (0.25.8).
 
 ### Added
 
-- Find Place: search for a place or type a latitude and longitude, and set the
-  area around it at a chosen print size.
-- Resize Area, View Area on Map and Draw Area in Browser buttons.
-- My Areas: save and remove your own area presets. They are stored outside the
-  add-on folder and survive updates.
-- Size hints: real size and area, and a warning when the model is larger than
-  the printer's bed.
-- Colours panel with presets (Default, Single Colour, 4-Colour AMS, Classic Map,
-  Night), a Bambu filament picker and a filament count.
-- Export STL for other slicers, one file per colour or one combined file.
-- Add Frame: creates a rectangle, rounded rectangle, circle or hexagon cutout
-  frame sized to the bed, the model or a custom size.
-- Downloads run in the background with progress, Esc/Cancel, a log file per
-  download and plain error messages.
-- Generate offers to download missing data first.
-- Map data attribution in exported 3MF and STL files.
-- Downloader setup scripts for Windows, macOS and Linux ship with the add-on.
-  They create the downloader environment in a per-user folder that add-on
-  updates do not remove.
-- Set Up Downloader dialog with Copy Setup Command, Detect and Test Downloader,
-  and a first-run box in the main panel.
-- Copy Support Info and Reset Settings.
-- Place Search URL preference.
+- Runs in the browser. Map data comes straight from Overture's GeoParquet files and elevation from the AWS Terrain Tiles, with no server, Blender or Python downloader.
+- Only the rows and pages of the Overture files that the area needs are downloaded, and downloads are cached in the browser (up to 400 MB).
+- Area editor on the map: move, resize and rotate the area, with rectangle, rounded rectangle, circle and hexagon shapes.
+- Place search, typed coordinates, pasted bounds, presets and share links.
+- 3D preview with the printer bed, part visibility, model details and screenshots. Hidden parts are left out of the download.
+- PrusaSlicer project and 3MF with colours export, besides the Bambu Studio project and STL.
+- Printers from Prusa and generic bed sizes, besides the Bambu Lab models.
+- Light and dark themes, and a layout for phones.
 
-### Changed
+### Changed from the add-on
 
-- Built-in area presets have descriptive names; ten print-sized international
-  presets were added.
-- Generation keeps the colours chosen in the Colours panel instead of resetting
-  the palette.
-- The print size in the Print Scale box is now the exact generated size.
-- LICENSE contains the full GPL-3.0 text, and both ZIPs include it.
-- The downloader Python is also found in the default setup location when no
-  path is set.
-- Requirement pins moved to `jarvizar_city_model/setup/`; the root
-  requirement files point to them.
-- Extension manifest: maintainer, tags, copyright and permission texts.
+- The area is set in metres around a centre and can be rotated, so the model can follow a street grid. Its shape crops the model directly instead of through a frame object.
+- Plate sections are cut in 2D before meshing, so every section is made of closed parts.
+- Ground kept under structures over water is part of the terrain itself instead of separate supports.
+- Land cover is cleared under buildings as well as under roads and water. Strips narrower than about 0.2 mm are removed.
+- Bridges use a simpler network solve: loose ends touch down on the road, decks climb at most 8% to clear what they cross, and networks too low to read as bridges become roads.
+- Buildings on the edge of the area are cut through instead of getting a new roof, and pyramid or dome roofs on concave footprints stay flat.
 
-### Fixed
+### Not included
 
-- Blender 5: exports wrote one grey filament for materials that only set a
-  viewport colour, and an extra white filament from an empty terrain material
-  slot. `Material.use_nodes` deprecation warnings are gone.
-- Downloads no longer freeze Blender or open a console window, and a download
-  that runs out of time reports it instead of raising an error.
-- Exports on a non-English Blender (Translate New Data on) wrote every part in
-  one grey filament.
-- Choosing a folder Blender cannot write to froze Blender; it now reports
-  "Cannot write to <folder>".
-- An empty or `//` Cache Directory in an unsaved file resolved to Blender's
-  working folder. A `//` folder is now stored as a full path once the file is
-  saved, so Save As keeps it.
-- Exporting in Edit Mode exported the mesh from before the edits.
-- A generated object with all faces deleted blocked the whole 3MF export.
-- Generation errors repeated their prefix and phase and were cut off in the
-  status box; the worker log is now kept in `<Cache Directory>/logs/`.
-- Damaged cache files, an all-water area and exporting over an open file now
-  give messages that say what to do.
-- Basin Water Thickness above Recess Depth stopped every generation, even
-  without ponds in the area.
-- Coordinates with typographic minus signs (−84.5) were rejected; decimal
-  commas and inverted boxes get clearer messages.
-- The downloader Python path accepts surrounding quotes and a venv folder.
-- Single-plate exports warn when the model is larger than the printer's bed.
-- Tooltip wording.
+- LiDAR buildings.
+- Tidy Road Network (it was off by default in the add-on).
+- Editing the model before export, and per-building objects with source metadata.

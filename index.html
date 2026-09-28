@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Jarvizar City Model</title>
+    <meta
+      name="description"
+      content="Turn any area of the map into a multicolour 3D printable city model, with terrain, water, parks, roads and buildings. Exports Bambu Studio 3MF projects and STL."
+    />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)" />
+    <meta property="og:title" content="Jarvizar City Model" />
+    <meta
+      property="og:description"
+      content="Pick an area on the map and download a multicolour 3D printable city model. Runs in your browser."
+    />
+    <style>
+      html,
+      body {
+        background: #f8fafc;
+      }
+      @media (prefers-color-scheme: dark) {
+        html,
+        body {
+          background: #020617;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>Jarvizar City Model needs JavaScript to run.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

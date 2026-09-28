@@ -1,101 +1,49 @@
 ---
-description: Verify the checkout with Python, Blender smoke, and cached integration checks
+description: Verify the checkout with type checks, unit tests, a real generation and a browser run
 ---
 
-Read [shared project context](../../CLAUDE.md). Run from the repository root;
-commands below use PowerShell. Verify interpreter/executable paths on the
-current machine. There is no fixed expected test count or mesh count.
+Read [shared project context](../../CLAUDE.md). Run from the repository root.
+There is no fixed expected test count or mesh count.
 
-1. Run the Python suite in the external environment so optional LiDAR tests
-   execute. Without those dependencies, report skipped tests explicitly.
+1. Type check and run the unit tests (no network):
 
    ```powershell
-   & .\.venv-overture\Scripts\python.exe -m unittest discover -s tests -p 'test_*.py' -t tests
+   npx tsc --noEmit
+   npm test
    ```
 
-   Keep `-t tests`: tests import sibling fixture modules. This suite needs no
-   Blender or network; dependencies are declared in `requirements-lidar.txt`.
-
-2. Run synthetic full-pipeline verification against the checkout:
+2. For data layer changes, run the live tests too:
 
    ```powershell
-   $blenderExe = 'C:\Program Files\Blender Foundation\Blender 3.6\blender.exe'
-   & $blenderExe --background --factory-startup --python-exit-code 1 --python .\tests\blender_smoke.py
+   $env:NETWORK = '1'; npx vitest run src/core/data; Remove-Item Env:NETWORK
    ```
 
-   Require `JARVIZAR_BLENDER_SMOKE_OK`, no traceback, and successful exit. Check
-   `$LASTEXITCODE` after every external command. Smoke uses its own fixtures and
-   settings; it does not replace focused subsystem tests.
-
-   For generation ownership, publication, or cleanup changes, also run:
+3. Generate real areas end to end and check every part reports `open 0 repeated 0`:
 
    ```powershell
-   & $blenderExe --background --factory-startup --python-exit-code 1 --python .\tests\blender_generation_transaction.py
+   npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --out out/loop.3mf
+   npx tsx scripts/generate.ts --preset "Clearwater - Beach and Downtown"
+   npx tsx scripts/generate.ts --preset "Rome - Historic Centre" --bridges
    ```
 
-   Require `JARVIZAR_GENERATION_TRANSACTION_OK` and successful exit. This offline
-   fixture injects failures after generation phases and before destructive
-   publication, then checks exact rollback and successful retries. It also covers
-   material users, scene state, helpers, shared meshes, and name collisions.
+   For geometry changes also look at the result, not only the counts.
 
-   For responsive generation, also run the offline real-worker checks:
+4. For export changes, round-trip the sample projects through the installed
+   Bambu Studio (it gets its own data folder):
 
    ```powershell
-   & $blenderExe --background --factory-startup --python-exit-code 1 --python .\tests\blender_generation_modal.py
+   npx tsx scripts/check-bambu.ts
    ```
 
-   Require `JARVIZAR_GENERATION_MODAL_OK`. This launches local background Blender
-   workers from the checkout, cancels them inside every generation phase, and
-   tests append/publication, settings changes, failed termination and retry.
-   `tests/generation_worker_fixture.py` deliberately pauses test workers; it is
-   not packaged or used by the add-on.
-
-   The real event-loop check needs a window and simulated events:
+5. For interface changes, build and run the site in the installed Edge:
 
    ```powershell
-   & $blenderExe --factory-startup --enable-event-simulate --python-exit-code 1 --python .\tests\blender_generation_gui.py
+   npm run build
+   npx vite preview --port 4173 --strictPort   # in the background
+   node scripts/e2e.mjs http://localhost:4173/ out/e2e
    ```
 
-   Require `JARVIZAR_GENERATION_GUI_OK` and both `GUI_CANCEL_OK` markers (Esc and
-   button), with successful exit. It operates only on a disposable factory scene,
-   verifies timer heartbeats during a deliberately blocked worker, retries to
-   success, and closes its own test process without saving user preferences.
-   On Windows, launch background windowed test helpers with `Start-Process
-   -WindowStyle Hidden` and capture both output streams.
+   Look at the screenshots in `out/e2e` and report console errors. Stop the
+   preview server afterwards.
 
-3. Run the full cached model when its Overture/DEM bundle is available:
-
-   ```powershell
-   $modelCacheRoot = Join-Path $env:APPDATA 'Blender Foundation\Blender\3.6\datafiles\jarvizar_city_model\cache'
-   & $blenderExe --background --factory-startup --python-exit-code 1 --python .\tests\blender_live_full.py -- --cache $modelCacheRoot
-   ```
-
-   This takes a **cache root**, uses the default Cincinnati fixture, and performs
-   no download. It accepts `--bbox west,south,east,north`; count assertions assume
-   a dense city with all feature types, so small selections are not equivalent
-   fixtures. Require `JARVIZAR_LIVE_FULL_OK`, successful exit, and zero meshes
-   reported as not closed. This checks undirected edge usage; winding, seating,
-   overlap, and printability need the relevant focused checks. If the cache is
-   absent, report this layer as unrun instead of silently downloading data.
-
-Use the regression table in `CLAUDE.md` for changed systems. Run each standalone
-Blender script in a fresh process. Inspect live-script arguments and fixture/output
-requirements; they are not all interchangeable.
-
-The legacy `blender_live_smoke.py` currently fails its building-only fixture:
-pond recessing remains enabled, so generation requires uncached water. It needs
-`recess_ponds_and_fountains=False` as well as its existing disabled water/cut
-settings. Do not cite it as passing. Synthetic `blender_smoke.py` already
-exercises merged and unmerged output.
-
-`--factory-startup` does not load saved preferences; supply an explicit downloader
-path for isolated acquisition tests. Installed-copy checks run separately without
-repository path injection; see [installation](install-addon.md). Clipboard
-integration needs a real window (`blender_gui_paste.py`). The embed probe prints
-diagnostic distributions; `PROBE_OK` alone does not certify acceptable geometry.
-
-Report actual test/skip/failure counts, success markers, live bbox/settings,
-object/polygon totals, generation time, and closure/winding findings as applicable.
-Compare identical inputs/settings. Distinguish existing harness failures from
-regressions and state what was not run. Keep transient results in task reports or
-ignored `scratchpad/`, not agent context.
+Report failures with their output. Say which steps were skipped and why.

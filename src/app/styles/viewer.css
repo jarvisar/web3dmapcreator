@@ -1,0 +1,339 @@
+.viewer {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 80% 75% at 50% 35%, var(--viewer-bg-1), var(--viewer-bg-2));
+}
+
+.viewer[aria-hidden='true'] {
+  visibility: hidden;
+}
+
+.viewer-host {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+}
+
+.viewer.is-lost .viewer-canvas {
+  visibility: hidden;
+}
+
+.viewer-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: none;
+}
+
+.viewer-overlay {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.viewer-overlay > * {
+  pointer-events: auto;
+}
+
+.viewer-top-left {
+  top: 12px;
+  left: 12px;
+  align-items: flex-start;
+  max-width: min(360px, calc(100% - 24px));
+}
+
+.viewer-top-right {
+  top: 12px;
+  right: 12px;
+  align-items: flex-end;
+}
+
+.viewer-banner {
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.chip-strong {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip-muted {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.chip-warning {
+  gap: 6px;
+  height: 30px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.chip-warning svg {
+  color: #d97706;
+}
+
+.toolbar {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-md);
+}
+
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius);
+  color: var(--text-2);
+  transition:
+    background-color var(--t) var(--ease),
+    color var(--t) var(--ease);
+}
+
+.tool-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.tool-btn[aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.viewer-card {
+  width: 300px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100% - 80px);
+  overflow: auto;
+  border-radius: var(--radius-lg);
+  padding: 4px 0;
+  animation: pop-in 150ms var(--ease);
+}
+
+.viewer-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px 6px 14px;
+}
+
+.viewer-card-header h3 {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.viewer-card-footer .link-btn {
+  flex: none;
+  white-space: nowrap;
+}
+
+.viewer-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.parts-list {
+  list-style: none;
+  padding: 2px 6px 6px;
+}
+
+.part-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.part-row:hover {
+  background: var(--surface-hover);
+}
+
+.part-row input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.part-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.part-count {
+  color: var(--text-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.info-list {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 14px 10px;
+  font-size: 12.5px;
+}
+
+.info-pair {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 5px 0;
+}
+
+.info-pair + .info-pair {
+  border-top: 1px solid var(--border);
+}
+
+.info-pair dt {
+  color: var(--text-3);
+}
+
+.info-pair dd {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.viewer-top-left .viewer-card {
+  padding: 10px 14px;
+}
+
+.viewer-top-left .warning-list {
+  margin: 0;
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 6px 14px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.banner:not(:has(button)) {
+  padding-right: 14px;
+}
+
+.banner-muted {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.banner .btn {
+  border-radius: 999px;
+}
+
+.viewer-hint {
+  position: absolute;
+  z-index: 4;
+  left: 12px;
+  bottom: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--glass);
+  color: var(--text-3);
+  font-size: 11.5px;
+  pointer-events: none;
+}
+
+.viewer-empty,
+.viewer-lost {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-2);
+  font-size: 13.5px;
+  pointer-events: none;
+}
+
+.viewer-empty > *,
+.viewer-lost > * {
+  pointer-events: auto;
+}
+
+.viewer-lost .viewer-card {
+  width: 340px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.viewer-lost h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.viewer-lost p {
+  font-size: 12.5px;
+}
+
+.viewer-lost .btn {
+  align-self: flex-start;
+}
+
+@media (max-width: 700px) {
+  .viewer-top-left {
+    top: auto;
+    bottom: 12px;
+  }
+  .viewer-hint {
+    display: none;
+  }
+  /* The action bar already shows progress and the stale note on phones. */
+  .viewer-banner {
+    display: none;
+  }
+  .toolbar .tool-btn {
+    width: 36px;
+    height: 36px;
+  }
+  /* Absolute children of a flex column ignore the toolbar above them, so place the card explicitly. */
+  .viewer-top-right .viewer-card {
+    position: absolute;
+    top: 52px;
+    right: 0;
+    width: calc(100vw - 24px);
+    max-height: 55vh;
+  }
+}
