@@ -47,6 +47,17 @@ describe('exportPlates', () => {
     expect(exportPlates(model(), request('bambu')).warnings).toEqual([]);
   });
 
+  it('credits only the survey for a model without map data', async () => {
+    const credits = ['LiDAR: USGS 3DEP; EPT mirror by Hobu'];
+    const map = await unzipText(exportPlates(model(), request('3mf'), credits).data);
+    expect(map['3D/3dmodel.model']).toContain('OpenStreetMap');
+    const lidar = await unzipText(exportPlates(model(), request('3mf'), credits, false).data);
+    expect(lidar['3D/3dmodel.model']).toContain('<metadata name="Copyright">LiDAR: USGS 3DEP; EPT mirror by Hobu</metadata>');
+    expect(lidar['3D/3dmodel.model']).not.toContain('OpenStreetMap');
+    const stl = new Uint8Array(await exportPlates(model(), request('stl'), credits, false).data.arrayBuffer());
+    expect(new TextDecoder().decode(stl.subarray(0, 80)).replace(/\0+$/, '')).toBe('Jarvizar City Model - LiDAR: USGS 3DEP; EPT mirror by Hobu');
+  });
+
   it('zips one STL per section for several plates', async () => {
     const plates = [
       plate('Section R1 C1', [part('terrain', 'Terrain', 'terrain', box(0, 0, 0, 50, 50, 1))], [0, 0, 50, 50]),

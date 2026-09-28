@@ -1,7 +1,7 @@
 // App state. Heavy mesh arrays never go in here: see model.ts.
 
 import { create } from 'zustand';
-import type { LidarSummary, ProgressEvent } from '../../core/engine/protocol';
+import type { LidarSummary, ProgressEvent, SurfaceSummary } from '../../core/engine/protocol';
 import {
   DEFAULT_AREA,
   DEFAULT_EXPORT,
@@ -16,6 +16,7 @@ import type {
   ExportFormat,
   ExportSettings,
   ModelSettings,
+  ModelSource,
   Palette,
   PaletteEntry,
 } from '../../core/settings';
@@ -52,6 +53,7 @@ export interface ResultMeta {
   parts: PartInfo[];
   triangles: number;
   lidar?: LidarSummary;
+  surface?: SurfaceSummary;
   /** False once the worker holding this model was replaced, so it cannot be exported. */
   exportable: boolean;
 }
@@ -205,6 +207,13 @@ export type SettingsSection = { [K in keyof ModelSettings]: ModelSettings[K] ext
 export function patchSettings<K extends SettingsSection>(key: K, patch: Partial<ModelSettings[K]>): void {
   set((state) => {
     const settings = { ...state.settings, [key]: { ...state.settings[key], ...patch } } as ModelSettings;
+    return { settings, generation: withStale(state.generation, state.area, settings) };
+  });
+}
+
+export function setModelSource(modelSource: ModelSource): void {
+  set((state) => {
+    const settings = { ...state.settings, modelSource };
     return { settings, generation: withStale(state.generation, state.area, settings) };
   });
 }

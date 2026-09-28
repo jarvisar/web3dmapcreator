@@ -124,6 +124,10 @@ Up to the faired grid, the measurement code was checked against the add-on's Pyt
 
 Buffers still come from Clipper rather than GEOS, so the 25 m ring the ground is fitted in has slightly different arcs, and the ground can come out up to 0.7 mm apart.
 
+## LiDAR only models
+
+With `LiDAR only`, none of the above is used. The survey is read over the whole area into a grid of about 0.7 m cells, heights are decided per cell (holes filled, water flattened or cut away, trees rounded, clutter removed), and the grid is meshed into one closed solid in the terrain colour. It's a port of the add-on's LiDAR Only mode with a few changes. [LiDAR only models](LIDAR_MODEL.md) has the details.
+
 ## Meshes
 
 Almost everything is a 2.5D prism: a polygon with a top and bottom height at every point and vertical walls (`src/core/geometry/solid.ts`). Trees and measured LiDAR roofs are the exceptions. The mesher (`src/core/geometry/mesher.ts`) triangulates the polygon once and uses it for both caps. Where a surface follows the terrain it adds interior points on the grid's lattice and uses a constrained Delaunay triangulation, so the outline stays exact. Walls run along every boundary edge. Each shell is closed and consistently wound by construction, and the mesher checks that every cap covers its polygon exactly before using it. Polygons whose rings touch at a single point are shrunk by a tenth of a micron so four walls never share one edge.
@@ -145,6 +149,6 @@ With multi-plate export the model is cut into equal sections no bigger than the 
 
 - Bridges are schematic: decks on evenly spaced piers, without towers, arches or trusses.
 - Building data varies by city. Buildings without a mapped height use a class default.
-- LiDAR only comes from streamed EPT and COPC surveys, so England, most of Germany and Spain have none.
+- LiDAR only comes from streamed EPT and COPC surveys, so England, most of Germany and Spain have none, for buildings or LiDAR only models.
 - Large areas need more memory and time. Around 25 km² at the default scale is comfortable on a desktop browser.
 - Areas that cross the 180th meridian or come within half a degree of the poles aren't supported.

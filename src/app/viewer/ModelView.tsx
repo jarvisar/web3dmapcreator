@@ -173,6 +173,9 @@ export default function ModelView({ active }: { active: boolean }) {
               ...result.lidar.surveys.map((s): [string, string] => [`Survey`, `${s.name} (${s.attribution}), ${formatCount(s.buildings)} buildings`]),
             ] as [string, string][])
           : []),
+        ...(result.surface
+          ? result.surface.surveys.map((s): [string, string] => ['Survey', `${s.name}${s.year ? ` (${s.year})` : ''}, ${s.attribution}`])
+          : []),
         ...(totalTime > 0 ? [['Generated in', formatSeconds(totalTime)] as [string, string]] : []),
       ]
     : [];

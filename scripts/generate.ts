@@ -4,24 +4,31 @@
 //   npx tsx scripts/generate.ts --bbox -87.64124,41.87626,-87.61552,41.89041 --out out/loop.3mf
 //   npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --format stl-zip
 //
-// Options: --bbox w,s,e,n | --preset name, --shape rectangle|rounded|circle|hexagon,
+// Options: --bbox w,s,e,n | --preset name | --area lon,lat,width,height[,rotation]
+// (metres, as in a share link), --shape rectangle|rounded|circle|hexagon,
 // --rotation deg, --scale mm-per-metre, --fit mm, --format bambu|prusa|3mf|stl-zip|stl,
 // --printer P1S, --multi-plate, --section mm, --bridges, --trees, --flat, --out path,
 // --settings path.json (merged onto the defaults), --no-filter (download every row,
 // for checking that the row filter drops nothing generation uses), --lidar (measure
 // buildings from streamed LiDAR), --lidar-cache dir (default out/lidar-cache),
 // --lidar-records path.json (write the measured records, for comparing runs),
-// --lidar-threads n (batches read and measured at once, 1 to stay in this thread).
+// --lidar-threads n (batches read and measured at once, 1 to stay in this thread),
+// --lidar-only (the whole model from a LiDAR survey, no map data), --detail mm (its
+// printed cell size), --cut-water (cut its water away), --surface-out dir (write its
+// grid layers as raw binaries).
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { cellSize } from '../src/core/dsm/grid';
+import { surfaceModel } from '../src/core/dsm/model';
+import { prepareSurface } from '../src/core/dsm/prepare';
 import { fetchDem } from '../src/core/data/dem';
 import { fetchOverture } from '../src/core/data/overture';
 import { exportPlates } from '../src/core/export';
 import { BAMBU_MAX_PLATES } from '../src/core/export/sections';
 import { areaFromBounds, effectiveScale, parseBoundsText } from '../src/core/geo/area';
 import { prepareLidar, type PreparedLidar } from '../src/core/lidar/prepare';
-import { lidarPoolSize } from '../src/worker/lidarPool';
+import { lidarPoolSize, surfacePoolSize } from '../src/worker/lidarPool';
 import { setUpLidar, threadPool } from './lidar-node';
 import { Progress } from '../src/core/pipeline/context';
 import { rowFilter } from '../src/core/pipeline/filter';
@@ -36,6 +43,7 @@ import {
   printerByKey,
   sanitizeSettings,
   type AreaShape,
+  type AreaSpec,
   type ExportFormat,
   type ModelSettings,
 } from '../src/core/settings';
@@ -66,10 +74,17 @@ function merge<T>(base: T, patch: unknown): T {
   return out as T;
 }
 
+function exactArea(text: string, shape: AreaShape): AreaSpec {
+  const [lon, lat, widthM, heightM, rotationDeg = 0] = text.split(',').map(Number);
+  if (![lon, lat, widthM, heightM, rotationDeg].every(Number.isFinite)) throw new Error('Pass --area lon,lat,width,height[,rotation]');
+  return { center: [lon, lat], widthM, heightM, rotationDeg, shape, cornerRadius: 0.1 };
+}
+
 async function main() {
+  const shape = (arg('shape') as AreaShape) ?? 'rectangle';
   const boundsText = arg('bbox') ?? (arg('preset') ? presetBounds(arg('preset')!) : undefined);
-  if (!boundsText) throw new Error('Pass --bbox w,s,e,n or --preset name');
-  const area = areaFromBounds(parseBoundsText(boundsText), (arg('shape') as AreaShape) ?? 'rectangle');
+  if (!boundsText && !arg('area')) throw new Error('Pass --bbox w,s,e,n, --preset name or --area lon,lat,width,height');
+  const area = arg('area') ? exactArea(arg('area')!, shape) : areaFromBounds(parseBoundsText(boundsText!), shape);
   if (arg('rotation')) area.rotationDeg = Number(arg('rotation'));
   let settings: ModelSettings = cloneSettings();
   if (arg('settings')) settings = merge(settings, JSON.parse(readFileSync(arg('settings')!, 'utf8')));
@@ -82,7 +97,11 @@ async function main() {
   if (flag('trees')) settings.trees.enabled = true;
   if (flag('flat')) settings.terrain.elevation = false;
   if (flag('lidar')) settings.lidar.enabled = true;
+  if (flag('lidar-only')) settings.modelSource = 'lidar';
+  if (arg('detail')) settings.lidarModel.detailMm = Number(arg('detail'));
+  if (flag('cut-water')) settings.lidarModel.cutWater = true;
   settings = sanitizeSettings(settings);
+  if (settings.modelSource === 'lidar') return lidarOnly(area, settings);
 
   const t0 = performance.now();
   const bounds = dataBoundsFor(area);
@@ -175,6 +194,76 @@ async function main() {
     writeFileSync(out, new Uint8Array(await result.data.arrayBuffer()));
     console.log(`wrote ${out} (${(result.data.size / 1e6).toFixed(1)} MB, ${result.plates} plate(s))`);
     for (const w of result.warnings) console.log(`warning: ${w}`);
+  }
+}
+
+async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
+  const t0 = performance.now();
+  let lastLabel = '';
+  const log = (label: string, detail?: string) => {
+    if (label !== lastLabel) console.log(`  ${((performance.now() - t0) / 1000).toFixed(1)}s ${label}${detail ? `: ${detail}` : ''}`);
+    lastLabel = label;
+  };
+  const cacheDir = arg('lidar-cache') ?? 'out/lidar-cache';
+  setUpLidar(cacheDir);
+  const scale = effectiveScale(area, settings.scale);
+  const threads = Number(arg('lidar-threads') ?? surfacePoolSize());
+  const pool = threads > 1 ? threadPool(threads, cacheDir) : null;
+  try {
+    const cell = cellSize(settings.lidarModel.detailMm, scale, area.widthM, area.heightM);
+    const surface = await prepareSurface({ area, cellM: cell, progress: (label, _fraction, detail) => log(label, detail), runner: pool ?? undefined });
+    const t1 = performance.now();
+    const { grid } = surface;
+    console.log(`lidar: ${grid.nx} x ${grid.ny} cells of ${grid.cell} m (asked ${surface.requestedCellM} m), ${Math.round(surface.coverage * 100)}% with returns, ${surface.points.toLocaleString('en-US')} returns, ${(surface.downloadedBytes / 1e6).toFixed(1)} MB in ${((t1 - t0) / 1000).toFixed(1)} s, ${surface.reusedBlocks} of ${surface.blocks} blocks reused`);
+    for (const s of surface.surveys) console.log(`  ${s.provider} ${s.name} (${s.year ?? 'year unknown'}): ${s.points.toLocaleString('en-US')} returns in ${s.blocks} blocks`);
+    for (const failure of surface.failures) console.log(`  failed: ${failure.source}: ${failure.reason}`);
+    if (arg('surface-out')) {
+      const dir = arg('surface-out')!;
+      mkdirSync(dir, { recursive: true });
+      const layers = surface.layers;
+      for (const name of ['top', 'solid', 'ground', 'waterZ', 'count', 'vegetation', 'water', 'building'] as const) {
+        const values = layers[name];
+        writeFileSync(join(dir, `${name}.bin`), new Uint8Array(values.buffer, values.byteOffset, values.byteLength));
+      }
+      writeFileSync(join(dir, 'grid.json'), JSON.stringify({ ...grid, requested: surface.requestedCellM, area }));
+    }
+    const progress = new Progress((e) => log(e.label));
+    const spec = await surfaceModel({ area, settings, surface, progress, runTile: pool ? (tile) => pool.tile(tile) : undefined, concurrency: pool?.concurrency ?? 1 });
+    const t2 = performance.now();
+    const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ });
+    const t3 = performance.now();
+    const b = partsBounds(meshed.parts);
+    console.log(`generate ${((t2 - t1) / 1000).toFixed(1)} s, mesh ${((t3 - t2) / 1000).toFixed(1)} s`);
+    console.log(`size ${(b[3] - b[0]).toFixed(1)} x ${(b[4] - b[1]).toFixed(1)} x ${(b[5] - b[2]).toFixed(1)} mm`);
+    for (const part of meshed.parts) {
+      const r = edgeReport(part.indices, part.positions.length / 3);
+      console.log(`  ${part.name.padEnd(16)} ${String(part.indices.length / 3).padStart(9)} tris  open ${r.open} repeated ${r.repeated}`);
+    }
+    if (meshed.failed) console.log(`  failed solids: ${meshed.failed}`);
+    console.log(JSON.stringify(spec.stats));
+    for (const w of spec.warnings) console.log(`warning: ${w}`);
+    const out = arg('out');
+    if (out) {
+      const format = (arg('format') as ExportFormat) ?? 'bambu';
+      const printer = printerByKey(arg('printer') ?? 'P1S');
+      const section = Number(arg('section') ?? 210);
+      const plates = await buildPlates(spec, {
+        multiPlate: flag('multi-plate'),
+        sectionWidthMm: section,
+        sectionHeightMm: section,
+        bedWidth: printer.width,
+        bedDepth: printer.depth,
+        maxPlates: format === 'bambu' ? BAMBU_MAX_PLATES : undefined,
+      });
+      const credits = [...new Set(surface.surveys.map((s) => `LiDAR: ${s.attribution}`))];
+      const result = exportPlates(plates, { format, printer: printer.key, palette: DEFAULT_PALETTE, multiPlate: flag('multi-plate'), sectionWidthMm: section, sectionHeightMm: section, fileBase: 'model' }, credits, false);
+      mkdirSync(dirname(out), { recursive: true });
+      writeFileSync(out, new Uint8Array(await result.data.arrayBuffer()));
+      console.log(`wrote ${out} (${(result.data.size / 1e6).toFixed(1)} MB, ${result.plates} plate(s))`);
+      for (const w of result.warnings) console.log(`warning: ${w}`);
+    }
+  } finally {
+    pool?.close();
   }
 }
 

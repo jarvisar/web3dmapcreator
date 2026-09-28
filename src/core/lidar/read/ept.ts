@@ -5,11 +5,11 @@
 
 import type { Projection } from '../../geo/projection';
 import type { GeoBounds } from '../../types';
-import type { Points } from '../points';
+import { emptyPoints, type Points } from '../points';
 import { crsFromEpsg, crsFromWkt, lonLatTransforms, regionalVerticalFactor, type CrsInfo } from './crs';
 import { lazDecoder } from './laz';
 import { readHeader } from './las';
-import { classTable, normalizeRecords, PointSink, queryBounds } from './normalize';
+import { classTable, normalizeRecords, PointSink, queryBounds, surfaceClassTable, type PointReceiver } from './normalize';
 import { ahead, type Fetcher } from './fetcher';
 
 // Recognised by name, since it may come back from a worker as a plain Error.
@@ -33,6 +33,12 @@ export interface ReadOptions {
   /** Declared units when the data has none, from the catalog. */
   verticalUnits?: string;
   classification?: Record<string, string>;
+  /** Every surface class, for a LiDAR Only model (surfaceClassTable), and no capture years. */
+  surface?: boolean;
+  /** More class codes for a surface read, on top of the provider's mapping. */
+  surfaceCodes?: Record<string, string>;
+  /** Where kept returns go. By default they're collected and returned. */
+  sink?: PointReceiver;
   progress?: (message: string) => void | Promise<void>;
 }
 
@@ -143,8 +149,8 @@ export async function readEpt(fetcher: Fetcher, url: string, bbox: GeoBounds, op
   }
   await options.progress?.('Reading the EPT hierarchy');
   const nodes = await collectNodes(fetcher, base, meta, query, maxDepth);
-  const classes = classTable(options.classification);
-  const sink = new PointSink();
+  const classes = options.surface ? surfaceClassTable(options.classification, options.surfaceCodes) : classTable(options.classification);
+  const sink = options.sink ?? new PointSink();
   const maxPoints = options.maxPoints ?? 8e6;
   // A dozen downloads run ahead while earlier nodes decode, so memory holds
   // a few nodes rather than the whole batch.
@@ -160,10 +166,10 @@ export async function readEpt(fetcher: Fetcher, url: string, bbox: GeoBounds, op
     } catch (error) {
       throw new Error(`Unreadable LiDAR node ${nodes[i]}: ${(error as Error).message}`);
     }
-    normalizeRecords(decoded.records, decoded.pointCount, decoded.pointSize, { header, query, bbox, toLonLat, frame: options.frame, zFactor, classes, knownEpt: mirror }, sink);
+    normalizeRecords(decoded.records, decoded.pointCount, decoded.pointSize, { header, query, bbox, toLonLat, frame: options.frame, zFactor, classes, knownEpt: mirror, years: !options.surface }, sink);
     if (sink.count > maxPoints) throw new BudgetExceeded('Cropped LiDAR point budget reached');
     i++;
   }
-  const points = sink.finish();
-  return { points, info: { url, nodes: nodes.length, points: points.count, horizontalCrs: crs.key, zToMetres: zFactor } };
+  const points = sink instanceof PointSink ? sink.finish() : emptyPoints();
+  return { points, info: { url, nodes: nodes.length, points: sink.count, horizontalCrs: crs.key, zToMetres: zFactor } };
 }

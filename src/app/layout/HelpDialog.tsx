@@ -13,7 +13,7 @@ const STEPS = [
   },
   {
     title: 'Set the size and layers',
-    text: 'Check the printed size under Print size and pick your printer. Turn layers such as bridges or trees on or off, and choose colours.',
+    text: 'Check the printed size under Print size and pick your printer. Turn layers such as bridges or trees on or off, and choose colours. Or pick LiDAR only under Layers to build the whole model from a LiDAR survey, in one colour.',
   },
   {
     title: 'Generate the model',
@@ -33,6 +33,7 @@ const TIPS = [
   'In Bambu Studio, pick your actual filaments and recalculate the flushing volumes before slicing.',
   'A model larger than the bed can be split into sections with Multi-plate export. Each section prints on its own plate and the pieces fit together. No connectors are added.',
   'The water and the terrain are separate parts, so water can be a different colour or left out.',
+  'A LiDAR only model shows the city the year it was surveyed. Glass, dark roofs and water return few points, so those spots are filled in from around them.',
 ];
 
 function StoredData() {
@@ -143,7 +144,7 @@ export function HelpDialog() {
           </a>
           .
         </li>
-        <li>If you share or sell prints, credit OpenStreetMap contributors and Overture Maps Foundation, and any LiDAR survey the model used.</li>
+        <li>If you share or sell prints, credit OpenStreetMap contributors and Overture Maps Foundation for a model made from map data, and any LiDAR survey the model used.</li>
       </ul>
 
       <h3 className="help-heading">Privacy</h3>

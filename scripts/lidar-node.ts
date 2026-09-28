@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { ByteCache } from '../src/core/data/cache';
+import { setSurfaceStore } from '../src/core/dsm/prepare';
 import { setCheckpointStore } from '../src/core/lidar/prepare';
 import { setLidarStore } from '../src/core/lidar/read/fetcher';
 import { installLidarCodecs } from '../src/worker/lidarCodecs';
@@ -37,6 +38,7 @@ export function setUpLidar(cacheDir: string): void {
   const store = folderStore(cacheDir);
   setLidarStore(store);
   setCheckpointStore(store);
+  setSurfaceStore(store);
   installLidarCodecs(readFileSync(createRequire(import.meta.url).resolve('@voxelkloud/wasm-codecs/voxelkloud_wasm_codecs_bg.wasm')));
 }
 

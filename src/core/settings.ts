@@ -26,8 +26,11 @@ export type ScaleMode = 'fixed' | 'fit';
 export type SurfaceCategory = 'paved' | 'sand' | 'rock' | 'green' | 'forest';
 export type FilamentLine = 'PLA Basic' | 'PLA Matte';
 export type LidarRoofMode = 'envelope' | 'heights';
+/** 'map' builds a multicolour model from map data, 'lidar' the whole model from a LiDAR survey alone. */
+export type ModelSource = 'map' | 'lidar';
 
 export interface ModelSettings {
+  modelSource: ModelSource;
   scale: {
     mode: ScaleMode;
     /** Printed millimetres per real metre in fixed mode. 0.07 is about 1:14,286. */
@@ -123,6 +126,24 @@ export interface ModelSettings {
     /** Also measure mapped bare rock. */
     rockSurfaces: boolean;
   };
+  /**
+   * The LiDAR Only model: one solid in the terrain colour. Scale, terrain
+   * exaggeration, base thickness and the rim are shared with map models.
+   */
+  lidarModel: {
+    /** Printed size of one grid cell. Cells grow where the survey is too sparse or the area too large. */
+    detailMm: number;
+    /** Round tree canopy into smooth masses. Off puts the ground or roof under it in its place. */
+    keepTrees: boolean;
+    /** Flatten anything under 2 m (cars, fences, benches), and poles, crane jibs and wires too thin to print. */
+    removeClutter: boolean;
+    /** How far water sits below its lowest bank. */
+    waterDepthMm: number;
+    /** Cut rivers, lakes and the sea out of the model instead of recessing them. */
+    cutWater: boolean;
+    /** Multiplies the height of everything standing on the ground. */
+    heightScale: number;
+  };
   /** Keep ground under roads, buildings and piers that stand over cut water. */
   supports: boolean;
   rim: {
@@ -133,6 +154,7 @@ export interface ModelSettings {
 }
 
 export const DEFAULT_SETTINGS: ModelSettings = {
+  modelSource: 'map',
   scale: { mode: 'fixed', mmPerMetre: 0.07, fitMm: 180 },
   terrain: { elevation: true, exaggeration: 1, smoothing: 1, resolution: 192, baseThicknessMm: 1.3 },
   water: {
@@ -196,6 +218,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     avoidRoads: true,
   },
   lidar: { enabled: false, roofMode: 'envelope', preferLidar: true, minFootprintMm2: 0.7, rockSurfaces: false },
+  lidarModel: { detailMm: 0.05, keepTrees: true, removeClutter: true, waterDepthMm: 0.6, cutWater: false, heightScale: 1 },
   supports: true,
   rim: { enabled: false, heightMm: 1.5, widthMm: 2 },
 };
@@ -457,6 +480,7 @@ const RANGES: SettingsRanges = {
   },
   trees: { spacingM: [2, 200], minHeightMm: [0.1, 10], minWidthMm: [0.1, 5], variation: [0, 0.8], maxTrees: [0, 500000, true] },
   lidar: { minFootprintMm2: [0, 10] },
+  lidarModel: { detailMm: [0.02, 0.3], waterDepthMm: [0, 3], heightScale: [0.1, 3] },
   rim: { heightMm: [0.1, 30], widthMm: [0.1, 20] },
 };
 
@@ -492,6 +516,7 @@ export function sanitizeSettings(settings: unknown): ModelSettings {
       }
     }
   }
+  out.modelSource = source.modelSource === 'lidar' ? 'lidar' : 'map';
   const scale = isObject(source.scale) ? source.scale : {};
   if (scale.mode === 'fixed' || scale.mode === 'fit') out.scale.mode = scale.mode;
   const lidar = isObject(source.lidar) ? source.lidar : {};

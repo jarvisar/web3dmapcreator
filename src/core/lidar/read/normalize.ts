@@ -46,8 +46,48 @@ export function classTable(mapping: Record<string, string> | Map<number, string>
   return table;
 }
 
+// A LiDAR Only model keeps every surface seen from above. Noise (7, 18),
+// overlap (12), wires and towers (13-16) and anything without an ASPRS
+// meaning are left out. Never classified (0) is kept as unclassified: whole
+// surveys are delivered that way.
+const SURFACE_CLASSES = [1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 17, 19, 20, 21];
+const SURFACE_SEMANTICS: Record<string, number> = { ...SEMANTICS, water: 9, bridge: 17, 'bridge deck': 17 };
+// Codes a mapping written for buildings leaves out but that mean the same in
+// every ASPRS-numbered survey.
+const SURFACE_STANDARD = [9, 17];
+
+/**
+ * Class codes for a LiDAR Only model, from the same mappings as classTable.
+ * A mapping only names ground, buildings and vegetation, so water and
+ * bridges keep their standard codes and whatever else it leaves out (IGN's
+ * artefacts and synthetic points) is dropped. `extra` names more codes,
+ * kept apart from the provider mappings since those shape building
+ * measurement too.
+ */
+export function surfaceClassTable(mapping: Record<string, string> | Map<number, string> | null | undefined, extra: Record<string, string> = {}): Uint8Array {
+  const table = new Uint8Array(256);
+  const entries = mapping ? (mapping instanceof Map ? [...mapping].map(([k, v]) => [String(k), v] as [string, string]) : Object.entries(mapping)) : null;
+  if (entries) for (const code of SURFACE_STANDARD) table[code] = code;
+  else {
+    table[0] = 1;
+    for (const code of SURFACE_CLASSES) table[code] = code;
+  }
+  for (const [code, label] of [...(entries ?? []), ...Object.entries(extra)]) {
+    const target = SURFACE_SEMANTICS[label.trim().toLowerCase()];
+    const n = Number(code);
+    if (n >= 0 && n < 256) table[n] = target ?? 0;
+  }
+  return table;
+}
+
+/** Where normalized points go: kept (PointSink) or counted into a grid as they come. */
+export interface PointReceiver {
+  count: number;
+  push(x: number, y: number, z: number, cls: number, single: number, year: number, confidence: number): void;
+}
+
 /** A growable set of normalized points. */
-export class PointSink {
+export class PointSink implements PointReceiver {
   points: Points = emptyPoints(1024);
   count = 0;
 
@@ -95,17 +135,38 @@ export interface NormalizeOptions {
   classes: Uint8Array;
   /** The USGS EPT mirror drops the GPS encoding bit; see gpsCaptureYears. */
   knownEpt?: boolean;
+  /** False skips capture years, which cost a date per point. */
+  years?: boolean;
 }
 
+// Returns of the chunk being normalized, reused from chunk to chunk.
+let held = { classes: new Uint8Array(0), single: new Uint8Array(0), gps: new Float64Array(0), lonlat: new Float64Array(0) };
+
 /** Append the kept records of one decoded node or chunk; returns how many were kept. */
-export function normalizeRecords(records: Uint8Array, count: number, size: number, options: NormalizeOptions, sink: PointSink): number {
+export function normalizeRecords(records: Uint8Array, count: number, size: number, options: NormalizeOptions, sink: PointReceiver): number {
   const read = recordReader(options.header, records, size);
   const f: RecordFields = { x: 0, y: 0, z: 0, classification: 0, returnNumber: 0, numberOfReturns: 0, withheld: false, overlap: false, gpsTime: 0 };
   const [qx0, qy0, qx1, qy1] = options.query;
   const { west, south, east, north } = options.bbox;
-  const keep: number[] = [];
-  const gps: number[] = [];
-  const lonlat: number[] = [];
+  if (options.years === false) {
+    let kept = 0;
+    for (let i = 0; i < count; i++) {
+      read(i, f);
+      if (!(f.x >= qx0 && f.x <= qx1 && f.y >= qy0 && f.y <= qy1)) continue;
+      const cls = options.classes[f.classification];
+      if (!cls || f.withheld || f.overlap || !Number.isFinite(f.z)) continue;
+      const [lon, lat] = options.toLonLat(f.x, f.y);
+      if (!(lon >= west && lon <= east && lat >= south && lat <= north)) continue;
+      const [x, y] = options.frame.toLocal(lon, lat);
+      sink.push(x, y, f.z * options.zFactor, cls, f.numberOfReturns === 1 ? 1 : 0, 0, 0);
+      kept++;
+    }
+    return kept;
+  }
+  // Years are decided for the chunk as a whole, so the kept returns wait here.
+  if (held.gps.length < count) held = { classes: new Uint8Array(count), single: new Uint8Array(count), gps: new Float64Array(count), lonlat: new Float64Array(3 * count) };
+  const { classes, single, gps, lonlat } = held;
+  let kept = 0;
   for (let i = 0; i < count; i++) {
     read(i, f);
     if (!(f.x >= qx0 && f.x <= qx1 && f.y >= qy0 && f.y <= qy1)) continue;
@@ -113,18 +174,22 @@ export function normalizeRecords(records: Uint8Array, count: number, size: numbe
     if (!cls || f.withheld || f.overlap || !Number.isFinite(f.z)) continue;
     const [lon, lat] = options.toLonLat(f.x, f.y);
     if (!(lon >= west && lon <= east && lat >= south && lat <= north)) continue;
-    keep.push(i, cls, f.numberOfReturns === 1 ? 1 : 0);
-    gps.push(f.gpsTime);
-    lonlat.push(lon, lat, f.z * options.zFactor);
+    classes[kept] = cls;
+    single[kept] = f.numberOfReturns === 1 ? 1 : 0;
+    gps[kept] = f.gpsTime;
+    lonlat[3 * kept] = lon;
+    lonlat[3 * kept + 1] = lat;
+    lonlat[3 * kept + 2] = f.z * options.zFactor;
+    kept++;
   }
   const adjusted = (options.header.globalEncoding & 1) === 1;
-  const { years, basis } = gpsCaptureYears(gps, adjusted, options.knownEpt ?? false);
+  const { years, basis } = gpsCaptureYears(gps.subarray(0, kept), adjusted, options.knownEpt ?? false);
   const confidence = basis === 'gps_declared' ? 1 : 0.5;
-  for (let k = 0; k < gps.length; k++) {
+  for (let k = 0; k < kept; k++) {
     const [x, y] = options.frame.toLocal(lonlat[3 * k], lonlat[3 * k + 1]);
-    sink.push(x, y, lonlat[3 * k + 2], keep[3 * k + 1], keep[3 * k + 2], years[k], years[k] ? confidence : 0);
+    sink.push(x, y, lonlat[3 * k + 2], classes[k], single[k], years[k], years[k] ? confidence : 0);
   }
-  return gps.length;
+  return kept;
 }
 
 /** Bounds of a lon/lat box in a cloud's grid, densified along each edge. */

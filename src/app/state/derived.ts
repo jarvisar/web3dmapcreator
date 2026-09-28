@@ -1,5 +1,6 @@
 // Values computed from the state: colour groups in use, bed fit, summaries.
 
+import { cellSize, gridProblem } from '../../core/dsm/grid';
 import { areaModelRing, effectiveScale } from '../../core/geo/area';
 import { sectionCount } from '../../core/export/sections';
 import { COLOUR_GROUPS, PALETTE_PRESETS, printerByKey } from '../../core/settings';
@@ -24,6 +25,8 @@ import type { ResultMeta } from './store';
 export function usedGroups(settings: ModelSettings): ColourGroup[] {
   const used = new Set<ColourGroup>(['terrain']);
   if (settings.rim.enabled) used.add('rim');
+  // A LiDAR Only model is one part in the terrain colour.
+  if (settings.modelSource === 'lidar') return COLOUR_GROUPS.map((group) => group.key).filter((key) => used.has(key));
   if (settings.buildings.enabled) used.add('buildings');
   if (settings.roads.enabled || settings.bridges.enabled) used.add('roads');
   if (settings.water.enabled) used.add('water');
@@ -108,18 +111,26 @@ export function bedFit(area: AreaSpec, settings: ModelSettings, exportSettings: 
 
 /** Why the model cannot be generated from this area and these settings, or null. */
 export function generationProblem(area: AreaSpec, settings: ModelSettings): string | null {
-  return validateArea(area) ?? settingsProblem(settings);
+  return validateArea(area) ?? settingsProblem(settings) ?? lidarModelProblem(area, settings);
+}
+
+function lidarModelProblem(area: AreaSpec, settings: ModelSettings): string | null {
+  if (settings.modelSource !== 'lidar') return null;
+  const scale = effectiveScale(area, settings.scale);
+  if (!(scale > 0)) return null;
+  return gridProblem(area.widthM, area.heightM, cellSize(settings.lidarModel.detailMm, scale, area.widthM, area.heightM));
 }
 
 function settingsProblem(settings: ModelSettings): string | null {
+  if (settings.scale.mode === 'fixed' && !(settings.scale.mmPerMetre > 0)) return 'The scale must be more than zero.';
+  if (settings.scale.mode === 'fit' && !(settings.scale.fitMm > 0)) return 'The printed size must be more than zero.';
+  if (settings.modelSource === 'lidar') return settings.lidarModel.detailMm > 0 ? null : 'The detail must be more than zero.';
   if (settings.roads.enabled && settings.roads.minWidthMm > settings.roads.maxWidthMm) {
     return 'The minimum road width is larger than the maximum road width.';
   }
   if (settings.water.recessPonds && !settings.water.skipPonds && settings.water.pondWaterMm > settings.water.pondDepthMm) {
     return 'Pond water thickness must not be more than the recess depth.';
   }
-  if (settings.scale.mode === 'fixed' && !(settings.scale.mmPerMetre > 0)) return 'The scale must be more than zero.';
-  if (settings.scale.mode === 'fit' && !(settings.scale.fitMm > 0)) return 'The printed size must be more than zero.';
   return null;
 }
 

@@ -90,16 +90,199 @@ function nextEdge(e: number): number {
  */
 export function clipTin(tin: Tin, region: MultiPolygon, epsilon?: number): Tin | null {
   const eps = epsilon ?? defaultEpsilon(tin, region);
-  const out = clipOnce(tin, region, eps);
+  const out = clipBand(tin, region, eps);
   if (out !== FAILED) return out;
   // An outline that grazes the TIN's vertices can leave the constrained
   // triangulation stuck. Moving it in by a millionth of the extent almost
   // always gets clear, and callers compare areas with more slack than that.
-  const retried = clipOnce(tin, offsetPolygons(region, -eps * 1e5), eps);
+  const retried = clipBand(tin, offsetPolygons(region, -eps * 1e5), eps);
   return retried === FAILED ? null : retried;
 }
 
 const FAILED = Symbol('failed');
+
+// Below this many triangles the whole TIN goes into one triangulation.
+const BAND_MIN = 4096;
+
+/**
+ * A large TIN (a LiDAR Only model's is a few hundred thousand triangles)
+ * sends only the triangles near the outline through the constrained
+ * triangulation, and keeps or drops the rest whole. Every TIN edge is a
+ * constraint anyway, so a triangle clear of the outline comes out the same
+ * either way. A triangle is near when an outline edge crosses its box: both
+ * triangles on an edge the outline touches are then near, so the two parts
+ * meet at edges nothing cut, and join by vertex index.
+ */
+function clipBand(tin: Tin, region: MultiPolygon, eps: number): Tin | null | typeof FAILED {
+  const f = tin.triangles;
+  const v = tin.vertices;
+  const faces = f.length / 3;
+  const whole = () => {
+    const out = clipOnce(tin, region, eps);
+    return out === FAILED ? FAILED : (out?.tin ?? null);
+  };
+  if (faces < BAND_MIN) return whole();
+  // Outline edges, the first ring of each polygon counter-clockwise and holes clockwise.
+  const edges: number[] = [];
+  for (const polygon of region) {
+    polygon.forEach((ring, r) => {
+      if (ring.length < 3) return;
+      const flip = ringArea(ring) > 0 !== (r === 0);
+      const n = ring.length;
+      for (let k = 0; k < n; k++) {
+        const a = ring[flip ? n - 1 - k : k];
+        const b = ring[flip ? (2 * n - 2 - k) % n : (k + 1) % n];
+        edges.push(a[0], a[1], b[0], b[1]);
+      }
+    });
+  }
+  if (!edges.length) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < v.length; i += 3) {
+    minX = Math.min(minX, v[i]);
+    minY = Math.min(minY, v[i + 1]);
+    maxX = Math.max(maxX, v[i]);
+    maxY = Math.max(maxY, v[i + 1]);
+  }
+  // Outline edges bucketed by the cells their boxes touch.
+  const cells = Math.max(1, Math.min(1024, Math.ceil(Math.sqrt(faces) / 4)));
+  const sx = (maxX - minX) / cells || 1;
+  const sy = (maxY - minY) / cells || 1;
+  const cellOf = (value: number, low: number, step: number) => Math.min(cells - 1, Math.max(0, Math.floor((value - low) / step)));
+  const buckets = new Map<number, number[]>();
+  const count = edges.length / 4;
+  for (let e = 0; e < count; e++) {
+    const ax = edges[4 * e];
+    const ay = edges[4 * e + 1];
+    const bx = edges[4 * e + 2];
+    const by = edges[4 * e + 3];
+    if (Math.max(ax, bx) < minX - eps || Math.min(ax, bx) > maxX + eps || Math.max(ay, by) < minY - eps || Math.min(ay, by) > maxY + eps) continue;
+    for (let cx = cellOf(Math.min(ax, bx) - eps, minX, sx); cx <= cellOf(Math.max(ax, bx) + eps, minX, sx); cx++) {
+      for (let cy = cellOf(Math.min(ay, by) - eps, minY, sy); cy <= cellOf(Math.max(ay, by) + eps, minY, sy); cy++) {
+        const key = cy * cells + cx;
+        const list = buckets.get(key);
+        if (list) list.push(e);
+        else buckets.set(key, [e]);
+      }
+    }
+  }
+  // Winding numbers only need the edges spanning the point's height, so edges are banded by y.
+  const bandsOfY = Math.max(1, Math.min(4096, count));
+  let lowY = minY;
+  let highY = maxY;
+  for (let k = 1; k < edges.length; k += 2) {
+    lowY = Math.min(lowY, edges[k]);
+    highY = Math.max(highY, edges[k]);
+  }
+  const bandHeight = (highY - lowY) / bandsOfY || 1;
+  const bandOf = (y: number) => Math.min(bandsOfY - 1, Math.max(0, Math.floor((y - lowY) / bandHeight)));
+  const spanning: number[][] = Array.from({ length: bandsOfY }, () => []);
+  for (let e = 0; e < count; e++) {
+    for (let b = bandOf(Math.min(edges[4 * e + 1], edges[4 * e + 3])); b <= bandOf(Math.max(edges[4 * e + 1], edges[4 * e + 3])); b++) spanning[b].push(e);
+  }
+  const inside = (x: number, y: number) => {
+    let w = 0;
+    for (const e of spanning[bandOf(y)]) {
+      const x1 = edges[4 * e];
+      const y1 = edges[4 * e + 1];
+      const x2 = edges[4 * e + 2];
+      const y2 = edges[4 * e + 3];
+      if (y1 <= y) {
+        if (y2 > y && (x2 - x1) * (y - y1) - (x - x1) * (y2 - y1) > 0) w++;
+      } else if (y2 <= y && (x2 - x1) * (y - y1) - (x - x1) * (y2 - y1) < 0) w--;
+    }
+    return w !== 0;
+  };
+  // 0 dropped, 1 kept whole, 2 near the outline.
+  const kind = new Uint8Array(faces);
+  let near = 0;
+  for (let t = 0; t < faces; t++) {
+    const a = 3 * f[3 * t];
+    const b = 3 * f[3 * t + 1];
+    const c = 3 * f[3 * t + 2];
+    const x0 = Math.min(v[a], v[b], v[c]) - eps;
+    const x1 = Math.max(v[a], v[b], v[c]) + eps;
+    const y0 = Math.min(v[a + 1], v[b + 1], v[c + 1]) - eps;
+    const y1 = Math.max(v[a + 1], v[b + 1], v[c + 1]) + eps;
+    let hit = false;
+    for (let cx = cellOf(x0, minX, sx); cx <= cellOf(x1, minX, sx) && !hit; cx++) {
+      for (let cy = cellOf(y0, minY, sy); cy <= cellOf(y1, minY, sy) && !hit; cy++) {
+        for (const e of buckets.get(cy * cells + cx) ?? []) {
+          const ax = edges[4 * e];
+          const ay = edges[4 * e + 1];
+          const bx = edges[4 * e + 2];
+          const by = edges[4 * e + 3];
+          if (Math.max(ax, bx) < x0 || Math.min(ax, bx) > x1 || Math.max(ay, by) < y0 || Math.min(ay, by) > y1) continue;
+          // A long diagonal edge's box covers much more than the edge: the box is only hit when its corners aren't all on one side.
+          const ex = bx - ax;
+          const ey = by - ay;
+          const s0 = ex * (y0 - ay) - ey * (x0 - ax);
+          const s1 = ex * (y0 - ay) - ey * (x1 - ax);
+          const s2 = ex * (y1 - ay) - ey * (x0 - ax);
+          const s3 = ex * (y1 - ay) - ey * (x1 - ax);
+          if ((s0 > 0 && s1 > 0 && s2 > 0 && s3 > 0) || (s0 < 0 && s1 < 0 && s2 < 0 && s3 < 0)) continue;
+          hit = true;
+          break;
+        }
+      }
+    }
+    if (hit) {
+      kind[t] = 2;
+      near++;
+    } else if (inside((v[a] + v[b] + v[c]) / 3, (v[a + 1] + v[b + 1] + v[c + 1]) / 3)) kind[t] = 1;
+  }
+  if (near === faces) return whole();
+  // The triangles near the outline as a TIN of their own.
+  const bandIndex = new Int32Array(v.length / 3).fill(-1);
+  const bandSource: number[] = [];
+  const bandTriangles = new Uint32Array(3 * near);
+  let at = 0;
+  for (let t = 0; t < faces; t++) {
+    if (kind[t] !== 2) continue;
+    for (let k = 0; k < 3; k++) {
+      const p = f[3 * t + k];
+      if (bandIndex[p] < 0) {
+        bandIndex[p] = bandSource.length;
+        bandSource.push(p);
+      }
+      bandTriangles[at++] = bandIndex[p];
+    }
+  }
+  const bandVertices = new Float64Array(3 * bandSource.length);
+  bandSource.forEach((p, i) => bandVertices.set(v.subarray(3 * p, 3 * p + 3), 3 * i));
+  const clipped = near ? clipOnce({ vertices: bandVertices, triangles: bandTriangles }, region, eps) : null;
+  if (clipped === FAILED) return FAILED;
+  // Kept triangles with their own vertices, then the clipped band, sharing TIN vertices by index.
+  const index = new Int32Array(v.length / 3).fill(-1);
+  const out: number[] = [];
+  const points: number[] = [];
+  const vertex = (p: number) => {
+    if (index[p] < 0) {
+      index[p] = points.length / 3;
+      points.push(v[3 * p], v[3 * p + 1], v[3 * p + 2]);
+    }
+    return index[p];
+  };
+  for (let t = 0; t < faces; t++) if (kind[t] === 1) out.push(vertex(f[3 * t]), vertex(f[3 * t + 1]), vertex(f[3 * t + 2]));
+  if (clipped) {
+    const cv = clipped.tin.vertices;
+    const ids = new Int32Array(cv.length / 3);
+    for (let i = 0; i < ids.length; i++) {
+      const source = clipped.source[i];
+      if (source >= 0) ids[i] = vertex(bandSource[source]);
+      else {
+        ids[i] = points.length / 3;
+        points.push(cv[3 * i], cv[3 * i + 1], cv[3 * i + 2]);
+      }
+    }
+    for (const p of clipped.tin.triangles) out.push(ids[p]);
+  }
+  if (!out.length) return null;
+  return { vertices: Float64Array.from(points), triangles: Uint32Array.from(out) };
+}
 
 /**
  * Constrainautor can rescan forever on a quad made degenerate by a point all
@@ -120,7 +303,8 @@ class Bounded extends Constrainautor {
   }
 }
 
-function clipOnce(tin: Tin, region: MultiPolygon, eps: number): Tin | null | typeof FAILED {
+/** The clipped TIN, with the input vertex behind each of its vertices (-1 for new points). */
+function clipOnce(tin: Tin, region: MultiPolygon, eps: number): { tin: Tin; source: Int32Array } | null | typeof FAILED {
   const table = new PointTable(eps);
   const vertexCount = tin.vertices.length / 3;
   const tinPoint = new Int32Array(vertexCount);
@@ -348,17 +532,22 @@ function clipOnce(tin: Tin, region: MultiPolygon, eps: number): Tin | null | typ
   const used = new Int32Array(count).fill(-1);
   let next = 0;
   for (const p of kept) if (used[p] < 0) used[p] = next++;
+  // TIN vertices were added to the table first, so each of their points came from the first TIN vertex there.
+  const from = new Int32Array(count).fill(-1);
+  for (let w = vertexCount - 1; w >= 0; w--) from[tinPoint[w]] = w;
   const vertices = new Float64Array(next * 3);
+  const source = new Int32Array(next);
   for (let p = 0; p < count; p++) {
     const i = used[p];
     if (i < 0) continue;
     vertices[3 * i] = xs[p];
     vertices[3 * i + 1] = ys[p];
     vertices[3 * i + 2] = z[p];
+    source[i] = from[p];
   }
   const out = new Uint32Array(kept.length);
   for (let i = 0; i < kept.length; i++) out[i] = used[kept[i]];
-  return { vertices, triangles: out };
+  return { tin: { vertices, triangles: out }, source };
 }
 
 function orientation(coords: Float64Array, triangles: Uint32Array): number {

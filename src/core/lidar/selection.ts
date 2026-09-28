@@ -178,14 +178,25 @@ export function gpsCaptureYears(values: ArrayLike<number>, adjusted: boolean, kn
   else return { years, basis };
   const thisYear = now.getUTCFullYear();
   const gpsEpoch = Date.UTC(1980, 0, 6);
+  // GPS seconds at each new year, so a point needs a lookup rather than a
+  // Date. Next year's is in there so its returns are still turned away.
+  const starts: number[] = [];
+  for (let year = 1980; year <= thisYear + 2; year++) starts.push((Date.UTC(year, 0, 1) - gpsEpoch) / 1000);
   let any = false;
+  let at = 0;
   for (let i = 0; i < values.length; i++) {
     const v = values[i];
     if (!Number.isFinite(v) || v === 0) continue;
     if (!adjusted && !(v < 0 || v > 604800)) continue;
     const seconds = v + 1e9;
     if (seconds < 315964800 || seconds >= (thisYear - 1979) * 366 * 86400) continue;
-    const year = new Date(gpsEpoch + Math.floor(seconds) * 1000).getUTCFullYear();
+    const whole = Math.floor(seconds);
+    // A node's returns are mostly one year, so start from the last one found.
+    if (!(whole >= starts[at] && whole < starts[at + 1])) {
+      at = 0;
+      while (at + 2 < starts.length && whole >= starts[at + 1]) at++;
+    }
+    const year = 1980 + at;
     if (year >= 1990 && year <= thisYear) {
       years[i] = year;
       any = true;

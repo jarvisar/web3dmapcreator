@@ -64,6 +64,7 @@ function toMeta(result: GenerateResult, key: string): ResultMeta {
     warnings: result.warnings ?? [],
     timings: result.timings ?? {},
     lidar: result.lidar,
+    surface: result.surface,
     parts,
     triangles,
     exportable: true,

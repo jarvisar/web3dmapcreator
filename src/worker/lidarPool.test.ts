@@ -123,6 +123,33 @@ describe('LiDAR worker pool', () => {
     expect(pool.downloaded()).toBe(100);
     pool.close();
   });
+
+  it('runs LiDAR Only blocks and mesh tiles on the same workers', async () => {
+    const seen: string[] = [];
+    const create = () => {
+      const worker: WorkerLike = {
+        onmessage: null,
+        onerror: null,
+        terminate() {},
+        postMessage(message) {
+          if (message.type === 'answer') return;
+          seen.push(message.type);
+          const outcome = message.type === 'tile' ? { positions: new Float64Array(9), triangles: new Uint32Array([0, 1, 2]), keys: new Int32Array(3) } : { points: 7 };
+          setTimeout(() => worker.onmessage?.({ data: { type: 'done', id: message.id, outcome } }), 1);
+        },
+      };
+      return worker;
+    };
+    const pool = lidarPool(2, undefined, create);
+    const [block, tile] = await Promise.all([
+      pool.surface({} as Parameters<typeof pool.surface>[0], () => undefined),
+      pool.tile({} as Parameters<typeof pool.tile>[0]),
+    ]);
+    expect(block.points).toBe(7);
+    expect(tile.triangles.length).toBe(3);
+    expect(seen.sort()).toEqual(['surface', 'tile']);
+    pool.close();
+  });
 });
 
 afterEach(() => vi.unstubAllGlobals());

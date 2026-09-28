@@ -1,18 +1,23 @@
 // Messages between a LiDAR worker and its pool, and the worker's side of
 // them, shared by the browser worker and the Node worker threads. Workers
 // send their downloads to the pool, which fetches each file once for all of
-// them (Fetcher.serve).
+// them (Fetcher.serve). Besides building batches, workers read the blocks of
+// a LiDAR Only model and simplify its mesh tiles.
 
+import { simplifyTile, type TileJob, type TileResult } from '../core/dsm/mesh';
+import { readSurfaceBlock, type SurfaceJob, type SurfaceOutcome } from '../core/dsm/prepare';
 import { runBatch, type BatchJob, type BatchOutcome } from '../core/lidar/prepare';
 import { Fetcher, setLidarTransport, type LidarRequest } from '../core/lidar/read/fetcher';
 
 export type ToLidarWorker =
   | { type: 'job'; id: number; job: BatchJob }
+  | { type: 'surface'; id: number; job: SurfaceJob }
+  | { type: 'tile'; id: number; job: TileJob }
   | { type: 'answer'; rid: number; value?: ArrayBuffer | string; error?: { name: string; message: string } };
 
 export type FromLidarWorker =
   | { type: 'progress'; id: number; label: string; detail?: string }
-  | { type: 'done'; id: number; outcome: BatchOutcome }
+  | { type: 'done'; id: number; outcome: BatchOutcome | SurfaceOutcome | TileResult }
   | { type: 'error'; id: number; name: string; message: string }
   | { type: 'request'; rid: number; request: LidarRequest };
 
@@ -42,8 +47,15 @@ export function lidarWorker(post: (message: FromLidarWorker) => void): (message:
       else handlers.resolve(message.value!);
       return;
     }
-    const { id, job } = message;
-    runBatch(job, new Fetcher(), (label, detail) => post({ type: 'progress', id, label, detail })).then(
+    const { id } = message;
+    const progress = (label: string, detail?: string) => post({ type: 'progress', id, label, detail });
+    const task: Promise<BatchOutcome | SurfaceOutcome | TileResult> =
+      message.type === 'job'
+        ? runBatch(message.job, new Fetcher(), progress)
+        : message.type === 'surface'
+          ? readSurfaceBlock(message.job, new Fetcher(), progress)
+          : Promise.resolve().then(() => simplifyTile(message.job));
+    task.then(
       (outcome) => post({ type: 'done', id, outcome }),
       (error) => post({ type: 'error', id, ...described(error) }),
     );

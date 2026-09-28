@@ -58,5 +58,15 @@ describe('sanitizeSettings', () => {
     expect(out).not.toHaveProperty('colour');
     expect(sanitizeSettings(null)).toEqual(DEFAULT_SETTINGS);
     expect(sanitizeSettings(out)).toEqual(out);
+    expect(out.modelSource).toBe('map');
+  });
+});
+
+describe('LiDAR only settings', () => {
+  it('keep the model source and clamp its numbers', () => {
+    const lidar = sanitizeSettings({ ...cloneSettings(), modelSource: 'lidar', lidarModel: { detailMm: 0, keepTrees: false, removeClutter: 'no', waterDepthMm: 9, heightScale: 2 } });
+    expect(lidar.modelSource).toBe('lidar');
+    expect(lidar.lidarModel).toEqual({ ...DEFAULT_SETTINGS.lidarModel, detailMm: 0.02, keepTrees: false, waterDepthMm: 3, heightScale: 2 });
+    expect(sanitizeSettings({ modelSource: 'point cloud' }).modelSource).toBe('map');
   });
 });

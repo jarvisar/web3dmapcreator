@@ -10,6 +10,7 @@ import {
   FillRule,
   JoinType,
   PolyTree64,
+  simplifyPaths,
   type Path64,
   type Paths64,
   type Point64,
@@ -538,6 +539,16 @@ export function offsetPolygons(mp: MultiPolygon, delta: number, join: 'round' | 
   const tree = new PolyTree64();
   offset.execute(delta * SCALE, tree);
   return fromTree(tree);
+}
+
+/**
+ * Vertices closer than `epsilon` to the line through their neighbours
+ * dropped, then tidied by a union: an outline traced along a grid loses its
+ * one-cell stairs and keeps its long edges and real corners.
+ */
+export function simplifyPolygons(mp: MultiPolygon, epsilon: number): MultiPolygon {
+  if (!mp.length) return [];
+  return run(ClipType.Union, simplifyPaths(toPaths(mp), epsilon * SCALE, true), null);
 }
 
 /** Drop polygons (and holes) smaller than `minArea` mm². */

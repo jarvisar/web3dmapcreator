@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GeoBounds } from '../../types';
 import type { Fetcher } from '../read/fetcher';
-import { discover, flaiInventory, USGS_CATALOG } from './index';
+import { discover, flaiInventory, sphericalArea, USGS_CATALOG } from './index';
 
 type Box = [number, number, number, number];
 
@@ -138,6 +138,16 @@ describe('LiDAR discovery', () => {
     expect(flai.tiles![0].horizontalCrs).toBe('EPSG:4326');
     expect(flai).toMatchObject({ acquisitionStart: '2022-01-01', acquisitionEnd: '2022-12-31', densityM2: 10, projectYearHint: 2022 });
     expect(requested.some((u) => u.endsWith('.copc.laz'))).toBe(false);
+  });
+
+  it('estimates the density of a USGS survey from its point count and outline', async () => {
+    const { fetcher } = fakeFetcher((url) => (url === 'https://example.com/here/ept.json' ? { points: 2e9 } : route(url)));
+    const here = (await discover(fetcher, bbox)).candidates[0];
+    // The outline is half of a 0.2 degree square at 60 degrees north: about 124 km2.
+    expect(here.densityM2! * sphericalArea(here.coverage)).toBeCloseTo(2e9, -3);
+    expect(sphericalArea(here.coverage) / 1e6).toBeCloseTo(123.9, 0);
+    // Without an ept.json there's no density, and discovery carries on.
+    expect((await discover(fakeFetcher(route).fetcher, bbox)).candidates[0].densityM2).toBeUndefined();
   });
 
   it('keeps the other providers when one fails', async () => {

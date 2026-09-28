@@ -1,14 +1,17 @@
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import { useId } from 'react';
 import type { ReactNode } from 'react';
-import type { LidarRoofMode, ModelSettings, SurfaceCategory } from '../../core/settings';
+import { cellSize } from '../../core/dsm/grid';
+import { effectiveScale } from '../../core/geo/area';
+import type { AreaSpec, LidarRoofMode, ModelSettings, SurfaceCategory } from '../../core/settings';
 import type { ColourGroup } from '../../core/types';
 import { Checkbox } from '../components/Checkbox';
 import { CheckField, SelectField } from '../components/Fields';
 import { HelpTip } from '../components/HelpTip';
 import { NumberField } from '../components/NumberField';
+import { Segmented } from '../components/Segmented';
 import { formatInteger, formatNumber, keepUnits, listJoin } from '../lib/format';
-import { patchSettings, resetSettingsSection, setSupports, toggleLayer, useApp } from '../state/store';
+import { patchSettings, resetSettingsSection, setModelSource, setSupports, toggleLayer, useApp } from '../state/store';
 import type { LayerKey, SettingsSection } from '../state/store';
 import { Section } from './Section';
 
@@ -681,6 +684,112 @@ function RimOptions({ rim }: { rim: ModelSettings['rim'] }) {
   );
 }
 
+/** The grid cell a LiDAR Only model reads, which grows past the detail for large areas. */
+function lidarCell(area: AreaSpec, settings: ModelSettings): number | null {
+  try {
+    return cellSize(settings.lidarModel.detailMm, effectiveScale(area, settings.scale), area.widthM, area.heightM);
+  } catch {
+    return null;
+  }
+}
+
+function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: AreaSpec }) {
+  const lidar = settings.lidarModel;
+  const cell = lidarCell(area, settings);
+  const scale = effectiveScale(area, settings.scale);
+  const grown = cell !== null && scale > 0 && cell > lidar.detailMm / scale + 0.006;
+  return (
+    <div className="lidar-model">
+      <p className="layer-help">
+        {keepUnits(
+          'Builds the whole model from a public LiDAR survey: the ground, buildings, trees and bridges as the survey saw them, in one piece and one colour. Covers the United States (USGS 3DEP), France (IGN), Canada (NRCan), Switzerland (swisstopo) and much of Europe (Open LiDAR Data). Expect 75 to 450 MB of downloads per km² depending on the survey and Detail, kept in the browser for next time, so start with a small area.',
+        )}
+      </p>
+      <NumberField
+        label="Detail"
+        value={lidar.detailMm}
+        onChange={(detailMm) => patchSettings('lidarModel', { detailMm })}
+        min={0.02}
+        max={0.3}
+        step={0.01}
+        decimals={3}
+        unit="mm"
+        help="Printed size of one grid cell. Smaller keeps finer detail but reads more of the survey and takes longer. Large areas get larger cells, and so do surveys too sparse to fill them."
+        hint={cell !== null ? `${formatNumber(cell, 2)} m cells${grown ? ', larger for this area' : ''}` : undefined}
+      />
+      <CheckField
+        label="Keep trees"
+        checked={lidar.keepTrees}
+        onChange={(keepTrees) => patchSettings('lidarModel', { keepTrees })}
+        help="Rounds tree canopy into smooth masses. Off puts the ground or roof under the trees in their place."
+      />
+      <CheckField
+        label="Remove cars and clutter"
+        checked={lidar.removeClutter}
+        onChange={(removeClutter) => patchSettings('lidarModel', { removeClutter })}
+        help="Flattens anything lower than 2 m above the ground, such as cars, fences and benches, which print as specks. Also removes poles, crane jibs and wires too thin to print."
+      />
+      <NumberField
+        label="Water depth"
+        value={lidar.waterDepthMm}
+        onChange={(waterDepthMm) => patchSettings('lidarModel', { waterDepthMm })}
+        min={0}
+        max={3}
+        step={0.1}
+        decimals={2}
+        unit="mm"
+        help="How far rivers, lakes and the sea sit below their lowest bank, so they read as water in one colour."
+      />
+      <CheckField
+        label="Cut away water"
+        checked={lidar.cutWater}
+        onChange={(cutWater) => patchSettings('lidarModel', { cutWater })}
+        help="Cuts rivers, lakes and the sea out of the model, leaving openings through the base. Water smaller than the area below, narrower than about 0.4 mm printed or up on a roof stays recessed. Bridges stay as solid walls, and islands print as separate pieces."
+      />
+      {lidar.cutWater && (
+        <NumberField
+          label="Cut through the base above"
+          value={settings.water.cutMinAreaM2}
+          onChange={(cutMinAreaM2) => patchSettings('water', { cutMinAreaM2: Math.round(cutMinAreaM2) })}
+          min={0}
+          max={1000000}
+          step={500}
+          decimals={0}
+          unit="m²"
+          help="Water at least this large is cut away. Shared with map models."
+        />
+      )}
+      <NumberField
+        label="Height scale"
+        value={lidar.heightScale}
+        onChange={(heightScale) => patchSettings('lidarModel', { heightScale })}
+        min={0.1}
+        max={3}
+        step={0.05}
+        decimals={2}
+        unit="×"
+        help="Multiplies the height of everything standing on the ground: buildings, trees and bridges. 1 is true to scale."
+      />
+      <NumberField
+        label="Terrain exaggeration"
+        value={settings.terrain.exaggeration}
+        onChange={(exaggeration) => patchSettings('terrain', { exaggeration })}
+        min={0}
+        max={10}
+        step={0.1}
+        decimals={2}
+        unit="×"
+        help="Multiplies height differences in the ground itself. 1 is true to scale. Shared with map models."
+      />
+      <div className="layer-foot">
+        <button type="button" className="link-btn" onClick={() => resetSettingsSection('lidarModel')}>
+          Reset LiDAR only settings
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function layerSummary(settings: ModelSettings): string {
   const on = [
     settings.terrain.elevation ? 'terrain' : 'flat base',
@@ -699,140 +808,166 @@ function layerSummary(settings: ModelSettings): string {
 
 export function LayersPanel() {
   const settings = useApp((state) => state.settings);
+  const area = useApp((state) => state.area);
   const { terrain, water, land, roads, bridges, buildings, lidar, trees, rim } = settings;
   const scale = settings.scale.mode === 'fixed' ? settings.scale.mmPerMetre : 0;
+  const lidarOnly = settings.modelSource === 'lidar';
 
   const roadExtras = [roads.includePaths && 'paths', roads.includeRail && 'rail', roads.includeAirports && 'airports'].filter(Boolean);
+  const cell = lidarCell(area, settings);
+  const summary = lidarOnly ? `LiDAR only${cell !== null ? ` · ${formatNumber(cell, 2)} m cells` : ''}${rim.enabled ? ' · rim' : ''}` : layerSummary(settings);
+
+  const rimRow = (
+    <LayerRow
+      layer="rim"
+      label="Border rim"
+      group="rim"
+      on={rim.enabled}
+      onToggle={(enabled) => patchSettings('rim', { enabled })}
+      summary={rim.enabled ? `${mm(rim.heightMm)} high` : 'Off'}
+      help="A raised frame around the edge of the model."
+      resetKey="rim"
+    >
+      <RimOptions rim={rim} />
+    </LayerRow>
+  );
 
   return (
-    <Section id="layers" title="Layers" summary={layerSummary(settings)}>
-      <div className="list-box">
-        <LayerRow
-          layer="terrain"
-          label="Terrain"
-          checkLabel="Terrain elevation"
-          group="terrain"
-          on={terrain.elevation}
-          onToggle={(elevation) => patchSettings('terrain', { elevation })}
-          summary={terrain.elevation ? `Elevation ×${formatNumber(terrain.exaggeration, 2)} · ${terrain.resolution} cells` : 'Flat base'}
-          help="Ground shape from public elevation data. Off builds a flat base and skips the elevation download."
-          resetKey="terrain"
-        >
-          <TerrainOptions terrain={terrain} />
-        </LayerRow>
-
-        <LayerRow
-          layer="water"
-          label="Water"
-          group="water"
-          on={water.enabled}
-          onToggle={(enabled) => patchSettings('water', { enabled })}
-          summary={water.enabled ? `Cut above ${formatInteger(water.cutMinAreaM2)} m²${water.skipPonds ? ' · no ponds' : ''}` : 'Off, cuts stay open'}
-          help="Rivers, lakes and the sea as their own part. Large water is cut through the base, small ponds are sunk into the ground. Off leaves the water openings empty."
-          resetKey="water"
-        >
-          <WaterOptions water={water} />
-        </LayerRow>
-
-        <LayerRow
-          layer="land"
-          label="Parks and land cover"
-          group="green"
-          on={land.enabled}
-          onToggle={(enabled) => patchSettings('land', { enabled })}
-          summary={land.enabled ? `${mm(land.riseMm)} rise` : 'Off'}
-          help="Parks, forest floor, sand, rock and paved plazas as thin slabs on the terrain, each in its own colour."
-          resetKey="land"
-        >
-          <LandOptions land={land} />
-        </LayerRow>
-
-        <LayerRow
-          layer="roads"
-          label="Roads"
-          group="roads"
-          on={roads.enabled}
-          onToggle={(enabled) => patchSettings('roads', { enabled })}
-          summary={roads.enabled ? `${mm(roads.thicknessMm)}${roadExtras.length ? ` · ${roadExtras.join(', ')}` : ''}` : 'Off'}
-          help="Roads, paths, railways and airport paving, sized so a 0.4 mm nozzle can print them."
-          resetKey="roads"
-        >
-          <RoadOptions roads={roads} scale={scale} />
-        </LayerRow>
-
-        <LayerRow
-          layer="bridges"
-          label="Bridges"
-          group="roads"
-          on={bridges.enabled}
-          onToggle={(enabled) => patchSettings('bridges', { enabled })}
-          summary={bridges.enabled ? `${mm(bridges.clearanceMm)} clearance` : 'Off, built as roads'}
-          help="Mapped bridges as decks on piers, lifted clear of what they cross. Off builds them as ordinary roads. Bridges are simple: no towers, arches or trusses."
-          resetKey="bridges"
-        >
-          <BridgeOptions bridges={bridges} />
-        </LayerRow>
-
-        <LayerRow
-          layer="buildings"
-          label="Buildings"
-          group="buildings"
-          on={buildings.enabled}
-          onToggle={(enabled) => patchSettings('buildings', { enabled })}
-          summary={buildings.enabled ? `Height ×${formatNumber(buildings.heightScale, 2)}${buildings.roofShapes ? ' · roofs' : ''}` : 'Off'}
-          help="Buildings from mapped footprints and heights. Buildings without a mapped height use a height for their type, then the default height."
-          resetKey="buildings"
-        >
-          <BuildingOptions buildings={buildings} />
-        </LayerRow>
-
-        <LayerRow
-          layer="lidar"
-          label="LiDAR"
-          checkLabel="LiDAR buildings"
-          group="buildings"
-          on={buildings.enabled && lidar.enabled}
-          onToggle={(enabled) => patchSettings('lidar', { enabled })}
-          summary={!lidar.enabled ? 'Off' : !buildings.enabled ? 'Needs buildings' : lidar.roofMode === 'envelope' ? 'Whole roofs' : 'Heights only'}
-          help="Measures buildings from public LiDAR surveys and rebuilds each one from its scanned roof: setbacks, towers, domes and spires included. Covers the United States (USGS 3DEP), France (IGN), Canada (NRCan), Switzerland (swisstopo) and much of Europe (Open LiDAR Data). Expect 150 to 450 MB of downloads per km² depending on the survey, kept in the browser for next time, so start with a small area. Buildings nothing covers keep their mapped shape."
-          resetKey="lidar"
-        >
-          <LidarOptions lidar={lidar} scale={scale} />
-        </LayerRow>
-
-        <LayerRow
-          layer="trees"
-          label="Trees"
-          group="trees"
-          on={trees.enabled}
-          onToggle={(enabled) => patchSettings('trees', { enabled })}
-          summary={trees.enabled ? `${trees.spacingM} m spacing` : 'Off'}
-          help="Mapped trees and trees scattered through forests, as simple solids sized to print. Trees add a lot of triangles."
-          resetKey="trees"
-        >
-          <TreeOptions trees={trees} />
-        </LayerRow>
-
-        <LayerRow
-          layer="rim"
-          label="Border rim"
-          group="rim"
-          on={rim.enabled}
-          onToggle={(enabled) => patchSettings('rim', { enabled })}
-          summary={rim.enabled ? `${mm(rim.heightMm)} high` : 'Off'}
-          help="A raised frame around the edge of the model."
-          resetKey="rim"
-        >
-          <RimOptions rim={rim} />
-        </LayerRow>
-
-      </div>
-      <CheckField
-        label="Keep ground under structures over water"
-        checked={settings.supports}
-        onChange={setSupports}
-        help="Keeps a strip of ground under roads, buildings and bridge piers that stand in water cut from the terrain, so they have something to print on."
+    <Section id="layers" title="Layers" summary={summary}>
+      <Segmented
+        label="Build the model from"
+        value={settings.modelSource}
+        stretch
+        onChange={setModelSource}
+        options={[
+          { value: 'map', label: 'Map data', title: 'Terrain, water, parks, roads and buildings from map data, each in its own colour' },
+          { value: 'lidar', label: 'LiDAR only', title: 'Everything a LiDAR survey saw, as one piece in one colour' },
+        ]}
       />
+      {lidarOnly ? (
+        <>
+          <LidarModelOptions settings={settings} area={area} />
+          <div className="list-box">{rimRow}</div>
+        </>
+      ) : (
+        <>
+          <div className="list-box">
+            <LayerRow
+              layer="terrain"
+              label="Terrain"
+              checkLabel="Terrain elevation"
+              group="terrain"
+              on={terrain.elevation}
+              onToggle={(elevation) => patchSettings('terrain', { elevation })}
+              summary={terrain.elevation ? `Elevation ×${formatNumber(terrain.exaggeration, 2)} · ${terrain.resolution} cells` : 'Flat base'}
+              help="Ground shape from public elevation data. Off builds a flat base and skips the elevation download."
+              resetKey="terrain"
+            >
+              <TerrainOptions terrain={terrain} />
+            </LayerRow>
+
+            <LayerRow
+              layer="water"
+              label="Water"
+              group="water"
+              on={water.enabled}
+              onToggle={(enabled) => patchSettings('water', { enabled })}
+              summary={water.enabled ? `Cut above ${formatInteger(water.cutMinAreaM2)} m²${water.skipPonds ? ' · no ponds' : ''}` : 'Off, cuts stay open'}
+              help="Rivers, lakes and the sea as their own part. Large water is cut through the base, small ponds are sunk into the ground. Off leaves the water openings empty."
+              resetKey="water"
+            >
+              <WaterOptions water={water} />
+            </LayerRow>
+
+            <LayerRow
+              layer="land"
+              label="Parks and land cover"
+              group="green"
+              on={land.enabled}
+              onToggle={(enabled) => patchSettings('land', { enabled })}
+              summary={land.enabled ? `${mm(land.riseMm)} rise` : 'Off'}
+              help="Parks, forest floor, sand, rock and paved plazas as thin slabs on the terrain, each in its own colour."
+              resetKey="land"
+            >
+              <LandOptions land={land} />
+            </LayerRow>
+
+            <LayerRow
+              layer="roads"
+              label="Roads"
+              group="roads"
+              on={roads.enabled}
+              onToggle={(enabled) => patchSettings('roads', { enabled })}
+              summary={roads.enabled ? `${mm(roads.thicknessMm)}${roadExtras.length ? ` · ${roadExtras.join(', ')}` : ''}` : 'Off'}
+              help="Roads, paths, railways and airport paving, sized so a 0.4 mm nozzle can print them."
+              resetKey="roads"
+            >
+              <RoadOptions roads={roads} scale={scale} />
+            </LayerRow>
+
+            <LayerRow
+              layer="bridges"
+              label="Bridges"
+              group="roads"
+              on={bridges.enabled}
+              onToggle={(enabled) => patchSettings('bridges', { enabled })}
+              summary={bridges.enabled ? `${mm(bridges.clearanceMm)} clearance` : 'Off, built as roads'}
+              help="Mapped bridges as decks on piers, lifted clear of what they cross. Off builds them as ordinary roads. Bridges are simple: no towers, arches or trusses."
+              resetKey="bridges"
+            >
+              <BridgeOptions bridges={bridges} />
+            </LayerRow>
+
+            <LayerRow
+              layer="buildings"
+              label="Buildings"
+              group="buildings"
+              on={buildings.enabled}
+              onToggle={(enabled) => patchSettings('buildings', { enabled })}
+              summary={buildings.enabled ? `Height ×${formatNumber(buildings.heightScale, 2)}${buildings.roofShapes ? ' · roofs' : ''}` : 'Off'}
+              help="Buildings from mapped footprints and heights. Buildings without a mapped height use a height for their type, then the default height."
+              resetKey="buildings"
+            >
+              <BuildingOptions buildings={buildings} />
+            </LayerRow>
+
+            <LayerRow
+              layer="lidar"
+              label="LiDAR"
+              checkLabel="LiDAR buildings"
+              group="buildings"
+              on={buildings.enabled && lidar.enabled}
+              onToggle={(enabled) => patchSettings('lidar', { enabled })}
+              summary={!lidar.enabled ? 'Off' : !buildings.enabled ? 'Needs buildings' : lidar.roofMode === 'envelope' ? 'Whole roofs' : 'Heights only'}
+              help="Measures buildings from public LiDAR surveys and rebuilds each one from its scanned roof: setbacks, towers, domes and spires included. Covers the United States (USGS 3DEP), France (IGN), Canada (NRCan), Switzerland (swisstopo) and much of Europe (Open LiDAR Data). Expect 150 to 450 MB of downloads per km² depending on the survey, kept in the browser for next time, so start with a small area. Buildings nothing covers keep their mapped shape."
+              resetKey="lidar"
+            >
+              <LidarOptions lidar={lidar} scale={scale} />
+            </LayerRow>
+
+            <LayerRow
+              layer="trees"
+              label="Trees"
+              group="trees"
+              on={trees.enabled}
+              onToggle={(enabled) => patchSettings('trees', { enabled })}
+              summary={trees.enabled ? `${trees.spacingM} m spacing` : 'Off'}
+              help="Mapped trees and trees scattered through forests, as simple solids sized to print. Trees add a lot of triangles."
+              resetKey="trees"
+            >
+              <TreeOptions trees={trees} />
+            </LayerRow>
+
+            {rimRow}
+          </div>
+          <CheckField
+            label="Keep ground under structures over water"
+            checked={settings.supports}
+            onChange={setSupports}
+            help="Keeps a strip of ground under roads, buildings and bridge piers that stand in water cut from the terrain, so they have something to print on."
+          />
+        </>
+      )}
     </Section>
   );
 }

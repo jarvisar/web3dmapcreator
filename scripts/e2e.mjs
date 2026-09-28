@@ -1,13 +1,17 @@
 // End-to-end check in the installed Edge: generate the default area, look at
 // it in 3D and download it in every format. Needs a running server
 // (npm run dev or npm run preview).
-//   node scripts/e2e.mjs <url> <out-folder> [--all-formats]
+//   node scripts/e2e.mjs <url> <out-folder> [--all-formats] [--lidar-only [--cut-water]]
+// With --lidar-only, give a small area in the URL's share-link hash
+// (#a=lon,lat,width,height,rotation,shape): a fresh browser downloads its
+// LiDAR in full.
 import { chromium } from 'playwright-core';
 import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const allFormats = process.argv.includes('--all-formats');
+const lidarOnly = process.argv.includes('--lidar-only');
 const [url = 'http://localhost:5173/', folder = 'out/e2e'] = args;
 mkdirSync(folder, { recursive: true });
 const browser = await chromium.launch({
@@ -26,10 +30,18 @@ await page.goto(url);
 await page.waitForTimeout(3000);
 await page.screenshot({ path: join(folder, '1-map.png') });
 
+if (lidarOnly) {
+  await page.locator('button[aria-controls="section-layers"]').click();
+  await page.getByRole('radio', { name: 'LiDAR only' }).click();
+  if (process.argv.includes('--cut-water')) await page.getByRole('checkbox', { name: /cut away water/i }).click();
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: join(folder, '1-lidar-only.png') });
+}
+
 await page.getByRole('button', { name: /generate model/i }).click();
 // Generation is done when the progress bar goes away.
 await page.waitForTimeout(1000);
-await page.waitForFunction(() => !document.querySelector('[role="progressbar"]'), null, { timeout: 300000, polling: 1000 });
+await page.waitForFunction(() => !document.querySelector('[role="progressbar"]'), null, { timeout: 900000, polling: 1000 });
 await page.waitForTimeout(3000);
 console.log(`generated in ${((Date.now() - started) / 1000).toFixed(1)} s`);
 await page.screenshot({ path: join(folder, '2-model.png') });

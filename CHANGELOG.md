@@ -4,6 +4,9 @@
 
 ### Added
 
+- LiDAR only models, ported from the add-on's LiDAR Only mode. Pick `LiDAR only` at the top of `Layers` to build the whole model from a public LiDAR survey: the ground, buildings, trees and bridges as the survey saw them, in one closed solid in the terrain colour. The survey is read in 256 m blocks, up to eight at once, and each block is kept, so a cancelled read carries on where it stopped and other settings regenerate without reading again. Cars, cranes and clutter are removed, trees are rounded or removed, and the cells grow to what the survey's point density fills. Exports credit the survey instead of the map data. See `docs/LIDAR_MODEL.md`.
+- `Cut away water` for LiDAR only models cuts rivers, lakes and the sea out of the model instead of recessing them, with the add-on's rules: water above the same minimum area as map models, counted across bridges, at least 0.4 mm wide and not up on a roof. Bridges stay as solid walls, and boats and pilings go with the water.
+- `scripts/generate.ts --lidar-only`, with `--detail`, `--cut-water` and `--surface-out`.
 - LiDAR buildings, ported from the add-on. Turn on `Layers > LiDAR` to measure buildings from public surveys and rebuild them from their scanned roofs, or only correct their heights. Surveys come from USGS 3DEP (EPT), IGN LiDAR HD, NRCan, swisstopo and Open LiDAR Data (COPC), streamed with range requests. Tiled LAZ downloads aren't supported.
 - LiDAR point data has its own browser cache of up to 1 GB, and measured buildings are reused for a day.
 - The surveys a model used are listed in `Model details` and in the attribution of exported 3MF files.
@@ -13,6 +16,8 @@
 
 ### Changed
 
+- Cutting a measured roof or a LiDAR only surface to a section or the area's shape only runs the triangles near the cut through the constrained triangulation. A section of a city-sized LiDAR surface took 5 s and takes about half a second.
+- Reading LiDAR for buildings works out each return's capture year from a table instead of a date object, about 9 times faster.
 - The site moved to https://citymodel.jarvisar.com/. The old web3dmapcreator.jarvisar.com address redirects there. Browsers keep saved settings and cached map data per address, so those start fresh on the new one.
 - New look: the system font, gradient buttons, a dark header, section bars and checkboxes for the layers. Dark mode follows the same style.
 - One Download button, in the bar under the settings. Export errors show there too, instead of inside the Export section.

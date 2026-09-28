@@ -7,7 +7,7 @@ import { writeBambuProject } from './bambu';
 import { filamentUse, preparePlates, type PreparedModel } from './common';
 import { formatG } from './format';
 import { PRUSA_MAX_BEDS, writePrusaProject } from './prusa';
-import { fileStem, writeStl, writeStlZip } from './stl';
+import { creditHeader, fileStem, STL_HEADER, writeStl, writeStlZip } from './stl';
 import { writeGeneric3mf } from './threemf';
 
 // Filaments an MMU3 or a Prusa XL can hold.
@@ -78,13 +78,17 @@ function prusaNotes(model: PreparedModel, printer: Printer): string[] {
   return notes;
 }
 
-/** `credits` are attributions beyond the map data, such as the LiDAR surveys a model used. */
-export function exportPlates(plates: Plate[], request: ExportRequest, credits: string[] = []): ExportResult {
+/**
+ * `credits` are attributions beyond the map data, such as the LiDAR surveys a
+ * model used. A LiDAR Only model uses no map data, so it credits only those.
+ */
+export function exportPlates(plates: Plate[], request: ExportRequest, credits: string[] = [], mapData = true): ExportResult {
   const printer = printerByKey(request.printer);
   const kept = printablePlates(plates, request.excludeParts);
   if (!kept.length) throw new Error('Nothing to export: every part is hidden or empty');
-  const model = preparePlates(kept, request.palette, credits);
+  const model = preparePlates(kept, request.palette, credits, mapData);
   const base = fileStem(request.fileBase);
+  const header = mapData ? STL_HEADER : creditHeader(model.attribution);
   const warnings = sizeWarnings(model, printer);
   const result = (fileName: string, data: Blob): ExportResult => ({ fileName, data, plates: kept.length, warnings });
 
@@ -108,11 +112,11 @@ export function exportPlates(plates: Plate[], request: ExportRequest, credits: s
     case '3mf':
       return result(`${base}.3mf`, writeGeneric3mf(model, printer, base));
     case 'stl-zip':
-      return result(`${base}-stl.zip`, writeStlZip(model, base));
+      return result(`${base}-stl.zip`, writeStlZip(model, base, { header }));
     case 'stl':
       // Sections are separate prints: one file each, zipped.
-      if (model.plates.length > 1) return result(`${base}-stl.zip`, writeStlZip(model, base, { combined: true }));
-      return result(`${base}.stl`, writeStl(model.plates[0]));
+      if (model.plates.length > 1) return result(`${base}-stl.zip`, writeStlZip(model, base, { combined: true, header }));
+      return result(`${base}.stl`, writeStl(model.plates[0], header));
     default:
       throw new Error(`Unknown export format: ${String(request.format)}`);
   }

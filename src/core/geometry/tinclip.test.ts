@@ -93,4 +93,30 @@ describe('clipTin', () => {
     expect(Math.abs(tinArea(out) - multiArea(region))).toBeLessThan(1e-3);
     checkConforming(out);
   }, 10000);
+
+  describe('a TIN large enough to clip only near the outline', () => {
+    // 70 x 70 cells, two triangles each: past the size where the rest is kept whole.
+    const tin = gridTin(70, 1, plane);
+
+    it('keeps the triangles clear of a hexagon with a hole and cuts the rest', () => {
+      const hexagon = Array.from({ length: 6 }, (_, i) => [35 + 30 * Math.cos((Math.PI / 3) * i + 0.1), 35 + 30 * Math.sin((Math.PI / 3) * i + 0.1)] as [number, number]);
+      const hole: [number, number][] = [[30.5, 30.5], [30.5, 40.25], [41, 40.25], [41, 30.5]];
+      const region: MultiPolygon = [[hexagon, hole]];
+      const out = clipTin(tin, region)!;
+      expect(tinArea(out)).toBeCloseTo(multiArea(region), 8);
+      checkConforming(out);
+      for (let i = 0; i < out.vertices.length; i += 3) expect(out.vertices[i + 2]).toBeCloseTo(plane(out.vertices[i], out.vertices[i + 1]), 9);
+      // Joined by index: each vertex once.
+      const seen = new Set<string>();
+      for (let i = 0; i < out.vertices.length; i += 3) seen.add(`${out.vertices[i]},${out.vertices[i + 1]}`);
+      expect(seen.size).toBe(out.vertices.length / 3);
+    });
+
+    it('returns the whole TIN for a region around it and nothing for one away from it', () => {
+      const around = clipTin(tin, [[[[-5, -5], [80, -5], [80, 80], [-5, 80]]]])!;
+      expect(around.triangles.length).toBe(tin.triangles.length);
+      expect(tinArea(around)).toBeCloseTo(70 * 70, 9);
+      expect(clipTin(tin, [[[[100, 100], [110, 100], [110, 110], [100, 110]]]])).toBeNull();
+    });
+  });
 });

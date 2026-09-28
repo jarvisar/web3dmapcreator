@@ -27,6 +27,7 @@ The build goes to `build/`, not `dist/`. In this repository `dist/` held the Ble
 | `src/core/geometry/` | Polygon booleans (Clipper2), the prism mesher, spatial indexes, mesh checks |
 | `src/core/terrain/` | The shared terrain height grid |
 | `src/core/lidar/` | LiDAR: survey discovery, EPT and COPC reading, building measurement and roof envelopes |
+| `src/core/dsm/` | LiDAR only models: reading a survey into a grid, the height rules, the mesh and the model |
 | `src/core/pipeline/` | Generation: water, roads, bridges, land cover, buildings, trees, meshing, plates |
 | `src/core/export/` | Bambu Studio, PrusaSlicer, 3MF and STL writers |
 | `src/core/engine/` | Messages between the page and the worker |
@@ -43,6 +44,7 @@ The build goes to `build/`, not `dist/`. In this repository `dist/` held the Ble
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --out out/loop.3mf
 npx tsx scripts/generate.ts --bbox -82.83485,27.96044,-82.79572,27.98152 --format stl-zip --out out/clearwater.zip
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar --out out/loop-lidar.3mf
+npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar-only --out out/loop-surface.3mf
 
 # Download an area's data and print what came back
 npx tsx scripts/fetch-area.ts --bbox -87.635,41.875,-87.625,41.885 --out out/area.json
@@ -61,6 +63,8 @@ node scripts/e2e.mjs http://localhost:5173/ out/e2e
 `generate.ts` takes `--shape`, `--rotation`, `--scale`, `--fit`, `--format`, `--printer`, `--multi-plate`, `--section`, `--bridges`, `--trees`, `--flat`, `--lidar` and `--settings file.json` (merged onto the defaults). The `out/` folder is ignored.
 
 With `--lidar`, point data and batch results are kept in `out/lidar-cache` (or `--lidar-cache folder`), which is never evicted, so delete it to start over. Batches run in worker threads, one fewer than the cores up to four (`--lidar-threads n`, 1 to stay on the main thread). `--lidar-records file.json` writes the measured records for comparing runs.
+
+`--lidar-only` builds a LiDAR only model instead, with its blocks checkpointed in the same folder and up to eight threads. `--detail mm` sets its cell size, `--cut-water` cuts its water away, and `--surface-out folder` writes the grid's layers as raw binaries with a `grid.json`, for looking at them in something else.
 
 `check-bambu.ts` gives Bambu Studio its own data folder, so your own settings, presets and recent files are never touched.
 

@@ -6,13 +6,13 @@
 // download.
 
 import type { GeoBounds } from '../../types';
-import type { Points } from '../points';
+import { emptyPoints, type Points } from '../points';
 import { crsFromEpsg, crsFromWkt, geoKeyEpsg, headerVerticalFactor, lonLatTransforms, regionalVerticalFactor, type CrsInfo } from './crs';
 import { BudgetExceeded, type ReadInfo, type ReadOptions } from './ept';
 import { ahead, type Fetcher } from './fetcher';
 import { lazDecoder } from './laz';
 import { classificationLookup, findVlr, geoKeys, readCopcInfo, readEvlrs, readHeader, readHierarchyPage, readVlrs, wktOf, type HierarchyEntry, type Vlr } from './las';
-import { classTable, normalizeRecords, PointSink, queryBounds } from './normalize';
+import { classTable, normalizeRecords, PointSink, queryBounds, surfaceClassTable } from './normalize';
 
 const UNITS: Record<string, number> = { m: 1, metre: 1, meter: 1, ft: 0.3048, 'us-ft': 1200 / 3937 };
 
@@ -62,7 +62,7 @@ function tileCrs(vlrs: Vlr[], declared?: string): CrsInfo {
 
 /** Cropped, normalized returns inside `bbox` from each intersecting tile. */
 export async function readCopc(fetcher: Fetcher, tiles: CopcTile[], bbox: GeoBounds, options: ReadOptions): Promise<{ points: Points; info: ReadInfo & { tiles: number } }> {
-  const sink = new PointSink();
+  const sink = options.sink ?? new PointSink();
   const maxPoints = options.maxPoints ?? 8e6;
   const decoder = await lazDecoder();
   let nodesRead = 0;
@@ -100,7 +100,8 @@ export async function readCopc(fetcher: Fetcher, tiles: CopcTile[], bbox: GeoBou
     const nodes = await hierarchy(fetcher, tile.url, info, query, levels);
     const total = nodes.reduce((s, n) => s + n.pointCount, 0);
     if (nodes.length > 4096 || total > maxPoints * 4) throw new BudgetExceeded('COPC node or point budget reached');
-    const classes = classTable(classificationLookup(vlrs) ?? options.classification);
+    const mapping = classificationLookup(vlrs) ?? options.classification;
+    const classes = options.surface ? surfaceClassTable(mapping, options.surfaceCodes) : classTable(mapping);
     const chunks = decoder.chunkDecoder(laszip.data);
     try {
       let n = 0;
@@ -108,7 +109,7 @@ export async function readCopc(fetcher: Fetcher, tiles: CopcTile[], bbox: GeoBou
         const node = nodes[n++];
         await options.progress?.(`Decoding COPC tile ${t + 1} of ${intersecting.length}, node ${n} of ${nodes.length}; ${sink.count.toLocaleString('en-US')} points kept`);
         const records = chunks.decode(new Uint8Array(body), node.pointCount);
-        normalizeRecords(records, node.pointCount, header.pointSize, { header, query, bbox, toLonLat, frame: options.frame, zFactor, classes }, sink);
+        normalizeRecords(records, node.pointCount, header.pointSize, { header, query, bbox, toLonLat, frame: options.frame, zFactor, classes, years: !options.surface }, sink);
         if (sink.count > maxPoints) throw new BudgetExceeded('Cropped LiDAR point budget reached');
       }
       nodesRead += nodes.length;
@@ -116,8 +117,8 @@ export async function readCopc(fetcher: Fetcher, tiles: CopcTile[], bbox: GeoBou
       chunks.free();
     }
   }
-  const points = sink.finish();
-  return { points, info: { url: tiles[0]?.url ?? '', nodes: nodesRead, points: points.count, horizontalCrs: crsKey, zToMetres: zUsed, tiles: intersecting.length } };
+  const points = sink instanceof PointSink ? sink.finish() : emptyPoints();
+  return { points, info: { url: tiles[0]?.url ?? '', nodes: nodesRead, points: sink.count, horizontalCrs: crsKey, zToMetres: zUsed, tiles: intersecting.length } };
 }
 
 /** Data nodes intersecting the query above the depth limit, reading child pages only where needed. */

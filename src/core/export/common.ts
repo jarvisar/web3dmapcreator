@@ -171,12 +171,12 @@ export interface PreparedPlate {
 export interface PreparedModel {
   plates: PreparedPlate[];
   extents: Extents;
-  /** The Copyright text: map data, then any other sources the model used. */
+  /** The Copyright text: map data (unless the model used none), then any other sources the model used. */
   attribution: string;
 }
 
 /** Validates every plate and part up front, so a bad part fails before any output. */
-export function preparePlates(plates: Plate[], palette: Palette, credits: string[] = []): PreparedModel {
+export function preparePlates(plates: Plate[], palette: Palette, credits: string[] = [], mapData = true): PreparedModel {
   if (!plates.length) throw new Error('An export needs at least one plate');
   const extents = emptyExtents();
   const prepared = plates.map((plate): PreparedPlate => {
@@ -199,7 +199,7 @@ export function preparePlates(plates: Plate[], palette: Palette, credits: string
     mergeExtents(extents, plateExtents);
     return { name: plate.name, bounds: [...bounds], parts, extents: plateExtents };
   });
-  return { plates: prepared, extents, attribution: [ATTRIBUTION, ...credits].join('; ') };
+  return { plates: prepared, extents, attribution: [...(mapData ? [ATTRIBUTION] : []), ...credits].join('; ') };
 }
 
 export interface FilamentUse {

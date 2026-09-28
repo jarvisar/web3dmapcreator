@@ -11,7 +11,9 @@ surfaces, roads/rail, optional schematic bridges and trees, and buildings with
 roofs from Overture Maps. It is a port of the Jarvizar City Model Blender
 add-on (separate repo `3dmapcreator`, not a dependency). Its LiDAR pipeline is
 ported for streamed surveys only (EPT and COPC). Staged LAZ downloads were left
-out. There is no server: data is read from public, CORS-enabled sources.
+out. `settings.modelSource = 'lidar'` (LiDAR only) builds the whole model from
+a survey alone instead, as one solid in the terrain colour (`src/core/dsm/`).
+There is no server: data is read from public, CORS-enabled sources.
 
 One model unit is one printed millimetre. Default scale 0.07 mm per metre
 (1:14,286). Defaults live in `src/core/settings.ts` and follow the add-on.
@@ -24,6 +26,7 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/data/` | Overture GeoParquet reads from S3 (STAC index, row-group pruning, two-pass page reads, hyparquet), Terrarium DEM tiles, IndexedDB byte cache, HTTP retries/limiter |
 | `src/core/geometry/` | Clipper2 wrappers (`polygon.ts`), prism mesher (`mesher.ts`, Delaunator + Constrainautor CDT with earcut fallback), edge/raster indexes, mesh validation |
 | `src/core/terrain/` | `HeightField`: the one grid every layer samples |
+| `src/core/dsm/` | LiDAR only models: `prepare.ts` reads a survey into a grid (`raster.ts`, `grid.ts`), `compose.ts`/`filters.ts` the height rules, `mesh.ts` RTIN and edge collapse, `model.ts` the `ModelSpec` |
 | `src/core/lidar/` | LiDAR: `sources/` discovery (USGS EPT, IGN, NRCan, swisstopo, Flai COPC), `read/` EPT/COPC/LAS reading with an injected LAZ decoder and projector, measurement (`measure.ts`, `envelope.ts`, ground, planes, terraces, selection), roof surfaces (`regularize.ts`, `delatin.ts`, `coarsen.ts`, `rim.ts`), `prepare.ts` batching and checkpoints |
 | `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
@@ -115,6 +118,50 @@ LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
 - With `preferLidar` off, mapped assemblies with more levels or a shaped roof
   the measurement lacks are kept (`preferSourceDetail`).
 
+LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
+
+- The grid is the area's own rectangle in its rotated frame, a cell centred
+  on each vertex. Nothing is resampled between reading and meshing. A square
+  area turned 90 degrees reads identical cells, which is a good check after
+  touching projection or rasterizing.
+- `compose.ts` is a port of the add-on's `dsm_model.compose` and matches it on
+  its prepared Chicago, Philadelphia and Boston grids (float32 flips 1 to 3
+  cells per grid on exact thresholds). Keep the rules and their order. The
+  deliberate differences: removed trees are ordinary cells again, `inside`
+  limits the base to the area shape, water grows into partly wet cells at
+  its level and takes in specks (`GROW_M`, `takeSpecks`, for San Francisco's
+  2023 survey), and cut water takes its bank's height for `BANK_RINGS` rings,
+  then the TIN is clipped along it (the add-on drops cut cells to the bottom
+  before meshing).
+- The density probe (`occupiedCell`) counts land as 2 m squares with a
+  return that isn't water. The add-on counts any return, which grew the
+  Chicago lakefront's cells to 2.08 m. Probe results are saved under
+  `PROBE_VERSION`.
+- Blocks are counted into cells as they're read (`BlockRaster`), never held as
+  points, and checkpointed in the LiDAR cache under `VERSION`. Raise it when
+  what a block stores changes. A block with a failed read isn't saved.
+- Surveys: whole-area coverage first, then `rankOrder`. A cell belongs to the
+  first survey whose outline holds it, returns or not.
+- The mesher prices collapses by memoryless quadrics against the current
+  faces (the add-on's, so stair walls straighten), and also checks every
+  collapse against the grid (`GridBound`): no grid point further than one
+  cell from the surface, square to it. Don't drop that check. Without it
+  vertices drift until penthouses are pyramids, the reason roof caps moved to
+  Delatin. Tiles are simplified in workers with edge points pinned, then the
+  seams get their own pass.
+- The model is one `CapSolid`, cut to shapes, sections and cut water by
+  `clipTin`. `clipBand` only triangulates the triangles near the outline, and
+  a triangle counts as near when an outline edge crosses its box, so both
+  triangles on any edge the outline touches are near. Keep it that way or
+  the two parts won't meet.
+- `Cut away water` is the add-on's `cut_water` (`cutWater`): survey water
+  of at least `water.cutMinAreaM2` (shared with map models), water within
+  40 m counting as one body across bridges, opened to 0.4 mm printed, none
+  more than 3 m above the ground (roof pools), and land it leaves alone
+  under 4 mm² printed goes too. The one change is that specks under
+  `SPECK_M2` are also filled before the opening. Overture water was
+  compared and rejected, see `docs/LIDAR_MODEL.md`.
+
 ## Verification
 
 ```powershell
@@ -123,6 +170,7 @@ npx tsc --noEmit
 $env:NETWORK=1; npx vitest run src/core/data   # live data tests
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --out out/loop.3mf
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar   # point cache in out/lidar-cache
+npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar-only --out out/loop-surface.3mf   # --cut-water to cut the river
 npx tsx scripts/check-bambu.ts   # round trip through installed Bambu Studio (isolated data dir)
 npm run build                # site into build/ (not dist/, which holds old add-on archives)
 ```
@@ -131,6 +179,8 @@ For geometry work check closure and winding (`edgeReport`, `signedVolume`)
 on real presets (Chicago Loop, Clearwater, Rome, San Francisco), and look at
 renders. `scripts/shot.mjs` screenshots the dev server with the installed Edge.
 Regression areas are fixtures, never reasons for location-specific code.
+LiDAR only output can be compared against the Micropolitan reference STLs in
+`examples_and_inspiration/` (git-ignored).
 
 Machine-local folders carried over from the add-on (`scratchpad/`, `dist/`,
 `.venv-overture/`) are ignored and unrelated to the web app.

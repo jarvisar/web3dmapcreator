@@ -45,7 +45,7 @@ Terrain heights come from the AWS Terrain Tiles open dataset (`elevation-tiles-p
 
 ## LiDAR
 
-Only downloaded when `LiDAR` is on. The surveys a model used are listed under `Model details` and in the attribution of exported 3MF files.
+Only downloaded for LiDAR buildings (`LiDAR` on) and LiDAR only models. The surveys a model used are listed under `Model details` and in the attribution of exported 3MF files.
 
 | Source | Where | License |
 | --- | --- | --- |
@@ -64,5 +64,7 @@ The map on the site uses [OpenFreeMap](https://openfreemap.org) vector tiles (©
 ## Printed models
 
 Exported 3MF files carry the map-data attribution in their metadata, and STL files carry it in their header. With LiDAR on, the 3MF metadata lists the surveys used as well. An STL header only has room for the map-data line.
+
+A LiDAR only model uses no map data or elevation tiles, so its 3MF metadata and STL header credit only the surveys.
 
 Under the ODbL a printed model made from this data is a Produced Work. If you sell or display one publicly, include the attribution with it, for example on the product listing, the packaging or a label on the base. This is not legal advice.

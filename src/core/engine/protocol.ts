@@ -44,6 +44,21 @@ export interface GenerateResult {
   timings: Record<string, number>;
   /** What LiDAR measured, when it was on. */
   lidar?: LidarSummary;
+  /** What a LiDAR Only model was read from. */
+  surface?: SurfaceSummary;
+}
+
+export interface SurfaceSummary {
+  /** Grid cell used, and asked for, in metres. */
+  cellM: number;
+  requestedCellM: number;
+  /** Share of the area with returns. */
+  coverage: number;
+  surveys: { name: string; provider: string; year: number | null; attribution: string; sourcePage: string }[];
+  failures: string[];
+  downloadedBytes: number;
+  /** Every block came from an earlier read. */
+  reused: boolean;
 }
 
 export interface LidarSurvey {

@@ -109,6 +109,39 @@ function dateOnly(value: unknown): string | undefined {
 
 export const USGS_CATALOG = 'https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson';
 
+/** Area of lon/lat polygons on the sphere, in m². */
+export function sphericalArea(polygons: Polygon[]): number {
+  const R = 6378137;
+  const rad = Math.PI / 180;
+  let total = 0;
+  for (const polygon of polygons) {
+    polygon.forEach((ring, r) => {
+      let a = 0;
+      for (let i = 0; i < ring.length; i++) {
+        const [x1, y1] = ring[i];
+        const [x2, y2] = ring[(i + 1) % ring.length];
+        a += (x2 - x1) * rad * (2 + Math.sin(y1 * rad) + Math.sin(y2 * rad));
+      }
+      total += (r === 0 ? 1 : -1) * Math.abs((a * R * R) / 2);
+    });
+  }
+  return total;
+}
+
+// The catalog has no densities, and names alone put a sparse 2018 wildfire
+// survey ahead of a 2023 one with ten times the returns over San Francisco.
+// An EPT's ept.json has its point count, so points over the outline's area
+// is its density, near enough.
+async function eptDensity(fetcher: Fetcher, candidate: Candidate): Promise<number | undefined> {
+  try {
+    const meta = (await fetcher.json(candidate.url)) as { points?: unknown };
+    const area = sphericalArea(candidate.coverage);
+    return typeof meta.points === 'number' && meta.points > 0 && area > 0 ? meta.points / area : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const discoverUsgs: Discover = async (fetcher, bbox) => {
   const catalog = (await fetcher.json(USGS_CATALOG)) as { features: { properties: { name: string; url: string }; geometry: { type: string; coordinates: unknown } }[] };
   const out: Candidate[] = [];
@@ -130,6 +163,7 @@ const discoverUsgs: Discover = async (fetcher, bbox) => {
       projectYearHint: projectYear(name),
     });
   }
+  await Promise.all(out.map(async (candidate) => (candidate.densityM2 = await eptDensity(fetcher, candidate))));
   return out;
 };
 

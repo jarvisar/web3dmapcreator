@@ -30,6 +30,16 @@
 
 **The first LiDAR model is slow.** Surveys differ a lot in density. The `Chicago - The Loop (small)` preset (3.3 km²) reads about 790 MB and takes about 4 minutes on a desktop, and the `Paris - Eiffel Tower` preset (8 km²) about 2.2 GB and 15 minutes. Copenhagen's survey needs about 175 MB per km², downtown Toronto's about 430. It's kept in the browser (up to 1 GB), and the measured buildings are reused for a day, so changing other settings afterwards is quick.
 
+**"No LiDAR survey that a browser can read covers this area."** A LiDAR only model needs a streamed survey over the area: the US, France, Canada and Switzerland, and other countries where Open LiDAR Data has a dataset. Switch back to `Map data` elsewhere.
+
+**Flat patches, smeared edges or bumpy roofs in a LiDAR only model.** Glass, dark roofs and water return few points, and a sparse survey leaves gaps between its scan lines. Those cells take their neighbours' heights. When `Model details` shows larger cells than `Detail` asks for, the survey is too sparse for it, and a smaller `Detail` won't add points the survey doesn't have.
+
+**A river or harbour prints as ground in a LiDAR only model.** Water comes from the survey alone, and some surveys file few or no water returns. IGN's survey of Paris leaves the Petit Bras beside Notre-Dame as holes, which take the height of the ground around them. For now `Map data` is the way to get that water, since it cuts Overture's water instead.
+
+**Some water stays recessed with `Cut away water` on.** Water smaller than `Cut through the base above`, narrower than about 0.4 mm printed or up on a roof stays recessed. In a survey that doesn't mark water returns, only large holes on the ground count as water at all.
+
+**A LiDAR only model is slow the first time.** It reads the survey over the whole area, but only as finely as the cells need. That came to about 75 MB per km² for Philadelphia's 2015 survey, 125 for Paris and 450 for San Francisco's densest survey at 0.25 m cells. A 600 m circle in downtown Chicago read 101 MB and took 30 seconds on a desktop. What's read is kept in the browser (up to 1 GB), so changing anything but the area, the scale or `Detail` builds again in seconds.
+
 ## The map and 3D view
 
 **The map or the 3D view stays blank.** Both need WebGL. Turn on hardware acceleration in your browser's settings, update your graphics driver, or try another browser.

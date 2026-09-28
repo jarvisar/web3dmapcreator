@@ -1,0 +1,194 @@
+// A LiDAR Only model from a prepared grid: one closed solid in the terrain
+// colour, with ground, buildings, trees and bridges as the survey saw them,
+// standing on a flat base. compose decides the heights and mesh.ts the
+// triangles. The solid is a cap (a TIN top with walls down to a flat
+// underside), so cutting it to the area's shape or into print sections is a
+// 2D clip like everything else.
+
+import { areaModelRing, effectiveScale } from '../geo/area';
+import { capBoundary } from '../geometry/cap';
+import { difference, offsetPolygons, ringArea, simplifyPolygons, union } from '../geometry/polygon';
+import { rowCrossings } from '../geometry/scanline';
+import type { CapSolid, Layer } from '../geometry/solid';
+import { clipTin, type Tin } from '../geometry/tinclip';
+import { Progress } from '../pipeline/context';
+import type { ModelSpec } from '../pipeline/generate';
+import type { AreaSpec, ModelSettings } from '../settings';
+import type { ModelStats, MultiPolygon, Polygon, Ring } from '../types';
+import { compose, ISLAND_MIN_MM2 } from './compose';
+import { meshSurface, type TileJob, type TileResult } from './mesh';
+import type { PreparedSurface } from './prepare';
+
+// The mesh may move the surface by one grid cell, and merges an edge while
+// its quadric cost stays under this many cells squared, which straightens a
+// wall drawn in one-cell stairs.
+const DEVIATION_CELLS = 1;
+const THRESHOLD_CELLS2 = 16;
+const MIN_GAP_CELLS = 0.02;
+const CLUTTER_M = 2;
+// Land narrower than twice this beside cut water is opened away, as thin
+// land slabs are. Pieces under ISLAND_MIN_MM2 go, as compose does on the
+// grid, since the area's shape can cut off new ones.
+const SLIVER_MM = 0.1;
+
+export interface SurfaceModelInput {
+  area: AreaSpec;
+  settings: ModelSettings;
+  surface: PreparedSurface;
+  progress?: Progress;
+  /** Simplifies mesh tiles, e.g. in the LiDAR workers. */
+  runTile?: (job: TileJob) => Promise<TileResult>;
+  concurrency?: number;
+}
+
+/** Grid cells whose centre is inside the ring, one byte each. */
+function cellsInRing(ring: Ring, nx: number, ny: number, x0: number, y0: number, dx: number, dy: number): Uint8Array {
+  const out = new Uint8Array(nx * ny);
+  const rows = rowCrossings([ring], y0, dy, 0, ny);
+  for (let j = 0; j < ny; j++) {
+    const xs = rows[j];
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const i0 = Math.max(0, Math.ceil((xs[k] - x0) / dx));
+      const i1 = Math.min(nx, Math.ceil((xs[k + 1] - x0) / dx));
+      out.fill(1, j * nx + i0, j * nx + Math.max(i0, i1));
+    }
+  }
+  return out;
+}
+
+/**
+ * Cells of a mask as squares around their grid points, merged, with the
+ * one-cell stairs of a diagonal shore taken out.
+ */
+export function maskOutline(mask: Uint8Array, nx: number, ny: number, x0: number, y0: number, dx: number, dy: number): MultiPolygon {
+  const pieces: Polygon[] = [];
+  const box = (i0: number, i1: number, j0: number, j1: number) => {
+    const [xa, xb] = [x0 + (i0 - 0.5) * dx, x0 + (i1 - 0.5) * dx];
+    const [ya, yb] = [y0 + (j0 - 0.5) * dy, y0 + (j1 - 0.5) * dy];
+    pieces.push([[[xa, ya], [xb, ya], [xb, yb], [xa, yb]]]);
+  };
+  // Runs along each row, grown upwards while the next row repeats them.
+  let open = new Map<number, number>();
+  for (let j = 0; j <= ny; j++) {
+    const next = new Map<number, number>();
+    for (let i = 0; j < ny && i < nx; ) {
+      if (!mask[j * nx + i]) {
+        i++;
+        continue;
+      }
+      const i0 = i;
+      while (i < nx && mask[j * nx + i]) i++;
+      const key = i0 * (nx + 1) + i;
+      next.set(key, open.get(key) ?? j);
+      open.delete(key);
+    }
+    for (const [key, j0] of open) box(Math.floor(key / (nx + 1)), key % (nx + 1), j0, j);
+    open = next;
+  }
+  return simplifyPolygons(union(pieces), 0.75 * Math.min(dx, dy));
+}
+
+/**
+ * The area's shape less the cut water, with land too thin to print opened
+ * away. Land well clear of the water keeps the shape's own corners.
+ */
+function landRegion(crop: Ring, water: MultiPolygon): MultiPolygon {
+  const shape: MultiPolygon = [[crop]];
+  const land = difference(shape, water);
+  const opened = offsetPolygons(offsetPolygons(land, -SLIVER_MM, 'round'), SLIVER_MM, 'round');
+  const clear = difference(shape, offsetPolygons(water, 2 * SLIVER_MM, 'round'));
+  // Holes are cut water and all stay.
+  return union(opened, clear).filter((polygon) => Math.abs(ringArea(polygon[0])) >= ISLAND_MIN_MM2);
+}
+
+/** The surface cut to a region, pulled a micron apart where two outlines only meet at a point. */
+function cutSurface(tin: Tin, region: MultiPolygon): Tin {
+  let clipped = clipTin(tin, region);
+  if (clipped && !capBoundary(clipped)) clipped = clipTin(tin, offsetPolygons(region, -1e-3, 'miter'));
+  if (!clipped || !capBoundary(clipped)) throw new Error('The LiDAR surface could not be cut to the area shape. Try the rectangle shape.');
+  return clipped;
+}
+
+export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec> {
+  const { area, settings, surface } = input;
+  const progress = input.progress ?? new Progress();
+  const mmPerMetre = effectiveScale(area, settings.scale);
+  const crop = areaModelRing(area, mmPerMetre);
+  const { layers, grid } = surface;
+  const { nx, ny } = layers;
+  // The same expressions areaModelRing uses, so a rectangle's surface ends exactly on its outline.
+  const x1 = (area.widthM * mmPerMetre) / 2;
+  const y1 = (area.heightM * mmPerMetre) / 2;
+  const x0 = -x1;
+  const y0 = -y1;
+  const dx = (x1 - x0) / (nx - 1);
+  const dy = (y1 - y0) / (ny - 1);
+  const rectangle = area.shape === 'rectangle' || (area.shape === 'rounded' && area.cornerRadius <= 0);
+  const stats: ModelStats = {};
+  const warnings: string[] = [];
+
+  progress.begin('terrain', 'Finding ground, water and trees', 0.62, 0.08);
+  await progress.checkpoint();
+  const inside = rectangle ? undefined : cellsInRing(crop, nx, ny, x0, y0, dx, dy);
+  const lidar = settings.lidarModel;
+  const result = compose(
+    layers,
+    grid.dx,
+    grid.dy,
+    mmPerMetre,
+    mmPerMetre,
+    {
+      keepTrees: lidar.keepTrees,
+      removeClutter: lidar.removeClutter,
+      clutterHeightM: CLUTTER_M,
+      waterDepthMm: lidar.waterDepthMm,
+      heightScale: lidar.heightScale,
+      terrainExaggeration: settings.terrain.exaggeration,
+      baseMm: settings.terrain.baseThicknessMm,
+      cutWater: lidar.cutWater,
+      cutMinAreaM2: settings.water.cutMinAreaM2,
+    },
+    inside,
+  );
+  for (const [key, value] of Object.entries(result.counts)) stats[`lidar_model_${key}`] = value;
+
+  progress.begin('mesh', 'Meshing the LiDAR surface', 0.7, 0.2);
+  const cell = Math.min(dx, dy);
+  let tin = await meshSurface(
+    { heights: result.heights, detail: result.detail, nx, ny, x0, y0, x1, y1, dx, dy },
+    { deviation: DEVIATION_CELLS * cell, threshold: THRESHOLD_CELLS2 * cell * cell, minGap: MIN_GAP_CELLS * cell },
+    { runTile: input.runTile, concurrency: input.concurrency, progress: (fraction) => progress.checkpoint(fraction) },
+  );
+  stats.lidar_model_surface_triangles = tin.triangles.length / 3;
+  if (result.counts.cut_water_cells) {
+    const region = landRegion(crop, maskOutline(result.cut, nx, ny, x0, y0, dx, dy));
+    if (!region.length) throw new Error('Nothing is left once the water is cut away. Turn off Cut away water, or move the area onto land.');
+    tin = cutSurface(tin, region);
+  } else if (!rectangle) {
+    tin = cutSurface(tin, [[crop]]);
+  }
+  const solid: CapSolid = { kind: 'cap', role: 'terrain', vertices: tin.vertices, triangles: tin.triangles, bottom: 0 };
+  const layersOut: Layer[] = [{ id: 'city', name: 'City', role: 'terrain', solids: [solid] }];
+
+  let outline: Polygon = [crop];
+  if (settings.rim.enabled && settings.rim.widthMm > 0) {
+    const outer = offsetPolygons([[crop]], settings.rim.widthMm, 'miter');
+    const ring = difference(outer, [[crop]]);
+    // Above the ground, not the tallest tower.
+    const top = result.groundMaxMm + settings.rim.heightMm;
+    layersOut.push({ id: 'rim', name: 'Border Rim', role: 'rim', solids: ring.map((polygon) => ({ kind: 'prism', role: 'rim', polygon, top, bottom: 0, drape: 0 })) });
+    if (outer.length === 1) outline = [outer[0][0]];
+  }
+
+  stats.lidar_model_cell_m = Math.round(grid.cell * 100) / 100;
+  stats.lidar_model_grid = `${nx} x ${ny}`;
+  stats.lidar_model_coverage = Math.round(surface.coverage * 1000) / 1000;
+  if (surface.coverage < 0.5) warnings.push('Much of the area has no LiDAR returns. It may be water, or outside the survey.');
+  if (grid.cell > surface.requestedCellM + 1e-9) {
+    warnings.push(
+      `The survey is too sparse for ${surface.requestedCellM.toFixed(2)} m cells, so the model uses ${grid.cell.toFixed(2)} m cells. A smaller Detail value won't add points the survey doesn't have.`,
+    );
+  }
+  for (const failure of surface.failures.slice(0, 3)) warnings.push(`LiDAR from ${failure.source} could not be read: ${failure.reason}`);
+  return { layers: layersOut, outline, crop: [crop], baseZ: 0, mmPerMetre, stats, warnings };
+}

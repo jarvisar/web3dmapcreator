@@ -116,14 +116,14 @@ function geometryRings(geometry: SourceFeature['geometry'] | null | undefined): 
   return [];
 }
 
-function toMetric(polygons: Polygon[], frame: Projection): MultiPolygon {
+export function toMetric(polygons: Polygon[], frame: Projection): MultiPolygon {
   const projected = polygons.map((polygon) => polygon.filter((ring) => ring.length >= 3).map((ring) => ring.map(([lon, lat]) => frame.toLocal(lon, lat))));
   const valid = projected.filter((p) => p.length);
   return keepStart(union(valid), valid);
 }
 
 /** Sutherland-Hodgman of lon/lat rings against a lon/lat box, before projecting huge catalog outlines. */
-function clipRingToBox(ring: Ring, [w, s, e, n]: [number, number, number, number]): Ring {
+export function clipRingToBox(ring: Ring, [w, s, e, n]: [number, number, number, number]): Ring {
   let points = ring;
   const sides: [(p: [number, number]) => boolean, (a: [number, number], b: [number, number]) => [number, number]][] = [
     [(p) => p[0] >= w, (a, b) => [w, a[1] + ((w - a[0]) / (b[0] - a[0])) * (b[1] - a[1])]],
@@ -148,7 +148,7 @@ function clipRingToBox(ring: Ring, [w, s, e, n]: [number, number, number, number
 // Ranking of surveys for one building, after the add-on's metadata_order:
 // newest acquisition first, then coverage, resolution and classification,
 // EPT before COPC on ties, the original publisher before a mirror.
-interface Ranked {
+export interface Ranked {
   candidate: Candidate;
   coverage: MultiPolygon;
   catalogCoverage: number;
@@ -161,7 +161,7 @@ function acquisitionOrdinal(c: Candidate): number {
   return hint ? Date.UTC(hint, 0, 1) / DAY_MS : 0;
 }
 
-function rankOrder(a: Ranked, b: Ranked): number {
+export function rankOrder(a: Ranked, b: Ranked): number {
   const key = (r: Ranked) => {
     const density = r.candidate.densityM2;
     return [
