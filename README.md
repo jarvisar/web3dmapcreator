@@ -1,6 +1,6 @@
 # Jarvizar City Model
 
-Turn any area of the map into a multicolour 3D printable city model, right in your browser. It builds terrain, water, parks, roads and buildings from [Overture Maps](https://overturemaps.org) data and public elevation tiles, sized for FDM printing with a 0.4 mm nozzle, and exports a Bambu Studio project with one filament per colour.
+Turn any area of the map into a multicolour 3D printable city model, right in your browser. It builds terrain, water, parks, roads and buildings from [Overture Maps](https://overturemaps.org) data and public elevation tiles, optionally measures the buildings from public LiDAR surveys, and sizes it all for FDM printing with a 0.4 mm nozzle, and exports a Bambu Studio project with one filament per colour.
 
 Visit the [GitHub Pages site](https://jarvisar.github.io/web3dmapcreator/) to use the latest version.
 
@@ -12,7 +12,7 @@ This is the web version of my Blender add-on. It runs the same generation rules,
 
 1. Search for a place, pick one of the `Presets`, or drag the box on the map. Drag a corner to resize it and the round handle to rotate it.
 2. Pick a shape (rectangle, rounded, circle or hexagon) and check the printed size under `Print size`. The default scale is 0.07 mm per metre, so a 2 km wide area prints 140 mm wide.
-3. Turn layers on or off under `Layers`, and pick filament colours under `Colours`. The Bambu PLA Basic and Matte colours are built in.
+3. Turn layers on or off under `Layers`, and pick filament colours under `Colours`. The Bambu PLA Basic and Matte colours are built in. Turn on `LiDAR` to measure buildings from a public survey where one covers the area.
 4. Click `Generate model`. The map data downloads first, which takes a few seconds for a small area.
 5. Look the model over in the 3D view, then click `Download`.
 
@@ -27,6 +27,7 @@ Open the 3MF in Bambu Studio with `File > Open Project`. Every part already has 
 - Parks, forest, sand, rock and paving, each as its own colour
 - Roads, paths, railways and airport paving, widened where needed so they print with a 0.4 mm nozzle
 - Buildings from mapped heights and building parts, with gabled, hipped, skillion, pyramid and dome roofs
+- Optional LiDAR buildings, rebuilt from their scanned roofs with setbacks, towers, domes and spires, from USGS 3DEP, IGN France, NRCan, swisstopo and Open LiDAR Data
 - Optional bridges on piers, trees and a border rim
 - Crop to a rectangle, rounded rectangle, circle or hexagon, rotated to follow the street grid
 - Fixed print scale, or fit the model to a size
@@ -58,6 +59,8 @@ Pushing to `main` deploys the site with GitHub Actions. Set `Settings > Pages > 
 - An area that needs more than 300 MB of map data is refused. Make it smaller or pick fewer layers.
 - Map data varies by city. Buildings without a mapped height get a typical height for their type, and some places have few mapped buildings.
 - Bridges are schematic: decks on evenly spaced piers, without towers, arches or trusses.
+- LiDAR is only read from surveys a browser can stream (EPT and COPC). Places only covered by tiled LAZ downloads, like England, most of Germany and Spain, keep their mapped buildings.
+- LiDAR downloads are big: 150 to 450 MB per km² depending on the survey. The `Chicago - The Loop (small)` preset reads about 790 MB and takes about 4 minutes the first time, the `Paris - Eiffel Tower` preset about 2.2 GB and 15 minutes. Point data is cached in the browser up to 1 GB, and measured buildings are reused for a day.
 - The model is made of separate overlapping parts, one per colour. Slicers join them, but other tools may report them as intersecting.
 - The Bambu Studio project is tested in Bambu Studio 2.8. It hasn't been tested in OrcaSlicer.
 - Areas that cross the 180th meridian aren't supported.
@@ -68,9 +71,9 @@ See [troubleshooting](docs/TROUBLESHOOTING.md) if something goes wrong, and [how
 
 ## Credits
 
-Map data © OpenStreetMap contributors, Overture Maps Foundation. Elevation from the AWS Terrain Tiles open dataset. Basemap © OpenFreeMap, OpenMapTiles, OpenStreetMap contributors. See [data sources](docs/DATA_SOURCES.md) for the full attribution, and what to include with printed models.
+Map data © OpenStreetMap contributors, Overture Maps Foundation. Elevation from the AWS Terrain Tiles open dataset. LiDAR from USGS 3DEP, IGN, NRCan, swisstopo and Open LiDAR Data by Flai when that layer is on. Basemap © OpenFreeMap, OpenMapTiles, OpenStreetMap contributors. See [data sources](docs/DATA_SOURCES.md) for the full attribution, and what to include with printed models.
 
-Built with React, MapLibre GL, three.js, hyparquet and Clipper2.
+Built with React, MapLibre GL, three.js, hyparquet and Clipper2. LiDAR is decoded by [laz-rs](https://github.com/tmontaigu/laz-rs) (Apache-2.0) and reprojected with proj4js. The site's `licenses.md` and `laz-decoder-notices.md` list the licenses of everything it bundles.
 
 ## License
 

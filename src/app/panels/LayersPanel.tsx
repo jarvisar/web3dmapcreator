@@ -1,10 +1,10 @@
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import { useId } from 'react';
 import type { ReactNode } from 'react';
-import type { ModelSettings, SurfaceCategory } from '../../core/settings';
+import type { LidarRoofMode, ModelSettings, SurfaceCategory } from '../../core/settings';
 import type { ColourGroup } from '../../core/types';
 import { Checkbox } from '../components/Checkbox';
-import { CheckField } from '../components/Fields';
+import { CheckField, SelectField } from '../components/Fields';
 import { HelpTip } from '../components/HelpTip';
 import { NumberField } from '../components/NumberField';
 import { formatInteger, formatNumber, keepUnits, listJoin } from '../lib/format';
@@ -48,7 +48,7 @@ function LayerRow({ layer, label, group, on, onToggle, checkLabel, summary, help
           {resetKey && (
             <div className="layer-foot">
               <button type="button" className="link-btn" onClick={() => resetSettingsSection(resetKey)}>
-                Reset {label.toLowerCase()} settings
+                Reset {/[A-Z].*[A-Z]/.test(label) ? label : label.toLowerCase()} settings
               </button>
             </div>
           )}
@@ -521,6 +521,51 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
   );
 }
 
+function LidarOptions({ lidar, scale }: { lidar: ModelSettings['lidar']; scale: number }) {
+  const envelope = lidar.roofMode === 'envelope';
+  return (
+    <>
+      <SelectField
+        label="Measure"
+        value={lidar.roofMode}
+        onChange={(roofMode) => patchSettings('lidar', { roofMode: roofMode as LidarRoofMode })}
+        help="Whole roofs rebuilds each building from its measured roof surface, with its setbacks, towers and roof shape. Heights only keeps the mapped shape and corrects heights that are far off."
+      >
+        <option value="envelope">Whole roofs</option>
+        <option value="heights">Heights only</option>
+      </SelectField>
+      <NumberField
+        label="Smallest footprint"
+        value={lidar.minFootprintMm2}
+        onChange={(minFootprintMm2) => patchSettings('lidar', { minFootprintMm2 })}
+        min={0}
+        max={10}
+        step={0.1}
+        decimals={2}
+        unit="mm²"
+        help={
+          scale > 0
+            ? `Buildings with a smaller printed footprint keep their mapped shape, which saves downloading and measuring them. At this scale ${formatNumber(lidar.minFootprintMm2, 2)} mm² is ${formatInteger(Math.round(lidar.minFootprintMm2 / scale ** 2))} m² on the ground. 0 measures every building.`
+            : 'Buildings with a smaller printed footprint keep their mapped shape, which saves downloading and measuring them. 0 measures every building.'
+        }
+      />
+      <CheckField
+        label="Prefer LiDAR on conflicts"
+        checked={lidar.preferLidar}
+        onChange={(preferLidar) => patchSettings('lidar', { preferLidar })}
+        help="Use a good scan even where it disagrees with the mapped height, the building's construction date or another survey. Off keeps the mapped building in those cases, which is safer where surveys are old."
+      />
+      <CheckField
+        label="Mapped bare rock"
+        checked={lidar.rockSurfaces}
+        disabled={!envelope}
+        onChange={(rockSurfaces) => patchSettings('lidar', { rockSurfaces })}
+        help="Also measure mapped bare rock, such as outcrops and cliffs, and build its surface in the rock colour. Only mapped rock areas are measured."
+      />
+    </>
+  );
+}
+
 function TreeOptions({ trees }: { trees: ModelSettings['trees'] }) {
   return (
     <>
@@ -644,6 +689,7 @@ function layerSummary(settings: ModelSettings): string {
     settings.roads.enabled && 'roads',
     settings.bridges.enabled && 'bridges',
     settings.buildings.enabled && 'buildings',
+    settings.buildings.enabled && settings.lidar.enabled && 'LiDAR',
     settings.trees.enabled && 'trees',
     settings.rim.enabled && 'rim',
   ].filter((item): item is string => Boolean(item));
@@ -653,7 +699,7 @@ function layerSummary(settings: ModelSettings): string {
 
 export function LayersPanel() {
   const settings = useApp((state) => state.settings);
-  const { terrain, water, land, roads, bridges, buildings, trees, rim } = settings;
+  const { terrain, water, land, roads, bridges, buildings, lidar, trees, rim } = settings;
   const scale = settings.scale.mode === 'fixed' ? settings.scale.mmPerMetre : 0;
 
   const roadExtras = [roads.includePaths && 'paths', roads.includeRail && 'rail', roads.includeAirports && 'airports'].filter(Boolean);
@@ -738,6 +784,20 @@ export function LayersPanel() {
           resetKey="buildings"
         >
           <BuildingOptions buildings={buildings} />
+        </LayerRow>
+
+        <LayerRow
+          layer="lidar"
+          label="LiDAR"
+          checkLabel="LiDAR buildings"
+          group="buildings"
+          on={buildings.enabled && lidar.enabled}
+          onToggle={(enabled) => patchSettings('lidar', { enabled })}
+          summary={!lidar.enabled ? 'Off' : !buildings.enabled ? 'Needs buildings' : lidar.roofMode === 'envelope' ? 'Whole roofs' : 'Heights only'}
+          help="Measures buildings from public LiDAR surveys and rebuilds each one from its scanned roof: setbacks, towers, domes and spires included. Covers the United States (USGS 3DEP), France (IGN), Canada (NRCan), Switzerland (swisstopo) and much of Europe (Open LiDAR Data). Expect 150 to 450 MB of downloads per km² depending on the survey, kept in the browser for next time, so start with a small area. Buildings nothing covers keep their mapped shape."
+          resetKey="lidar"
+        >
+          <LidarOptions lidar={lidar} scale={scale} />
         </LayerRow>
 
         <LayerRow

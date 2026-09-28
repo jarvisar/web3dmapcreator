@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@kninnug/constrainautor": "^4.1.0",
+    "@voxelkloud/wasm-codecs": "0.5.1",
     "clipper2-ts": "^2.0.1-18",
     "delaunator": "^5.1.0",
     "earcut": "^3.2.3",
@@ -26,8 +27,10 @@
     "hyparquet": "^1.31.2",
     "lucide-react": "^1.48.0",
     "maplibre-gl": "^6.11.2",
+    "proj4": "2.22.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "robust-predicates": "^3.0.3",
     "three": "^0.186.1",
     "zustand": "^5.0.15"
   },

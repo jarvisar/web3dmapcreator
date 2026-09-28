@@ -3,10 +3,14 @@
 // kept for the session, so changing a setting regenerates without
 // downloading again, and the byte cache survives reloads.
 
+import lazWasmUrl from '@voxelkloud/wasm-codecs/voxelkloud_wasm_codecs_bg.wasm?url';
+import { lidarCache } from '../core/data/cache';
 import { fetchDem, type DemMosaic } from '../core/data/dem';
 import type { OvertureData } from '../core/data/features';
 import { fetchOverture } from '../core/data/overture';
-import type { ExportRequest, FromWorker, GenerateRequest, GenerateResult, ProgressEvent, ToWorker } from '../core/engine/protocol';
+import type { ExportRequest, FromWorker, GenerateRequest, GenerateResult, LidarSummary, ProgressEvent, ToWorker } from '../core/engine/protocol';
+import { effectiveScale } from '../core/geo/area';
+import { prepareLidar, setCheckpointStore, type PreparedLidar } from '../core/lidar/prepare';
 import { exportPlates } from '../core/export';
 import { BAMBU_MAX_PLATES } from '../core/export/sections';
 import { CancelError, Progress } from '../core/pipeline/context';
@@ -16,6 +20,8 @@ import { meshLayers, partsBounds } from '../core/pipeline/mesh';
 import { buildPlates } from '../core/pipeline/plates';
 import { printerByKey, sanitizeSettings, type ModelSettings } from '../core/settings';
 import type { GeoBounds, ModelStats } from '../core/types';
+import { installLidarCodecs } from './lidarCodecs';
+import { lidarPool, lidarPoolSize } from './lidarPool';
 
 const ctx = self as unknown as {
   postMessage(message: FromWorker, transfer?: Transferable[]): void;
@@ -30,8 +36,13 @@ interface Running {
 
 let running: Running | null = null;
 let lastSpec: ModelSpec | null = null;
+let lastCredits: string[] = [];
 let overture: { key: string; data: OvertureData } | null = null;
 let elevation: { key: string; dem: DemMosaic } | null = null;
+let prepared: { key: string; lidar: PreparedLidar } | null = null;
+
+setCheckpointStore(lidarCache);
+installLidarCodecs(lazWasmUrl);
 
 function boundsKey(b: GeoBounds): string {
   return [b.west, b.south, b.east, b.north].map((v) => v.toFixed(6)).join(',');
@@ -50,6 +61,7 @@ function downloadKey(s: ModelSettings): string {
     s.trees.forestScatter,
     s.trees.landCoverScatter,
     s.supports,
+    s.lidar.enabled && s.lidar.rockSurfaces && s.lidar.roofMode === 'envelope',
   ]);
 }
 
@@ -120,12 +132,71 @@ async function loadData(request: GenerateRequest, job: Running, report: (e: Prog
   return { data, dem, downloaded };
 }
 
+// LiDAR takes this share of the progress bar, and generation the rest after it.
+const LIDAR_START = 0.3;
+const LIDAR_END = 0.6;
+
+/**
+ * Measured buildings for the area. Preparation checkpoints each batch in the
+ * LiDAR cache, and the last result is kept for the session, so changing a
+ * setting that LiDAR does not depend on regenerates straight away.
+ */
+async function loadLidar(request: GenerateRequest, data: OvertureData, job: Running): Promise<PreparedLidar> {
+  const { area, settings } = request;
+  const scale = effectiveScale(area, settings.scale);
+  const bounds = dataBoundsFor(area);
+  const key = JSON.stringify([boundsKey(bounds), data.release, settings.lidar, scale, settings.buildings.heightScale]);
+  if (prepared?.key === key) return prepared.lidar;
+  prepared = null;
+  const progress = job.progress;
+  progress.begin('lidar', 'Preparing LiDAR buildings', LIDAR_START, LIDAR_END - LIDAR_START);
+  // Browsers without nested workers read and measure in this worker instead.
+  const pool = typeof Worker === 'undefined' ? null : lidarPool(lidarPoolSize(), job.abort.signal);
+  let lidar: PreparedLidar;
+  try {
+    lidar = await prepareLidar({
+      bounds,
+      buildings: data.features.building ?? [],
+      parts: data.features.building_part ?? [],
+      land: data.features.land ?? [],
+      settings: { ...settings.lidar, xyScale: scale, zScale: scale * settings.buildings.heightScale },
+      signal: job.abort.signal,
+      progress: (label, fraction, detail) => progress.checkpoint(fraction, detail, label),
+      runner: pool ?? undefined,
+    });
+  } finally {
+    pool?.close();
+  }
+  prepared = { key, lidar };
+  return lidar;
+}
+
+function lidarSummary(lidar: PreparedLidar): LidarSummary {
+  const skipped: Record<string, number> = {};
+  for (const reason of Object.values(lidar.rejected)) skipped[reason] = (skipped[reason] ?? 0) + 1;
+  return {
+    measured: Object.keys(lidar.records).filter((id) => !id.startsWith('rock:')).length,
+    candidates: lidar.candidates,
+    skipped,
+    surveys: lidar.surveys.map(({ name, provider, buildings, attribution, sourcePage }) => ({ name, provider, buildings, attribution, sourcePage })),
+    failures: lidar.failures.map((f) => `${f.source}: ${f.reason}`),
+    downloadedBytes: lidar.downloadedBytes,
+    reused: lidar.reused,
+  };
+}
+
 async function generate(id: number, request: GenerateRequest) {
   request = { ...request, settings: sanitizeSettings(request.settings) };
   const started = performance.now();
   const timings: Record<string, number> = {};
   const report = (event: ProgressEvent) => post({ type: 'progress', id, progress: event });
-  const job: Running = { id, progress: new Progress(report), abort: new AbortController() };
+  const useLidar = request.settings.lidar.enabled && request.settings.buildings.enabled;
+  // With LiDAR on, generation's own fractions (from 0.3) are squeezed in after it.
+  const remapped = (event: ProgressEvent) => {
+    if (!useLidar || event.stage === 'lidar' || event.fraction < LIDAR_START) report(event);
+    else report({ ...event, fraction: LIDAR_END + ((event.fraction - LIDAR_START) * (1 - LIDAR_END)) / (1 - LIDAR_START) });
+  };
+  const job: Running = { id, progress: new Progress(remapped), abort: new AbortController() };
   running = job;
   try {
     report({ stage: 'data', label: 'Finding map data', fraction: 0.01 });
@@ -133,12 +204,20 @@ async function generate(id: number, request: GenerateRequest) {
     timings.download = (performance.now() - started) / 1000;
     if (job.progress.cancelled) throw new CancelError();
 
+    let lidar: PreparedLidar | null = null;
+    if (useLidar) {
+      const t0 = performance.now();
+      lidar = await loadLidar(request, data, job);
+      timings.lidar = (performance.now() - t0) / 1000;
+    }
+
     const t1 = performance.now();
     const spec = await generateModel({
       area: request.area,
       settings: request.settings,
       data,
       elevation: dem,
+      lidar,
       progress: job.progress,
     });
     timings.generate = (performance.now() - t1) / 1000;
@@ -157,14 +236,25 @@ async function generate(id: number, request: GenerateRequest) {
     }
     if (meshed.failed) warnings.push(`${meshed.failed} small pieces could not be meshed and were left out.`);
     if (meshed.fallbacks) warnings.push(`${meshed.fallbacks} pieces only follow the terrain along their edges and may show flat spots.`);
+    lastCredits = [];
+    if (lidar) {
+      lastCredits = [...new Set(lidar.surveys.map((s) => `LiDAR: ${s.attribution}`))];
+      if (!lidar.surveys.length && lidar.candidates && !lidar.failures.length && !Object.keys(lidar.records).length) {
+        warnings.push('No LiDAR survey that a browser can read covers these buildings, so they keep their mapped shapes.');
+      }
+      for (const failure of lidar.failures.slice(0, 3)) warnings.push(`LiDAR from ${failure.source} could not be read: ${failure.reason}`);
+      const fallbacks = typeof spec.stats.lidar_geometry_fallbacks === 'number' ? spec.stats.lidar_geometry_fallbacks : 0;
+      if (fallbacks) warnings.push(`${fallbacks} measured buildings could not be built cleanly and keep their mapped shapes.`);
+    }
     const result: GenerateResult = {
       parts: meshed.parts,
       bounds: partsBounds(meshed.parts),
       mmPerMetre: spec.mmPerMetre,
       release: data.release,
-      stats: userStats(spec.stats, downloaded),
+      stats: userStats(spec.stats, downloaded + (lidar?.downloadedBytes ?? 0)),
       warnings,
       timings,
+      lidar: lidar ? lidarSummary(lidar) : undefined,
     };
     post({ type: 'generated', id, result }, meshed.parts.flatMap((p) => [p.positions.buffer, p.indices.buffer]));
   } catch (error) {
@@ -194,7 +284,7 @@ async function exportModel(id: number, request: ExportRequest) {
       progress,
     });
     post({ type: 'progress', id, progress: { stage: 'export', label: 'Writing the file', fraction: 0.85 } });
-    const result = exportPlates(plates, request);
+    const result = exportPlates(plates, request, lastCredits);
     post({ type: 'exported', id, result });
   } catch (error) {
     post({ type: 'error', id, message: describe(error) });
@@ -209,6 +299,7 @@ function userStats(stats: ModelStats, downloaded: number): ModelStats {
     if (value !== 0 && value !== '') out[label] = value;
   };
   add('Buildings', n('buildings'));
+  add('Measured with LiDAR', n('lidar_buildings'));
   add('Building parts', n('building_parts'));
   add('Shaped roofs', n('roofs_shaped'));
   add('Rivers, lakes and sea', n('water_cut_bodies'));

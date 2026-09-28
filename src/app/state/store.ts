@@ -1,7 +1,7 @@
 // App state. Heavy mesh arrays never go in here: see model.ts.
 
 import { create } from 'zustand';
-import type { ProgressEvent } from '../../core/engine/protocol';
+import type { LidarSummary, ProgressEvent } from '../../core/engine/protocol';
 import {
   DEFAULT_AREA,
   DEFAULT_EXPORT,
@@ -26,7 +26,7 @@ import { readHashArea } from './shareLink';
 
 export type View = 'map' | 'model';
 export type SectionKey = 'area' | 'print' | 'layers' | 'colours' | 'export';
-export type LayerKey = 'terrain' | 'water' | 'land' | 'roads' | 'bridges' | 'buildings' | 'trees' | 'rim';
+export type LayerKey = 'terrain' | 'water' | 'land' | 'roads' | 'bridges' | 'buildings' | 'lidar' | 'trees' | 'rim';
 export type BasemapKey = 'streets' | 'light' | 'satellite';
 /** 'mm' is the printed size. */
 export type SizeUnit = 'km' | 'm' | 'mm';
@@ -51,6 +51,7 @@ export interface ResultMeta {
   timings: Record<string, number>;
   parts: PartInfo[];
   triangles: number;
+  lidar?: LidarSummary;
   /** False once the worker holding this model was replaced, so it cannot be exported. */
   exportable: boolean;
 }

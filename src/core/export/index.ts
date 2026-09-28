@@ -78,11 +78,12 @@ function prusaNotes(model: PreparedModel, printer: Printer): string[] {
   return notes;
 }
 
-export function exportPlates(plates: Plate[], request: ExportRequest): ExportResult {
+/** `credits` are attributions beyond the map data, such as the LiDAR surveys a model used. */
+export function exportPlates(plates: Plate[], request: ExportRequest, credits: string[] = []): ExportResult {
   const printer = printerByKey(request.printer);
   const kept = printablePlates(plates, request.excludeParts);
   if (!kept.length) throw new Error('Nothing to export: every part is hidden or empty');
-  const model = preparePlates(kept, request.palette);
+  const model = preparePlates(kept, request.palette, credits);
   const base = fileStem(request.fileBase);
   const warnings = sizeWarnings(model, printer);
   const result = (fileName: string, data: Blob): ExportResult => ({ fileName, data, plates: kept.length, warnings });

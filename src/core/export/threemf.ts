@@ -9,7 +9,6 @@
 import { filamentName, type Printer } from '../settings';
 import {
   APP_NAME,
-  ATTRIBUTION,
   CORE_NAMESPACE,
   DESCRIPTION,
   FilamentTable,
@@ -47,7 +46,7 @@ export function writeGeneric3mf(model: PreparedModel, printer: Printer, title = 
       ` <metadata name="Title">${escapeText(title)}</metadata>\n` +
       ` <metadata name="Application">${APP_NAME}</metadata>\n` +
       ` <metadata name="Description">${DESCRIPTION}</metadata>\n` +
-      ` <metadata name="Copyright">${ATTRIBUTION}</metadata>\n` +
+      ` <metadata name="Copyright">${escapeText(model.attribution)}</metadata>\n` +
       ' <resources>\n  <basematerials id="1">\n',
   );
   for (const filament of materials.filaments) {

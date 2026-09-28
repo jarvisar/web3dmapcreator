@@ -21,6 +21,15 @@
 
 **Roads cross rivers as solid causeways.** With `Bridges` off, roads over water keep a strip of ground under them so they print. Turn `Bridges` on to raise them on piers instead.
 
+**LiDAR measured few or no buildings.** `Model details` shows how many were measured. The usual reasons:
+- No streamed survey covers the area. The US, France, Canada and Switzerland are covered, other countries only where Open LiDAR Data has a dataset.
+- A survey only counts for a building when it covers the whole footprint, so buildings on a survey's edge keep their mapped shape.
+- Buildings under `Smallest footprint` are skipped, and so are buildings the scan barely reached or that were built after the survey.
+
+**"LiDAR from ... could not be read."** That survey's server failed or refused the request. The other surveys and the mapped buildings are still used. Generating again retries it, since a result with failures isn't kept.
+
+**The first LiDAR model is slow.** Surveys differ a lot in density. The `Chicago - The Loop (small)` preset (3.3 km²) reads about 790 MB and takes about 4 minutes on a desktop, and the `Paris - Eiffel Tower` preset (8 km²) about 2.2 GB and 15 minutes. Copenhagen's survey needs about 175 MB per km², downtown Toronto's about 430. It's kept in the browser (up to 1 GB), and the measured buildings are reused for a day, so changing other settings afterwards is quick.
+
 ## The map and 3D view
 
 **The map or the 3D view stays blank.** Both need WebGL. Turn on hardware acceleration in your browser's settings, update your graphics driver, or try another browser.

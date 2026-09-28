@@ -17,6 +17,7 @@ export type Stage =
   | 'roads'
   | 'buildings'
   | 'trees'
+  | 'lidar'
   | 'mesh'
   | 'export';
 
@@ -41,6 +42,31 @@ export interface GenerateResult {
   warnings: string[];
   /** Seconds per phase. */
   timings: Record<string, number>;
+  /** What LiDAR measured, when it was on. */
+  lidar?: LidarSummary;
+}
+
+export interface LidarSurvey {
+  name: string;
+  provider: string;
+  buildings: number;
+  attribution: string;
+  sourcePage: string;
+}
+
+export interface LidarSummary {
+  /** Buildings with a usable measurement. */
+  measured: number;
+  /** Buildings in the area that could have been measured. */
+  candidates: number;
+  /** Why the others kept their mapped shape, by reason. */
+  skipped: Record<string, number>;
+  surveys: LidarSurvey[];
+  /** Surveys or providers that could not be read. */
+  failures: string[];
+  downloadedBytes: number;
+  /** Everything came from an earlier preparation. */
+  reused: boolean;
 }
 
 export interface ExportRequest {

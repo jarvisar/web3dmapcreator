@@ -26,10 +26,11 @@ The build goes to `build/`, not `dist/`. In this repository `dist/` held the Ble
 | `src/core/data/` | Overture GeoParquet reads, elevation tiles, HTTP retries and the IndexedDB cache |
 | `src/core/geometry/` | Polygon booleans (Clipper2), the prism mesher, spatial indexes, mesh checks |
 | `src/core/terrain/` | The shared terrain height grid |
+| `src/core/lidar/` | LiDAR: survey discovery, EPT and COPC reading, building measurement and roof envelopes |
 | `src/core/pipeline/` | Generation: water, roads, bridges, land cover, buildings, trees, meshing, plates |
 | `src/core/export/` | Bambu Studio, PrusaSlicer, 3MF and STL writers |
 | `src/core/engine/` | Messages between the page and the worker |
-| `src/worker/` | The Web Worker that downloads, generates and exports |
+| `src/worker/` | The Web Worker that downloads, generates and exports, and the LiDAR workers it starts |
 | `src/app/` | The React interface: state, map, panels and 3D viewer |
 | `scripts/` | Command-line tools for testing |
 
@@ -41,6 +42,7 @@ The build goes to `build/`, not `dist/`. In this repository `dist/` held the Ble
 # Generate a model from the command line and write a 3MF or STL zip
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --out out/loop.3mf
 npx tsx scripts/generate.ts --bbox -82.83485,27.96044,-82.79572,27.98152 --format stl-zip --out out/clearwater.zip
+npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar --out out/loop-lidar.3mf
 
 # Download an area's data and print what came back
 npx tsx scripts/fetch-area.ts --bbox -87.635,41.875,-87.625,41.885 --out out/area.json
@@ -56,13 +58,17 @@ node scripts/shot.mjs http://localhost:5173/ out/shot.png
 node scripts/e2e.mjs http://localhost:5173/ out/e2e
 ```
 
-`generate.ts` takes `--shape`, `--rotation`, `--scale`, `--fit`, `--format`, `--printer`, `--multi-plate`, `--section`, `--bridges`, `--trees`, `--flat` and `--settings file.json` (merged onto the defaults). The `out/` folder is ignored.
+`generate.ts` takes `--shape`, `--rotation`, `--scale`, `--fit`, `--format`, `--printer`, `--multi-plate`, `--section`, `--bridges`, `--trees`, `--flat`, `--lidar` and `--settings file.json` (merged onto the defaults). The `out/` folder is ignored.
+
+With `--lidar`, point data and batch results are kept in `out/lidar-cache` (or `--lidar-cache folder`), which is never evicted, so delete it to start over. Batches run in worker threads, one fewer than the cores up to four (`--lidar-threads n`, 1 to stay on the main thread). `--lidar-records file.json` writes the measured records for comparing runs.
 
 `check-bambu.ts` gives Bambu Studio its own data folder, so your own settings, presets and recent files are never touched.
 
 ## Tests
 
 `npm test` covers the projection, the classifiers, linear referencing, water, roads, bridges, land cover, buildings and roofs (checked against the add-on's rules), the mesher, the exporters and the data layer against small parquet fixtures. The pipeline tests build models and check that every part is made of closed, consistently wound shells.
+
+The LiDAR tests run offline. The rectangle, centroid and rotation tests compare against Shapely output saved in `src/core/lidar/testdata/`. The envelope and edge collapse tests use point clouds from an exact copy of numpy's random generator (`src/core/lidar/test-helpers.ts`), so their expected values match the add-on's. The readers are tested against small synthetic EPT and COPC files with a pass-through decoder, and discovery against canned catalog answers.
 
 The live data tests are skipped by default. Run them with:
 
@@ -86,5 +92,16 @@ Everything is fetched from the browser, so every service must send CORS headers:
 - `overturemaps-us-west-2.s3.us-west-2.amazonaws.com` for the GeoParquet files, with range requests
 - `s3.amazonaws.com/elevation-tiles-prod` for Terrarium elevation tiles
 - `tiles.openfreemap.org` for the basemap, and `photon.komoot.io` for place search
+
+With LiDAR on:
+
+- `raw.githubusercontent.com` for the USGS catalog and the Open LiDAR Data inventory
+- `s3-us-west-2.amazonaws.com/usgs-lidar-public` for USGS EPT
+- `data.geopf.fr` for IGN's tile index and COPC files
+- `maps-cartes.services.geo.ca` for NRCan's tile index and `canelevation-lidar-point-clouds.s3.ca-central-1.amazonaws.com` for its COPC files
+- `data.geo.admin.ch` for swisstopo's STAC and COPC files
+- `open-lidar-data.s3.eu-central-1.amazonaws.com` for Open LiDAR Data
+
+Staged LAZ downloads (TNM, the Environment Agency, most German states, PNOA) aren't read. They're whole files of tens to hundreds of MB, and some hosts, like `rockyweb.usgs.gov` and `geodaten.bayern.de`, send no CORS headers. If one is worth adding later, a CORS proxy that forwards `Range` and exposes `Content-Range` would be the way in.
 
 The Azure copy of Overture's data doesn't send CORS headers, so the S3 copy is used.

@@ -59,6 +59,10 @@ export interface RequestOptions {
   refresh?: boolean;
   /** Retries after the first attempt. Default from configureHttp. */
   retries?: number;
+  /** A cache other than the default, such as the LiDAR one. null caches nothing. */
+  store?: ByteCache | null;
+  /** Silence allowed before an attempt is dropped. Default from configureHttp. */
+  idleTimeoutMs?: number;
 }
 
 export class HttpError extends Error {
@@ -210,6 +214,7 @@ interface Transfer {
   size?: number;
   signal?: AbortSignal;
   onBytes?: BytesListener;
+  idleTimeoutMs?: number;
 }
 
 function rangeProblem(response: Response, t: Transfer & { range: [number, number] }): string | undefined {
@@ -283,12 +288,13 @@ async function transferOnce(t: Transfer): Promise<ArrayBuffer> {
   t.signal?.addEventListener('abort', forward, { once: true });
   let stalled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const idle = t.idleTimeoutMs ?? config.idleTimeoutMs;
   const arm = () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
       stalled = true;
       controller.abort();
-    }, config.idleTimeoutMs);
+    }, idle);
   };
   let received = 0;
   try {
@@ -317,7 +323,7 @@ async function transferOnce(t: Transfer): Promise<ArrayBuffer> {
   } catch (error) {
     if (received) t.onBytes?.(-received, false);
     if (stalled && !t.signal?.aborted) {
-      throw new TransferError(`No data received for ${Math.round(config.idleTimeoutMs / 1000)} s`);
+      throw new TransferError(`No data received for ${Math.round(idle / 1000)} s`);
     }
     throw error;
   } finally {
@@ -328,7 +334,7 @@ async function transferOnce(t: Transfer): Promise<ArrayBuffer> {
 }
 
 async function cachedTransfer(key: string, t: Transfer, options: RequestOptions): Promise<ArrayBuffer> {
-  const cache = options.cache === false ? null : byteCache;
+  const cache = options.cache === false ? null : options.store !== undefined ? options.store : byteCache;
   if (cache && !options.refresh) {
     const hit = await cache.get(key).catch(() => undefined);
     if (hit && (!t.range || hit.byteLength === t.range[1] - t.range[0])) {
@@ -364,9 +370,20 @@ export function remoteFile(url: string, byteLength: number, options: RequestOpti
   };
 }
 
+/**
+ * Bytes [start, end) of a file whose size may not be known, cached like a
+ * slice of remoteFile. A server that ignores the range is an error, so a
+ * large file is never downloaded whole by accident.
+ */
+export function fetchRange(url: string, start: number, end: number, signal?: AbortSignal, options: Omit<RequestOptions, 'signal'> = {}): Promise<ArrayBuffer> {
+  if (!(start >= 0 && end > start)) return Promise.reject(new RangeError(`Invalid byte range ${start}-${end} of ${url}`));
+  const transfer = { url, range: [start, end] as [number, number], signal, onBytes: options.onBytes, idleTimeoutMs: options.idleTimeoutMs };
+  return cachedTransfer(`${url}#${start}-${end}`, transfer, options);
+}
+
 /** A whole file, cached by its URL unless `cache` is false. */
 export function fetchBytes(url: string, signal?: AbortSignal, options: Omit<RequestOptions, 'signal'> = {}): Promise<ArrayBuffer> {
-  return cachedTransfer(url, { url, signal, onBytes: options.onBytes }, options);
+  return cachedTransfer(url, { url, signal, onBytes: options.onBytes, idleTimeoutMs: options.idleTimeoutMs }, options);
 }
 
 /** File size from a HEAD request, for files the Overture index gives no size for. */

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CACHE_LIMIT, cacheSize, clearCache } from '../../core/data/cache';
+import { CACHE_LIMIT, cacheSize, clearCache, LIDAR_CACHE_LIMIT } from '../../core/data/cache';
 import { Dialog } from '../components/Dialog';
 import { GithubMark } from '../components/Icons';
 import { formatBytes, keepUnits } from '../lib/format';
@@ -53,7 +53,8 @@ function StoredData() {
 
   return (
     <p className="help-text">
-      Downloaded map data is kept in this browser, up to {formatBytes(CACHE_LIMIT)}, so an area loads faster the next time.{' '}
+      Downloaded map data is kept in this browser, up to {formatBytes(CACHE_LIMIT)}, and LiDAR up to another {formatBytes(LIDAR_CACHE_LIMIT)}, so an area loads faster
+      the next time.{' '}
       {bytes !== null && bytes > 0 && (
         <>
           It holds {formatBytes(bytes)} right now.{' '}
@@ -122,14 +123,33 @@ export function HelpDialog() {
           </a>
           , OpenStreetMap contributors. Satellite imagery © Esri and its partners.
         </li>
+        <li>
+          LiDAR from USGS 3DEP (public domain, through Hobu's EPT mirror), IGN LiDAR HD (Licence Ouverte 2.0), NRCan
+          CanElevation (Open Government Licence - Canada), swisstopo swissSURFACE3D and{' '}
+          <a href="https://github.com/flai-ai/open-lidar-data" target="_blank" rel="noreferrer">
+            Open LiDAR Data
+          </a>{' '}
+          by Flai (licence per dataset). The surveys a model used are listed in its details and in exported 3MF files.
+        </li>
         <li>Place search by Photon from komoot, using OpenStreetMap data.</li>
-        <li>If you share or sell prints, credit OpenStreetMap contributors and Overture Maps Foundation.</li>
+        <li>
+          Licenses of the code the site bundles are in{' '}
+          <a href="licenses.md" target="_blank" rel="noreferrer">
+            licenses.md
+          </a>{' '}
+          and, for the LAZ decoder,{' '}
+          <a href="laz-decoder-notices.md" target="_blank" rel="noreferrer">
+            laz-decoder-notices.md
+          </a>
+          .
+        </li>
+        <li>If you share or sell prints, credit OpenStreetMap contributors and Overture Maps Foundation, and any LiDAR survey the model used.</li>
       </ul>
 
       <h3 className="help-heading">Privacy</h3>
       <p className="help-text">
-        Everything runs in your browser. There is no account and no server of ours: map data, elevation and map tiles are
-        downloaded straight from their public sources. Place search sends what you type to Photon (photon.komoot.io). Your
+        Everything runs in your browser. There is no account and no server of ours: map data, elevation, LiDAR and map
+        tiles are downloaded straight from their public sources. Place search sends what you type to Photon (photon.komoot.io). Your
         settings are saved in this browser only.
       </p>
       {open && <StoredData />}

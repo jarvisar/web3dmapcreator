@@ -43,12 +43,26 @@ Terrain heights come from the AWS Terrain Tiles open dataset (`elevation-tiles-p
 - United Kingdom terrain data © Environment Agency copyright and/or database right 2015. All rights reserved
 - United States 3DEP (formerly NED) and global GMTED2010 and SRTM terrain data courtesy of the U.S. Geological Survey
 
+## LiDAR
+
+Only downloaded when `LiDAR` is on. The surveys a model used are listed under `Model details` and in the attribution of exported 3MF files.
+
+| Source | Where | License |
+| --- | --- | --- |
+| [USGS 3DEP](https://www.usgs.gov/3d-elevation-program), through [Hobu's EPT mirror](https://github.com/hobuinc/usgs-lidar) | United States | Public domain |
+| [IGN LiDAR HD](https://geoservices.ign.fr/lidarhd) | France | Licence Ouverte 2.0 |
+| [NRCan CanElevation](https://open.canada.ca/data/en/dataset/7069387e-9986-4297-9f55-0288e9676947) | Canada | Open Government Licence - Canada |
+| [swisstopo swissSURFACE3D](https://www.swisstopo.admin.ch/en/height-model-swisssurface3d) | Switzerland | swisstopo open government data terms |
+| [Open LiDAR Data](https://github.com/flai-ai/open-lidar-data) by Flai | Parts of Europe and elsewhere | Per dataset, listed in its inventory |
+
+Credit the survey's publisher, for example `LiDAR: IGN - LiDAR HD` or `LiDAR: USGS 3DEP`. For Open LiDAR Data, include the original agency and the dataset's license.
+
 ## Map and place search
 
 The map on the site uses [OpenFreeMap](https://openfreemap.org) vector tiles (© OpenFreeMap, © OpenMapTiles, data © OpenStreetMap contributors). The satellite option uses Esri World Imagery. Place search uses [Photon](https://photon.komoot.io) by komoot, which searches OpenStreetMap data. Your search text is sent to Photon.
 
 ## Printed models
 
-Exported 3MF files carry the map-data attribution in their metadata, and STL files carry it in their header.
+Exported 3MF files carry the map-data attribution in their metadata, and STL files carry it in their header. With LiDAR on, the 3MF metadata lists the surveys used as well. An STL header only has room for the map-data line.
 
 Under the ODbL a printed model made from this data is a Produced Work. If you sell or display one publicly, include the attribution with it, for example on the product listing, the packaging or a label on the base. This is not legal advice.

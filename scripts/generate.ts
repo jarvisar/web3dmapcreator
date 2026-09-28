@@ -8,7 +8,10 @@
 // --rotation deg, --scale mm-per-metre, --fit mm, --format bambu|prusa|3mf|stl-zip|stl,
 // --printer P1S, --multi-plate, --section mm, --bridges, --trees, --flat, --out path,
 // --settings path.json (merged onto the defaults), --no-filter (download every row,
-// for checking that the row filter drops nothing generation uses).
+// for checking that the row filter drops nothing generation uses), --lidar (measure
+// buildings from streamed LiDAR), --lidar-cache dir (default out/lidar-cache),
+// --lidar-records path.json (write the measured records, for comparing runs),
+// --lidar-threads n (batches read and measured at once, 1 to stay in this thread).
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -16,7 +19,10 @@ import { fetchDem } from '../src/core/data/dem';
 import { fetchOverture } from '../src/core/data/overture';
 import { exportPlates } from '../src/core/export';
 import { BAMBU_MAX_PLATES } from '../src/core/export/sections';
-import { areaFromBounds, parseBoundsText } from '../src/core/geo/area';
+import { areaFromBounds, effectiveScale, parseBoundsText } from '../src/core/geo/area';
+import { prepareLidar, type PreparedLidar } from '../src/core/lidar/prepare';
+import { lidarPoolSize } from '../src/worker/lidarPool';
+import { setUpLidar, threadPool } from './lidar-node';
 import { Progress } from '../src/core/pipeline/context';
 import { rowFilter } from '../src/core/pipeline/filter';
 import { dataBoundsFor, generateModel, neededTypes } from '../src/core/pipeline/generate';
@@ -75,6 +81,7 @@ async function main() {
   if (flag('bridges')) settings.bridges.enabled = true;
   if (flag('trees')) settings.trees.enabled = true;
   if (flag('flat')) settings.terrain.elevation = false;
+  if (flag('lidar')) settings.lidar.enabled = true;
   settings = sanitizeSettings(settings);
 
   const t0 = performance.now();
@@ -94,13 +101,44 @@ async function main() {
   console.log(`data: ${(data.bytes / 1e6).toFixed(1)} MB in ${((t1 - t0) / 1000).toFixed(1)} s, release ${data.release}`);
   for (const [type, s] of Object.entries(data.stats)) if (s.features) console.log(`  ${type}: ${s.features} features`);
 
+  let lidar: PreparedLidar | null = null;
+  if (settings.lidar.enabled && settings.buildings.enabled) {
+    const cacheDir = arg('lidar-cache') ?? 'out/lidar-cache';
+    setUpLidar(cacheDir);
+    const scale = effectiveScale(area, settings.scale);
+    const threads = Number(arg('lidar-threads') ?? lidarPoolSize());
+    const pool = threads > 1 ? threadPool(threads, cacheDir) : null;
+    try {
+      lidar = await prepareLidar({
+        bounds,
+        buildings: data.features.building ?? [],
+        parts: data.features.building_part ?? [],
+        land: data.features.land ?? [],
+        settings: { ...settings.lidar, xyScale: scale, zScale: scale * settings.buildings.heightScale },
+        progress: (label) => log(label),
+        runner: pool ?? undefined,
+      });
+    } finally {
+      pool?.close();
+    }
+    const measured = Object.keys(lidar.records).filter((id) => !id.startsWith('rock:')).length;
+    console.log(`lidar: ${measured} of ${lidar.candidates} buildings measured, ${(lidar.downloadedBytes / 1e6).toFixed(1)} MB in ${((performance.now() - t1) / 1000).toFixed(1)} s${lidar.reused ? ' (reused)' : ''}`);
+    for (const survey of lidar.surveys) console.log(`  ${survey.provider} ${survey.name}: ${survey.buildings} buildings`);
+    for (const failure of lidar.failures) console.log(`  failed: ${failure.source}: ${failure.reason}`);
+    if (arg('lidar-records')) {
+      mkdirSync(dirname(arg('lidar-records')!), { recursive: true });
+      writeFileSync(arg('lidar-records')!, JSON.stringify(lidar));
+    }
+  }
+
+  const generating = performance.now();
   const progress = new Progress((e) => log(e.label));
-  const spec = await generateModel({ area, settings, data, elevation: dem, progress });
+  const spec = await generateModel({ area, settings, data, elevation: dem, lidar, progress });
   const t2 = performance.now();
   const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ });
   const t3 = performance.now();
   const b = partsBounds(meshed.parts);
-  console.log(`generate ${((t2 - t1) / 1000).toFixed(1)} s, mesh ${((t3 - t2) / 1000).toFixed(1)} s`);
+  console.log(`generate ${((t2 - generating) / 1000).toFixed(1)} s, mesh ${((t3 - t2) / 1000).toFixed(1)} s`);
   console.log(`size ${(b[3] - b[0]).toFixed(1)} x ${(b[4] - b[1]).toFixed(1)} x ${(b[5] - b[2]).toFixed(1)} mm`);
   for (const part of meshed.parts) {
     const r = edgeReport(part.indices, part.positions.length / 3);
@@ -123,6 +161,7 @@ async function main() {
       bedDepth: printer.depth,
       maxPlates: format === 'bambu' ? BAMBU_MAX_PLATES : undefined,
     });
+    const credits = lidar ? [...new Set(lidar.surveys.map((s) => `LiDAR: ${s.attribution}`))] : [];
     const result = exportPlates(plates, {
       format,
       printer: printer.key,
@@ -131,7 +170,7 @@ async function main() {
       sectionWidthMm: section,
       sectionHeightMm: section,
       fileBase: 'model',
-    });
+    }, credits);
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, new Uint8Array(await result.data.arrayBuffer()));
     console.log(`wrote ${out} (${(result.data.size / 1e6).toFixed(1)} MB, ${result.plates} plate(s))`);

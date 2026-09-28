@@ -25,6 +25,7 @@ export interface AreaSpec {
 export type ScaleMode = 'fixed' | 'fit';
 export type SurfaceCategory = 'paved' | 'sand' | 'rock' | 'green' | 'forest';
 export type FilamentLine = 'PLA Basic' | 'PLA Matte';
+export type LidarRoofMode = 'envelope' | 'heights';
 
 export interface ModelSettings {
   scale: {
@@ -110,6 +111,18 @@ export interface ModelSettings {
     landCoverScatter: boolean;
     avoidRoads: boolean;
   };
+  /** Building roofs and heights measured from public LiDAR surveys. */
+  lidar: {
+    enabled: boolean;
+    /** 'envelope' rebuilds whole roofs; 'heights' only corrects mapped heights. */
+    roofMode: LidarRoofMode;
+    /** Use a usable scan even where mapped heights, dates or another survey disagree. */
+    preferLidar: boolean;
+    /** Buildings with a smaller printed footprint keep their mapped shape. 0 measures every one. */
+    minFootprintMm2: number;
+    /** Also measure mapped bare rock. */
+    rockSurfaces: boolean;
+  };
   /** Keep ground under roads, buildings and piers that stand over cut water. */
   supports: boolean;
   rim: {
@@ -182,6 +195,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     landCoverScatter: true,
     avoidRoads: true,
   },
+  lidar: { enabled: false, roofMode: 'envelope', preferLidar: true, minFootprintMm2: 0.7, rockSurfaces: false },
   supports: true,
   rim: { enabled: false, heightMm: 1.5, widthMm: 2 },
 };
@@ -441,6 +455,7 @@ const RANGES: SettingsRanges = {
     slendernessExemptMm: [0, 2],
   },
   trees: { spacingM: [2, 200], minHeightMm: [0.1, 10], minWidthMm: [0.1, 5], variation: [0, 0.8], maxTrees: [0, 500000, true] },
+  lidar: { minFootprintMm2: [0, 10] },
   rim: { heightMm: [0.1, 30], widthMm: [0.1, 20] },
 };
 
@@ -478,6 +493,8 @@ export function sanitizeSettings(settings: unknown): ModelSettings {
   }
   const scale = isObject(source.scale) ? source.scale : {};
   if (scale.mode === 'fixed' || scale.mode === 'fit') out.scale.mode = scale.mode;
+  const lidar = isObject(source.lidar) ? source.lidar : {};
+  if (lidar.roofMode === 'envelope' || lidar.roofMode === 'heights') out.lidar.roofMode = lidar.roofMode;
   // The priority must name every surface category once.
   const land = isObject(source.land) ? source.land : {};
   const all = DEFAULT_SETTINGS.land.priority;

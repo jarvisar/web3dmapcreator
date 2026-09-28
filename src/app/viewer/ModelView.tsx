@@ -167,6 +167,12 @@ export default function ModelView({ active }: { active: boolean }) {
           typeof value === 'number' ? formatCount(value) : String(value),
         ]),
         ...(result.release ? [['Map data', `Overture ${result.release}`] as [string, string]] : []),
+        ...(result.lidar
+          ? ([
+              ['LiDAR', `${formatCount(result.lidar.measured)} of ${formatCount(result.lidar.candidates)} buildings measured`],
+              ...result.lidar.surveys.map((s): [string, string] => [`Survey`, `${s.name} (${s.attribution}), ${formatCount(s.buildings)} buildings`]),
+            ] as [string, string][])
+          : []),
         ...(totalTime > 0 ? [['Generated in', formatSeconds(totalTime)] as [string, string]] : []),
       ]
     : [];

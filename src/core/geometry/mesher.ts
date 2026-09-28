@@ -12,6 +12,7 @@ import Constrainautor from '@kninnug/constrainautor';
 import Delaunator from 'delaunator';
 import earcut from 'earcut';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
+import { capIsClosed, meshCap } from './cap';
 import {
   boxesOverlap,
   cleanRing,
@@ -112,6 +113,12 @@ export function clipRegion(polygons: MultiPolygon): ClipRegion {
 /** Mesh one solid into `out`, optionally keeping only what lies inside `clip`. */
 export function meshSolid(solid: Solid, out: MeshBuilder, clip?: MultiPolygon | ClipRegion, stats?: MeshStats): void {
   const region = clip && !Array.isArray(clip) ? clip : clip ? clipRegion(clip) : undefined;
+  if (solid.kind === 'cap') {
+    const result = meshCap(solid, out, region);
+    if (stats && result === 'ok') stats.solids++;
+    if (stats && result === 'failed') stats.failed++;
+    return;
+  }
   if (solid.kind === 'mesh') {
     // A tree can't be cut, so one crossing a section edge is left out of both
     // sections rather than overhanging the next one. Trees are kept inside
@@ -498,38 +505,6 @@ function constrainedCap(
   return { points, boundaryCount, rings: ids, triangles: kept };
 }
 
-/**
- * Whether counter-clockwise cap triangles cover the rings exactly: every ring
- * edge is used once in its own direction and every other edge twice, once
- * each way. Area alone can miss a dropped sliver, which leaves a hole.
- */
-export function capIsClosed(tris: number[], rings: number[][], count: number): boolean {
-  const uses = new Map<number, number>();
-  for (let t = 0; t < tris.length; t += 3) {
-    for (let k = 0; k < 3; k++) {
-      const a = tris[t + k];
-      const b = tris[t + ((k + 1) % 3)];
-      const key = a * count + b;
-      uses.set(key, (uses.get(key) ?? 0) + 1);
-    }
-  }
-  const ringEdges = new Set<number>();
-  for (const ring of rings) {
-    for (let k = 0; k < ring.length; k++) {
-      const key = ring[k] * count + ring[(k + 1) % ring.length];
-      if (uses.get(key) !== 1) return false;
-      ringEdges.add(key);
-    }
-  }
-  for (const [key, n] of uses) {
-    if (n !== 1) return false;
-    if (ringEdges.has(key)) continue;
-    const a = Math.floor(key / count);
-    const b = key - a * count;
-    if (uses.get(b * count + a) !== 1) return false;
-  }
-  return true;
-}
 
 /** +1 when Delaunator's triangles are counter-clockwise in this coordinate system. */
 function triangleOrientation(coords: Float64Array, triangles: Uint32Array): number {

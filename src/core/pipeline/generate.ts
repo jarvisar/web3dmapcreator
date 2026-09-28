@@ -20,6 +20,7 @@ import {
   type Box,
 } from '../geometry/polygon';
 import type { Layer, PrismSolid, Solid } from '../geometry/solid';
+import type { PreparedLidar } from '../lidar/prepare';
 import type { AreaSpec, ModelSettings, SurfaceCategory } from '../settings';
 import { HeightField } from '../terrain/heightfield';
 import type { MaterialRole, ModelStats, MultiPolygon, Polygon } from '../types';
@@ -53,6 +54,8 @@ export interface GenerateInput {
   data: SourceData;
   /** Null builds a flat base. */
   elevation: Elevation | null;
+  /** Prepared LiDAR measurements; null or absent builds every building from the map. */
+  lidar?: PreparedLidar | null;
   progress?: Progress;
 }
 
@@ -94,7 +97,8 @@ export function neededTypes(settings: ModelSettings): SourceType[] {
   }
   const trees = settings.trees;
   const forestTrees = trees.enabled && trees.forestScatter;
-  if (settings.land.enabled || decks || forestTrees || (trees.enabled && trees.mapped)) types.add('land');
+  const rock = settings.buildings.enabled && settings.lidar.enabled && settings.lidar.rockSurfaces && settings.lidar.roofMode === 'envelope';
+  if (settings.land.enabled || decks || forestTrees || rock || (trees.enabled && trees.mapped)) types.add('land');
   if (settings.land.enabled || decks || forestTrees) types.add('land_use');
   if (settings.land.enabled || (forestTrees && trees.landCoverScatter)) types.add('land_cover');
   return [...types];
@@ -202,8 +206,11 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   // ---------------------------------------------------------------- buildings
   progress.begin('buildings', 'Building footprints and roofs', 0.55, 0.2);
   const buildings = settings.buildings.enabled
-    ? await buildBuildings(features('building'), features('building_part'), ctx, { clipAway: supportsOn ? [] : noGround })
-    : { solids: [] as PrismSolid[], footprint: [] as MultiPolygon };
+    ? await buildBuildings(features('building'), features('building_part'), ctx, {
+        clipAway: supportsOn ? [] : noGround,
+        lidar: input.lidar ? { records: input.lidar.records, preferLidar: settings.lidar.preferLidar } : undefined,
+      })
+    : { solids: [] as PrismSolid[], measured: [] as Solid[], rock: [] as Solid[], footprint: [] as MultiPolygon };
   if (supportsOn && buildings.footprint.length && noGround.length) {
     structures.push(intersection(buildings.footprint, noGround));
   }
@@ -345,7 +352,9 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   if (piers.length) layers.push({ id: 'piers', name: 'Bridge Piers', role: 'pier', solids: piers });
 
   // ---------------------------------------------------------------- buildings
-  if (buildings.solids.length) layers.push({ id: 'buildings', name: 'Buildings', role: 'building', solids: buildings.solids });
+  const buildingSolids: Solid[] = [...buildings.solids, ...buildings.measured];
+  if (buildingSolids.length) layers.push({ id: 'buildings', name: 'Buildings', role: 'building', solids: buildingSolids });
+  if (buildings.rock.length) layers.push({ id: 'lidar-rock', name: 'Rock (LiDAR)', role: 'rock', solids: buildings.rock });
 
   // --------------------------------------------------------------------- trees
   if (settings.trees.enabled) {

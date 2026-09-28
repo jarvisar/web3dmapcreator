@@ -7,6 +7,7 @@ import { edgeReport, signedVolume } from '../geometry/validate';
 import { cloneSettings, type ModelSettings } from '../settings';
 import { HeightField } from '../terrain/heightfield';
 import type { MultiPolygon, Ring, Vec2 } from '../types';
+import type { PublishedRecord } from '../lidar/publish';
 import { buildBuildings } from './buildings';
 import { Progress, type Context } from './context';
 import type { SourceFeature } from './source';
@@ -414,5 +415,22 @@ describe('buildBuildings', () => {
     const [solid] = solids;
     for (const [x, y] of solid.polygon[0]) expect(at(solid.bottom, x, y)).toBeLessThanOrEqual((solid.top as number) - 0.05 + 1e-12);
     expectClosed(solids);
+  });
+
+  it('keeps mapped tiers a flat LiDAR measurement leaves out unless LiDAR is preferred', async () => {
+    // A 30 m podium with a 60 m tower part, measured as one flat top at 45 m.
+    const parent = feature('parent', -20, -20, 20, 20, { height: 30, has_parts: true });
+    const podium = feature('podium', -20, -20, 20, 20, { building_id: 'parent', height: 30 });
+    const tower = feature('tower', -8, -8, 8, 8, { building_id: 'parent', height: 60, min_height: 30 });
+    const record: PublishedRecord = { method: 'roof_p90', heightM: 45, tiers: [] };
+    const run = (preferLidar: boolean) => buildBuildings([parent], [podium, tower], context(), { clipAway: [], lidar: { records: { parent: record }, preferLidar } });
+
+    const preferred = await run(true);
+    expect(preferred.measured.length).toBeGreaterThan(0);
+    expect(preferred.solids).toEqual([]);
+
+    const mapped = await run(false);
+    expect(mapped.measured).toEqual([]);
+    expect(new Set(mapped.solids.map((s) => s.top as number))).toEqual(new Set([30 * V, 60 * V]));
   });
 });

@@ -15,7 +15,6 @@
 
 import type { Printer } from '../settings';
 import {
-  ATTRIBUTION,
   APP_NAME,
   CONFIG_CONTENT_TYPE,
   CORE_NAMESPACE,
@@ -78,7 +77,7 @@ export function writePrusaProject(model: PreparedModel, printer: Printer, title 
       ' <metadata name="slic3rpe:Version3mf">1</metadata>\n' +
       ` <metadata name="Title">${escapeText(title)}</metadata>\n` +
       ` <metadata name="Description">${DESCRIPTION}</metadata>\n` +
-      ` <metadata name="Copyright">${ATTRIBUTION}</metadata>\n` +
+      ` <metadata name="Copyright">${escapeText(model.attribution)}</metadata>\n` +
       ` <metadata name="Application">${APP_NAME}</metadata>\n` +
       ' <resources>\n',
   );

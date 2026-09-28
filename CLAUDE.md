@@ -9,8 +9,9 @@ A browser-only app (Vite + React + TypeScript, deployed to GitHub Pages) that
 turns a map area into a multicolour FDM city model: terrain, water, land
 surfaces, roads/rail, optional schematic bridges and trees, and buildings with
 roofs from Overture Maps. It is a port of the Jarvizar City Model Blender
-add-on (separate repo `3dmapcreator`, not a dependency). LiDAR was deliberately
-left out. There is no server: data is read from public, CORS-enabled sources.
+add-on (separate repo `3dmapcreator`, not a dependency). Its LiDAR pipeline is
+ported for streamed surveys only (EPT and COPC). Staged LAZ downloads were left
+out. There is no server: data is read from public, CORS-enabled sources.
 
 One model unit is one printed millimetre. Default scale 0.07 mm per metre
 (1:14,286). Defaults live in `src/core/settings.ts` and follow the add-on.
@@ -23,6 +24,7 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/data/` | Overture GeoParquet reads from S3 (STAC index, row-group pruning, two-pass page reads, hyparquet), Terrarium DEM tiles, IndexedDB byte cache, HTTP retries/limiter |
 | `src/core/geometry/` | Clipper2 wrappers (`polygon.ts`), prism mesher (`mesher.ts`, Delaunator + Constrainautor CDT with earcut fallback), edge/raster indexes, mesh validation |
 | `src/core/terrain/` | `HeightField`: the one grid every layer samples |
+| `src/core/lidar/` | LiDAR: `sources/` discovery (USGS EPT, IGN, NRCan, swisstopo, Flai COPC), `read/` EPT/COPC/LAS reading with an injected LAZ decoder and projector, measurement (`measure.ts`, `envelope.ts`, `simplify.ts`, ground, planes, terraces, selection), `prepare.ts` batching and checkpoints |
 | `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
 | `src/core/engine/` | Worker protocol and main-thread client |
@@ -67,6 +69,46 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 - The row filter (`pipeline/filter.ts`) decides from small columns which rows
   need geometry. Keep it in step with the classifiers.
 
+LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
+
+- Measurement is a port of the add-on's `lidar_*.py` (algorithm 29). With the
+  same footprint and ground it gives the same records on the same points.
+  `simplify.ts` sums quadrics in CPython 3.11 set order (`pyset.ts`), tests
+  use a numpy PCG64 copy, and `geos.ts`, `centroid` and `rotate` follow GEOS
+  3.13 and Shapely to the bit (the grid follows the minimum rotated
+  rectangle, whose opposite sides tie). Don't swap any of these for generic
+  versions, or results drift from the add-on.
+- Buffers are Clipper's, not GEOS's, so the 25 m ground ring differs at its
+  arcs and the ground can move by up to ~0.7 mm. That is the known remaining
+  difference from the add-on, and the simplification can amplify it.
+- Records are measured in a metric frame at scale 1 and published in lon/lat.
+  Generation projects them like any other feature.
+- A roof envelope is a `CapSolid` (TIN top, flat underside, boundary walls).
+  Section cuts clip the TIN with `clipTin` (CDT arrangement), so caps stay
+  closed. `capBoundary` rejects pinched TINs rather than welding them. The
+  underside is triangulated from the outline (`undersideTriangles`), with
+  outline vertices earcut skips put back, and checked with `capIsClosed`.
+- `clipTin` caps Constrainautor's work (`Bounded`) and retries a stuck cut
+  with the region moved in slightly. Without the cap, a grazing outline can
+  loop forever.
+- `thinRim` (not in the add-on) removes rim vertices on straight walls after
+  the envelope is clipped. It cut roof triangles about four times.
+- `src/core` has no LAZ or proj dependency. `src/worker/lidarCodecs.ts`
+  installs laz-rs (`@voxelkloud/wasm-codecs`) and proj4 with `setLazDecoder`
+  and `setProjector`, for the workers and scripts. Tests use a pass-through
+  decoder.
+- Batches are plain `BatchJob`s run by a `BatchRunner`: a pool of
+  `lidar.worker.ts` workers in the browser, worker threads in the CLI, or in
+  the calling thread. Checkpoints and survey choice stay in `prepare.ts`, and
+  each building is in one batch per round, so finishing order doesn't matter.
+  Workers send downloads to the pool (`lidarProtocol.ts`, `Fetcher.serve`),
+  which fetches each file once. Separate caches per worker downloaded
+  Chicago's LiDAR about three times over.
+- Readers only use range reads that come back whole (exact header, VLR, page
+  and node ranges). A server ignoring `Range` is an error.
+- With `preferLidar` off, mapped assemblies with more levels or a shaped roof
+  the measurement lacks are kept (`preferSourceDetail`).
+
 ## Verification
 
 ```powershell
@@ -74,6 +116,7 @@ npm test                     # vitest, offline
 npx tsc --noEmit
 $env:NETWORK=1; npx vitest run src/core/data   # live data tests
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --out out/loop.3mf
+npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar   # point cache in out/lidar-cache
 npx tsx scripts/check-bambu.ts   # round trip through installed Bambu Studio (isolated data dir)
 npm run build                # site into build/ (not dist/, which holds old add-on archives)
 ```
@@ -88,39 +131,82 @@ Machine-local folders carried over from the add-on (`scratchpad/`, `dist/`,
 
 # Writing style
 
-This applies to all code comments and anything public (READMEs, docs, PR descriptions). Write it like a developer leaving useful context for another developer, not like a technical writer, a tutorial, or an AI trying to make the codebase look well documented.
+This applies to code comments and anything public like READMEs, docs, and PR descriptions. Write like the developer who built the project leaving useful context for somebody else. Do not write like a technical writer, tutorial author, or AI documenting everything it found in the codebase.
 
-My older READMEs are the reference for tone: pre-2024 versions in jarvisar/solar-system, sorting-algos, interpreter, exoplanet-classifier, and senior-design. Don't use my newer repos as a reference, some of those are AI generated.
+My older READMEs are the main reference for tone: pre-2024 versions in `jarvisar/solar-system`, `sorting-algos`, `interpreter`, `exoplanet-classifier`, and `senior-design`. Don't use newer repos as a style reference since some of those were AI generated.
 
 ## General
 
-- Plain, direct, and practical. Use a normal word when one works. Nothing corporate, academic, or overly polished.
-- Short sentences. Describe actual behavior with concrete details, numbers, and examples.
-- Focus on intent: what something is supposed to do, why a decision was made, and any constraints or tradeoffs.
-- Call out real limits, exceptions, and edge cases. If something is uncertain, just say so.
-- Qualifiers like "currently", "for now", "normally", "only when needed", "this should still..." or "we don't want..." are fine when they clarify scope.
-- Keep it proportional to the problem. Don't invent terminology or structure for simple behavior.
-- No em dashes, semicolons, emojis, arrows, bold scattered through sentences, or other punctuation and formatting regular people don't use.
-- No AI patterns: "it's not just X, it's Y", rhetorical flourishes, intros that restate the title, "Overall, ..." wrap-ups, repeated summaries, filler adjectives like powerful, seamless, or robust.
+- Plain, direct, and practical. Use normal words.
+- Don't try to sound polished. Slightly casual or imperfect wording is fine if it sounds natural.
+- Keep sentences fairly short, but don't force every sentence into the same length or pattern.
+- Write what is actually useful to know. Do not document something just because you found it in the code.
+- Prefer a few important details over exhaustive coverage.
+- Don't systematically explain every subsystem, edge case, fallback, constant, or implementation decision unless the document actually needs it.
+- Avoid giving every section the same amount of detail. Some things may need a paragraph, some need one sentence, and some do not need mentioning at all.
+- Don't turn code inspection into an encyclopedia of how the project works.
+- Assume the reader is a developer. Obvious implementation details usually don't need explanation.
+- Focus on things I would realistically remember being worth mentioning: weird behavior, important constraints, decisions that are easy to misunderstand, useful examples, and limitations.
+- Concrete numbers and implementation details are good when they matter, but don't dump constants into documentation just because they exist.
+- Explain why something works a certain way only when the reason is useful or non-obvious. Not every behavior needs a justification.
+- It's fine to say things like "currently", "for now", "I ended up doing this because...", "this is a little weird", "we don't want...", or "this should still..." when natural.
+- First person is fine when talking about a decision I made. Don't artificially rewrite everything into detached authoritative prose.
+- If something is uncertain, unfinished, hacky, or likely to change, say that normally instead of making it sound finalized.
+- Keep structure proportional to the amount of information. Don't invent categories, terminology, or sections just to make the documentation look complete.
+- Don't add an intro or conclusion unless there is actually something useful to say.
+- Don't repeat a point in prose after already showing it in a command, example, heading, or list.
+- No em dashes, semicolons, emojis, arrows, bold scattered through sentences, or overly decorative formatting.
+- Avoid AI writing patterns like "it's not just X, it's Y", rhetorical contrasts, fake enthusiasm, title-restating intros, "Overall..." conclusions, repeated summaries, or filler words like powerful, seamless, robust, comprehensive, sophisticated, and elegant.
+- Avoid repetitive explanatory constructions like "This ensures...", "This allows...", "This means...", or "This prevents..." paragraph after paragraph.
+- Don't make every statement sound absolute. Human-written project docs are often scoped to how the project works right now.
+- When in doubt, write less.
 
 ## READMEs
 
-- Open with a sentence or two on what it is. e.g. "This is a simple proxy server that adds the necessary headers to allow Cross-Origin Resource Sharing (CORS) for a specified website." or "My first real Three.js project."
+- Open with one or two normal sentences saying what the project is. For example: "This is a simple proxy server that adds the necessary headers to allow Cross-Origin Resource Sharing (CORS) for a specified website." or "My first real Three.js project."
 - Link the live build if there is one: "Visit the [GitHub Pages site](...) to access the latest deployment."
-- Controls and usage as short imperatives: "Use W/S to increase or decrease throttle. Use A/D to roll. Press the escape key at any time to exit flight mode."
+- Don't explain the entire architecture unless the project actually needs an architecture section.
+- Prefer documenting what somebody needs to run, use, understand, or modify the project.
+- Controls and usage should be short and direct: "Use W/S to increase or decrease throttle. Use A/D to roll. Press the escape key at any time to exit flight mode."
 - State limits plainly: "Currently the maximum amount is 512." or "Note that large searches can take up to 15 seconds to process."
 - Small side notes can go on an h6 line: "###### Note: Assembly generator currently only supports integers"
-- Usual sections, only when there's something to put in them: Usage or How to Use, Features, Local Installation (numbered steps with the command in backticks), Known Issues & Limitations, Screenshots, Credits.
-- Title Case headings. "&" is fine in titles ("Solar System & Flight Simulator").
+- Common sections are Usage or How to Use, Features, Local Installation, Known Issues & Limitations, Screenshots, and Credits, but only add them when they are useful.
+- Don't force every README into the same template.
+- Title Case headings. `&` is fine in titles.
 - Backticks for buttons, keys, files, branches, and commands.
-- Keep it short. Most of my older READMEs were 250 to 550 words, bigger projects around 1,200 to 1,500.
+- Keep it short. Most of my older READMEs were around 250 to 550 words. Bigger projects can be around 1,200 to 1,500, but don't aim for a word count if there isn't that much worth saying.
+- If a technical detail is easy to find by reading one function, it probably doesn't belong in the README.
+- A README can leave implementation details out. It does not need to prove that every part of the project was considered.
+
+## Technical docs
+
+- Technical docs can be more detailed than the README, but still shouldn't read like generated reference documentation.
+- Start from the reason the document exists, not from a desire to describe the whole system.
+- Don't automatically create one section per subsystem.
+- Don't walk through the entire pipeline in order unless understanding that sequence is the point of the document.
+- Mention source files where they are genuinely useful for finding the implementation, not after every paragraph.
+- Avoid exhaustive lists of thresholds, fallback rules, caches, data sources, and special cases unless those details are the subject of the document.
+- Examples and odd cases are often more useful than a complete formal description.
+- It's fine for a technical document to say "The rest is handled in `foo.ts`" rather than explaining every step.
+- Leave out details that are likely to become stale unless they are important enough to maintain.
+- Don't make the implementation sound more deliberate or formally designed than it really was.
 
 ## Code comments
 
-- Sparse. Only for non-obvious logic, reasons behind a decision, edge cases, limitations, unusual behavior, or something another developer might be tempted to "fix".
-- Don't narrate straightforward code or restate the function name. Don't add doc blocks just to have them.
-- Short and plain, a fragment is fine. e.g. "# Use WSL to run the commands if on Windows" or "# If the input contains an equal sign, skip code generation"
+- Keep comments sparse.
+- Only comment non-obvious logic, reasons behind a decision, edge cases, limitations, unusual behavior, or something another developer might be tempted to "fix".
+- Don't narrate straightforward code or restate the function name.
+- Don't add doc blocks just because a function is public.
+- Don't explain every branch of complicated code. Comment the weird part or the reason the code has to be complicated.
+- Fragments are fine.
+- Comments can sound like quick developer notes rather than miniature documentation paragraphs.
+- Good: `# Use WSL to run the commands if on Windows`
+- Good: `# If the input contains an equal sign, skip code generation`
+- Good: `// Keep this separate from the road union or tiny paths disappear`
+- Bad: `// This ensures that the road geometry is correctly processed before proceeding to the next stage.`
 
-## Attributes
+# Attribution
 
-Never list Claude or any AI tool as an author or co-author: no `Co-Authored-By` trailers, "Generated with" lines or session links in commits or pull requests, and no AI names in author, maintainer or copyright fields. The user (jarvisar) is the sole author and should appear as the sole Contributor on the GitHub repository.
+Never list Claude or any other AI tool as an author or co-author. Do not add `Co-Authored-By` trailers, "Generated with" lines, session links, or AI names to commits, pull requests, author fields, maintainer fields, or copyright notices.
+
+The user (`jarvisar`) is the sole author and should appear as the sole contributor on the GitHub repository.

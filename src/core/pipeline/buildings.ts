@@ -28,7 +28,8 @@ import {
   union,
   type Box,
 } from '../geometry/polygon';
-import type { HeightFn, PrismSolid } from '../geometry/solid';
+import type { HeightFn, PrismSolid, Solid } from '../geometry/solid';
+import type { PublishedRecord } from '../lidar/publish';
 import type { MultiPolygon, Polygon } from '../types';
 import { resolveVerticalProfile, text } from './buildings/heights';
 import { isConvex, ringWidth } from './buildings/planar';
@@ -36,10 +37,16 @@ import { footprintAdmitsMinimumHeight, sourcePartWidths } from './buildings/prin
 import { isShaped, resolveRoof, shapedRoofRegions, type RoofRegion } from './buildings/roofs';
 import { hasHoles, selectBuildingGeometry } from './buildings/selection';
 import { count, type Context } from './context';
+import { measuredSolids, projectShape } from './lidar';
 import { isPolygonal, positive, projectPolygons, type SourceFeature } from './source';
 
 export interface BuildingResult {
+  /** Buildings built from their mapped shape. */
   solids: PrismSolid[];
+  /** Buildings built from LiDAR measurements. */
+  measured: Solid[];
+  /** Mapped bare rock measured by LiDAR. */
+  rock: Solid[];
   /** Ground-founded footprints, for ground kept over water and tree clearance. */
   footprint: MultiPolygon;
 }
@@ -47,6 +54,8 @@ export interface BuildingResult {
 export interface BuildingOptions {
   /** Where there is no ground (cut water, basins) and none will be kept: footprints are clipped away from it. */
   clipAway: MultiPolygon;
+  /** Prepared LiDAR measurements by building id. */
+  lidar?: { records: Record<string, PublishedRecord>; preferLidar: boolean };
 }
 
 // A shaped roof lower than this is built flat: it would print as a lid anyway.
@@ -283,12 +292,157 @@ export async function buildBuildings(
     if (maximumSlenderness > 0 && width < settings.slendernessExemptMm && thicknessMm > width * maximumSlenderness) return 'slender';
     return null;
   };
+  // With LiDAR not preferred, a mapped building keeps crowns and tiers its
+  // measurement leaves out. A simpler measured roof is no reason to drop mapped
+  // sections. Only masses that would pass the size checks count.
+  const preferSourceDetail = (parent: SourceFeature, parts: SourceFeature[], record: PublishedRecord): boolean => {
+    const assembly = selection.suppressedParentIds.has(parent.id) ? parts : [...parts, parent];
+    const widths = sourcePartWidths(parts, (part) => footprintOf(part).masses.map((mass) => mass.polygon), vertical, floorHeightM, defaultHeightM, minimumWidth, maximumSlenderness);
+    const parentTopM = positive(parent.props.height);
+    const levels: number[] = [];
+    for (const member of assembly) {
+      const profile = resolveVerticalProfile(member.props, floorHeightM, defaultHeightM);
+      if (profile.thicknessM <= 0) continue;
+      const masses = footprintOf(member).masses;
+      for (let m = 0; m < masses.length; m++) {
+        const outer = masses[m].polygon[0];
+        const width = ringWidth(outer);
+        if (tooThin(widths.get(member.id)?.[m] ?? width, vertical(profile.thicknessM))) continue;
+        const roof = resolveRoof(member.props, profile, member !== parent, parentTopM, projection.metres(width));
+        if (settings.roofShapes && isShaped(roof) && masses[m].polygon.length === 1 && vertical(roof.roofTopM - roof.wallTopM) >= MINIMUM_ROOF_MM) {
+          if (!record.cap && !record.roofSurfaces?.length) return true;
+        }
+        levels.push(vertical(profile.topM));
+      }
+    }
+    const distinct: number[] = [];
+    for (const height of levels.sort((a, b) => a - b)) {
+      if (!distinct.length || height - distinct[distinct.length - 1] >= Math.max(MINIMUM_ROOF_MM, 0.2)) distinct.push(height);
+    }
+    const sections = 1 + record.tiers.length + (record.roofSurfaces?.length ?? 0) + (record.cap ? record.cap.triangles.length / 3 : 0);
+    return distinct.length >= 2 && levels.length > sections;
+  };
+
+  // ---------------------------------------------------------------- LiDAR
+  // Measured buildings are built first. One whose roof was reconstructed
+  // replaces its whole mapped assembly; a measured infill replaces only the
+  // missing main mass and corrects its parts' heights; height-only records
+  // rescale the mapped masses afterwards. A measurement that cannot be built
+  // cleanly leaves the mapped building as it was.
+  const solids: PrismSolid[] = [];
+  const measured: Solid[] = [];
+  const rock: Solid[] = [];
+  const groundPieces: MultiPolygon = [];
+  const enhanced = new Set<string>();
+  const infilled = new Set<string>();
+  const covered = new Set<string>();
+  const partHeights = new Map<string, number>();
+  const heightOnly = new Map<string, number>();
+  const lidar = options.lidar;
+  if (lidar) {
+    for (const key of ['lidar_buildings', 'lidar_envelopes', 'lidar_geometry_fallbacks', 'lidar_infill_buildings', 'lidar_part_heights', 'lidar_height_only_buildings']) stat(key, 0);
+    const measuredOptions = {
+      vertical,
+      minimumWidth,
+      maximumSlenderness,
+      exemptWidth: settings.slendernessExemptMm,
+      minimumHeight,
+      minimumFootprint,
+    };
+    for (const feature of buildingFeatures) {
+      const record = lidar.records[feature.id];
+      if (!record || selection.duplicateIds.has(feature.id) || feature.props.is_underground === true) continue;
+      const parts = partsByParent.get(feature.id) ?? [];
+      if (record.method === 'height_only') {
+        // Built as mapped first; corrected mass by mass below.
+        for (const [key, height] of Object.entries(record.sourceHeights ?? {})) {
+          if (key === feature.id || parts.some((p) => p.id === key)) heightOnly.set(key, height);
+        }
+        continue;
+      }
+      const supplement = record.method === 'source_parts';
+      if (supplement && !selection.suppressedParentIds.has(feature.id) && !lidar.preferLidar) continue;
+      const updates = parts.filter((p) => record.partHeights?.[p.id] !== undefined).map((p) => [p.id, record.partHeights![p.id]] as const);
+      if (supplement && !record.infillGeometry) {
+        for (const [id, height] of updates) partHeights.set(id, height);
+        continue;
+      }
+      if (!supplement && !lidar.preferLidar && preferSourceDetail(feature, parts, record)) {
+        stat('lidar_source_detail_preserved');
+        continue;
+      }
+      let footprint: MultiPolygon;
+      let pieces: MultiPolygon;
+      let whole: boolean;
+      if (record.infillGeometry) {
+        footprint = projectShape(record.infillGeometry, ctx);
+        const seen = footprint.map((polygon) => visibility.of(polygon));
+        pieces = seen.flatMap((v) => v.pieces);
+        whole = seen.every((v) => v.whole);
+      } else {
+        const masses = footprintOf(feature).masses;
+        footprint = masses.map((m) => m.polygon);
+        pieces = masses.flatMap((m) => m.pieces);
+        whole = masses.every((m) => m.whole);
+      }
+      if (!pieces.length) continue;
+      const ground = groundOf(feature.id);
+      if (!ground) continue;
+      const built = measuredSolids(record, { ...measuredOptions, footprint, pieces, whole, ground }, ctx);
+      if (!built) {
+        stat('lidar_geometry_fallbacks');
+        continue;
+      }
+      measured.push(...built.solids);
+      groundPieces.push(...pieces);
+      stat('buildings');
+      stat('lidar_buildings');
+      if (record.cap) stat('lidar_envelopes');
+      if (built.lift > 0) stat('buildings_raised_to_minimum');
+      if (supplement) {
+        infilled.add(feature.id);
+        stat('lidar_infill_buildings');
+        // Part corrections are committed only once the infill has been built.
+        for (const [id, height] of updates) partHeights.set(id, height);
+      } else enhanced.add(feature.id);
+    }
+    // Mapped bare rock, and the source buildings wholly inside a rock mass it replaces.
+    for (const record of Object.values(lidar.records)) {
+      if (record.surfaceKind !== 'rock' || !record.surfaceGeometry) continue;
+      const footprint = projectShape(record.surfaceGeometry, ctx);
+      const seen = footprint.map((polygon) => visibility.of(polygon));
+      const pieces = seen.flatMap((v) => v.pieces);
+      if (!pieces.length) continue;
+      let top = -Infinity;
+      for (const polygon of footprint) for (const ring of polygon) for (const [x, y] of densifyRing(ring, hf.step)) top = Math.max(top, hf.heightAt(x, y));
+      const built = measuredSolids(
+        record,
+        { vertical, minimumWidth: 0.08, maximumSlenderness: 0, exemptWidth: 0, minimumHeight: 0, minimumFootprint: 0, footprint, pieces, whole: seen.every((v) => v.whole), ground: [0, top], role: 'rock' },
+        ctx,
+      );
+      if (!built) {
+        stat('lidar_rock_geometry_fallbacks');
+        continue;
+      }
+      rock.push(...built.solids);
+      for (const id of record.coveredBuildings ?? []) covered.add(id);
+      stat('lidar_rock_surfaces');
+    }
+  }
+  const replaced = (feature: SourceFeature) => {
+    const parent = text(feature.props.building_id);
+    return enhanced.has(feature.id) || enhanced.has(parent) || covered.has(feature.id) || covered.has(parent);
+  };
+  const correctedParts = selection.parts
+    .filter((part) => !replaced(part))
+    .map((part) => (partHeights.has(part.id) ? { ...part, props: { ...part.props, height: partHeights.get(part.id) } } : part));
+
   // Adjoining parts use their assembly's width for the filter. With both
   // filters off there is nothing to measure.
   const partWidths =
     minimumWidth > 0 || maximumSlenderness > 0
       ? sourcePartWidths(
-          selection.parts,
+          correctedParts,
           (part) => footprintOf(part).masses.map((mass) => mass.polygon),
           vertical,
           floorHeightM,
@@ -299,9 +453,7 @@ export async function buildBuildings(
       : null;
   await ctx.progress.checkpoint(0.15);
 
-  const solids: PrismSolid[] = [];
-  const groundPieces: MultiPolygon = [];
-  const emit = (surfaces: RoofRegion[], mass: Mass, bottom: HeightFn | number, grounded: boolean, tidy: boolean): number => {
+  const emit =(surfaces: RoofRegion[], mass: Mass, bottom: HeightFn | number, grounded: boolean, tidy: boolean): number => {
     let added = 0;
     for (const surface of surfaces) {
       let shapes: MultiPolygon;
@@ -338,6 +490,18 @@ export async function buildBuildings(
     jobs.push({ feature, isPart: false });
   }
   const builtPartParents = new Set<string>();
+  // Masses of each source identity with a height-only measurement, for the correction below.
+  interface Segment {
+    solids: PrismSolid[];
+    base: number;
+    lift: number;
+    /** Highest finished point above the base, before any lift. */
+    peak: number;
+    terrainTop: number;
+    minimum: number;
+    grounded: boolean;
+  }
+  const segments = new Map<string, Segment[]>();
 
   for (let index = 0; index < jobs.length; index++) {
     if (index % 100 === 0) await ctx.progress.checkpoint(0.15 + (0.8 * index) / jobs.length);
@@ -345,12 +509,14 @@ export async function buildBuildings(
     const id = feature.id;
     const restoring = !isPart && selection.suppressedParentIds.has(id);
     if (restoring && builtPartParents.has(id)) continue;
+    if (replaced(feature) || (!isPart && infilled.has(id))) continue;
     const footprint = footprintOf(feature);
     if (!footprint.masses.some((mass) => mass.pieces.length)) {
       if (footprint.near && !footprint.masses.length) stat('buildings_rejected_geometry');
       continue;
     }
-    const props = feature.props;
+    // Identity, footprint, underside and roof shape stay; only the height is measured.
+    const props = partHeights.has(id) ? { ...feature.props, height: partHeights.get(id) } : feature.props;
     const profile = resolveVerticalProfile(props, floorHeightM, defaultHeightM);
     if (profile.implausible) stat('building_heights_implausible');
     if (profile.thicknessM <= 0) {
@@ -434,7 +600,14 @@ export async function buildBuildings(
       // Clipping a concave outline against a half-plane can leave zero-width
       // bridges along the ridge. Normalizing splits them.
       const tidy = !!regions && (roof.kind === 'gabled' || roof.kind === 'hipped') && !isConvex(outer);
+      const first = solids.length;
       if (!emit(surfaces, mass, floor, grounded, tidy)) continue;
+      if (heightOnly.has(id)) {
+        const minimum = minimumHeight > 0 && footprintAdmitsMinimumHeight(outer, minimumFootprint) ? minimumHeight : 0;
+        const list = segments.get(id) ?? [];
+        list.push({ solids: solids.slice(first), base: terrain, lift, peak: peak - terrain, terrainTop, minimum, grounded });
+        segments.set(id, list);
+      }
 
       emitted = true;
       if (lift > 0) stat(isPart ? 'building_parts_raised_to_minimum' : 'buildings_raised_to_minimum');
@@ -455,6 +628,7 @@ export async function buildBuildings(
       builtPartParents.add(parentId);
       stat('building_parts');
       stat('parts_founded_on_parent_base');
+      if (partHeights.has(id)) stat('lidar_part_heights');
     } else {
       stat('buildings');
       if (restoring) {
@@ -464,6 +638,31 @@ export async function buildBuildings(
     }
   }
 
+  // Height-only LiDAR: rescale a mass's heights above its base when the
+  // measured top differs by more than 3 m and 20%. It is a sanity
+  // correction, not a precision one, so small differences (survey noise
+  // included) leave the model exactly as mapped. Each identity uses only its
+  // own measurement: a podium never inherits its tower's height.
+  for (const [id, list] of segments) {
+    const measured = vertical(heightOnly.get(id)!);
+    const peak = Math.max(...list.map((s) => s.peak));
+    if (peak <= 0 || Math.abs(measured - peak) <= Math.max(vertical(3), Math.max(measured, peak) * 0.2)) continue;
+    const ratio = measured / peak;
+    for (const segment of list) {
+      const { base, lift } = segment;
+      const newLift = segment.minimum ? Math.max(0, segment.minimum - (base + segment.peak * ratio - segment.terrainTop)) : 0;
+      const scale = (z: HeightFn | number): HeightFn | number =>
+        typeof z === 'number' ? base + (z - base - lift) * ratio + newLift : (x, y) => base + (z(x, y) - base - lift) * ratio + newLift;
+      for (const solid of segment.solids) {
+        solid.top = scale(solid.top);
+        // An elevated mass's underside moves with its roof; a grounded one stays in the terrain.
+        if (!segment.grounded) solid.bottom = scale(solid.bottom);
+      }
+    }
+    stat('lidar_height_only_buildings');
+    stat('lidar_buildings');
+  }
+
   await ctx.progress.checkpoint(0.95);
-  return { solids, footprint: groundPieces.length ? union(groundPieces) : [] };
+  return { solids, measured, rock, footprint: groundPieces.length ? union(groundPieces) : [] };
 }

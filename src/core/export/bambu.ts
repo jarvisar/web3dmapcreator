@@ -9,7 +9,6 @@
 
 import type { Printer } from '../settings';
 import {
-  ATTRIBUTION,
   CONFIG_CONTENT_TYPE,
   CORE_NAMESPACE,
   DESCRIPTION,
@@ -23,7 +22,7 @@ import {
   modelRelationship,
   type PreparedModel,
 } from './common';
-import { fixed6, formatG, quoteattr } from './format';
+import { escapeText, fixed6, formatG, quoteattr } from './format';
 import { BAMBU_MAX_PLATES, plateOrigin } from './sections';
 import { ZipWriter } from './zip';
 
@@ -67,7 +66,7 @@ export function writeBambuProject(model: PreparedModel, printer: Printer): Blob 
       ` <metadata name="Application">${APPLICATION}</metadata>\n` +
       ' <metadata name="BambuStudio:3mfVersion">1</metadata>\n' +
       ` <metadata name="Description">${DESCRIPTION}</metadata>\n` +
-      ` <metadata name="Copyright">${ATTRIBUTION}</metadata>\n` +
+      ` <metadata name="Copyright">${escapeText(model.attribution)}</metadata>\n` +
       ' <resources>\n',
   );
   for (const { plate, parts, assembly } of layout) {

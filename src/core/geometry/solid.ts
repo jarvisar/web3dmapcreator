@@ -37,7 +37,23 @@ export interface MeshSolid {
   anchor: Vec2;
 }
 
-export type Solid = PrismSolid | MeshSolid;
+/**
+ * A measured roof: a triangulated height surface (from LiDAR) that tiles its
+ * outline exactly, closed by walls along that outline down to a flat
+ * underside. Like a prism it can be cut to a print section in 2D, since the
+ * surface is a height field.
+ */
+export interface CapSolid {
+  kind: 'cap';
+  role: MaterialRole;
+  /** xyz triplets in model mm. */
+  vertices: Float64Array;
+  /** Counter-clockwise in plan; faces meet at shared corners. */
+  triangles: Uint32Array;
+  bottom: number;
+}
+
+export type Solid = PrismSolid | MeshSolid | CapSolid;
 
 /** A named group of solids that becomes one exported part. */
 export interface Layer {

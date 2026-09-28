@@ -21,6 +21,8 @@ export function rowFilter(settings: ModelSettings, bounds: GeoBounds): RowFilter
   const forestTrees = trees && settings.trees.forestScatter;
   const surfaces = settings.land.enabled;
   const decks = settings.supports;
+  const lidarRock =
+    settings.buildings.enabled && settings.lidar.enabled && settings.lidar.rockSurfaces && settings.lidar.roofMode === 'envelope';
 
   return (type, props, bbox) => {
     const cls = str(props.class);
@@ -38,6 +40,8 @@ export function rowFilter(settings: ModelSettings, bounds: GeoBounds): RowFilter
       case 'land': {
         if (cls === 'tree' || subtype === 'tree') return mappedTrees;
         if (decks && (WATER_DECK.has(cls) || WATER_DECK.has(subtype))) return true;
+        // Mapped bare rock LiDAR measures, whatever its extent (as the add-on's rock domains).
+        if (lidarRock && cls === 'bare_rock') return true;
         const category = LAND_CLASS[cls] ?? LAND_CLASS[subtype];
         if (!category || regional(bbox)) return false;
         return surfaces || (forestTrees && category === 'forest');

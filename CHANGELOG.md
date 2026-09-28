@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- LiDAR buildings, ported from the add-on. Turn on `Layers > LiDAR` to measure buildings from public surveys and rebuild them from their scanned roofs, or only correct their heights. Surveys come from USGS 3DEP (EPT), IGN LiDAR HD, NRCan, swisstopo and Open LiDAR Data (COPC), streamed with range requests. Tiled LAZ downloads aren't supported.
+- LiDAR point data has its own browser cache of up to 1 GB, and measured buildings are reused for a day.
+- The surveys a model used are listed in `Model details` and in the attribution of exported 3MF files.
+- `Mapped bare rock` builds cliffs and outcrops mapped as bare rock from the LiDAR surface.
+- `scripts/generate.ts --lidar` for the command line.
+- Measured roofs are lighter than the add-on's: rim vertices on straight walls are thinned and the underside comes from the outline, about a quarter of the triangles for the same shape.
+
 ### Changed
 
 - New look: the system font, gradient buttons, a dark header, section bars and checkboxes for the layers. Dark mode follows the same style.
