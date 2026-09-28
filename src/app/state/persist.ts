@@ -24,7 +24,7 @@ export interface SavedState {
   sections?: Partial<Record<string, boolean>>;
   basemap?: 'streets' | 'light' | 'satellite';
   showBed?: boolean;
-  sizeUnit?: 'km' | 'm';
+  sizeUnit?: 'km' | 'm' | 'mm';
   mapHintDismissed?: boolean;
   /** The URL hash the app last wrote, to tell its own hash from a share link. */
   hash?: string;
@@ -108,7 +108,7 @@ export function loadSaved(): SavedState {
     sections: isObject(ui.sections) ? (ui.sections as Record<string, boolean>) : undefined,
     basemap: ui.basemap === 'streets' || ui.basemap === 'light' || ui.basemap === 'satellite' ? ui.basemap : undefined,
     showBed: typeof ui.showBed === 'boolean' ? ui.showBed : undefined,
-    sizeUnit: ui.sizeUnit === 'km' || ui.sizeUnit === 'm' ? ui.sizeUnit : undefined,
+    sizeUnit: ui.sizeUnit === 'km' || ui.sizeUnit === 'm' || ui.sizeUnit === 'mm' ? ui.sizeUnit : undefined,
     mapHintDismissed: typeof ui.mapHintDismissed === 'boolean' ? ui.mapHintDismissed : undefined,
     hash: typeof raw.hash === 'string' ? raw.hash : undefined,
   };

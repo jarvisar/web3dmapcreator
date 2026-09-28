@@ -28,7 +28,8 @@ export type View = 'map' | 'model';
 export type SectionKey = 'area' | 'print' | 'layers' | 'colours' | 'export';
 export type LayerKey = 'terrain' | 'water' | 'land' | 'roads' | 'bridges' | 'buildings' | 'trees' | 'rim';
 export type BasemapKey = 'streets' | 'light' | 'satellite';
-export type SizeUnit = 'km' | 'm';
+/** 'mm' is the printed size. */
+export type SizeUnit = 'km' | 'm' | 'mm';
 
 export interface PartInfo {
   id: string;

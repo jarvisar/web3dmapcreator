@@ -59,6 +59,7 @@ const NEXT_STEPS: Record<ExportFormat, string[]> = {
   prusa: [
     'Open the file in PrusaSlicer, or drag it onto the plate.',
     'Each colour is a part on its own extruder. Set the filament for each extruder.',
+    'A model split into sections opens with every section on the first bed. Press Arrange (A) to give each one a bed.',
     'Slice and check the preview before printing.',
   ],
   '3mf': [

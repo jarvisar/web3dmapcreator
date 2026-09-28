@@ -69,10 +69,10 @@ function prusaNotes(model: PreparedModel, printer: Printer): string[] {
         'and parts on higher extruders print with the first one.',
     );
   }
-  if (model.plates.length > PRUSA_MAX_BEDS) {
+  if (model.plates.length > 1) {
     notes.push(
-      `PrusaSlicer has at most ${PRUSA_MAX_BEDS} beds, so the ${model.plates.length} sections are laid out side by side. ` +
-        'Use Arrange to put them on beds.',
+      `The ${model.plates.length} sections open side by side on the first bed. Press Arrange (A) to put them on separate beds` +
+        (model.plates.length > PRUSA_MAX_BEDS ? `. PrusaSlicer has at most ${PRUSA_MAX_BEDS}, so do the rest in a second project.` : '.'),
     );
   }
   return notes;

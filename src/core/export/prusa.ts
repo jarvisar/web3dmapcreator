@@ -39,31 +39,14 @@ const SLIC3RPE_NAMESPACE = 'http://schemas.slic3r.org/3mf/2017/06';
 // MAX_NUMBER_OF_BEDS in PrusaSlicer 2.9.
 export const PRUSA_MAX_BEDS = 9;
 
-/** Bed index to grid cell, as MultipleBeds' index2grid_coords fills a growing square. */
-export function prusaBedCell(index: number): [number, number] {
-  if (index === 0) return [0, 0];
-  let id = index + 1;
-  let a = 1;
-  while ((a + 1) * (a + 1) < id) a++;
-  id -= a * a;
-  return id <= a ? [a, id - 1] : [id - a - 1, a];
-}
-
-/** Where PrusaSlicer 2.9 puts bed `index`: MultipleBeds::get_bed_translation. */
-export function prusaBedOrigin(index: number, bedWidth: number, bedDepth: number): [number, number] {
-  // bed_gap(): 0.3 of the bed diagonal, at most 100 mm.
-  const gap = Math.min(100, Math.hypot(bedWidth, bedDepth) * 0.3);
-  const [x, y] = prusaBedCell(index);
-  return [x * (bedWidth + gap), y * (bedDepth + gap)];
-}
-
-/** XY translation of each plate: one per bed while they fit, else side by side on the first bed. */
+/**
+ * Sections go side by side on the first bed. PrusaSlicer 2.9 centres a 3MF
+ * that isn't one of its own projects on the first bed when it opens it,
+ * which would scatter a layout spread over its beds. Arrange puts them on
+ * beds from here.
+ */
 function prusaPlacement(bounds: [number, number, number, number][], bedWidth: number, bedDepth: number): [number, number][] {
-  if (bounds.length > PRUSA_MAX_BEDS) return sideBySide(bounds, bedWidth, bedDepth);
-  return bounds.map(([west, south, east, north], i) => {
-    const [ox, oy] = prusaBedOrigin(i, bedWidth, bedDepth);
-    return [ox + bedWidth / 2 - (west + east) / 2, oy + bedDepth / 2 - (south + north) / 2];
-  });
+  return sideBySide(bounds, bedWidth, bedDepth);
 }
 
 export function writePrusaProject(model: PreparedModel, printer: Printer, title = 'City Model'): Blob {

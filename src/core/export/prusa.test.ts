@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_PALETTE, printerByKey, type Palette, type Printer } from '../settings';
 import type { Plate } from '../types';
 import { MODEL_PATH, preparePlates } from './common';
-import { PRUSA_MODEL_CONFIG_PATH, prusaBedCell, prusaBedOrigin, writePrusaProject } from './prusa';
+import { PRUSA_MODEL_CONFIG_PATH, writePrusaProject } from './prusa';
 import { box, findAll, parseXml, part, plate, unzipText, type XmlNode } from './test-helpers';
 
 async function write(plates: Plate[], palette: Palette, printer: Printer, title?: string) {
@@ -69,35 +69,7 @@ describe('writePrusaProject', () => {
     expect(translation(items[0])).toEqual([125, 105, 2]);
   });
 
-  it('puts sections on PrusaSlicer 2.9 beds', async () => {
-    expect([0, 1, 2, 3, 4, 5, 6, 7, 8].map(prusaBedCell)).toEqual([
-      [0, 0], [1, 0], [0, 1], [1, 1], [2, 0], [2, 1], [0, 2], [1, 2], [2, 2],
-    ]);
-    // MK4: the gap is 0.3 of the bed diagonal.
-    const gap = Math.hypot(250, 210) * 0.3;
-    expect(prusaBedOrigin(3, 250, 210)).toEqual([250 + gap, 210 + gap]);
-    // XL: capped at 100 mm.
-    expect(prusaBedOrigin(1, 360, 360)).toEqual([460, 0]);
-
-    const cells: [number, number, number, number][] = [[-50, 0, 0, 40], [0, 0, 50, 40], [-50, -40, 0, 0], [0, -40, 50, 0]];
-    const plates = cells.map((bounds, i) =>
-      plate(`Section R${i < 2 ? 1 : 2} C${(i % 2) + 1}`, [part('terrain', 'Terrain', 'terrain', box(bounds[0], bounds[1], -2, 50, 40, 2))], bounds),
-    );
-    const { model, config } = await write(plates, DEFAULT_PALETTE, printerByKey('MK4'));
-    expect(findAll(config, 'object').map((o) => o.attrs.id)).toEqual(['1', '2', '3', '4']);
-    const items = findAll(model, 'item');
-    items.forEach((item, i) => {
-      const [bx, by] = prusaBedOrigin(i, 250, 210);
-      const [tx, ty, tz] = translation(item);
-      const [w, s, e, n] = cells[i];
-      // Each section's centre lands on its bed's centre.
-      expect(tx + (w + e) / 2).toBeCloseTo(bx + 125, 6);
-      expect(ty + (s + n) / 2).toBeCloseTo(by + 105, 6);
-      expect(tz).toBe(2);
-    });
-  });
-
-  it('lays out more sections than PrusaSlicer has beds side by side', async () => {
+  it('lays out sections side by side on the first bed', async () => {
     const plates = Array.from({ length: 10 }, (_, i) => {
       const bounds: [number, number, number, number] = [i * 20, 0, i * 20 + 20, 20];
       return plate(`Section R1 C${i + 1}`, [part('terrain', 'Terrain', 'terrain', box(i * 20, 0, 0, 20, 20, 1))], bounds);

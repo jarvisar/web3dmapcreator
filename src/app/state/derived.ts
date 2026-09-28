@@ -66,15 +66,26 @@ export interface BedFit {
   plates: number;
 }
 
-export function bedFit(area: AreaSpec, settings: ModelSettings, exportSettings: ExportSettings): BedFit {
-  const printer = printerByKey(exportSettings.printer);
-  // Measured and split the way the export does it, so the counts agree.
+type SizeSettings = Pick<ModelSettings, 'scale' | 'rim'>;
+
+// Measured the way the export does it, so sizes and plate counts agree.
+function modelOutline(area: AreaSpec, settings: SizeSettings) {
   const outline = withRim(areaModelRing(area, effectiveScale(area, settings.scale)), settings.rim.enabled ? settings.rim.widthMm : 0);
   const xs = outline.map((p) => p[0]);
   const ys = outline.map((p) => p[1]);
   const [west, south, east, north] = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-  const width = east - west;
-  const depth = north - south;
+  return { outline, west, south, width: east - west, depth: north - south };
+}
+
+/** Printed width and depth, rim included. */
+export function printedSize(area: AreaSpec, settings: SizeSettings): { width: number; depth: number } {
+  const { width, depth } = modelOutline(area, settings);
+  return { width, depth };
+}
+
+export function bedFit(area: AreaSpec, settings: ModelSettings, exportSettings: ExportSettings): BedFit {
+  const printer = printerByKey(exportSettings.printer);
+  const { outline, west, south, width, depth } = modelOutline(area, settings);
   const straight = width <= printer.width && depth <= printer.depth;
   const turned = width <= printer.depth && depth <= printer.width;
   const cols = sectionCount(width, Math.min(exportSettings.sectionWidthMm, printer.width));

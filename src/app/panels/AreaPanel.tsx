@@ -1,6 +1,6 @@
 import { ClipboardPaste, Copy, Link, RotateCcw, Scan, TriangleAlert, CircleAlert } from 'lucide-react';
 import { useId } from 'react';
-import { areaGeoBounds, areaKm2, parseBoundsText, validateArea, MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
+import { areaGeoBounds, areaKm2, effectiveScale, parseBoundsText, validateArea, MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
 import type { AreaShape } from '../../core/settings';
 import { ShapeIcon } from '../components/Icons';
 import { NumberField, NumberInput } from '../components/NumberField';
@@ -8,10 +8,11 @@ import { SliderField } from '../components/Fields';
 import { Segmented } from '../components/Segmented';
 import { SHAPES, SHAPE_LABELS, areaForBounds, constrainSize } from '../lib/area';
 import { copyText, readClipboardText } from '../lib/browser';
-import { formatNumber, formatSizePair } from '../lib/format';
+import { formatNumber, formatRatio, formatSizePair } from '../lib/format';
 import { areaForView } from '../map/mapHandle';
+import { printedSize } from '../state/derived';
 import { shareUrl } from '../state/shareLink';
-import { setArea, setSizeUnit, toast, useApp } from '../state/store';
+import { patchSettings, setArea, setSizeUnit, toast, useApp } from '../state/store';
 import type { SizeUnit } from '../state/store';
 import { writeHashNow } from '../state/sync';
 import { PlaceSearch } from './PlaceSearch';
@@ -26,9 +27,24 @@ function areaSummary(placeName: string, shape: AreaShape, widthM: number, height
   return placeName ? `${placeName} · ${size}` : `${SHAPE_LABELS[shape]} · ${size}`;
 }
 
-function SizeInput({ label, valueM, unit, onChange }: { label: string; valueM: number; unit: SizeUnit; onChange: (m: number) => void }) {
+interface SizeInputProps {
+  label: string;
+  valueM: number;
+  unit: SizeUnit;
+  mmPerMetre: number;
+  /** What the rim adds to this side of the print. */
+  rimMm: number;
+  onChange: (m: number) => void;
+}
+
+function SizeInput({ label, valueM, unit, mmPerMetre, rimMm, onChange }: SizeInputProps) {
   const id = useId();
-  const km = unit === 'km';
+  const input =
+    unit === 'mm'
+      ? { value: valueM * mmPerMetre + rimMm, decimals: 1, step: 1, min: MIN_SIDE_M * mmPerMetre + rimMm, max: MAX_SIDE_M * mmPerMetre + rimMm }
+      : unit === 'km'
+        ? { value: valueM, scale: 0.001, decimals: 2, step: 0.01, min: MIN_SIDE_M / 1000, max: MAX_SIDE_M / 1000 }
+        : { value: valueM, decimals: 0, step: 10, min: MIN_SIDE_M, max: MAX_SIDE_M };
   return (
     <div className="size-field">
       <label htmlFor={id} className="size-label">
@@ -36,13 +52,8 @@ function SizeInput({ label, valueM, unit, onChange }: { label: string; valueM: n
       </label>
       <NumberInput
         id={id}
-        value={valueM}
-        onChange={onChange}
-        scale={km ? 0.001 : 1}
-        decimals={km ? 2 : 0}
-        step={km ? 0.01 : 10}
-        min={km ? MIN_SIDE_M / 1000 : MIN_SIDE_M}
-        max={km ? MAX_SIDE_M / 1000 : MAX_SIDE_M}
+        {...input}
+        onChange={(value) => onChange(unit === 'mm' ? (value - rimMm) / mmPerMetre : value)}
         unit={unit}
       />
     </div>
@@ -53,8 +64,14 @@ export function AreaPanel() {
   const area = useApp((state) => state.area);
   const placeName = useApp((state) => state.placeName);
   const unit = useApp((state) => state.ui.sizeUnit);
+  const scale = useApp((state) => state.settings.scale);
+  const rim = useApp((state) => state.settings.rim);
   const problem = validateArea(area);
   const km2 = areaKm2(area);
+  const mmPerMetre = effectiveScale(area, scale);
+  const printed = printedSize(area, { scale, rim });
+  const rimX = printed.width - area.widthM * mmPerMetre;
+  const rimY = printed.depth - area.heightM * mmPerMetre;
 
   function setSize(side: 'width' | 'height', metres: number) {
     setArea(
@@ -66,6 +83,12 @@ export function AreaPanel() {
       },
       { focus: 'if-needed' },
     );
+    // Fit to size would rescale the model to the new area. Keep the scale
+    // instead, so the printed size stays what was typed.
+    if (unit === 'mm' && scale.mode === 'fit') {
+      const next = useApp.getState().area;
+      patchSettings('scale', { fitMm: Math.min(2000, Math.max(20, mmPerMetre * Math.max(next.widthM, next.heightM))) });
+    }
   }
 
   function setShape(shape: AreaShape) {
@@ -146,19 +169,47 @@ export function AreaPanel() {
             options={[
               { value: 'km', label: 'km' },
               { value: 'm', label: 'm' },
+              { value: 'mm', label: 'mm', title: 'Printed size', ariaLabel: 'Printed size in mm' },
             ]}
           />
         </div>
         <div className="size-grid">
           {area.shape === 'circle' ? (
-            <SizeInput label="Diameter" valueM={area.widthM} unit={unit} onChange={(m) => setSize('width', m)} />
+            <SizeInput
+              label="Diameter"
+              valueM={area.widthM}
+              unit={unit}
+              mmPerMetre={mmPerMetre}
+              rimMm={rimX}
+              onChange={(m) => setSize('width', m)}
+            />
           ) : (
             <>
-              <SizeInput label="Width" valueM={area.widthM} unit={unit} onChange={(m) => setSize('width', m)} />
-              <SizeInput label="Height" valueM={area.heightM} unit={unit} onChange={(m) => setSize('height', m)} />
+              <SizeInput
+                label="Width"
+                valueM={area.widthM}
+                unit={unit}
+                mmPerMetre={mmPerMetre}
+                rimMm={rimX}
+                onChange={(m) => setSize('width', m)}
+              />
+              <SizeInput
+                label="Height"
+                valueM={area.heightM}
+                unit={unit}
+                mmPerMetre={mmPerMetre}
+                rimMm={rimY}
+                onChange={(m) => setSize('height', m)}
+              />
             </>
           )}
         </div>
+        {unit === 'mm' && (
+          <p className="field-hint">
+            Printed size at {formatRatio(mmPerMetre)}
+            {rim.enabled ? ', rim included' : ''}. Changing it resizes the area on the map.
+          </p>
+        )}
       </div>
 
       <NumberField

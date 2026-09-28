@@ -22,6 +22,7 @@
 - A lake that only reaches into a corner of the area is cut through the base like the rest of it.
 - Bridge piers could stand outside the model. A ramp that meets another deck partway along joins it instead of dropping to the road.
 - The border rim was missing from multi-plate exports.
+- A PrusaSlicer project split into sections opened with the sections scattered around and off the bed, because PrusaSlicer 2.9 recentres the file. They now open side by side on the first bed, ready for Arrange.
 - Trees could grow inside buildings when `Keep trees off roads` was off, hang over the model edge or cross section seams. Forests mapped as land use get trees.
 - Building heights over 1,000 m or 200 floors are treated as mapping errors.
 - Mapped piers keep their ground with parks and land cover turned off.
