@@ -2,7 +2,7 @@
 
 Turn any area of the map into a multicolour 3D printable city model, right in your browser. It builds terrain, water, parks, roads and buildings from [Overture Maps](https://overturemaps.org) data and public elevation tiles, sized for FDM printing with a 0.4 mm nozzle, and exports a Bambu Studio project with one filament per colour.
 
-Visit the [GitHub Pages site](https://jarvisar.github.io/web3dmapcreator/) to use the latest version.
+Visit the [GitHub Pages site](https://web3dmapcreator.jarvisar.com/) to use the latest version.
 
 ![The Chicago Loop at the default scale, 149 x 110 mm](docs/images/preview.png)
 
