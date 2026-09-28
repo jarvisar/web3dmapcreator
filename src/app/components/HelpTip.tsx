@@ -1,6 +1,5 @@
-import { CircleQuestionMark } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { keepUnits } from '../lib/format';
 import { placeFloating } from './floating';
@@ -15,7 +14,7 @@ interface TooltipProps {
 
 export function Tooltip({ anchor, open, children, placement = 'top', id }: TooltipProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ left: number; top: number; side: string } | null>(null);
+  const [position, setPosition] = useState<{ left: number; top: number; side: string; arrow: number } | null>(null);
 
   useLayoutEffect(() => {
     if (!open || !anchor || !ref.current) {
@@ -23,8 +22,11 @@ export function Tooltip({ anchor, open, children, placement = 'top', id }: Toolt
       return;
     }
     const box = ref.current.getBoundingClientRect();
-    const place = placeFloating(anchor.getBoundingClientRect(), { width: box.width, height: box.height }, placement, 6);
-    setPosition({ left: place.left, top: place.top, side: place.side });
+    const rect = anchor.getBoundingClientRect();
+    const place = placeFloating(rect, { width: box.width, height: box.height }, placement, 7);
+    // The box can be pushed in from the screen edge, so aim the arrow at the anchor itself.
+    const arrow = Math.min(box.width - 8, Math.max(8, rect.left + rect.width / 2 - place.left));
+    setPosition({ left: place.left, top: place.top, side: place.side, arrow });
   }, [open, anchor, placement, children]);
 
   if (!open) return null;
@@ -35,7 +37,11 @@ export function Tooltip({ anchor, open, children, placement = 'top', id }: Toolt
       role="tooltip"
       className="tooltip"
       data-side={position?.side}
-      style={position ? { left: position.left, top: position.top } : { left: -9999, top: 0, visibility: 'hidden' }}
+      style={
+        position
+          ? ({ left: position.left, top: position.top, '--arrow-x': `${position.arrow}px` } as CSSProperties)
+          : { left: -9999, top: 0, visibility: 'hidden' }
+      }
     >
       {children}
     </div>,
@@ -62,7 +68,10 @@ export function HelpTip({ text, label }: HelpTipProps) {
       setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key !== 'Escape') return;
+      // Only close the tip, not the drawer it sits in.
+      event.preventDefault();
+      setOpen(false);
     };
     document.addEventListener('pointerdown', close, true);
     document.addEventListener('keydown', onKey);
@@ -92,7 +101,7 @@ export function HelpTip({ text, label }: HelpTipProps) {
           setOpen(true);
         }}
       >
-        <CircleQuestionMark size={14} strokeWidth={1.75} aria-hidden="true" />
+        <span aria-hidden="true">?</span>
       </button>
       <span id={describedBy} className="sr-only">
         {text}

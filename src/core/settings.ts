@@ -380,7 +380,11 @@ export const DEFAULT_PALETTE: Palette = PALETTE_PRESETS[0].palette;
 
 // ------------------------------------------------------------------ export
 
-export type ExportFormat = 'bambu' | 'prusa' | '3mf' | 'stl-zip' | 'stl';
+export const EXPORT_FORMATS = ['bambu', 'prusa', '3mf', 'stl-zip', 'stl'] as const;
+export type ExportFormat = (typeof EXPORT_FORMATS)[number];
+
+// Smallest print section, per side.
+export const MIN_SECTION_MM = 20;
 
 export interface ExportSettings {
   format: ExportFormat;
@@ -401,4 +405,85 @@ export const DEFAULT_EXPORT: ExportSettings = {
 /** Deep copy that keeps the shape of the defaults, for resets and saved state. */
 export function cloneSettings(settings: ModelSettings = DEFAULT_SETTINGS): ModelSettings {
   return structuredClone(settings);
+}
+
+type Range = [min: number, max: number, integer?: boolean];
+type NumberKeys<T> = { [K in keyof T]: T[K] extends number ? K : never }[keyof T];
+type SettingsRanges = {
+  [G in keyof ModelSettings as ModelSettings[G] extends object ? G : never]: Record<NumberKeys<ModelSettings[G]>, Range>;
+};
+
+// Valid values of every number setting. Each is at least as wide as its input
+// in the settings panels, so nothing the UI accepts is ever changed. Grades
+// and tree size variation are fractions here and percentages in the UI.
+const RANGES: SettingsRanges = {
+  scale: { mmPerMetre: [0.001, 2], fitMm: [20, 2000] },
+  terrain: { exaggeration: [0, 10], smoothing: [0, 4, true], resolution: [16, 1024, true], baseThicknessMm: [0.1, 20] },
+  water: { cutMinAreaM2: [0, 1e6, true], pondDepthMm: [0.1, 5], pondWaterMm: [0.1, 5] },
+  land: { riseMm: [0.02, 3], embedMm: [0.02, 1], beachWidthMm: [0.1, 5] },
+  roads: { thicknessMm: [0.05, 5], minWidthMm: [0.05, 5], maxWidthMm: [0.1, 5] },
+  bridges: {
+    deckThicknessMm: [0.05, 10],
+    clearanceMm: [0, 3],
+    maxGrade: [0.01, 0.5],
+    minLiftMm: [0, 2],
+    pierSpacingM: [1, 200],
+    pierMinSizeMm: [0.1, 3],
+  },
+  buildings: {
+    heightScale: [0.1, 3],
+    minHeightMm: [0, 5],
+    minHeightFootprintMm: [0, 10],
+    defaultHeightM: [1, 100],
+    floorHeightM: [1, 10],
+    minWidthMm: [0, 2],
+    maxSlenderness: [0, 60],
+    slendernessExemptMm: [0, 2],
+  },
+  trees: { spacingM: [2, 200], minHeightMm: [0.1, 10], minWidthMm: [0.1, 5], variation: [0, 0.8], maxTrees: [0, 500000, true] },
+  rim: { heightMm: [0.1, 30], widthMm: [0.1, 20] },
+};
+
+type Json = Record<string, unknown>;
+const isObject = (value: unknown): value is Json => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * Settings made safe to generate from, wherever they came from (saved state,
+ * a CLI file). Numbers are clamped to their range and integers rounded.
+ * Anything missing or of the wrong type takes its default, and unknown keys
+ * are dropped. A 0 cell terrain grid or a 0 m floor height would otherwise
+ * give NaN terrain or silently drop buildings.
+ */
+export function sanitizeSettings(settings: unknown): ModelSettings {
+  const source = isObject(settings) ? settings : {};
+  const out = cloneSettings();
+  const groups = out as unknown as Json;
+  for (const [key, group] of Object.entries(groups)) {
+    const given = source[key];
+    if (!isObject(group)) {
+      if (typeof given === typeof group) groups[key] = given;
+      continue;
+    }
+    const values = isObject(given) ? given : {};
+    const ranges = (RANGES as unknown as Record<string, Record<string, Range>>)[key];
+    for (const [field, fallback] of Object.entries(group)) {
+      const value = values[field];
+      if (typeof fallback === 'number' && typeof value === 'number' && Number.isFinite(value)) {
+        const [min, max, integer] = ranges[field];
+        group[field] = Math.min(max, Math.max(min, integer ? Math.round(value) : value));
+      } else if (typeof fallback === 'boolean' && typeof value === 'boolean') {
+        group[field] = value;
+      }
+    }
+  }
+  const scale = isObject(source.scale) ? source.scale : {};
+  if (scale.mode === 'fixed' || scale.mode === 'fit') out.scale.mode = scale.mode;
+  // The priority must name every surface category once.
+  const land = isObject(source.land) ? source.land : {};
+  const all = DEFAULT_SETTINGS.land.priority;
+  const priority = land.priority;
+  if (Array.isArray(priority) && priority.length === all.length && all.every((c) => priority.includes(c))) {
+    out.land.priority = [...priority];
+  }
+  return out;
 }

@@ -1,7 +1,6 @@
 // Streaming ZIP writer over fflate. Each entry is deflated as its chunks
 // arrive, so a large model never exists as one string or one uncompressed
-// buffer. Only the compressed archive is kept, and it is joined once at the
-// end.
+// buffer. The compressed chunks go into a Blob and are never joined.
 
 import { Zip, ZipDeflate } from 'fflate';
 
@@ -12,8 +11,49 @@ const TEXT_CHUNK = 1 << 20;
 // fflate writes no ZIP64 records: sizes and offsets are 32-bit.
 const ZIP32_LIMIT = 0xffffffff;
 const TOO_LARGE = 'The export is too large for a ZIP archive (4 GB)';
+// Chunks are handed to a Blob about this often.
+const BLOB_BATCH = 1 << 24;
 
 const encoder = new TextEncoder();
+
+/**
+ * Output collected as a Blob. The browser keeps blob bytes out of the JS heap
+ * (Chrome can page large ones to disk), and a Blob posts from the worker
+ * without a copy, so an export only ever holds one batch of chunks itself.
+ */
+export class BlobBuilder {
+  private blobs: Blob[] = [];
+  private chunks: Uint8Array[] = [];
+  private pending = 0;
+  private total = 0;
+
+  get size(): number {
+    return this.total;
+  }
+
+  /** The chunk is kept until the next batch, so the caller must not reuse it. */
+  push(chunk: Uint8Array): void {
+    if (!chunk.length) return;
+    this.chunks.push(chunk);
+    this.pending += chunk.length;
+    this.total += chunk.length;
+    if (this.pending >= BLOB_BATCH) this.flush();
+  }
+
+  finish(type: string): Blob {
+    this.flush();
+    const blob = new Blob(this.blobs, { type });
+    this.blobs = [];
+    return blob;
+  }
+
+  private flush(): void {
+    if (!this.chunks.length) return;
+    this.blobs.push(new Blob(this.chunks as BlobPart[]));
+    this.chunks = [];
+    this.pending = 0;
+  }
+}
 
 export class ZipEntry {
   private parts: string[] = [];
@@ -73,8 +113,7 @@ export class ZipEntry {
 
 export class ZipWriter {
   private readonly zip: Zip;
-  private chunks: Uint8Array[] = [];
-  private length = 0;
+  private readonly out = new BlobBuilder();
   private error: Error | null = null;
   private ended = false;
   private open: ZipEntry | null = null;
@@ -88,8 +127,8 @@ export class ZipWriter {
         this.error ??= error;
         return;
       }
-      this.chunks.push(data);
-      this.length += data.length;
+      // fflate hands over a new array each time, so it can be kept as is.
+      this.out.push(data);
       if (final) this.ended = true;
     });
   }
@@ -114,19 +153,12 @@ export class ZipWriter {
     entry.close();
   }
 
-  finish(): Uint8Array {
+  finish(type = 'application/zip'): Blob {
     if (this.open) throw new Error(`${this.open.name} is still being written`);
     this.zip.end();
     this.checkError();
     if (!this.ended) throw new Error('The ZIP archive did not finish');
-    const out = new Uint8Array(this.length);
-    let offset = 0;
-    for (const chunk of this.chunks) {
-      out.set(chunk, offset);
-      offset += chunk.length;
-    }
-    this.chunks = [];
-    return out;
+    return this.out.finish(type);
   }
 
   /** @internal */
@@ -138,6 +170,6 @@ export class ZipWriter {
   /** @internal */
   checkError(): void {
     if (this.error) throw new Error(`ZIP compression failed: ${this.error.message}`);
-    if (this.length > ZIP32_LIMIT) throw new Error(TOO_LARGE);
+    if (this.out.size > ZIP32_LIMIT) throw new Error(TOO_LARGE);
   }
 }

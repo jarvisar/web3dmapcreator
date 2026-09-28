@@ -4,19 +4,28 @@
 import { formatG } from './format';
 
 export const BAMBU_MAX_PLATES = 36;
+// Any more and the scale or section size is almost certainly a mistake.
+export const MAX_SECTIONS = 400;
 // Bambu PartPlateList: virtual plates are one bed apart plus a fifth of a bed
 // (LOGICAL_PART_PLATE_GAP), in columns of ceil(sqrt(count)), rows downward.
-export const PLATE_STRIDE = 1.2;
+const PLATE_STRIDE = 1.2;
 
 export interface Section {
   row: number;
   column: number;
   /** west, south, east, north in model mm. */
   bounds: [number, number, number, number];
-  /** One snapping tolerance shared by every cell, so clipping treats both sides of a seam alike. */
-  tolerance: number;
   /** "Section R1 C1" */
   name: string;
+}
+
+/**
+ * Sections needed along one side. The allowance keeps float noise from
+ * adding a section: 3 km at 0.07 mm/m is 210.00000000000003 mm, which is one
+ * 210 mm section, not two. The UI's plate count uses this too.
+ */
+export function sectionCount(length: number, max: number): number {
+  return Math.max(1, Math.ceil(length / max - 1e-9));
 }
 
 /**
@@ -45,13 +54,10 @@ export function sectionGrid(
   }
   const [west, south, east, north] = bounds;
   if (east <= west || north <= south) throw new Error('The model must have nonzero width and height');
-  const columns = Math.ceil((east - west) / maxWidth);
-  const rows = Math.ceil((north - south) / maxHeight);
-  if (rows * columns > BAMBU_MAX_PLATES) {
-    throw new Error(
-      `The model needs a ${rows} x ${columns} grid; Bambu Studio supports at most ${BAMBU_MAX_PLATES} plates. ` +
-        'Increase the maximum section dimensions',
-    );
+  const columns = sectionCount(east - west, maxWidth);
+  const rows = sectionCount(north - south, maxHeight);
+  if (rows * columns > MAX_SECTIONS) {
+    throw new Error(`The model needs a ${rows} x ${columns} grid of sections. Make the sections larger or reduce the scale`);
   }
   const xs: number[] = [];
   for (let i = 0; i < columns; i++) xs.push(west + ((east - west) * i) / columns);
@@ -59,7 +65,6 @@ export function sectionGrid(
   const ys: number[] = [];
   for (let i = 0; i < rows; i++) ys.push(north - ((north - south) * i) / rows);
   ys.push(south);
-  const tolerance = Math.max(1, ...bounds.map(Math.abs), east - west, north - south) * 8e-7;
   const cells: Section[] = [];
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < columns; c++) {
@@ -67,7 +72,6 @@ export function sectionGrid(
         row: r + 1,
         column: c + 1,
         bounds: [xs[c], ys[r + 1], xs[c + 1], ys[r]],
-        tolerance,
         name: `Section R${r + 1} C${c + 1}`,
       });
     }
@@ -89,7 +93,7 @@ export function explodedOffsets(bounds: [number, number, number, number][], gap:
   });
 }
 
-export const SECTION_GAP_MM = 10;
+const SECTION_GAP_MM = 10;
 
 /** XY translation of each plate: sections pulled apart, then the whole layout centred on the bed. */
 export function sideBySide(

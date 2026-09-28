@@ -1,6 +1,7 @@
 // Values computed from the state: colour groups in use, bed fit, summaries.
 
-import { modelSizeMm } from '../../core/geo/area';
+import { areaModelRing, effectiveScale } from '../../core/geo/area';
+import { sectionCount } from '../../core/export/sections';
 import { COLOUR_GROUPS, PALETTE_PRESETS, printerByKey } from '../../core/settings';
 import type {
   AreaSpec,
@@ -12,9 +13,11 @@ import type {
   PalettePreset,
   Printer,
 } from '../../core/settings';
+import { validateArea } from '../../core/geo/area';
 import { ROLE_GROUP } from '../../core/types';
 import type { ColourGroup } from '../../core/types';
-import { slugify } from '../lib/browser';
+import { areaInBox, withRim } from '../lib/area';
+import { cleanFileName, slugify } from '../lib/browser';
 import type { ResultMeta } from './store';
 
 /** Colour groups the enabled layers can produce, in palette order. */
@@ -65,18 +68,39 @@ export interface BedFit {
 
 export function bedFit(area: AreaSpec, settings: ModelSettings, exportSettings: ExportSettings): BedFit {
   const printer = printerByKey(exportSettings.printer);
-  const { width, depth } = modelSizeMm(area, settings.scale);
+  // Measured and split the way the export does it, so the counts agree.
+  const outline = withRim(areaModelRing(area, effectiveScale(area, settings.scale)), settings.rim.enabled ? settings.rim.widthMm : 0);
+  const xs = outline.map((p) => p[0]);
+  const ys = outline.map((p) => p[1]);
+  const [west, south, east, north] = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  const width = east - west;
+  const depth = north - south;
   const straight = width <= printer.width && depth <= printer.depth;
   const turned = width <= printer.depth && depth <= printer.width;
-  const sectionW = Math.min(exportSettings.sectionWidthMm, printer.width);
-  const sectionD = Math.min(exportSettings.sectionHeightMm, printer.depth);
-  const cols = Math.max(1, Math.ceil(width / sectionW - 1e-9));
-  const rows = Math.max(1, Math.ceil(depth / sectionD - 1e-9));
-  return { printer, width, depth, fits: straight || turned, rotated: !straight && turned, cols, rows, plates: cols * rows };
+  const cols = sectionCount(width, Math.min(exportSettings.sectionWidthMm, printer.width));
+  const rows = sectionCount(depth, Math.min(exportSettings.sectionHeightMm, printer.depth));
+  // Round shapes leave some corner cells empty, and those get no plate.
+  let plates = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const box: [number, number, number, number] = [
+        west + (width * c) / cols,
+        south + (depth * r) / rows,
+        west + (width * (c + 1)) / cols,
+        south + (depth * (r + 1)) / rows,
+      ];
+      if (areaInBox(outline, box) > 1e-6) plates++;
+    }
+  }
+  return { printer, width, depth, fits: straight || turned, rotated: !straight && turned, cols, rows, plates };
 }
 
-/** Why the model cannot be generated with these settings, or null. */
-export function settingsProblem(settings: ModelSettings): string | null {
+/** Why the model cannot be generated from this area and these settings, or null. */
+export function generationProblem(area: AreaSpec, settings: ModelSettings): string | null {
+  return validateArea(area) ?? settingsProblem(settings);
+}
+
+function settingsProblem(settings: ModelSettings): string | null {
   if (settings.roads.enabled && settings.roads.minWidthMm > settings.roads.maxWidthMm) {
     return 'The minimum road width is larger than the maximum road width.';
   }
@@ -100,7 +124,8 @@ export function autoFileBase(placeName: string): string {
   return slugify(placeName, 'city-model');
 }
 
+/** File name for downloads and screenshots, without the extension. */
 export function fileBase(placeName: string, fileName: string | null): string {
   const typed = fileName?.trim();
-  return typed ? typed : autoFileBase(placeName);
+  return (typed && cleanFileName(typed)) || autoFileBase(placeName);
 }

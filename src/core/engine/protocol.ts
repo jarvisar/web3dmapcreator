@@ -58,8 +58,8 @@ export interface ExportRequest {
 
 export interface ExportResult {
   fileName: string;
-  mime: string;
-  data: Uint8Array;
+  /** The file, with its MIME type. A Blob posts from the worker without copying its bytes. */
+  data: Blob;
   plates: number;
   warnings: string[];
 }

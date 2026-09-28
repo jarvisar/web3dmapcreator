@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_PALETTE } from '../settings';
-import { fileStem, sectionTag, STL_HEADER, stlHeader, writeStl, writeStlZip } from './stl';
-import { box, part, plate, unzip } from './test-helpers';
+import { DEFAULT_PALETTE, type Palette } from '../settings';
+import type { Plate } from '../types';
+import { preparePlates } from './common';
+import { fileStem, sectionTag, STL_HEADER, stlHeader, writeStl, writeStlZip, type StlZipOptions } from './stl';
+import { blobBytes, box, part, plate, unzip } from './test-helpers';
 
 interface Stl {
   header: string;
@@ -24,6 +26,14 @@ function readStl(data: Uint8Array): Stl {
     expect(view.getUint16(at + 48, true)).toBe(0);
   }
   return { header: new TextDecoder().decode(data.subarray(0, 80)), count, normals, corners, size: data.length };
+}
+
+async function stlBytes(p: Plate): Promise<Uint8Array> {
+  return blobBytes(writeStl(preparePlates([p], DEFAULT_PALETTE).plates[0]));
+}
+
+function stlZip(plates: Plate[], palette: Palette, base: string, options?: StlZipOptions) {
+  return unzip(writeStlZip(preparePlates(plates, palette), base, options));
 }
 
 function signedVolume(corners: number[][][]): number {
@@ -54,10 +64,10 @@ describe('STL header', () => {
 });
 
 describe('writeStl', () => {
-  it('writes every part with outward unit normals, centred on the plate, lowest point at zero', () => {
+  it('writes every part with outward unit normals, centred on the plate, lowest point at zero', async () => {
     const terrain = part('terrain', 'Terrain', 'terrain', box(0, 0, -3, 100, 80, 3));
     const buildings = part('buildings', 'Buildings', 'building', box(10, 10, 0, 10, 20, 30));
-    const data = writeStl(plate('Map', [terrain, buildings], [0, 0, 100, 80]));
+    const data = await stlBytes(plate('Map', [terrain, buildings], [0, 0, 100, 80]));
     const stl = readStl(data);
     expect(stl.header).toBe(STL_HEADER.padEnd(80, '\0'));
     expect(stl.count).toBe(24);
@@ -73,9 +83,9 @@ describe('writeStl', () => {
     }
   });
 
-  it('gives degenerate triangles a zero normal', () => {
+  it('gives degenerate triangles a zero normal', async () => {
     const flat = { id: 'f', name: 'Flat', role: 'terrain' as const, positions: new Float32Array([0, 0, 0, 1, 0, 0, 2, 0, 0]), indices: new Uint32Array([0, 1, 2]) };
-    expect(readStl(writeStl(plate('Map', [flat], [0, 0, 2, 0]))).normals).toEqual([[0, 0, 0]]);
+    expect(readStl(await stlBytes(plate('Map', [flat], [0, 0, 2, 0]))).normals).toEqual([[0, 0, 0]]);
   });
 });
 
@@ -86,9 +96,9 @@ describe('writeStlZip', () => {
   const paved = part('paved', 'Paved', 'paved', box(0, 0, 0, 10, 10, 0.5));
   const rim = part('rim', 'Rim', 'rim', box(-52, -42, -3, 2, 84, 4));
 
-  it('writes one file per colour, named by number, colour groups and hex', () => {
+  it('writes one file per colour, named by number, colour groups and hex', async () => {
     const palette = { ...DEFAULT_PALETTE, rim: DEFAULT_PALETTE.terrain };
-    const files = unzip(writeStlZip([plate('Map', [terrain, buildings, roads, paved, rim], [-50, -40, 50, 40])], palette, 'loop'));
+    const files = await stlZip([plate('Map', [terrain, buildings, roads, paved, rim], [-50, -40, 50, 40])], palette, 'loop');
     expect(Object.keys(files)).toEqual([
       'loop_1_Terrain+Rim_FFFFFF.stl',
       'loop_2_Buildings_AE835B.stl',
@@ -103,7 +113,7 @@ describe('writeStlZip', () => {
     expect(bounds(stls[1].corners)[4]).toBe(3);
   });
 
-  it('numbers colours across sections and names section files', () => {
+  it('numbers colours across sections and names section files', async () => {
     const west = part('terrain', 'Terrain', 'terrain', box(0, 0, -1, 50, 50, 1));
     const east = part('terrain', 'Terrain', 'terrain', box(50, 0, -1, 50, 50, 1));
     const eastRoads = part('roads', 'Roads', 'road', box(60, 10, 0, 30, 2, 0.6));
@@ -112,7 +122,7 @@ describe('writeStlZip', () => {
       plate('Section R1 C1', [west, westTrees], [0, 0, 50, 50]),
       plate('Section R1 C2', [eastRoads, east], [50, 0, 100, 50]),
     ];
-    const files = unzip(writeStlZip(plates, DEFAULT_PALETTE, 'city'));
+    const files = await stlZip(plates, DEFAULT_PALETTE, 'city');
     expect(Object.keys(files)).toEqual([
       'city_R1C1_1_Terrain_FFFFFF.stl',
       'city_R1C1_2_Trees_0F2E14.stl',
@@ -122,17 +132,17 @@ describe('writeStlZip', () => {
     // Each section is centred on its own cell.
     const eastTerrain = readStl(files['city_R1C2_1_Terrain_FFFFFF.stl']);
     expect(bounds(eastTerrain.corners)).toEqual([-25, 25, -25, 25, 0, 1]);
-    const combined = unzip(writeStlZip(plates, DEFAULT_PALETTE, 'city', { combined: true }));
+    const combined = await stlZip(plates, DEFAULT_PALETTE, 'city', { combined: true });
     expect(Object.keys(combined)).toEqual(['city_R1C1.stl', 'city_R1C2.stl']);
     expect(Object.values(combined).map((d) => readStl(d).count)).toEqual([24, 24]);
   });
 
-  it('pads colour numbers once there are ten or more', () => {
+  it('pads colour numbers once there are ten or more', async () => {
     const groups = ['terrain', 'buildings', 'roads', 'paved', 'water', 'green', 'forest', 'trees', 'sand', 'rock', 'rim'] as const;
     const roles = ['terrain', 'building', 'road', 'paved', 'water', 'green', 'forest', 'tree', 'sand', 'rock', 'rim'] as const;
     const palette = Object.fromEntries(groups.map((g, i) => [g, { hex: `#0000${i.toString(16).padStart(2, '0')}`, line: 'PLA Basic' }])) as unknown as typeof DEFAULT_PALETTE;
     const parts = roles.map((role, i) => part(role, role, role, box(i, 0, 0, 1, 1, 1)));
-    const names = Object.keys(unzip(writeStlZip([plate('Map', parts, [0, 0, 11, 1])], palette, 'city')));
+    const names = Object.keys(await stlZip([plate('Map', parts, [0, 0, 11, 1])], palette, 'city'));
     expect(names[0]).toBe('city_01_Terrain_000000.stl');
     expect(names.at(-1)).toBe('city_11_Rim_00000A.stl');
     expect(names).toEqual([...names].sort());

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { pointInPolygon } from '../geometry/polygon';
+import type { PrismSolid } from '../geometry/solid';
 import { edgeReport, signedVolume } from '../geometry/validate';
 import { cloneSettings, type AreaSpec } from '../settings';
 import { generateModel } from './generate';
@@ -55,12 +57,14 @@ function town(): SourceData {
 const area: AreaSpec = { center: [LON, LAT], widthM: 1500, heightM: 1000, rotationDeg: 0, shape: 'rectangle', cornerRadius: 0.1 };
 const hills = { sample: (lon: number, lat: number) => 30 + 20 * Math.sin((lon - LON) / M_LON / 200) + 10 * Math.cos((lat - LAT) / M_LAT / 150) };
 
-async function build(settingsPatch?: (s: ReturnType<typeof cloneSettings>) => void, areaPatch?: Partial<AreaSpec>) {
+async function build(settingsPatch?: (s: ReturnType<typeof cloneSettings>) => void, areaPatch?: Partial<AreaSpec>, roads: SourceFeature[] = []) {
   const settings = cloneSettings();
   settings.terrain.resolution = 96;
   settings.trees.enabled = true;
   settingsPatch?.(settings);
-  const spec = await generateModel({ area: { ...area, ...areaPatch }, settings, data: town(), elevation: hills });
+  const data = town();
+  data.features.segment!.push(...roads);
+  const spec = await generateModel({ area: { ...area, ...areaPatch }, settings, data, elevation: hills });
   const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ });
   return { spec, meshed };
 }
@@ -124,18 +128,69 @@ describe('generateModel', () => {
     expect(deckLow).toBeGreaterThan(waterTop);
   });
 
+  it('cuts decks and piers at the model edge', async () => {
+    // A bridge along the river, running off the east edge at 750 m, high
+    // enough over the water for piers.
+    const bridge = feature({ type: 'LineString', coordinates: [at(450, -10), at(950, -10)] }, { subtype: 'road', class: 'primary', road_flags: [{ values: ['is_bridge'] }] });
+    const { spec } = await build((s) => ((s.bridges.enabled = true), (s.bridges.clearanceMm = 1.5)), undefined, [bridge]);
+    const piers = spec.layers.find((l) => l.id === 'piers')!.solids as PrismSolid[];
+    expect(piers.length).toBeGreaterThan(3);
+    const edge = 750 * spec.mmPerMetre;
+    for (const pier of piers) for (const [x] of pier.polygon[0]) expect(x).toBeLessThanOrEqual(edge + 1e-6);
+  });
+
+  it('lifts a ramp that ends partway along another deck with it', async () => {
+    const flags = { road_flags: [{ values: ['is_bridge'] }] };
+    const main = feature({ type: 'LineString', coordinates: [at(200, -250), at(200, 250)] }, { subtype: 'road', class: 'primary', ...flags });
+    const ramp = feature({ type: 'LineString', coordinates: [at(450, -10), at(200, -10)] }, { subtype: 'road', class: 'primary', ...flags });
+    const { spec } = await build((s) => (s.bridges.enabled = true), undefined, [main, ramp]);
+    expect(spec.stats.bridge_ends_joined_mid_deck).toBeGreaterThanOrEqual(1);
+    // Both decks meet at the same height where the ramp joins.
+    const x = 200 * spec.mmPerMetre;
+    const y = -10 * spec.mmPerMetre;
+    const decks = (spec.layers.find((l) => l.id === 'bridges')!.solids as PrismSolid[]).filter((s) => pointInPolygon(x, y, s.polygon));
+    expect(decks.length).toBeGreaterThanOrEqual(2);
+    const tops = decks.map((s) => (typeof s.top === 'number' ? s.top : s.top(x, y)));
+    expect(Math.max(...tops) - Math.min(...tops)).toBeLessThan(0.05);
+  });
+
+  it('keeps the rim when the model is cut into sections', async () => {
+    const { spec, meshed } = await build((s) => (s.rim.enabled = true));
+    const plates = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 40, sectionHeightMm: 40, bedWidth: 180, bedDepth: 180 });
+    const rimVolume = (parts: typeof meshed.parts) =>
+      parts.filter((p) => p.id === 'rim').reduce((v, p) => v + signedVolume(p.positions, p.indices), 0);
+    const whole = rimVolume(meshed.parts);
+    expect(whole).toBeGreaterThan(0);
+    expect(plates.reduce((v, plate) => v + rimVolume(plate.parts), 0)).toBeCloseTo(whole, 3);
+  });
+
   it('splits into closed sections that add up to the whole', async () => {
     const { spec, meshed } = await build();
     const plates = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 40, sectionHeightMm: 40, bedWidth: 180, bedDepth: 180 });
     expect(plates.length).toBe(3 * 2);
-    const total = (parts: typeof meshed.parts) => parts.reduce((v, p) => v + signedVolume(p.positions, p.indices), 0);
+    const total = (parts: typeof meshed.parts) =>
+      parts.filter((p) => p.id !== 'trees').reduce((v, p) => v + signedVolume(p.positions, p.indices), 0);
     let sum = 0;
+    let trees = 0;
     for (const plate of plates) {
-      for (const part of plate.parts) expect(edgeReport(part.indices, part.positions.length / 3).open).toBe(0);
+      for (const part of plate.parts) {
+        expect(edgeReport(part.indices, part.positions.length / 3).open).toBe(0);
+        if (part.id !== 'trees') continue;
+        // Trees can't be cut, so each one is wholly inside its section.
+        trees += part.indices.length;
+        const [west, south, east, north] = plate.bounds;
+        for (let i = 0; i < part.positions.length; i += 3) {
+          expect(part.positions[i]).toBeGreaterThanOrEqual(west - 1e-3);
+          expect(part.positions[i]).toBeLessThanOrEqual(east + 1e-3);
+          expect(part.positions[i + 1]).toBeGreaterThanOrEqual(south - 1e-3);
+          expect(part.positions[i + 1]).toBeLessThanOrEqual(north + 1e-3);
+        }
+      }
       sum += total(plate.parts);
     }
-    // Trees are kept whole in one section, so allow a little difference.
-    expect(sum).toBeCloseTo(total(meshed.parts), -1);
+    expect(sum).toBeCloseTo(total(meshed.parts), 0);
+    expect(trees).toBeGreaterThan(0);
+    expect(trees).toBeLessThanOrEqual(meshed.parts.find((p) => p.id === 'trees')!.indices.length);
   });
 
   it('builds a flat base without elevation', async () => {

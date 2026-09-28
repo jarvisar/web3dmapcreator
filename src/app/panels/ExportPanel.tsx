@@ -1,11 +1,9 @@
-import { CircleAlert, Download, FileDown, Info, LoaderCircle } from 'lucide-react';
 import { useId, useRef } from 'react';
 import type { KeyboardEvent } from 'react';
-import { printerByKey } from '../../core/settings';
+import { MIN_SECTION_MM, printerByKey } from '../../core/settings';
 import type { ExportFormat } from '../../core/settings';
+import { CheckField } from '../components/Fields';
 import { NumberField } from '../components/NumberField';
-import { SwitchField } from '../components/Fields';
-import { exportModel } from '../state/actions';
 import { autoFileBase, FORMAT_EXTENSIONS } from '../state/derived';
 import { patchExport, setFileName, useApp } from '../state/store';
 import { Section } from './Section';
@@ -18,7 +16,7 @@ interface FormatInfo {
   recommended?: boolean;
 }
 
-export const FORMATS: FormatInfo[] = [
+const FORMATS: FormatInfo[] = [
   {
     value: 'bambu',
     title: 'Bambu Studio project (.3mf)',
@@ -90,7 +88,7 @@ function FormatCards() {
   }
 
   return (
-    <div ref={ref} className="format-cards" role="radiogroup" aria-label="File format" onKeyDown={onKeyDown}>
+    <div ref={ref} className="list-box" role="radiogroup" aria-label="File format" onKeyDown={onKeyDown}>
       {FORMATS.map((item) => {
         const selected = item.value === format;
         return (
@@ -118,52 +116,19 @@ function FormatCards() {
   );
 }
 
-export function DownloadButton({ compact = false, primary = true }: { compact?: boolean; primary?: boolean }) {
-  const result = useApp((state) => state.generation.result);
-  const generating = useApp((state) => state.generation.status === 'running');
-  const exporting = useApp((state) => state.exporting);
-  const format = useApp((state) => state.exportSettings.format);
-  const hidden = useApp((state) => state.ui.hiddenParts);
-  const allHidden = result ? result.parts.every((part) => hidden.includes(part.id)) : false;
-  const running = exporting.status === 'running';
-  const disabled = !result || generating || running || allHidden || !result.exportable;
-  const extension = FORMAT_EXTENSIONS[format];
-  const label = running
-    ? `Preparing${exporting.progress ? ` ${Math.round(exporting.progress.fraction * 100)}%` : ''}`
-    : compact
-      ? `Download ${extension}`
-      : `Download ${extension} file`;
-  return (
-    <button
-      type="button"
-      className={`btn btn-lg ${primary ? 'btn-primary' : 'btn-secondary'}${compact ? '' : ' btn-block'}`}
-      disabled={disabled}
-      aria-busy={running}
-      onClick={() => void exportModel()}
-    >
-      {running ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
-      {label}
-    </button>
-  );
-}
-
 export function ExportPanel() {
   const exportSettings = useApp((state) => state.exportSettings);
   const placeName = useApp((state) => state.placeName);
   const fileName = useApp((state) => state.fileName);
-  const result = useApp((state) => state.generation.result);
-  const generating = useApp((state) => state.generation.status === 'running');
-  const exporting = useApp((state) => state.exporting);
-  const hidden = useApp((state) => state.ui.hiddenParts);
+  const last = useApp((state) => state.exporting.last);
   const fileId = useId();
   const printer = printerByKey(exportSettings.printer);
   const format = FORMATS.find((item) => item.value === exportSettings.format)!;
   const extension = FORMAT_EXTENSIONS[exportSettings.format];
-  const hiddenNames = result ? result.parts.filter((part) => hidden.includes(part.id)).map((part) => part.name) : [];
-  const last = exporting.last;
+  const done = last?.format === exportSettings.format ? last : null;
 
   return (
-    <Section id="export" title="Export" icon={<FileDown size={16} />} summary={`${format.short} · ${printer.model.replace(/^Bambu Lab /, '')}`}>
+    <Section id="export" title="Export" summary={`${format.short} · ${printer.model.replace(/^Bambu Lab /, '')}`}>
       <FormatCards />
       {exportSettings.format === 'bambu' && printer.vendor !== 'Bambu Lab' && (
         <p className="field-hint">
@@ -171,7 +136,7 @@ export function ExportPanel() {
         </p>
       )}
 
-      <SwitchField
+      <CheckField
         label="Multi-plate export"
         checked={exportSettings.multiPlate}
         onChange={(multiPlate) => patchExport({ multiPlate })}
@@ -183,7 +148,7 @@ export function ExportPanel() {
             label="Section width"
             value={exportSettings.sectionWidthMm}
             onChange={(sectionWidthMm) => patchExport({ sectionWidthMm })}
-            min={20}
+            min={MIN_SECTION_MM}
             max={printer.width}
             step={5}
             decimals={1}
@@ -194,7 +159,7 @@ export function ExportPanel() {
             label="Section depth"
             value={exportSettings.sectionHeightMm}
             onChange={(sectionHeightMm) => patchExport({ sectionHeightMm })}
-            min={20}
+            min={MIN_SECTION_MM}
             max={printer.depth}
             step={5}
             decimals={1}
@@ -224,56 +189,22 @@ export function ExportPanel() {
         </div>
       </div>
 
-      <DownloadButton />
-      {!result && <p className="field-hint center">Generate a model first.</p>}
-      {result && generating && <p className="field-hint center">Wait for the new model to finish.</p>}
-      {result && !result.exportable && (
-        <p className="field-hint center">The generator was restarted, so generate the model again before downloading.</p>
-      )}
-      {hiddenNames.length > 0 && (
-        <p className="field-hint">
-          Left out because they are hidden in the 3D view: {hiddenNames.join(', ')}.
-        </p>
-      )}
-
-      {exporting.error && (
-        <div className="notice notice-error" role="alert">
-          <CircleAlert size={16} aria-hidden="true" />
-          <span>Export failed: {exporting.error}</span>
-        </div>
-      )}
-
-      {last && (
-        <div className="next-steps">
-          <div className="next-steps-title">
-            <Info size={15} aria-hidden="true" />
-            Next steps for {last.fileName}
-          </div>
-          <ol>
-            {NEXT_STEPS[last.format].map((step) => (
-              <li key={step}>{step}</li>
+      <div className={`next-steps${done ? ' is-done' : ''}`}>
+        <div className="next-steps-title">{done ? `Downloaded ${done.fileName}. Next:` : 'After downloading'}</div>
+        <ol>
+          {NEXT_STEPS[exportSettings.format].map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+          {done && done.plates > 1 && <li>The model is split into {done.plates} plates. Print them one by one and fit them together.</li>}
+        </ol>
+        {done && done.warnings.length > 0 && (
+          <ul className="warning-list">
+            {done.warnings.map((warning, i) => (
+              <li key={i}>{warning}</li>
             ))}
-            {last.plates > 1 && <li>The model is split into {last.plates} plates. Print them one by one and fit them together.</li>}
-          </ol>
-          {last.warnings.length > 0 && (
-            <ul className="warning-list">
-              {last.warnings.map((warning, i) => (
-                <li key={i}>{warning}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-      {!last && (
-        <details className="next-steps-preview">
-          <summary>What to do with the file</summary>
-          <ol>
-            {NEXT_STEPS[exportSettings.format].map((step) => (
-              <li key={step}>{step}</li>
-            ))}
-          </ol>
-        </details>
-      )}
+          </ul>
+        )}
+      </div>
     </Section>
   );
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cacheSize, clearCache, memo, persistentCache, planEviction, setCacheLimit } from './cache';
+import { cacheSize, clearCache, memo, persistentCache, planEviction } from './cache';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -12,7 +12,6 @@ describe('persistent cache without IndexedDB', () => {
     await expect(persistentCache.get('key')).resolves.toBeUndefined();
     await expect(cacheSize()).resolves.toBe(0);
     await expect(clearCache()).resolves.toBeUndefined();
-    await expect(setCacheLimit(1e6)).resolves.toBeUndefined();
   });
 });
 

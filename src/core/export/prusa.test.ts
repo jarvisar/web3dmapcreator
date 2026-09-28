@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_PALETTE, printerByKey } from '../settings';
-import { MODEL_PATH } from './common';
+import { DEFAULT_PALETTE, printerByKey, type Palette, type Printer } from '../settings';
+import type { Plate } from '../types';
+import { MODEL_PATH, preparePlates } from './common';
 import { PRUSA_MODEL_CONFIG_PATH, prusaBedCell, prusaBedOrigin, writePrusaProject } from './prusa';
 import { box, findAll, parseXml, part, plate, unzipText, type XmlNode } from './test-helpers';
 
-function write(...args: Parameters<typeof writePrusaProject>) {
-  const files = unzipText(writePrusaProject(...args));
+async function write(plates: Plate[], palette: Palette, printer: Printer, title?: string) {
+  const files = await unzipText(writePrusaProject(preparePlates(plates, palette), printer, title));
   return { files, model: parseXml(files[MODEL_PATH]), config: parseXml(files[PRUSA_MODEL_CONFIG_PATH]) };
 }
 
@@ -23,8 +24,8 @@ describe('writePrusaProject', () => {
   const buildings = part('buildings', 'Buildings', 'building', box(-10, -10, 0, 5, 5, 20), box(10, 10, 0, 4, 4, 8));
   const paved = part('paved', 'Paved', 'paved', box(0, 0, -0.15, 10, 10, 0.5));
 
-  it('concatenates parts into one object and splits them into volumes by triangle range', () => {
-    const { files, model, config } = write([plate('Map', [terrain, roads, buildings, paved], [-50, -40, 50, 40])], DEFAULT_PALETTE, printerByKey('MK4'), 'Loop');
+  it('concatenates parts into one object and splits them into volumes by triangle range', async () => {
+    const { files, model, config } = await write([plate('Map', [terrain, roads, buildings, paved], [-50, -40, 50, 40])], DEFAULT_PALETTE, printerByKey('MK4'), 'Loop');
     const objects = findAll(model, 'object');
     expect(objects.map((o) => [o.attrs.id, o.attrs.name, o.attrs.type])).toEqual([['1', 'Map', 'model']]);
     const vertices = findAll(objects[0], 'vertex');
@@ -68,7 +69,7 @@ describe('writePrusaProject', () => {
     expect(translation(items[0])).toEqual([125, 105, 2]);
   });
 
-  it('puts sections on PrusaSlicer 2.9 beds', () => {
+  it('puts sections on PrusaSlicer 2.9 beds', async () => {
     expect([0, 1, 2, 3, 4, 5, 6, 7, 8].map(prusaBedCell)).toEqual([
       [0, 0], [1, 0], [0, 1], [1, 1], [2, 0], [2, 1], [0, 2], [1, 2], [2, 2],
     ]);
@@ -82,7 +83,7 @@ describe('writePrusaProject', () => {
     const plates = cells.map((bounds, i) =>
       plate(`Section R${i < 2 ? 1 : 2} C${(i % 2) + 1}`, [part('terrain', 'Terrain', 'terrain', box(bounds[0], bounds[1], -2, 50, 40, 2))], bounds),
     );
-    const { model, config } = write(plates, DEFAULT_PALETTE, printerByKey('MK4'));
+    const { model, config } = await write(plates, DEFAULT_PALETTE, printerByKey('MK4'));
     expect(findAll(config, 'object').map((o) => o.attrs.id)).toEqual(['1', '2', '3', '4']);
     const items = findAll(model, 'item');
     items.forEach((item, i) => {
@@ -96,12 +97,12 @@ describe('writePrusaProject', () => {
     });
   });
 
-  it('lays out more sections than PrusaSlicer has beds side by side', () => {
+  it('lays out more sections than PrusaSlicer has beds side by side', async () => {
     const plates = Array.from({ length: 10 }, (_, i) => {
       const bounds: [number, number, number, number] = [i * 20, 0, i * 20 + 20, 20];
       return plate(`Section R1 C${i + 1}`, [part('terrain', 'Terrain', 'terrain', box(i * 20, 0, 0, 20, 20, 1))], bounds);
     });
-    const { model } = write(plates, DEFAULT_PALETTE, printerByKey('MK4'));
+    const { model } = await write(plates, DEFAULT_PALETTE, printerByKey('MK4'));
     const xs = findAll(model, 'item').map((item, i) => translation(item)[0] + plates[i].bounds[0]);
     xs.slice(1).forEach((x, i) => expect(x - xs[i]).toBeCloseTo(30, 6));
   });

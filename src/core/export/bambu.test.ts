@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_PALETTE, printerByKey, type Palette } from '../settings';
 import type { MeshPart, Plate } from '../types';
 import { APPLICATION, PROJECT_PATH, SETTINGS_PATH, writeBambuProject } from './bambu';
-import { MODEL_PATH } from './common';
+import { MODEL_PATH, preparePlates } from './common';
 import { box, child, findAll, metadataValue, parseXml, part, plate, unzipText, type XmlNode } from './test-helpers';
 
 const PALETTE: Palette = {
@@ -12,8 +12,8 @@ const PALETTE: Palette = {
   roads: { hex: '#FF0000', line: 'PLA Basic' },
 };
 
-function write(plates: Plate[], printer = 'P1S', palette = PALETTE) {
-  const files = unzipText(writeBambuProject(plates, palette, printerByKey(printer)));
+async function write(plates: Plate[], printer = 'P1S', palette = PALETTE) {
+  const files = await unzipText(writeBambuProject(preparePlates(plates, palette), printerByKey(printer)));
   return {
     files,
     model: parseXml(files[MODEL_PATH]),
@@ -32,12 +32,12 @@ function translations(model: XmlNode): number[][] {
 }
 
 describe('writeBambuProject', () => {
-  it('writes two plates with filaments, placement and the package parts', () => {
+  it('writes two plates with filaments, placement and the package parts', async () => {
     const terrain = part('terrain', 'Terrain', 'terrain', box(-100, -50, -3, 200, 100, 3));
     const buildings = part('buildings', 'Buildings', 'building', box(-10, -10, 0, 20, 20, 30));
     const roads = part('roads', 'Roads', 'road', box(-100, -1, 0, 200, 2, 0.6));
     const second = part('terrain', 'Terrain', 'terrain', box(0, 0, -1, 100, 100, 1));
-    const { files, model, config, project } = write([
+    const { files, model, config, project } = await write([
       plate('Map', [terrain, buildings, roads], [-100, -50, 100, 50]),
       plate('Section R1 C2', [second], [0, 0, 100, 100]),
     ]);
@@ -98,8 +98,8 @@ describe('writeBambuProject', () => {
     expect(Object.keys(files).sort()).toEqual([MODEL_PATH, SETTINGS_PATH, PROJECT_PATH, '[Content_Types].xml', '_rels/.rels'].sort());
   });
 
-  it('writes the package files exactly as the add-on did', () => {
-    const { files } = write([plate('Map', [part('terrain', 'Terrain', 'terrain', box(0, 0, 0, 10, 10, 1))], [0, 0, 10, 10])]);
+  it('writes the package files exactly as the add-on did', async () => {
+    const { files } = await write([plate('Map', [part('terrain', 'Terrain', 'terrain', box(0, 0, 0, 10, 10, 1))], [0, 0, 10, 10])]);
     expect(files['[Content_Types].xml']).toBe(
       '<?xml version="1.0" encoding="UTF-8"?>\n' +
         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n' +
@@ -148,10 +148,10 @@ describe('writeBambuProject', () => {
     );
   });
 
-  it('changes layout and starting profiles with the bed', () => {
+  it('changes layout and starting profiles with the bed', async () => {
     const terrain = part('terrain', 'Terrain', 'terrain', box(0, 0, 0, 100, 100, 2));
     const shifted = part('terrain', 'Terrain', 'terrain', box(100, 0, 0, 100, 100, 2));
-    let { model, project } = write(
+    let { model, project } = await write(
       [plate('Section R1 C1', [terrain], [0, 0, 100, 100]), plate('Section R1 C2', [shifted], [100, 0, 200, 100])],
       'A1M',
     );
@@ -161,13 +161,13 @@ describe('writeBambuProject', () => {
     expect(project.printer_model).toBe('Bambu Lab A1 mini');
     expect(project.print_settings_id).toBe('0.20mm Standard @BBL A1M');
     expect(project.filament_settings_id).toEqual(['Bambu PLA Basic @BBL A1M']);
-    ({ model, project } = write([plate('Map', [terrain], [0, 0, 100, 100])], 'H2D'));
+    ({ model, project } = await write([plate('Map', [terrain], [0, 0, 100, 100])], 'H2D'));
     expect(project.printable_area).toEqual(['0x0', '350x0', '350x320', '0x320']);
     expect(project.printer_settings_id).toBe('Bambu Lab H2D 0.4 nozzle');
     expect(translations(model)[0].slice(9)).toEqual([175 - 50, 160 - 50, 0]);
     // A 2 x 2 grid: two columns, the second row one plate stride down.
     const four = [0, 1, 2, 3].map((i) => plate(`Section ${i}`, [terrain], [0, 0, 100, 100]));
-    ({ model } = write(four));
+    ({ model } = await write(four));
     const expected = [[78, 78], [307.2 + 78, 78], [78, 78 - 307.2], [307.2 + 78, 78 - 307.2]];
     translations(model).forEach((t, i) => {
       expect(t[9]).toBeCloseTo(expected[i][0], 6);
@@ -175,7 +175,7 @@ describe('writeBambuProject', () => {
     });
   });
 
-  it('selects presets by filament line and numbers filaments per colour and line', () => {
+  it('selects presets by filament line and numbers filaments per colour and line', async () => {
     const palette: Palette = {
       ...PALETTE,
       terrain: { hex: '#ffffff', line: 'PLA Matte' },
@@ -192,7 +192,7 @@ describe('writeBambuProject', () => {
       part('paved', 'Paved', 'paved', mesh),
       part('paths', 'Paths', 'path', mesh),
     ];
-    const { config, project } = write([plate('Map', parts, [0, 0, 10, 10])], 'P1S', palette);
+    const { config, project } = await write([plate('Map', parts, [0, 0, 10, 10])], 'P1S', palette);
     expect(project.filament_colour).toEqual(['#FFFFFF', '#AE835B', '#545454', '#FFFFFF']);
     expect(project.filament_settings_id).toEqual([
       'Bambu PLA Matte @BBL P1S 0.4 nozzle', 'Bambu PLA Matte @BBL P1S 0.4 nozzle',
@@ -201,18 +201,18 @@ describe('writeBambuProject', () => {
     expect(project.filament_ids).toEqual(['GFA01', 'GFA01', 'GFA00', 'GFA00']);
     expect(project.flush_volumes_matrix).toHaveLength(16);
     expect(findAll(config, 'part').map((p) => metadataValue(p, 'extruder'))).toEqual(['1', '2', '3', '4', '3']);
-    expect(write([plate('Map', parts.slice(0, 1), [0, 0, 10, 10])], 'A1M', palette).project.filament_settings_id).toEqual([
+    expect((await write([plate('Map', parts.slice(0, 1), [0, 0, 10, 10])], 'A1M', palette)).project.filament_settings_id).toEqual([
       'Bambu PLA Matte @BBL A1M',
     ]);
     const silk = { ...palette, terrain: { hex: '#FFFFFF', line: 'PLA Silk' } } as unknown as Palette;
-    expect(() => write([plate('Map', parts.slice(0, 1), [0, 0, 10, 10])], 'P1S', silk)).toThrow(/filament line/);
+    await expect(write([plate('Map', parts.slice(0, 1), [0, 0, 10, 10])], 'P1S', silk)).rejects.toThrow(/filament line/);
     const short = { ...palette, terrain: { hex: '#fff', line: 'PLA Basic' } } as Palette;
-    expect(() => write([plate('Map', parts.slice(0, 1), [0, 0, 10, 10])], 'P1S', short)).toThrow(/#RRGGBB/);
+    await expect(write([plate('Map', parts.slice(0, 1), [0, 0, 10, 10])], 'P1S', short)).rejects.toThrow(/#RRGGBB/);
   });
 
-  it('numbers repeated part names within a plate', () => {
+  it('numbers repeated part names within a plate', async () => {
     const mesh = box(0, 0, 0, 1, 1, 1);
-    const { model, config } = write([
+    const { model, config } = await write([
       plate('Map', [part('a', 'Buildings', 'building', mesh), part('b', 'Terrain', 'terrain', mesh), part('c', 'Buildings', 'building', mesh)], [0, 0, 1, 1]),
       plate('Section R1 C2', [part('a', 'Buildings', 'building', mesh)], [0, 0, 1, 1]),
     ]);
@@ -220,19 +220,19 @@ describe('writeBambuProject', () => {
     expect(findAll(config, 'part').map((p) => metadataValue(p, 'name'))).toEqual(['Buildings 1', 'Terrain', 'Buildings 2', 'Buildings']);
   });
 
-  it('escapes names', () => {
+  it('escapes names', async () => {
     const mesh = box(0, 0, 0, 1, 1, 1);
-    const { model, config, files } = write([plate('Café "Map" & <co>', [part('a', 'Road\'s "A"', 'road', mesh)], [0, 0, 1, 1])]);
+    const { model, config, files } = await write([plate('Café "Map" & <co>', [part('a', 'Road\'s "A"', 'road', mesh)], [0, 0, 1, 1])]);
     expect(objects(model).map((o) => o.attrs.name)).toEqual(['Road\'s "A"', 'Café "Map" & <co>']);
     expect(metadataValue(findAll(config, 'plate')[0], 'plater_name')).toBe('Café "Map" & <co>');
     expect(files[MODEL_PATH]).toContain(`name='Café "Map" &amp; &lt;co&gt;'`);
   });
 
-  it('streams large parts', () => {
+  it('streams large parts', async () => {
     const meshes = [];
     for (let i = 0; i < 6000; i++) meshes.push(box(i % 100, Math.floor(i / 100), 0, 0.5, 0.5, 1 + (i % 7)));
     const big = part('buildings', 'Buildings', 'building', ...meshes);
-    const { files, model } = write([plate('Map', [big], [0, 0, 100, 60])]);
+    const { files, model } = await write([plate('Map', [big], [0, 0, 100, 60])]);
     const obj = objects(model)[0];
     expect(findAll(obj, 'vertex')).toHaveLength(big.positions.length / 3);
     expect(findAll(obj, 'triangle')).toHaveLength(big.indices.length / 3);
@@ -241,7 +241,7 @@ describe('writeBambuProject', () => {
     expect(files[MODEL_PATH].length).toBeGreaterThan(2 << 20);
   });
 
-  it('rejects invalid parts and plates', () => {
+  it('rejects invalid parts and plates', async () => {
     const { positions, indices } = box(0, 0, 0, 1, 1, 1);
     const good = part('terrain', 'Terrain', 'terrain', { positions, indices });
     const bad: MeshPart[] = [
@@ -253,13 +253,13 @@ describe('writeBambuProject', () => {
       { ...good, indices: new Uint32Array([...indices, 0]) },
       { ...good, role: 'lava' as MeshPart['role'] },
     ];
-    for (const part of bad) expect(() => write([plate('Map', [part], [0, 0, 1, 1])])).toThrow(/Terrain/);
-    expect(() => write([])).toThrow(/at least one plate/);
-    expect(() => write([plate('Map', [], [0, 0, 1, 1])])).toThrow(/at least one part/);
-    expect(() => write([plate('Map', [good], [0, 0, NaN, 1])])).toThrow(/bounds/);
+    for (const part of bad) await expect(write([plate('Map', [part], [0, 0, 1, 1])])).rejects.toThrow(/Terrain/);
+    await expect(write([])).rejects.toThrow(/at least one plate/);
+    await expect(write([plate('Map', [], [0, 0, 1, 1])])).rejects.toThrow(/at least one part/);
+    await expect(write([plate('Map', [good], [0, 0, NaN, 1])])).rejects.toThrow(/bounds/);
     const many = Array.from({ length: 37 }, (_, i) => plate(`Section R1 C${i + 1}`, [good], [0, 0, 1, 1]));
-    expect(() => write(many)).toThrow(/at most 36 plates/);
-    expect(write(many.slice(0, 36)).project.printer_model).toBe('Bambu Lab P1S');
-    expect(() => writeBambuProject([plate('Map', [good], [0, 0, 1, 1])], PALETTE, printerByKey('MK4'))).toThrow(/no Bambu Studio presets/);
+    await expect(write(many)).rejects.toThrow(/at most 36 plates/);
+    expect((await write(many.slice(0, 36))).project.printer_model).toBe('Bambu Lab P1S');
+    expect(() => writeBambuProject(preparePlates([plate('Map', [good], [0, 0, 1, 1])], PALETTE), printerByKey('MK4'))).toThrow(/no Bambu Studio presets/);
   });
 });

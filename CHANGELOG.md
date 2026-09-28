@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- New look: the system font, gradient buttons, a dark header, section bars and checkboxes for the layers. Dark mode follows the same style.
+- One Download button, in the bar under the settings. Export errors show there too, instead of inside the Export section.
+- The layer list shows the filament colour of each layer.
+- Terrain exaggeration is only under `Layers > Terrain` now, not in `Print size` as well.
+- Help shows how much map data the browser keeps, with a link to clear it.
+- Exports are written in pieces, so a large single STL needs about a third of the memory it did.
+- Map data is cached per page, so moving the area a little downloads less. Elevation tiles no longer queue behind the map data.
+- Areas with many lakes or large detailed forests generate much faster (37 s to 0.5 s and 12.5 s to 0.2 s in the worst cases found).
+
+### Fixed
+
+- The plate count on screen could differ from the export. A 3 km area at the default scale showed 1 plate and exported 4.
+- The 36-plate limit applied to every format. It's only for Bambu Studio projects now, and it's checked before anything is meshed.
+- The sea or a bay running off the edge of the model sat up to 1.3 mm too low.
+- Water mapped as overlapping polygons, like a harbour and the river flowing into it, prints as one body at one level. Ponds mapped inside a river no longer overlap it.
+- A lake that only reaches into a corner of the area is cut through the base like the rest of it.
+- Bridge piers could stand outside the model. A ramp that meets another deck partway along joins it instead of dropping to the road.
+- The border rim was missing from multi-plate exports.
+- Trees could grow inside buildings when `Keep trees off roads` was off, hang over the model edge or cross section seams. Forests mapped as land use get trees.
+- Building heights over 1,000 m or 200 floors are treated as mapping errors.
+- Mapped piers keep their ground with parks and land cover turned off.
+- Missing elevation tiles give a warning instead of silently reading as sea level.
+- A new Overture release without an optional data type no longer stops generation.
+- The 3D view kept its graphics context after closing, so many failed generations in a row could blank the map.
+- Generate could hang on "Starting" after the page's worker failed to load, for example after a new deploy. It now asks you to reload.
+- Tabbing through a number field rounded its value. A comma typed as the decimal point ("0,4") is read as one.
+- The place name, and so the file name, was lost on reload.
+- Keyboard focus now goes into the Presets menu and the colour picker, and back to `Settings` when the phone drawer closes.
+- Saved settings outside the allowed ranges are clamped when loaded instead of breaking generation.
+
 ## 1.0.0
 
 First web release, ported from the Jarvizar City Model Blender add-on (0.25.8).

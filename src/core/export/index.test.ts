@@ -29,7 +29,7 @@ function model(width = 150, depth = 110, height = 20): Plate[] {
 }
 
 describe('exportPlates', () => {
-  it('names files and types by format', () => {
+  it('names files and types by format', async () => {
     const cases: [ExportRequest['format'], string, string][] = [
       ['bambu', 'chicago.3mf', 'model/3mf'],
       ['prusa', 'chicago.3mf', 'model/3mf'],
@@ -39,30 +39,30 @@ describe('exportPlates', () => {
     ];
     for (const [format, fileName, mime] of cases) {
       const result = exportPlates(model(), request(format));
-      expect([result.fileName, result.mime, result.plates], format).toEqual([fileName, mime, 1]);
-      expect(result.data.length).toBeGreaterThan(84);
+      expect([result.fileName, result.data.type, result.plates], format).toEqual([fileName, mime, 1]);
+      expect(result.data.size).toBeGreaterThan(84);
     }
-    const bambu = unzipText(exportPlates(model(), request('bambu')).data);
+    const bambu = await unzipText(exportPlates(model(), request('bambu')).data);
     expect(bambu['3D/3dmodel.model']).toContain('BambuStudio-02.00.00.00');
     expect(exportPlates(model(), request('bambu')).warnings).toEqual([]);
   });
 
-  it('zips one STL per section for several plates', () => {
+  it('zips one STL per section for several plates', async () => {
     const plates = [
       plate('Section R1 C1', [part('terrain', 'Terrain', 'terrain', box(0, 0, 0, 50, 50, 1))], [0, 0, 50, 50]),
       plate('Section R1 C2', [part('terrain', 'Terrain', 'terrain', box(50, 0, 0, 50, 50, 1))], [50, 0, 100, 50]),
     ];
     const result = exportPlates(plates, request('stl', { fileBase: 'a/b' }));
-    expect([result.fileName, result.mime, result.plates]).toEqual(['a-b-stl.zip', 'application/zip', 2]);
-    expect(Object.keys(unzipText(result.data))).toEqual(['a-b_R1C1.stl', 'a-b_R1C2.stl']);
+    expect([result.fileName, result.data.type, result.plates]).toEqual(['a-b-stl.zip', 'application/zip', 2]);
+    expect(Object.keys(await unzipText(result.data))).toEqual(['a-b_R1C1.stl', 'a-b_R1C2.stl']);
   });
 
-  it('leaves out hidden and empty parts and plates', () => {
+  it('leaves out hidden and empty parts and plates', async () => {
     const plates = [...model(), plate('Empty', [{ ...part('water', 'Water', 'water', box(0, 0, 0, 1, 1, 1)), indices: new Uint32Array() }], [0, 0, 1, 1])];
     expect(printablePlates(plates, ['roads']).map((p) => [p.name, p.parts.map((q) => q.id)])).toEqual([['Map', ['terrain', 'buildings']]]);
     const result = exportPlates(plates, request('bambu', { excludeParts: ['roads'] }));
     expect(result.plates).toBe(1);
-    const text = unzipText(result.data)['3D/3dmodel.model'];
+    const text = (await unzipText(result.data))['3D/3dmodel.model'];
     expect(text).not.toContain('name="Roads"');
     expect(text).toContain('name="Buildings"');
     expect(() => exportPlates(plates, request('stl', { excludeParts: ['terrain', 'roads', 'buildings'] }))).toThrow(/Nothing to export/);
@@ -81,12 +81,12 @@ describe('exportPlates', () => {
     ]);
   });
 
-  it('starts a Bambu project for another printer from the P1S presets with its bed', () => {
+  it('starts a Bambu project for another printer from the P1S presets with its bed', async () => {
     const result = exportPlates(model(), request('bambu', { printer: 'MK4' }));
     expect(result.warnings[0]).toBe(
       'Prusa MK4 / MK4S is not a Bambu Lab printer, so the project starts from the Bambu Lab P1S presets with a 250 x 210 mm bed.',
     );
-    const project = JSON.parse(unzipText(result.data)['Metadata/project_settings.config']);
+    const project = JSON.parse((await unzipText(result.data))['Metadata/project_settings.config']);
     expect(project.printer_model).toBe('Bambu Lab P1S');
     expect(project.printable_area).toEqual(['0x0', '250x0', '250x210', '0x210']);
     expect(project.printable_height).toBe('220');

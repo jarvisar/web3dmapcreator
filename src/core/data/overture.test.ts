@@ -5,10 +5,11 @@ import { clearCache, type ByteCache } from './cache';
 import type { OvertureProgress } from './overture';
 import {
   AreaTooLargeError,
+  checkTypes,
   configurePageReading,
   estimateShare,
   fetchOverture,
-  getLatestRelease,
+  getLatestIndex,
   getReleaseIndex,
   latestFromCatalog,
   latestFromListing,
@@ -241,10 +242,15 @@ describe('finding the latest release', () => {
     '<CommonPrefixes><Prefix>release/2026-09-23.0/</Prefix></CommonPrefixes></ListBucketResult>';
   const SAVED = 'overture-latest-release';
   const BUSY = "Overture's servers are busy. Try again in a few minutes.";
+  const indexUrl = (release: string) => `https://stac.overturemaps.org/${release}/collections.parquet`;
   let store: Map<string, ArrayBuffer>;
 
   const save = (release: string, age: number) =>
     store.set(SAVED, new TextEncoder().encode(JSON.stringify({ release, time: Date.now() - age })).buffer);
+  const saved = () => {
+    const bytes = store.get(SAVED);
+    return bytes && (JSON.parse(new TextDecoder().decode(bytes)) as { release: string; time: number });
+  };
 
   beforeEach(async () => {
     await clearCache();
@@ -263,31 +269,65 @@ describe('finding the latest release', () => {
     expect(() => latestFromListing('<ListBucketResult><Prefix>release/</Prefix></ListBucketResult>')).toThrow();
   });
 
-  it('falls back to the S3 listing when the catalog is rate limited, and saves the answer', async () => {
-    const mock = mockServer({ [CATALOG]: JSON.stringify({ latest: '2026-01-01.0' }), [LISTING]: LISTING_XML });
+  it('saves the catalog answer once its index is read', async () => {
+    const mock = mockServer({ [CATALOG]: JSON.stringify({ latest: '2026-09-23.1' }), [indexUrl('2026-09-23.1')]: fixture('index.parquet') });
+    vi.stubGlobal('fetch', mock.fetch);
+    const index = await getLatestIndex();
+    expect(index.release).toBe('2026-09-23.1');
+    expect(index.files.length).toBeGreaterThan(0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(saved()).toMatchObject({ release: '2026-09-23.1' });
+  });
+
+  it('falls back to the S3 listing when the catalog is rate limited, without saving its answer', async () => {
+    const mock = mockServer({
+      [CATALOG]: JSON.stringify({ latest: '2026-01-01.0' }),
+      [LISTING]: LISTING_XML,
+      [indexUrl('2026-09-23.1')]: fixture('index.parquet'),
+    });
     mock.failNext((url) => url === CATALOG, 429, 10);
     vi.stubGlobal('fetch', mock.fetch);
-    await expect(getLatestRelease()).resolves.toBe('2026-09-23.1');
+    expect((await getLatestIndex()).release).toBe('2026-09-23.1');
     expect(mock.requests.filter((r) => r.url === CATALOG)).toHaveLength(1);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(JSON.parse(new TextDecoder().decode(store.get(SAVED)))).toMatchObject({ release: '2026-09-23.1' });
+    expect(saved()).toBeUndefined();
   });
 
   it('uses a saved release for six hours without asking', async () => {
     save('2026-08-19.0', 60 * 60 * 1000);
-    const mock = mockServer({});
+    const mock = mockServer({ [indexUrl('2026-08-19.0')]: fixture('index.parquet') });
     vi.stubGlobal('fetch', mock.fetch);
-    await expect(getLatestRelease()).resolves.toBe('2026-08-19.0');
-    expect(mock.requests).toHaveLength(0);
+    expect((await getLatestIndex()).release).toBe('2026-08-19.0');
+    expect(mock.requests.map((r) => r.url)).toEqual([indexUrl('2026-08-19.0')]);
   });
 
   it('uses a stale saved release when nothing answers', async () => {
     save('2026-08-19.0', 7 * 60 * 60 * 1000);
+    // Its index was cached when it was saved.
+    store.set(indexUrl('2026-08-19.0'), fixture('index.parquet').slice().buffer);
     const mock = mockServer({});
     mock.failNext(() => true, 503, 100);
     vi.stubGlobal('fetch', mock.fetch);
-    await expect(getLatestRelease()).resolves.toBe('2026-08-19.0');
+    expect((await getLatestIndex()).release).toBe('2026-08-19.0');
     expect(mock.requests.some((r) => r.url === LISTING)).toBe(true);
+  });
+
+  it('falls back to the saved release while the new release has no index', async () => {
+    save('2026-08-19.0', 7 * 60 * 60 * 1000);
+    const mock = mockServer({ [CATALOG]: JSON.stringify({ latest: '2026-09-23.1' }), [indexUrl('2026-08-19.0')]: fixture('index.parquet') });
+    vi.stubGlobal('fetch', mock.fetch);
+    expect((await getLatestIndex()).release).toBe('2026-08-19.0');
+    expect(mock.requests.some((r) => r.url === indexUrl('2026-09-23.1'))).toBe(true);
+    // Left as it was, so the next session asks again.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(saved()?.time).toBeLessThan(Date.now() - 6 * 60 * 60 * 1000);
+  });
+
+  it('says so when a release has no index and nothing is saved', async () => {
+    vi.stubGlobal('fetch', mockServer({ [CATALOG]: JSON.stringify({ latest: '2026-09-23.1' }) }).fetch);
+    await expect(getLatestIndex()).rejects.toThrow(
+      'Could not find the file index for Overture release 2026-09-23.1. The release may not be published yet, or may be too old.',
+    );
   });
 
   it('says the servers are busy when nothing answers and nothing is saved', async () => {
@@ -295,7 +335,7 @@ describe('finding the latest release', () => {
     mock.failNext((url) => url === CATALOG, 429, 100);
     mock.failNext((url) => url === LISTING, 503, 100);
     vi.stubGlobal('fetch', mock.fetch);
-    const error = await getLatestRelease().catch((e: unknown) => e);
+    const error = await getLatestIndex().catch((e: unknown) => e);
     expect(error).toBeInstanceOf(OvertureUnavailableError);
     expect((error as Error).message).toBe(BUSY);
 
@@ -304,7 +344,7 @@ describe('finding the latest release', () => {
     vi.stubGlobal('fetch', async () => {
       throw new TypeError('fetch failed');
     });
-    await expect(getLatestRelease()).rejects.toThrow("Could not reach Overture's servers. Check the internet connection and try again.");
+    await expect(getLatestIndex()).rejects.toThrow("Could not reach Overture's servers. Check the internet connection and try again.");
   });
 
   it('gives the same message when the index is rate limited, and keeps the index once read', async () => {
@@ -328,6 +368,7 @@ describe('fetchOverture (offline)', () => {
     const data = await fetchOverture({ bounds: AREA, types: ['water', 'building', 'segment'], onProgress: (p) => progress.push(p) });
 
     expect(data.release).toBe('test');
+    expect(data.warnings).toEqual([]);
     expect(Object.keys(data.features).sort()).toEqual(
       ['building', 'building_part', 'infrastructure', 'land', 'land_cover', 'land_use', 'segment', 'water'],
     );
@@ -395,9 +436,22 @@ describe('fetchOverture (offline)', () => {
     expect(data.stats.land_use.files).toBe(0);
   });
 
-  it('fails for a type the release does not have', async () => {
+  it('leaves out a type the release does not have, with a warning', async () => {
     vi.stubGlobal('fetch', server().fetch);
-    await expect(fetchOverture({ bounds: AREA, types: ['building_part'], release: 'test' })).rejects.toThrow(/lists no building_part files/);
+    const data = await fetchOverture({ bounds: AREA, types: ['water', 'building_part', 'land_cover'], release: 'test' });
+    expect(data.features.water).toHaveLength(2);
+    expect(data.features.building_part).toEqual([]);
+    expect(data.warnings).toEqual([
+      'Overture release test has no building parts data, so the model was built without it.',
+      'Overture release test has no land cover data, so the model was built without it.',
+    ]);
+  });
+
+  it('fails when the release has no buildings, roads or water', () => {
+    const bbox: [number, number, number, number] = [0, 0, 1, 1];
+    const index = { release: 'r', files: [{ theme: 'base', type: 'water', href: 'https://example.com/w.parquet', size: 1, bbox, rows: 1, rowGroups: 1 }] };
+    expect(checkTypes(index, ['water', 'land'])).toEqual(['Overture release r has no land data, so the model was built without it.']);
+    expect(() => checkTypes(index, ['water', 'segment', 'land'])).toThrow("Overture release r has no roads and paths data, so the model can't be built.");
   });
 
   it('refuses an area that needs too much data before downloading it', async () => {
@@ -516,6 +570,25 @@ describe('fetchOverture (offline)', () => {
     const tiny = await fetchOverture({ bounds: AREA, types: ['building'], release: 'test', maxTotalBytes: 10 }).catch((e: unknown) => e);
     expect(String(tiny)).toMatch(/over \d+ MB/);
     expect(early.requests.filter((r) => r.url.includes('building-'))).toHaveLength(2);
+  });
+
+  it('downloads again what the cache holds but does not parse', async () => {
+    const store = new Map<string, ArrayBuffer>();
+    setByteCache({ get: async (key) => store.get(key), put: async (key, value) => void store.set(key, value) });
+    const types = ['building', 'water'] as const;
+    vi.stubGlobal('fetch', server().fetch);
+    const first = await fetchOverture({ bounds: AREA, types, release: 'test' });
+    // Footers, attribute chunks and geometry chunks, all the right length and all wrong.
+    const damaged = [...store.keys()].filter((key) => key.startsWith(S3));
+    expect(damaged.length).toBeGreaterThan(5);
+    for (const key of damaged) store.set(key, new ArrayBuffer(store.get(key)!.byteLength));
+    const mock = server();
+    vi.stubGlobal('fetch', mock.fetch);
+    const second = await fetchOverture({ bounds: AREA, types, release: 'test' });
+    expect(second.features).toEqual(first.features);
+    expect(mock.requests.length).toBeGreaterThan(0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(damaged.every((key) => new Uint8Array(store.get(key)!).some((byte) => byte !== 0))).toBe(true);
   });
 
   it('reads everything from the cache the second time', async () => {

@@ -10,9 +10,6 @@ export interface MeshOptions {
   clip?: MultiPolygon;
   /** Added to every z, so the model's underside can sit at 0. */
   zShift?: number;
-  /** Also shift x and y, e.g. to put a section at its own origin. */
-  xShift?: number;
-  yShift?: number;
   progress?: Progress;
   /** Progress fractions (0 to 1) this call reports within. */
   span?: [number, number];
@@ -40,16 +37,8 @@ export async function meshLayers(layers: Layer[], options: MeshOptions = {}): Pr
     }
     if (!out.indexCount) continue;
     const { positions, indices } = out.finish();
-    const dx = options.xShift ?? 0;
-    const dy = options.yShift ?? 0;
     const dz = options.zShift ?? 0;
-    if (dx || dy || dz) {
-      for (let i = 0; i < positions.length; i += 3) {
-        positions[i] += dx;
-        positions[i + 1] += dy;
-        positions[i + 2] += dz;
-      }
-    }
+    if (dz) for (let i = 2; i < positions.length; i += 3) positions[i] += dz;
     parts.push({ id: layer.id, name: layer.name, role: layer.role, positions, indices });
   }
   return { parts, failed: stats.failed, fallbacks: stats.fallbacks };

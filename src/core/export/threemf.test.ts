@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_PALETTE, printerByKey } from '../settings';
-import { MODEL_PATH } from './common';
+import { DEFAULT_PALETTE, printerByKey, type Palette, type Printer } from '../settings';
+import type { Plate } from '../types';
+import { MODEL_PATH, preparePlates } from './common';
 import { box, findAll, parseXml, part, plate, unzipText } from './test-helpers';
 import { writeGeneric3mf } from './threemf';
 
-function write(...args: Parameters<typeof writeGeneric3mf>) {
-  const files = unzipText(writeGeneric3mf(...args));
+async function write(plates: Plate[], palette: Palette, printer: Printer, title?: string) {
+  const files = await unzipText(writeGeneric3mf(preparePlates(plates, palette), printer, title));
   return { files, model: parseXml(files[MODEL_PATH]) };
 }
 
@@ -19,8 +20,8 @@ describe('writeGeneric3mf', () => {
   const paved = part('paved', 'Paved', 'paved', box(0, 0, -0.15, 10, 10, 0.5));
   const buildings = part('buildings', 'Buildings', 'building', box(-10, -10, 0, 5, 5, 20), box(10, 10, 0, 4, 4, 8));
 
-  it('gives each colour a base material and each part an object with it', () => {
-    const { files, model } = write([plate('Map', [terrain, roads, paved, buildings], [-50, -40, 50, 40])], DEFAULT_PALETTE, printerByKey('P1S'), 'Chicago Loop');
+  it('gives each colour a base material and each part an object with it', async () => {
+    const { files, model } = await write([plate('Map', [terrain, roads, paved, buildings], [-50, -40, 50, 40])], DEFAULT_PALETTE, printerByKey('P1S'), 'Chicago Loop');
     const bases = findAll(model, 'base').map((b) => [b.attrs.name, b.attrs.displaycolor]);
     // Roads and paving share Dark Gray in the default palette.
     expect(bases).toEqual([
@@ -52,12 +53,12 @@ describe('writeGeneric3mf', () => {
     expect(files['_rels/.rels']).toContain('Target="/3D/3dmodel.model"');
   });
 
-  it('lays sections out in their grid, 10 mm apart, centred on the bed', () => {
+  it('lays sections out in their grid, 10 mm apart, centred on the bed', async () => {
     const cells: [number, number, number, number][] = [[-50, 0, 0, 40], [0, 0, 50, 40], [-50, -40, 0, 0], [0, -40, 50, 0]];
     const plates = cells.map((bounds, i) =>
       plate(`Section R${i < 2 ? 1 : 2} C${(i % 2) + 1}`, [part('terrain', 'Terrain', 'terrain', box(bounds[0], bounds[1], -2, 50, 40, 2))], bounds),
     );
-    const { model } = write(plates, DEFAULT_PALETTE, printerByKey('A1M'));
+    const { model } = await write(plates, DEFAULT_PALETTE, printerByKey('A1M'));
     const items = findAll(model, 'item').map((i) => translation(i.attrs.transform));
     // The exploded layout is 110 x 90 mm, centred on the 180 mm bed.
     expect(items).toEqual([[85, 95, 2], [95, 95, 2], [85, 85, 2], [95, 85, 2]]);

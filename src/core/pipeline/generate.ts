@@ -6,7 +6,9 @@
 import { areaGeoBounds, areaModelRing, effectiveScale } from '../geo/area';
 import { Projection } from '../geo/projection';
 import {
+  ClipSet,
   difference,
+  differenceSet,
   dropSmall,
   intersection,
   multiArea,
@@ -34,8 +36,10 @@ import { buildTrees } from './trees';
 
 export interface ModelSpec {
   layers: Layer[];
-  /** Model outline in mm. */
+  /** Model outline in mm, including the rim when there is one. */
   outline: Polygon;
+  /** The outline without the rim, for an export with the rim left out. */
+  crop: Polygon;
   /** Z of the model's underside; meshes are shifted so it lands on 0. */
   baseZ: number;
   mmPerMetre: number;
@@ -80,17 +84,19 @@ export function neededTypes(settings: ModelSettings): SourceType[] {
     types.add('segment');
     if (settings.roads.includeAirports) types.add('infrastructure');
   }
-  // Piers and quays keep their ground over cut water.
-  if (settings.supports) types.add('infrastructure');
+  // Piers and quays keep their ground over cut water. They are mapped in
+  // land and land_use too, which is why those are read even with land off.
+  const decks = settings.supports;
+  if (decks) types.add('infrastructure');
   if (settings.buildings.enabled) {
     types.add('building');
     types.add('building_part');
   }
-  if (settings.land.enabled || settings.trees.enabled) {
-    types.add('land');
-    types.add('land_use');
-    types.add('land_cover');
-  }
+  const trees = settings.trees;
+  const forestTrees = trees.enabled && trees.forestScatter;
+  if (settings.land.enabled || decks || forestTrees || (trees.enabled && trees.mapped)) types.add('land');
+  if (settings.land.enabled || decks || forestTrees) types.add('land_use');
+  if (settings.land.enabled || (forestTrees && trees.landCoverScatter)) types.add('land_cover');
   return [...types];
 }
 
@@ -145,7 +151,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
 
   // -------------------------------------------------------------------- roads
   progress.begin('roads', 'Laying out roads', 0.43, 0.12);
-  let roads: RoadResult = { road: [], path: [], rail: [], footprint: [], pieces: [], bridgeLines: [] };
+  let roads: RoadResult = { road: [], path: [], rail: [], footprint: [], bridgeLines: [] };
   let bridgeSolids: PrismSolid[] = [];
   let pierGround: MultiPolygon = [];
   if (settings.roads.enabled) {
@@ -160,7 +166,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
       pierGround = bridges.pierGround;
       if (bridges.demoted.length) ribbons = await bufferRoads([...groundPieces, ...bridges.demoted], ctx);
     }
-    roads = { ...ribbons, pieces: collected.pieces, bridgeLines: collected.bridgeLines };
+    roads = { ...ribbons, bridgeLines: collected.bridgeLines };
   }
   let airport: MultiPolygon = [];
   if (settings.roads.enabled && settings.roads.includeAirports) {
@@ -204,6 +210,10 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   const supports = union(...structures);
   const cutFinal = supports.length ? difference(water.cut, supports) : water.cut;
   const basinFinal = supports.length ? difference(water.basins, supports) : water.basins;
+  // Every body lies inside the cut or basin set, so a body less the supports
+  // is its share of cutFinal or basinFinal, found from the rings near it only.
+  const supportSet = new ClipSet([supports]);
+  const unsupported = (polygon: Polygon) => differenceSet([polygon], supportSet);
   ctx.stats.ground_kept_under_structures_mm2 = Math.round(multiArea(supports) * 10) / 10;
 
   // --------------------------------------------------------------- land cover
@@ -244,23 +254,27 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     lattice,
   }));
   // Basin floors: the recess is the terrain built lower over the basin.
-  for (const body of basinBodies) {
-    for (const polygon of intersection([body.polygon], basinFinal)) {
+  for (let i = 0; i < basinBodies.length; i++) {
+    const body = basinBodies[i];
+    for (const polygon of unsupported(body.polygon)) {
       terrainSolids.push({ kind: 'prism', role: 'terrain', polygon, top: body.bed, bottom: baseZ, drape: 0 });
     }
+    if (i % 32 === 0) await progress.checkpoint(0.5 * (i / basinBodies.length));
   }
   layers.push({ id: 'terrain', name: 'Terrain', role: 'terrain', solids: terrainSolids });
 
   // -------------------------------------------------------------- water fill
   if (settings.water.enabled) {
     const fills: Solid[] = [];
-    for (const body of water.bodies) {
+    for (let i = 0; i < water.bodies.length; i++) {
+      const body = water.bodies[i];
+      if (i % 32 === 0) await progress.checkpoint(0.5 + 0.5 * (i / water.bodies.length));
       if (body.kind === 'cut') {
-        for (const polygon of intersection([body.polygon], cutFinal)) {
+        for (const polygon of unsupported(body.polygon)) {
           fills.push({ kind: 'prism', role: 'water', polygon, top: body.top, bottom: baseZ, drape: 0 });
         }
       } else if (body.kind === 'basin') {
-        for (const polygon of intersection([body.polygon], basinFinal)) {
+        for (const polygon of unsupported(body.polygon)) {
           fills.push({ kind: 'prism', role: 'water', polygon, top: body.top, bottom: body.bed, drape: 0 });
         }
       } else {
@@ -337,26 +351,29 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   if (settings.trees.enabled) {
     progress.begin('trees', 'Planting trees', 0.88, 0.04);
     const trees = await buildTrees(data, ctx, {
-      forest: land?.forest ?? [],
-      avoid: union(roads.footprint, buildings.footprint),
+      roads: roads.footprint,
+      structures: [...buildings.footprint, ...decks.map((deck) => deck.polygon)],
       noGround: union(cutFinal, basinFinal, water.sheets),
     });
     if (trees.length) layers.push({ id: 'trees', name: 'Trees', role: 'tree', solids: trees });
   }
 
   // ---------------------------------------------------------------------- rim
+  let outline: Polygon = [crop];
   if (settings.rim.enabled && settings.rim.widthMm > 0) {
-    const ring = difference(offsetPolygons(ctx.cropSet, settings.rim.widthMm, 'miter'), ctx.cropSet);
-    let highest = -Infinity;
-    for (const v of hf.values) highest = Math.max(highest, v);
+    const outer = offsetPolygons(ctx.cropSet, settings.rim.widthMm, 'miter');
+    const ring = difference(outer, ctx.cropSet);
+    const top = hf.max() + settings.rim.heightMm;
     layers.push({
       id: 'rim',
       name: 'Border Rim',
       role: 'rim',
-      solids: ring.map((polygon) => ({ kind: 'prism', role: 'rim', polygon, top: highest + settings.rim.heightMm, bottom: baseZ, drape: 0 })),
+      solids: ring.map((polygon) => ({ kind: 'prism', role: 'rim', polygon, top, bottom: baseZ, drape: 0 })),
     });
+    // Sections are cut from the outline, so it has to take the rim in.
+    if (outer.length === 1) outline = [outer[0][0]];
   }
 
-  ctx.stats.model_bounds = multiBounds(ctx.cropSet).map((v) => v.toFixed(1)).join(', ');
-  return { layers, outline: [crop], baseZ, mmPerMetre, stats: ctx.stats, warnings: ctx.warnings };
+  ctx.stats.model_bounds = multiBounds([outline]).map((v) => v.toFixed(1)).join(', ');
+  return { layers, outline, crop: [crop], baseZ, mmPerMetre, stats: ctx.stats, warnings: ctx.warnings };
 }

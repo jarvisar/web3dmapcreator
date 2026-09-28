@@ -72,17 +72,17 @@ describe('planReads', () => {
     ],
   };
 
-  it('reads runs of neighbouring pages that hold wanted rows', () => {
+  it('reads runs of neighbouring pages that hold wanted rows, one range per page', () => {
     expect(planReads(layout, [12, 15, 35])).toEqual([
       { ranges: [[150, 200]], firstRow: 10, rows: [12, 15] },
       { ranges: [[250, 300]], firstRow: 30, rows: [35] },
     ]);
-    expect(planReads(layout, [12, 21, 35])).toEqual([{ ranges: [[150, 300]], firstRow: 10, rows: [12, 21, 35] }]);
+    expect(planReads(layout, [12, 21, 35])).toEqual([{ ranges: [[150, 200], [200, 250], [250, 300]], firstRow: 10, rows: [12, 21, 35] }]);
     expect(readsBytes(planReads(layout, [12, 35]))).toBe(100);
   });
 
   it('adds the dictionary only for runs that use it', () => {
-    expect(planReads(layout, [5, 12])).toEqual([{ ranges: [[0, 200]], firstRow: 0, rows: [5, 12] }]);
+    expect(planReads(layout, [5, 12])).toEqual([{ ranges: [[0, 150], [150, 200]], firstRow: 0, rows: [5, 12] }]);
     const allDictionary = { ...layout, pages: layout.pages.map((page) => ({ ...page, usesDictionary: true })) };
     const reads = planReads(allDictionary, [5, 35]);
     expect(reads).toEqual([

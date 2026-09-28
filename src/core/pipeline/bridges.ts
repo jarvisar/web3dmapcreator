@@ -8,7 +8,8 @@
 // never rises a printed layer above the road is built as an ordinary road,
 // unless it crosses open water.
 
-import { bufferLines, clipLines, densifyLine, dropSmall, intersection, union } from '../geometry/polygon';
+import { EdgeIndex } from '../geometry/edgeindex';
+import { bufferLines, clipLines, densifyLine, dropSmall, intersection, segmentDistance, union } from '../geometry/polygon';
 import { RasterMask } from '../geometry/raster';
 import type { PrismSolid } from '../geometry/solid';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
@@ -35,7 +36,7 @@ export function splitDecks(pieces: RoadPiece[], ctx: Context, cutWater: MultiPol
   const decks: RoadPiece[] = [];
   // Cheap wet-or-not test first. Only pieces that reach water are clipped exactly.
   const wetMask = cutWater.length ? new RasterMask(cutWater, 0.1) : null;
-  const reachesWater = (points: Vec2[]) => densifyLine(points, 0.1).some(([x, y]) => wetMask!.has(x, y));
+  const reachesWater = (points: Vec2[]) => densifyLine(points, wetMask!.cell).some(([x, y]) => wetMask!.has(x, y));
   for (const piece of pieces) {
     const length = polylineLength(piece.points);
     if (piece.flags.has('is_bridge')) {
@@ -99,7 +100,7 @@ export async function buildBridges(
   const station = Math.max(0.25, Math.min(hf.step / 2, 0.6));
   const cutMask = new RasterMask(input.cutWater, 0.1);
   const roadMask = new RasterMask(input.groundRoads, 0.1);
-  const cropMask = new RasterMask(ctx.cropSet, 0.1);
+  const crop = new EdgeIndex(ctx.cropSet, 5);
 
   // Joints: piece ends that meet within a tolerance share one node.
   const nodes: Node[] = [];
@@ -158,6 +159,49 @@ export async function buildBridges(
     chains.push({ piece, ids });
   }
 
+  // A ramp can end partway along another deck instead of at one of its
+  // ends. Joined to the nearest station of that deck, it rises with it
+  // rather than being anchored to the road and diving under it. The end has
+  // to lie on the other deck's centerline, not merely near it.
+  const reachJoin = station / 2 + JOINT_TOLERANCE_MM;
+  const onDeck = (x: number, y: number, m: number) =>
+    nodes[m].edges.some(([k]) => segmentDistance(x, y, nodes[m].x, nodes[m].y, nodes[k].x, nodes[k].y) <= JOINT_TOLERANCE_MM);
+  const cells = new Map<string, number[]>();
+  const cellOf = (x: number, y: number) => `${Math.floor(x / reachJoin)},${Math.floor(y / reachJoin)}`;
+  nodes.forEach((node, i) => {
+    const key = cellOf(node.x, node.y);
+    const list = cells.get(key);
+    if (list) list.push(i);
+    else cells.set(key, [i]);
+  });
+  for (const { ids } of chains) {
+    let own: Set<number> | null = null;
+    for (const end of [ids[0], ids[ids.length - 1]]) {
+      const node = nodes[end];
+      if (node.edges.length !== 1) continue;
+      own ??= new Set(ids);
+      const cx = Math.floor(node.x / reachJoin);
+      const cy = Math.floor(node.y / reachJoin);
+      let best = -1;
+      let bestDistance = reachJoin;
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (const m of cells.get(`${cx + dx},${cy + dy}`) ?? []) {
+            if (own.has(m)) continue;
+            const d = Math.hypot(nodes[m].x - node.x, nodes[m].y - node.y);
+            if (d <= bestDistance && onDeck(node.x, node.y, m)) {
+              best = m;
+              bestDistance = d;
+            }
+          }
+        }
+      }
+      if (best < 0) continue;
+      link(end, best);
+      count(ctx, 'bridge_ends_joined_mid_deck');
+    }
+  }
+
   // Networks: connected components of the station graph.
   const component = new Int32Array(nodes.length).fill(-1);
   let components = 0;
@@ -180,9 +224,7 @@ export async function buildBridges(
   // Loose ends touch down on the road surface. Ends at the model edge keep their height.
   for (const node of nodes) {
     if (node.edges.length !== 1) continue;
-    const edge = !cropMask.has(node.x + 0.15, node.y) || !cropMask.has(node.x - 0.15, node.y) ||
-      !cropMask.has(node.x, node.y + 0.15) || !cropMask.has(node.x, node.y - 0.15);
-    if (edge) continue;
+    if (!crop.contains(node.x, node.y) || crop.distance(node.x, node.y, 0.15) < 0.15) continue;
     node.anchorTop = node.ground + thickness;
   }
 
@@ -249,6 +291,7 @@ export async function buildBridges(
       const base = n.ground;
       if (deckBottom - base < MINIMUM_PIER_HEIGHT_MM) continue;
       if (n.wet && !settings.supports) continue;
+      if (!crop.contains(n.x, n.y)) continue;
       const ux = (n.x - a.x) / (length || 1);
       const uy = (n.y - a.y) / (length || 1);
       const along = b.pierMinSizeMm / 2;
@@ -259,16 +302,22 @@ export async function buildBridges(
         [n.x + ux * along - uy * across, n.y + uy * along + ux * across],
         [n.x - ux * along - uy * across, n.y - uy * along + ux * across],
       ];
-      const footprint: Polygon = [corners];
-      solids.push({
-        kind: 'prism',
-        role: 'pier',
-        polygon: footprint,
-        top: deckBottom + PIER_OVERLAP_MM,
-        bottom: (x, y) => hf.heightAt(x, y) - embed,
-        drape: 0,
-      });
-      if (n.wet) pierFootprints.push(footprint);
+      // Decks are cut at the model edge, and piers with them.
+      const half = Math.hypot(along, across);
+      const footprints: Polygon[] =
+        crop.distance(n.x, n.y, half) < half ? dropSmall(intersection([[corners]], ctx.cropSet), 0.01) : [[corners]];
+      if (!footprints.length) continue;
+      for (const footprint of footprints) {
+        solids.push({
+          kind: 'prism',
+          role: 'pier',
+          polygon: footprint,
+          top: deckBottom + PIER_OVERLAP_MM,
+          bottom: (x, y) => hf.heightAt(x, y) - embed,
+          drape: 0,
+        });
+        if (n.wet) pierFootprints.push(footprint);
+      }
       pierCount++;
     }
   }

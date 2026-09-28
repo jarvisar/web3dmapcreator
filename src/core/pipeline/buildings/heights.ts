@@ -89,6 +89,12 @@ export const CLASS_DEFAULT_HEIGHT_M: Readonly<Record<string, number>> = {
 export const SELECTION_FLOOR_HEIGHT_M = 3;
 export const SELECTION_DEFAULT_HEIGHT_M = 10;
 
+// The tallest building standing is 828 m with 163 floors. Anything past these
+// is a typo in the source (one 3000 m row prints a 231 mm needle), so it is
+// read as missing and the next source is used.
+export const MAXIMUM_HEIGHT_M = 1000;
+export const MAXIMUM_FLOORS = 200;
+
 export type Props = Record<string, unknown>;
 
 export interface VerticalProfile {
@@ -101,6 +107,8 @@ export interface VerticalProfile {
   heightSource: string;
   /** min_height, min_floor or ground. */
   minHeightSource: string;
+  /** A height or floor count was past the plausible maximum and skipped. */
+  implausible: boolean;
 }
 
 /** A property, or the OSM-style fallback key when the first is absent. A present null still wins, as in the source data. */
@@ -150,8 +158,14 @@ export function classDefaultHeight(props: Props, fallbackM: number): [number, st
  * and left for the caller to skip. A taller top is never invented.
  */
 export function resolveVerticalProfile(props: Props, floorHeightM: number, defaultHeightM: number): VerticalProfile {
-  const explicitHeight = positive(lengthMetres(props.height));
-  const floors = positive(prop(props, 'num_floors', 'building:levels'));
+  let implausible = false;
+  const upTo = (value: number | null, maximum: number): number | null => {
+    if (value === null || value <= maximum) return value;
+    implausible = true;
+    return null;
+  };
+  const explicitHeight = upTo(positive(lengthMetres(props.height)), MAXIMUM_HEIGHT_M);
+  const floors = upTo(positive(prop(props, 'num_floors', 'building:levels')), MAXIMUM_FLOORS);
   let topM: number;
   let heightSource: string;
   if (explicitHeight !== null) {
@@ -164,8 +178,8 @@ export function resolveVerticalProfile(props: Props, floorHeightM: number, defau
     [topM, heightSource] = classDefaultHeight(props, defaultHeightM);
   }
 
-  const explicitMinimum = lengthMetres(props.min_height);
-  const minFloor = nonnegative(prop(props, 'min_floor', 'building:min_level'));
+  const explicitMinimum = upTo(lengthMetres(props.min_height), MAXIMUM_HEIGHT_M);
+  const minFloor = upTo(nonnegative(prop(props, 'min_floor', 'building:min_level')), MAXIMUM_FLOORS);
   let bottomM = 0;
   let minHeightSource = 'ground';
   if (explicitMinimum !== null) {
@@ -176,7 +190,7 @@ export function resolveVerticalProfile(props: Props, floorHeightM: number, defau
     minHeightSource = 'min_floor';
   }
   if (topM <= bottomM) heightSource += '+invalid_interval';
-  return { bottomM, topM, thicknessM: topM - bottomM, heightSource, minHeightSource };
+  return { bottomM, topM, thicknessM: topM - bottomM, heightSource, minHeightSource, implausible };
 }
 
 /** Whether a part carries a height or floor count that gives it a real interval. */

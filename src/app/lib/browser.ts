@@ -86,7 +86,10 @@ export function useMediaQuery(query: string): boolean {
   return useSyncExternalStore(subscribe, () => window.matchMedia(query).matches, () => false);
 }
 
+// Keep these in step with the media queries in the stylesheets.
 export const NARROW_QUERY = '(max-width: 1099.98px)';
+/** Phones: the area tip moves from the map to the action bar (map.css). */
+export const PHONE_QUERY = '(max-width: 900px)';
 export const DARK_QUERY = '(prefers-color-scheme: dark)';
 export const COARSE_QUERY = '(pointer: coarse)';
 

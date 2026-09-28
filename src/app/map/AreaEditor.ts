@@ -152,10 +152,6 @@ export class AreaEditor {
     this.element.classList.toggle('is-invalid', invalid);
   }
 
-  get dragging(): boolean {
-    return this.drag !== null;
-  }
-
   destroy(): void {
     this.destroyed = true;
     this.endDrag();

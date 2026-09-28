@@ -6,28 +6,26 @@
 // items. The model is centred on the bed with its lowest point at z = 0.
 // Several sections are laid out in their grid, 10 mm apart.
 
-import { filamentName, type Palette, type Printer } from '../settings';
-import type { Plate } from '../types';
+import { filamentName, type Printer } from '../settings';
 import {
   APP_NAME,
   ATTRIBUTION,
-  CONTENT_TYPES_NAMESPACE,
   CORE_NAMESPACE,
   DESCRIPTION,
   FilamentTable,
+  MIME_3MF,
   MODEL_PATH,
-  MODEL_RELATIONSHIP,
   ModelStream,
-  RELATIONSHIPS_NAMESPACE,
   XML_HEADER,
-  preparePlates,
+  contentTypes,
+  modelRelationship,
+  type PreparedModel,
 } from './common';
 import { escapeText, fixed6, quoteattr } from './format';
 import { sideBySide } from './sections';
 import { ZipWriter } from './zip';
 
-export function writeGeneric3mf(plates: Plate[], palette: Palette, printer: Printer, title = 'City Model'): Uint8Array {
-  const model = preparePlates(plates, palette);
+export function writeGeneric3mf(model: PreparedModel, printer: Printer, title = 'City Model'): Blob {
   const bottom = model.extents.minZ;
   const materials = new FilamentTable();
   let nextId = 2;
@@ -60,18 +58,9 @@ export function writeGeneric3mf(plates: Plate[], palette: Palette, printer: Prin
   for (const { plate, parts, assembly } of layout) {
     plate.parts.forEach((prepared, i) => {
       const part = parts[i];
-      out.text(
-        `  <object id="${part.id}" name=${quoteattr(part.name)} type="model" pid="1" pindex="${part.index}">\n` +
-          '   <mesh>\n    <vertices>\n',
-      );
-      out.vertices(prepared.part.positions);
-      out.text('    </vertices>\n    <triangles>\n');
-      out.triangles(prepared.part.indices);
-      out.text('    </triangles>\n   </mesh>\n  </object>\n');
+      out.meshObject(part.id, part.name, [prepared.part], ` pid="1" pindex="${part.index}"`);
     });
-    out.text(`  <object id="${assembly}" name=${quoteattr(plate.name)} type="model">\n   <components>\n`);
-    out.text(parts.map((part) => `    <component objectid="${part.id}"/>\n`).join(''));
-    out.text('   </components>\n  </object>\n');
+    out.assembly(assembly, plate.name, parts.map((part) => part.id));
   }
   out.text(' </resources>\n <build>\n');
   layout.forEach(({ assembly }, i) => {
@@ -81,20 +70,7 @@ export function writeGeneric3mf(plates: Plate[], palette: Palette, printer: Prin
   out.text(' </build>\n</model>\n');
   out.close();
 
-  zip.file(
-    '[Content_Types].xml',
-    XML_HEADER +
-      `<Types xmlns="${CONTENT_TYPES_NAMESPACE}">\n` +
-      ' <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n' +
-      ' <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n' +
-      '</Types>\n',
-  );
-  zip.file(
-    '_rels/.rels',
-    XML_HEADER +
-      `<Relationships xmlns="${RELATIONSHIPS_NAMESPACE}">\n` +
-      ` <Relationship Id="rel0" Target="/${MODEL_PATH}" Type="${MODEL_RELATIONSHIP}"/>\n` +
-      '</Relationships>\n',
-  );
-  return zip.finish();
+  zip.file('[Content_Types].xml', contentTypes());
+  zip.file('_rels/.rels', modelRelationship());
+  return zip.finish(MIME_3MF);
 }

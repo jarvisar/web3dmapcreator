@@ -2,12 +2,10 @@
 
 import { CancelledError } from '../../core/engine/client';
 import type { GenerateResult, ProgressEvent } from '../../core/engine/protocol';
-import { validateArea } from '../../core/geo/area';
 import { cloneSettings } from '../../core/settings';
-import type { AreaSpec } from '../../core/settings';
-import { cleanFileName, downloadBlob, NARROW_QUERY } from '../lib/browser';
+import { downloadBlob, NARROW_QUERY } from '../lib/browser';
 import { formatBytes } from '../lib/format';
-import { fileBase, settingsProblem } from './derived';
+import { fileBase, generationProblem } from './derived';
 import { getEngine, onWorkerReplaced } from './engine';
 import { setModelParts } from './model';
 import {
@@ -22,22 +20,24 @@ import type { ResultMeta } from './store';
 let run = 0;
 let version = 0;
 
-// Progress can arrive faster than it is worth drawing.
-let pendingProgress: ProgressEvent | null = null;
-let progressFrame = 0;
+// Progress can arrive faster than it is worth drawing, so at most one update
+// per frame goes into the store for each target.
+type Target = 'generation' | 'exporting';
+const pendingProgress: Record<Target, ProgressEvent | null> = { generation: null, exporting: null };
+const progressFrame: Record<Target, number> = { generation: 0, exporting: 0 };
 
-function queueProgress(event: ProgressEvent, target: 'generation' | 'exporting') {
-  pendingProgress = event;
-  if (progressFrame) return;
+function queueProgress(event: ProgressEvent, target: Target) {
+  pendingProgress[target] = event;
+  if (progressFrame[target]) return;
   const flush = () => {
-    progressFrame = 0;
-    const next = pendingProgress;
-    pendingProgress = null;
-    if (!next) return;
-    if (target === 'generation' && useApp.getState().generation.status === 'running') patchGeneration({ progress: next });
-    if (target === 'exporting' && useApp.getState().exporting.status === 'running') patchExporting({ progress: next });
+    progressFrame[target] = 0;
+    const next = pendingProgress[target];
+    pendingProgress[target] = null;
+    if (!next || useApp.getState()[target].status !== 'running') return;
+    if (target === 'generation') patchGeneration({ progress: next });
+    else patchExporting({ progress: next });
   };
-  progressFrame = document.hidden ? window.setTimeout(flush, 100) : requestAnimationFrame(flush);
+  progressFrame[target] = document.hidden ? window.setTimeout(flush, 100) : requestAnimationFrame(flush);
 }
 
 function describe(error: unknown): string {
@@ -46,7 +46,7 @@ function describe(error: unknown): string {
   return 'Something went wrong. Try again.';
 }
 
-function toMeta(result: GenerateResult, key: string, area: AreaSpec): ResultMeta {
+function toMeta(result: GenerateResult, key: string): ResultMeta {
   let triangles = 0;
   const parts = result.parts.map((part) => {
     const count = Math.floor(part.indices.length / 3);
@@ -57,7 +57,6 @@ function toMeta(result: GenerateResult, key: string, area: AreaSpec): ResultMeta
   return {
     version,
     key,
-    area,
     bounds: result.bounds,
     mmPerMetre: result.mmPerMetre,
     release: result.release,
@@ -70,15 +69,11 @@ function toMeta(result: GenerateResult, key: string, area: AreaSpec): ResultMeta
   };
 }
 
-export function generationProblem(): string | null {
-  const { area, settings } = useApp.getState();
-  return validateArea(area) ?? settingsProblem(settings);
-}
-
 export async function generateModel(): Promise<void> {
   const state = useApp.getState();
-  if (state.generation.status === 'running') return;
-  const problem = generationProblem();
+  // The worker would do both at once, and a cancel could take the export down with it.
+  if (state.generation.status === 'running' || state.exporting.status === 'running') return;
+  const problem = generationProblem(state.area, state.settings);
   if (problem) {
     patchGeneration({ status: 'error', error: problem });
     return;
@@ -94,7 +89,7 @@ export async function generateModel(): Promise<void> {
     });
     if (id !== run) return;
     setModelParts(result.parts);
-    const meta = toMeta(result, key, area);
+    const meta = toMeta(result, key);
     const narrow = window.matchMedia(NARROW_QUERY).matches;
     useApp.setState((current) => ({
       generation: {
@@ -147,18 +142,18 @@ export async function exportModel(): Promise<void> {
         multiPlate,
         sectionWidthMm,
         sectionHeightMm,
-        fileBase: cleanFileName(fileBase(state.placeName, state.fileName)) || 'city-model',
+        fileBase: fileBase(state.placeName, state.fileName),
         excludeParts: exclude,
       },
       (event) => queueProgress(event, 'exporting'),
     );
-    downloadBlob(new Blob([out.data as BlobPart], { type: out.mime || 'application/octet-stream' }), out.fileName);
+    downloadBlob(out.data, out.fileName);
     patchExporting({
       status: 'idle',
       progress: null,
-      last: { fileName: out.fileName, format, plates: out.plates, warnings: out.warnings ?? [], bytes: out.data.byteLength },
+      last: { fileName: out.fileName, format, plates: out.plates, warnings: out.warnings ?? [], bytes: out.data.size },
     });
-    toast(`Downloaded ${out.fileName} (${formatBytes(out.data.byteLength)})`, 'success');
+    toast(`Downloaded ${out.fileName} (${formatBytes(out.data.size)})`, 'success');
   } catch (error) {
     patchExporting({ status: 'idle', progress: null, error: describe(error) });
   }

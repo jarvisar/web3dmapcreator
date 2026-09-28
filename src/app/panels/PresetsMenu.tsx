@@ -1,10 +1,10 @@
 import { ChevronDown } from 'lucide-react';
 import { useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { areaFromBounds } from '../../core/geo/area';
 import { Popover } from '../components/Popover';
 import { PRESET_GROUPS } from '../data/presets';
 import type { AreaPreset } from '../data/presets';
+import { areaForBounds } from '../lib/area';
 import { NARROW_QUERY } from '../lib/browser';
 import { setArea, setDrawerOpen } from '../state/store';
 
@@ -14,10 +14,7 @@ export function PresetsMenu() {
   const listRef = useRef<HTMLDivElement>(null);
 
   function choose(preset: AreaPreset) {
-    setArea((area) => ({ ...areaFromBounds(preset.bounds, area.shape === 'rounded' ? 'rounded' : 'rectangle'), cornerRadius: area.cornerRadius }), {
-      focus: 'always',
-      placeName: preset.name,
-    });
+    setArea((area) => areaForBounds(preset.bounds, area), { focus: 'always', placeName: preset.name });
     setOpen(false);
     anchor?.focus();
     if (window.matchMedia(NARROW_QUERY).matches) setDrawerOpen(false);
@@ -40,7 +37,7 @@ export function PresetsMenu() {
       <button
         ref={setAnchor}
         type="button"
-        className="btn btn-ghost btn-sm"
+        className="btn"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen(!open)}

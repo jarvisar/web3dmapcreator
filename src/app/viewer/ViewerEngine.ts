@@ -47,21 +47,21 @@ interface Theme {
 }
 
 const LIGHT_THEME: Theme = {
-  bed: '#e4e9f0',
-  grid: '#d3dae4',
-  gridMajor: '#c2cad6',
-  border: '#94a3b8',
+  bed: '#e3e4e6',
+  grid: '#d0d2d5',
+  gridMajor: '#bbbec2',
+  border: '#8e9197',
   shadow: 0.2,
-  background: ['#eef2f7', '#dde3ea'],
+  background: ['#f4f5f7', '#c9ced5'],
 };
 
 const DARK_THEME: Theme = {
-  bed: '#1f2a3d',
-  grid: '#2a374c',
-  gridMajor: '#34445c',
-  border: '#56657c',
+  bed: '#2f3034',
+  grid: '#3b3c41',
+  gridMajor: '#47494f',
+  border: '#6c6e74',
   shadow: 0.35,
-  background: ['#1e293b', '#0f172a'],
+  background: ['#45474c', '#1e1f22'],
 };
 
 interface Tween {
@@ -249,7 +249,7 @@ export class ViewerEngine {
     const context = canvas.getContext('2d');
     if (!context) return null;
     const { width, height } = canvas;
-    const gradient = context.createRadialGradient(width / 2, height * 0.35, 0, width / 2, height * 0.35, Math.max(width, height) * 0.8);
+    const gradient = context.createLinearGradient(0, 0, 0, height);
     gradient.addColorStop(0, this.theme.background[0]);
     gradient.addColorStop(1, this.theme.background[1]);
     context.fillStyle = gradient;
@@ -288,7 +288,11 @@ export class ViewerEngine {
     this.materials.clear();
     this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLost);
     this.renderer.domElement.removeEventListener('webglcontextrestored', this.onContextRestored);
+    this.sun.shadow.dispose();
     this.renderer.dispose();
+    // Free the context now rather than at garbage collection. Browsers keep
+    // about 16, and past that they drop the oldest, which is the map's.
+    this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
   }
 

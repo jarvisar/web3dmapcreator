@@ -17,13 +17,16 @@ export interface PlateOptions {
   bedDepth: number;
   /** Layer ids left out. */
   exclude?: string[];
+  /** Refuse before meshing when there are more non-empty sections than this. */
+  maxPlates?: number;
   progress?: Progress;
 }
 
 export async function buildPlates(spec: ModelSpec, options: PlateOptions): Promise<Plate[]> {
   const excluded = new Set(options.exclude ?? []);
   const layers = spec.layers.filter((layer) => !excluded.has(layer.id));
-  const outline = spec.outline;
+  // Sections follow what is printed, so a hidden rim doesn't widen the grid.
+  const outline = excluded.has('rim') ? spec.crop : spec.outline;
   const [west, south, east, north] = ringBounds(outline[0]);
   const zShift = -spec.baseZ;
 
@@ -34,12 +37,19 @@ export async function buildPlates(spec: ModelSpec, options: PlateOptions): Promi
 
   const width = Math.min(options.sectionWidthMm, options.bedWidth);
   const depth = Math.min(options.sectionHeightMm, options.bedDepth);
-  const cells = sectionGrid([west, south, east, north], width, depth, options.bedWidth, options.bedDepth);
+  // Round shapes can leave corner cells empty.
+  const cells = sectionGrid([west, south, east, north], width, depth, options.bedWidth, options.bedDepth)
+    .map((cell) => ({ cell, clip: intersection(rectangle(...cell.bounds), [outline]) }))
+    .filter(({ clip }) => clip.length > 0);
+  if (options.maxPlates !== undefined && cells.length > options.maxPlates) {
+    throw new Error(
+      `The model needs ${cells.length} plates and a Bambu Studio project holds at most ${options.maxPlates}. ` +
+        'Make the sections larger or reduce the scale.',
+    );
+  }
   const plates: Plate[] = [];
   for (let i = 0; i < cells.length; i++) {
-    const cell = cells[i];
-    const clip = intersection(rectangle(...cell.bounds), [outline]);
-    if (!clip.length) continue;
+    const { cell, clip } = cells[i];
     const span: [number, number] = [(0.8 * i) / cells.length, (0.8 * (i + 1)) / cells.length];
     const meshed = await meshLayers(layers, { clip, zShift, progress: options.progress, span });
     if (!meshed.parts.length) continue;

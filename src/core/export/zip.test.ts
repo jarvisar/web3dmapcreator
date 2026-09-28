@@ -1,9 +1,10 @@
 import { strFromU8, unzipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
+import { blobBytes } from './test-helpers';
 import { ZipWriter } from './zip';
 
 describe('ZipWriter', () => {
-  it('streams text and byte chunks into entries in order', () => {
+  it('streams text and byte chunks into entries in order', async () => {
     const zip = new ZipWriter();
     const model = zip.entry('3D/3dmodel.model');
     const rows: string[] = [];
@@ -18,14 +19,14 @@ describe('ZipWriter', () => {
     model.close();
     zip.file('Metadata/a.config', '<config/>\n');
     zip.file('b.bin', new Uint8Array([1, 2, 3]));
-    const files = unzipSync(zip.finish());
+    const files = unzipSync(await blobBytes(zip.finish()));
     expect(Object.keys(files)).toEqual(['3D/3dmodel.model', 'Metadata/a.config', 'b.bin']);
     expect(strFromU8(files['3D/3dmodel.model'])).toBe(rows.join('') + '© end\n');
     expect(strFromU8(files['Metadata/a.config'])).toBe('<config/>\n');
     expect([...files['b.bin']]).toEqual([1, 2, 3]);
   });
 
-  it('copies byte chunks, so a caller can reuse its buffer', () => {
+  it('copies byte chunks, so a caller can reuse its buffer', async () => {
     const zip = new ZipWriter();
     const entry = zip.entry('data.bin');
     const scratch = new Uint8Array(1000);
@@ -34,12 +35,12 @@ describe('ZipWriter', () => {
       entry.bytes(scratch);
     }
     entry.close();
-    const data = unzipSync(zip.finish())['data.bin'];
+    const data = unzipSync(await blobBytes(zip.finish()))['data.bin'];
     expect(data.length).toBe(5000);
     for (let round = 0; round < 5; round++) expect(data[round * 1000 + 999]).toBe(round);
   });
 
-  it('writes empty entries and refuses misuse', () => {
+  it('writes empty entries and refuses misuse', async () => {
     const zip = new ZipWriter();
     zip.file('empty.txt', '');
     const open = zip.entry('open.txt');
@@ -48,7 +49,9 @@ describe('ZipWriter', () => {
     open.close();
     expect(() => open.text('late')).toThrow(/already closed/);
     expect(() => zip.entry('empty.txt')).toThrow(/Duplicate/);
-    const files = unzipSync(zip.finish());
+    const blob = zip.finish();
+    expect(blob.type).toBe('application/zip');
+    const files = unzipSync(await blobBytes(blob));
     expect(files['empty.txt'].length).toBe(0);
     expect(files['open.txt'].length).toBe(0);
   });

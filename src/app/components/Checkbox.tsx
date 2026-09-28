@@ -1,29 +1,22 @@
-interface SwitchProps {
+interface CheckboxProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
-  /** Accessible name when there is no visible label pointing at the switch. */
+  /** Accessible name when there is no visible label for the box. */
   label?: string;
   id?: string;
   disabled?: boolean;
-  labelledBy?: string;
-  describedBy?: string;
 }
 
-export function Switch({ checked, onChange, label, id, disabled, labelledBy, describedBy }: SwitchProps) {
+export function Checkbox({ checked, onChange, label, id, disabled }: CheckboxProps) {
   return (
-    <button
-      type="button"
-      role="switch"
+    <input
+      type="checkbox"
+      className="checkbox"
       id={id}
-      className="switch"
-      aria-checked={checked}
-      aria-label={labelledBy ? undefined : label}
-      aria-labelledby={labelledBy}
-      aria-describedby={describedBy}
+      checked={checked}
       disabled={disabled}
-      onClick={() => onChange(!checked)}
-    >
-      <span className="switch-thumb" aria-hidden="true" />
-    </button>
+      aria-label={label}
+      onChange={(event) => onChange(event.target.checked)}
+    />
   );
 }

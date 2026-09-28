@@ -1,12 +1,15 @@
 // Area helpers the UI needs on top of core/geo/area.ts: keeping the box tight
 // around circles and hexagons, clamping, and snapping rotation.
 
-import { MAX_LATITUDE, MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
+import { areaFromBounds, MAX_LATITUDE, MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
 import type { AreaShape, AreaSpec } from '../../core/settings';
+import type { GeoBounds, Ring, Vec2 } from '../../core/types';
 
 export const HEX_RATIO = Math.sqrt(3) / 2;
 export const LATITUDE_LIMIT = MAX_LATITUDE - 0.5;
 export const SHAPES: AreaShape[] = ['rectangle', 'rounded', 'circle', 'hexagon'];
+
+export const AREA_HINT = 'Drag the box to move it. Drag a corner to resize it, or the round handle to rotate it.';
 
 export const SHAPE_LABELS: Record<AreaShape, string> = {
   rectangle: 'Rectangle',
@@ -92,6 +95,59 @@ export function snapRotation(degrees: number, coarse: boolean): number {
   const quarter = Math.round(value / 90) * 90;
   if (Math.abs(value - quarter) <= 3) return normalizeRotation(quarter);
   return value;
+}
+
+// The next two mirror what the export does with Clipper, for the plate count
+// on screen. Area outlines are convex and counter-clockwise, which keeps them short.
+
+/** The outline grown by the rim with mitred corners, like the rim in generate.ts. */
+export function withRim(ring: Ring, width: number): Ring {
+  if (!(width > 0)) return ring;
+  const n = ring.length;
+  const normal = (a: Vec2, b: Vec2): Vec2 => {
+    const length = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    return [(b[1] - a[1]) / length, (a[0] - b[0]) / length];
+  };
+  return ring.map((p, i) => {
+    const n1 = normal(ring[(i + n - 1) % n], p);
+    const n2 = normal(p, ring[(i + 1) % n]);
+    const k = width / (1 + n1[0] * n2[0] + n1[1] * n2[1]);
+    return [p[0] + (n1[0] + n2[0]) * k, p[1] + (n1[1] + n2[1]) * k];
+  });
+}
+
+/** Area of the outline inside a box: west, south, east, north. */
+export function areaInBox(ring: Ring, [west, south, east, north]: [number, number, number, number]): number {
+  const sides = [(p: Vec2) => p[0] - west, (p: Vec2) => east - p[0], (p: Vec2) => p[1] - south, (p: Vec2) => north - p[1]];
+  let points: Vec2[] = ring;
+  for (const side of sides) {
+    const kept: Vec2[] = [];
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i];
+      const b = points[(i + 1) % points.length];
+      const da = side(a);
+      const db = side(b);
+      if (da >= 0) kept.push(a);
+      if (da >= 0 !== db >= 0) {
+        const t = da / (da - db);
+        kept.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      }
+    }
+    points = kept;
+    if (!points.length) return 0;
+  }
+  let twice = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    twice += a[0] * b[1] - b[0] * a[1];
+  }
+  return twice / 2;
+}
+
+/** An area covering the bounds. Bounds are a box, so only a rounded area keeps its shape. */
+export function areaForBounds(bounds: GeoBounds, current: AreaSpec): AreaSpec {
+  return { ...areaFromBounds(bounds, current.shape === 'rounded' ? 'rounded' : 'rectangle'), cornerRadius: current.cornerRadius };
 }
 
 export function sameArea(a: AreaSpec, b: AreaSpec): boolean {

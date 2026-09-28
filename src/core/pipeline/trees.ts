@@ -3,7 +3,7 @@
 // selection always grows the same trees.
 
 import { EdgeIndex } from '../geometry/edgeindex';
-import { boxesOverlap, clipToBox, intersection, pointInMulti, ringBounds, type Box } from '../geometry/polygon';
+import { boxesOverlap, clipToBox, intersection, ringBounds, type Box } from '../geometry/polygon';
 import type { MeshSolid } from '../geometry/solid';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
 import { classifySurface, isTreePoint } from './classify';
@@ -112,10 +112,10 @@ class Clearance {
 }
 
 export interface TreeOptions {
-  /** Forest floor slabs, used when land cover is off too. */
-  forest: MultiPolygon;
-  /** Ground roads and buildings; crowns must stay clear of them. */
-  avoid: MultiPolygon;
+  /** Ground roads. Crowns stay clear of them when avoidRoads is on. */
+  roads: MultiPolygon;
+  /** Building footprints and bridge decks. Crowns always stay clear of them. */
+  structures: MultiPolygon;
   /** Water and basins: never planted. */
   noGround: MultiPolygon;
 }
@@ -136,15 +136,19 @@ export async function buildTrees(data: SourceData, ctx: Context, options: TreeOp
     Math.max(t.minHeightMm / height, t.minWidthMm / (2 * radius * flat), 1 + (size - 0.5) * 2 * t.variation);
   const maxFactor = Math.max(scaleFor(0), scaleFor(1));
   const clearance = new Clearance(radius * maxFactor, CANOPY_CLEARANCE_MM);
-  const avoid = t.avoidRoads && options.avoid.length ? new EdgeIndex(options.avoid, Math.max(radius * 4, 1)) : null;
+  const blockers = t.avoidRoads ? [...options.roads, ...options.structures] : options.structures;
+  const avoid = blockers.length ? new EdgeIndex(blockers, Math.max(radius * 4, 1)) : null;
   const water = new EdgeIndex(options.noGround, 1);
+  // Long crop edges fill every bucket of their bounds, so this one is coarse.
+  const crop = new EdgeIndex(ctx.cropSet, Math.max(radius * maxFactor * 4, 2));
   const placements: [number, number, number][] = [];
   let skipped = 0;
 
   const place = (x: number, y: number, size: number) => {
     if (placements.length >= t.maxTrees) return;
-    if (!pointInMulti(x, y, ctx.cropSet) || water.contains(x, y)) return;
     const r = radius * scaleFor(size);
+    // The whole crown, not only the trunk, has to be on the model.
+    if (!crop.contains(x, y) || crop.distance(x, y, r) < r || water.contains(x, y)) return;
     if (avoid && avoid.touches(x, y, r + ROAD_CLEARANCE_MM)) {
       skipped++;
       return;
@@ -164,21 +168,28 @@ export async function buildTrees(data: SourceData, ctx: Context, options: TreeOp
 
   if (t.forestScatter) {
     const spacing = Math.max(t.spacingM * mm, 2 * radius + CANOPY_CLEARANCE_MM);
-    const sources: [SourceType, typeof land][] = [['land', land]];
+    const sources: [SourceType, typeof land][] = [
+      ['land', land],
+      ['land_use', data.features.land_use ?? []],
+    ];
     if (t.landCoverScatter) sources.push(['land_cover', data.features.land_cover ?? []]);
-    const regions: { key: string; polygons: MultiPolygon }[] = [];
+    const regions: MultiPolygon[] = [];
     for (const [type, features] of sources) {
       for (const feature of features) {
         if (classifySurface(type, feature) !== 'forest') continue;
         if (isRegional(feature.geometry, ctx.bounds)) continue;
         const polygons = projectPolygons(feature.geometry, ctx.projection).filter((p) => boxesOverlap(ringBounds(p[0]), ctx.cropBox));
-        if (polygons.length) regions.push({ key: `${type}|${feature.id}`, polygons: intersection(clipToBox(polygons, ctx.cropBox), ctx.cropSet) });
+        if (polygons.length) regions.push(intersection(clipToBox(polygons, ctx.cropBox), ctx.cropSet));
       }
     }
-    if (!regions.length && options.forest.length) regions.push({ key: 'forest', polygons: options.forest });
-    for (let i = 0; i < regions.length && placements.length < t.maxTrees; i++) {
-      for (const polygon of regions[i].polygons) scatter(polygon, spacing, seed(regions[i].key), place);
-      await ctx.progress.checkpoint(i / regions.length);
+    const full = () => placements.length >= t.maxTrees;
+    // A forest is often mapped in land and land_use both. Each grid cell is
+    // tried once whichever region reaches it, or it would get two trees.
+    const tried = new Set<string>();
+    for (let i = 0; i < regions.length && !full(); i++) {
+      const progress = (f: number) => ctx.progress.checkpoint((i + f) / regions.length);
+      for (const polygon of regions[i]) await scatter(polygon, spacing, tried, place, full, progress);
+      await progress(1);
     }
   }
 
@@ -206,20 +217,36 @@ export async function buildTrees(data: SourceData, ctx: Context, options: TreeOp
   return solids;
 }
 
-function scatter(polygon: Polygon, spacing: number, s: number, place: (x: number, y: number, size: number) => void) {
+async function scatter(
+  polygon: Polygon,
+  spacing: number,
+  tried: Set<string>,
+  place: (x: number, y: number, size: number) => void,
+  full: () => boolean,
+  progress: (fraction: number) => Promise<void>,
+) {
   const box: Box = ringBounds(polygon[0]);
-  const columns = Math.floor((box[2] - box[0]) / spacing) + 1;
-  const rows = Math.floor((box[3] - box[1]) / spacing) + 1;
-  // Global grid cells, so neighbouring forests share one pattern.
+  // Cells are counted from the model origin rather than the polygon and every
+  // forest shares one jitter, so a tree stays put when the crop cuts its
+  // forest differently, and overlapping forests agree on where trees go.
   const c0 = Math.floor(box[0] / spacing);
   const r0 = Math.floor(box[1] / spacing);
-  for (let r = r0; r <= r0 + rows; r++) {
-    for (let c = c0; c <= c0 + columns; c++) {
-      const [jx, jy, size] = jitter(seed(s, r, c));
+  const c1 = Math.floor(box[2] / spacing);
+  const r1 = Math.floor(box[3] / spacing);
+  // Strips one row of cells tall: a candidate only tests the outline edges
+  // in its own row, which matters on a coastline-like forest edge.
+  const outline = new EdgeIndex([polygon], spacing);
+  for (let r = r0; r <= r1 && !full(); r++) {
+    for (let c = c0; c <= c1; c++) {
+      const [jx, jy, size] = jitter(seed('forest', r, c));
       const x = (c + 0.5 + (jx - 0.5) * JITTER * 2) * spacing;
       const y = (r + 0.5 + (jy - 0.5) * JITTER * 2) * spacing;
       if (x < box[0] || x > box[2] || y < box[1] || y > box[3]) continue;
-      if (pointInMulti(x, y, [polygon])) place(x, y, size);
+      const key = `${r},${c}`;
+      if (tried.has(key) || !outline.contains(x, y)) continue;
+      tried.add(key);
+      place(x, y, size);
     }
+    if ((r - r0) % 16 === 15) await progress((r - r0) / (r1 - r0 + 1));
   }
 }

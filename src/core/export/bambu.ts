@@ -7,21 +7,21 @@
 // All plates share one Z datum: the lowest point of the whole project rests
 // on the bed.
 
-import type { Palette, Printer } from '../settings';
-import type { Plate } from '../types';
+import type { Printer } from '../settings';
 import {
   ATTRIBUTION,
-  CONTENT_TYPES_NAMESPACE,
+  CONFIG_CONTENT_TYPE,
   CORE_NAMESPACE,
   DESCRIPTION,
   FILAMENT_IDS,
   FilamentTable,
+  MIME_3MF,
   MODEL_PATH,
-  MODEL_RELATIONSHIP,
   ModelStream,
-  RELATIONSHIPS_NAMESPACE,
   XML_HEADER,
-  preparePlates,
+  contentTypes,
+  modelRelationship,
+  type PreparedModel,
 } from './common';
 import { fixed6, formatG, quoteattr } from './format';
 import { BAMBU_MAX_PLATES, plateOrigin } from './sections';
@@ -45,11 +45,10 @@ interface PlacedPart {
   extruder: number;
 }
 
-export function writeBambuProject(plates: Plate[], palette: Palette, printer: Printer): Uint8Array {
+export function writeBambuProject(model: PreparedModel, printer: Printer): Blob {
   const presets = printer.bambu;
   if (!presets) throw new Error(`${printer.model} has no Bambu Studio presets`);
-  if (plates.length > BAMBU_MAX_PLATES) throw new Error(`Bambu Studio supports at most ${BAMBU_MAX_PLATES} plates`);
-  const model = preparePlates(plates, palette);
+  if (model.plates.length > BAMBU_MAX_PLATES) throw new Error(`Bambu Studio supports at most ${BAMBU_MAX_PLATES} plates`);
   const bottom = model.extents.minZ;
 
   // Parts are written before the assembly that references them, as 3MF requires.
@@ -72,16 +71,8 @@ export function writeBambuProject(plates: Plate[], palette: Palette, printer: Pr
       ' <resources>\n',
   );
   for (const { plate, parts, assembly } of layout) {
-    plate.parts.forEach((prepared, i) => {
-      out.text(`  <object id="${parts[i].id}" name=${quoteattr(parts[i].name)} type="model">\n   <mesh>\n    <vertices>\n`);
-      out.vertices(prepared.part.positions);
-      out.text('    </vertices>\n    <triangles>\n');
-      out.triangles(prepared.part.indices);
-      out.text('    </triangles>\n   </mesh>\n  </object>\n');
-    });
-    out.text(`  <object id="${assembly}" name=${quoteattr(plate.name)} type="model">\n   <components>\n`);
-    out.text(parts.map((part) => `    <component objectid="${part.id}"/>\n`).join(''));
-    out.text('   </components>\n  </object>\n');
+    plate.parts.forEach((prepared, i) => out.meshObject(parts[i].id, parts[i].name, [prepared.part]));
+    out.assembly(assembly, plate.name, parts.map((part) => part.id));
   }
   out.text(' </resources>\n <build>\n');
   const count = layout.length;
@@ -133,13 +124,7 @@ export function writeBambuProject(plates: Plate[], palette: Palette, printer: Pr
   // declare exactly its parts.
   zip.file(
     '[Content_Types].xml',
-    XML_HEADER +
-      `<Types xmlns="${CONTENT_TYPES_NAMESPACE}">\n` +
-      ' <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n' +
-      ' <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n' +
-      ' <Default Extension="config" ContentType="application/xml"/>\n' +
-      ` <Override PartName="/${PROJECT_PATH}" ContentType="application/json"/>\n` +
-      '</Types>\n',
+    contentTypes(CONFIG_CONTENT_TYPE + ` <Override PartName="/${PROJECT_PATH}" ContentType="application/json"/>\n`),
   );
 
   const list = filaments.filaments;
@@ -167,12 +152,6 @@ export function writeBambuProject(plates: Plate[], palette: Palette, printer: Pr
     flush_volumes_matrix: list.flatMap((_, a) => list.map((__, b) => (a === b ? '0' : '280'))),
   };
   zip.file(PROJECT_PATH, JSON.stringify(project, null, 2));
-  zip.file(
-    '_rels/.rels',
-    XML_HEADER +
-      `<Relationships xmlns="${RELATIONSHIPS_NAMESPACE}">\n` +
-      ` <Relationship Id="rel0" Target="/${MODEL_PATH}" Type="${MODEL_RELATIONSHIP}"/>\n` +
-      '</Relationships>\n',
-  );
-  return zip.finish();
+  zip.file('_rels/.rels', modelRelationship());
+  return zip.finish(MIME_3MF);
 }

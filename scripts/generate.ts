@@ -15,6 +15,7 @@ import { dirname } from 'node:path';
 import { fetchDem } from '../src/core/data/dem';
 import { fetchOverture } from '../src/core/data/overture';
 import { exportPlates } from '../src/core/export';
+import { BAMBU_MAX_PLATES } from '../src/core/export/sections';
 import { areaFromBounds, parseBoundsText } from '../src/core/geo/area';
 import { Progress } from '../src/core/pipeline/context';
 import { rowFilter } from '../src/core/pipeline/filter';
@@ -27,6 +28,7 @@ import {
   cloneSettings,
   DEFAULT_PALETTE,
   printerByKey,
+  sanitizeSettings,
   type AreaShape,
   type ExportFormat,
   type ModelSettings,
@@ -73,6 +75,7 @@ async function main() {
   if (flag('bridges')) settings.bridges.enabled = true;
   if (flag('trees')) settings.trees.enabled = true;
   if (flag('flat')) settings.terrain.elevation = false;
+  settings = sanitizeSettings(settings);
 
   const t0 = performance.now();
   const bounds = dataBoundsFor(area);
@@ -105,7 +108,7 @@ async function main() {
   }
   if (meshed.failed) console.log(`  failed solids: ${meshed.failed}, fallbacks: ${meshed.fallbacks}`);
   console.log(JSON.stringify(spec.stats));
-  for (const w of spec.warnings) console.log(`warning: ${w}`);
+  for (const w of [...data.warnings, ...spec.warnings]) console.log(`warning: ${w}`);
 
   const out = arg('out');
   if (out) {
@@ -118,6 +121,7 @@ async function main() {
       sectionHeightMm: section,
       bedWidth: printer.width,
       bedDepth: printer.depth,
+      maxPlates: format === 'bambu' ? BAMBU_MAX_PLATES : undefined,
     });
     const result = exportPlates(plates, {
       format,
@@ -129,8 +133,8 @@ async function main() {
       fileBase: 'model',
     });
     mkdirSync(dirname(out), { recursive: true });
-    writeFileSync(out, result.data);
-    console.log(`wrote ${out} (${(result.data.length / 1e6).toFixed(1)} MB, ${result.plates} plate(s))`);
+    writeFileSync(out, new Uint8Array(await result.data.arrayBuffer()));
+    console.log(`wrote ${out} (${(result.data.size / 1e6).toFixed(1)} MB, ${result.plates} plate(s))`);
     for (const w of result.warnings) console.log(`warning: ${w}`);
   }
 }

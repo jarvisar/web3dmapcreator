@@ -4,9 +4,12 @@
 // tens of thousands of edges.
 
 import type { MultiPolygon } from '../types';
+import { segmentDistance } from './polygon';
 
 export class EdgeIndex {
-  private readonly buckets = new Map<number, number[]>();
+  // Built on the first distance query. Containment only needs the strips, and
+  // a long diagonal edge fills every grid cell of its bounds.
+  private buckets: Map<number, number[]> | null = null;
   private readonly strips = new Map<number, number[]>();
   private readonly edges: number[] = [];
   private readonly cell: number;
@@ -20,20 +23,12 @@ export class EdgeIndex {
           const b = ring[(i + 1) % ring.length];
           const e = this.edges.length;
           this.edges.push(a[0], a[1], b[0], b[1]);
-          const c0 = Math.floor(Math.min(a[0], b[0]) / this.cell);
-          const c1 = Math.floor(Math.max(a[0], b[0]) / this.cell);
           const r0 = Math.floor(Math.min(a[1], b[1]) / this.cell);
           const r1 = Math.floor(Math.max(a[1], b[1]) / this.cell);
           for (let r = r0; r <= r1; r++) {
             const strip = this.strips.get(r);
             if (strip) strip.push(e);
             else this.strips.set(r, [e]);
-            for (let c = c0; c <= c1; c++) {
-              const key = this.key(c, r);
-              const list = this.buckets.get(key);
-              if (list) list.push(e);
-              else this.buckets.set(key, [e]);
-            }
           }
         }
       }
@@ -42,6 +37,27 @@ export class EdgeIndex {
 
   private key(c: number, r: number): number {
     return (c + 1048576) * 2097152 + (r + 1048576);
+  }
+
+  private grid(): Map<number, number[]> {
+    if (this.buckets) return this.buckets;
+    const buckets = new Map<number, number[]>();
+    const edges = this.edges;
+    for (let e = 0; e < edges.length; e += 4) {
+      const c0 = Math.floor(Math.min(edges[e], edges[e + 2]) / this.cell);
+      const c1 = Math.floor(Math.max(edges[e], edges[e + 2]) / this.cell);
+      const r0 = Math.floor(Math.min(edges[e + 1], edges[e + 3]) / this.cell);
+      const r1 = Math.floor(Math.max(edges[e + 1], edges[e + 3]) / this.cell);
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) {
+          const key = this.key(c, r);
+          const list = buckets.get(key);
+          if (list) list.push(e);
+          else buckets.set(key, [e]);
+        }
+      }
+    }
+    return (this.buckets = buckets);
   }
 
   get empty(): boolean {
@@ -69,23 +85,17 @@ export class EdgeIndex {
 
   /** Distance to the nearest outline edge, or `limit` when none is that close. */
   distance(x: number, y: number, limit: number): number {
+    const buckets = this.grid();
     let best = limit;
     const reach = Math.ceil(limit / this.cell);
     const c = Math.floor(x / this.cell);
     const r = Math.floor(y / this.cell);
     for (let dc = -reach; dc <= reach; dc++) {
       for (let dr = -reach; dr <= reach; dr++) {
-        const list = this.buckets.get(this.key(c + dc, r + dr));
+        const list = buckets.get(this.key(c + dc, r + dr));
         if (!list) continue;
         for (const e of list) {
-          const ax = this.edges[e];
-          const ay = this.edges[e + 1];
-          const dx = this.edges[e + 2] - ax;
-          const dy = this.edges[e + 3] - ay;
-          const l2 = dx * dx + dy * dy;
-          let t = l2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / l2 : 0;
-          t = t < 0 ? 0 : t > 1 ? 1 : t;
-          const d = Math.hypot(x - (ax + dx * t), y - (ay + dy * t));
+          const d = segmentDistance(x, y, this.edges[e], this.edges[e + 1], this.edges[e + 2], this.edges[e + 3]);
           if (d < best) best = d;
         }
       }

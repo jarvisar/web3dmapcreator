@@ -97,6 +97,31 @@ describe('meshPrism', () => {
     expect(signedVolume(positions, indices)).toBeCloseTo(2 * (100 - 8), 1);
   });
 
+  it('does not count a draped triangle smaller than a cell as a fallback', () => {
+    const stats = newMeshStats();
+    const triangle: Polygon = [[[0, 0], [0.3, 0], [0, 0.3]]];
+    meshSolid({ kind: 'prism', role: 'terrain', polygon: triangle, top: (x) => 1 + x, bottom: 0, drape: 1 }, new MeshBuilder(), undefined, stats);
+    expect(stats).toEqual({ solids: 1, failed: 0, fallbacks: 0 });
+  });
+
+  it('leaves a tree crossing a section edge out of the section', () => {
+    const tree = (x: number) => ({
+      kind: 'mesh' as const,
+      role: 'tree' as const,
+      positions: new Float32Array([x - 0.5, 0, 0, x + 0.5, 0, 0, x, 0.5, 1]),
+      indices: [0, 1, 2],
+      anchor: [x, 0] as [number, number],
+    });
+    const count = (x: number) => {
+      const out = new MeshBuilder();
+      meshSolid(tree(x), out, rectangle(0, -5, 10, 5));
+      return out.triangleCount;
+    };
+    expect(count(5)).toBe(1);
+    expect(count(9.8)).toBe(0);
+    expect(count(10.2)).toBe(0);
+  });
+
   it('clips a solid to a section', () => {
     const out = new MeshBuilder();
     meshSolid(

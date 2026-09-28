@@ -2,6 +2,7 @@
 // exact arithmetic: crossing-number containment, cell-centre sample grids and
 // the shoelace sum in vertex order. Selection runs on raw lon/lat rings and
 // the thresholds (90% coverage and so on) were set against these samples.
+// Named apart from the geometry/polygon helpers, which don't behave the same.
 
 import type { Ring, Vec2 } from '../../types';
 
@@ -24,13 +25,13 @@ export function signedArea(points: readonly Vec2[]): number {
 }
 
 /** Outer ring area less the holes', whatever their winding. */
-export function polygonArea(rings: readonly (readonly Vec2[])[]): number {
+export function planarArea(rings: readonly (readonly Vec2[])[]): number {
   let area = Math.abs(signedArea(rings[0]));
   for (let i = 1; i < rings.length; i++) area -= Math.abs(signedArea(rings[i]));
   return area;
 }
 
-export function ringBounds(points: readonly Vec2[]): Bounds {
+export function planarBounds(points: readonly Vec2[]): Bounds {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -77,7 +78,7 @@ export function pointInRings(x: number, y: number, rings: readonly (readonly Vec
  */
 export function interiorGridPoints(rings: readonly (readonly Vec2[])[], spacing: number, limit = 1200): Vec2[] {
   if (!rings.length || !(spacing > 0) || rings[0].length < 3 || limit < 1) return [];
-  const [minX, minY, maxX, maxY] = ringBounds(rings[0]);
+  const [minX, minY, maxX, maxY] = planarBounds(rings[0]);
   if (maxX <= minX || maxY <= minY) return [];
   let columns = Math.max(1, Math.trunc((maxX - minX) / spacing));
   let rows = Math.max(1, Math.trunc((maxY - minY) / spacing));
@@ -105,7 +106,7 @@ export function interiorGridPoints(rings: readonly (readonly Vec2[])[], spacing:
 }
 
 /** Drop repeated vertices and the closing duplicate. Empty when fewer than three remain or the area is negligible. */
-export function cleanRing(points: readonly Vec2[], epsilon = EPSILON): Ring {
+export function cleanPlanarRing(points: readonly Vec2[], epsilon = EPSILON): Ring {
   const clean: Ring = [];
   for (const [x, y] of points) {
     const last = clean[clean.length - 1];

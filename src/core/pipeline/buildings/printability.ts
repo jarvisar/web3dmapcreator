@@ -4,7 +4,7 @@
 import type { Polygon, Vec2 } from '../../types';
 import type { SourceFeature } from '../source';
 import { resolveVerticalProfile, text } from './heights';
-import { EPSILON, polygonArea, ringBounds, ringWidth, signedArea } from './planar';
+import { EPSILON, planarArea, planarBounds, ringWidth, signedArea } from './planar';
 
 /**
  * Whether a footprint is big enough to be stretched to the minimum height.
@@ -76,7 +76,7 @@ export interface PartMass {
 export function adjoiningPartWidths(masses: readonly PartMass[], minimumWidth = 0.08, maximumSlenderness = 30): number[] {
   const widths = masses.map((mass) => ringWidth(mass.polygon[0]));
   const edges = masses.map((mass) => edgesOf(mass.polygon));
-  const boxes = masses.map((mass) => ringBounds(mass.polygon[0]));
+  const boxes = masses.map((mass) => planarBounds(mass.polygon[0]));
   const groups = masses.map((_, i) => i);
   const contacts: [number, number, number][] = [];
   const root = (i: number): number => {
@@ -126,7 +126,7 @@ export function adjoiningPartWidths(masses: readonly PartMass[], minimumWidth = 
     let area = 0;
     let perimeter = 0;
     for (const i of indices) {
-      area += polygonArea(masses[i].polygon);
+      area += planarArea(masses[i].polygon);
       for (const [a, b] of edges[i]) perimeter += Math.hypot(b[0] - a[0], b[1] - a[1]);
     }
     perimeter -= internal.get(group) ?? 0;

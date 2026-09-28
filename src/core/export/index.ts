@@ -1,27 +1,17 @@
 // Export entry point: one call per download, dispatching on the format.
 
 import type { ExportRequest, ExportResult } from '../engine/protocol';
-import { COLOUR_GROUPS, filamentName, printerByKey, type Palette, type Printer } from '../settings';
+import { DEFAULT_PRINTER, filamentName, printerByKey, type Printer } from '../settings';
 import type { Plate } from '../types';
 import { writeBambuProject } from './bambu';
-import { FilamentTable, partGroup, preparePlates, type PreparedModel } from './common';
+import { filamentUse, preparePlates, type PreparedModel } from './common';
 import { formatG } from './format';
 import { PRUSA_MAX_BEDS, writePrusaProject } from './prusa';
 import { fileStem, writeStl, writeStlZip } from './stl';
 import { writeGeneric3mf } from './threemf';
 
-export { writeBambuProject } from './bambu';
-export { writePrusaProject } from './prusa';
-export { BAMBU_MAX_PLATES, plateOrigin, sectionGrid, type Section } from './sections';
-export { writeStl, writeStlZip } from './stl';
-export { writeGeneric3mf } from './threemf';
-
-const MIME_3MF = 'model/3mf';
-const MIME_STL = 'model/stl';
-const MIME_ZIP = 'application/zip';
 // Filaments an MMU3 or a Prusa XL can hold.
 const PRUSA_MAX_FILAMENTS = 5;
-const FALLBACK_BAMBU = 'P1S';
 
 /** Drops excluded parts, parts with nothing to print and plates left empty. */
 export function printablePlates(plates: Plate[], exclude: string[] = []): Plate[] {
@@ -66,21 +56,11 @@ function sizeWarnings(model: PreparedModel, printer: Printer): string[] {
 }
 
 // PrusaSlicer takes colours from its extruders, never from the file.
-function prusaNotes(plates: Plate[], palette: Palette, printer: Printer): string[] {
-  const extruders = new FilamentTable();
-  const groups = new Map<number, Set<string>>();
-  for (const plate of plates) {
-    for (const part of plate.parts) {
-      const slot = extruders.slot(palette[partGroup(part)]);
-      if (!groups.has(slot)) groups.set(slot, new Set());
-      groups.get(slot)!.add(partGroup(part));
-    }
-  }
-  const list = extruders.filaments.map((filament, i) => {
-    const used = groups.get(i + 1)!;
-    const labels = COLOUR_GROUPS.filter((g) => used.has(g.key)).map((g) => g.label).join(' + ');
+function prusaNotes(model: PreparedModel, printer: Printer): string[] {
+  const { filaments, labels } = filamentUse(model);
+  const list = filaments.map((filament, i) => {
     const name = filamentName(filament);
-    return `${i + 1} ${labels} ${name ? `(${name}, ${filament.hex})` : `(${filament.hex})`}`;
+    return `${i + 1} ${labels[i].join(' + ')} ${name ? `(${name}, ${filament.hex})` : `(${filament.hex})`}`;
   });
   const notes = [`PrusaSlicer does not read colours from a 3MF. Set the extruder colours to match: ${list.join(', ')}.`];
   if (printer.vendor === 'Prusa' && list.length > PRUSA_MAX_FILAMENTS) {
@@ -89,9 +69,9 @@ function prusaNotes(plates: Plate[], palette: Palette, printer: Printer): string
         'and parts on higher extruders print with the first one.',
     );
   }
-  if (plates.length > PRUSA_MAX_BEDS) {
+  if (model.plates.length > PRUSA_MAX_BEDS) {
     notes.push(
-      `PrusaSlicer has at most ${PRUSA_MAX_BEDS} beds, so the ${plates.length} sections are laid out side by side. ` +
+      `PrusaSlicer has at most ${PRUSA_MAX_BEDS} beds, so the ${model.plates.length} sections are laid out side by side. ` +
         'Use Arrange to put them on beds.',
     );
   }
@@ -105,41 +85,33 @@ export function exportPlates(plates: Plate[], request: ExportRequest): ExportRes
   const model = preparePlates(kept, request.palette);
   const base = fileStem(request.fileBase);
   const warnings = sizeWarnings(model, printer);
-  const result = (fileName: string, mime: string, data: Uint8Array): ExportResult => ({
-    fileName,
-    mime,
-    data,
-    plates: kept.length,
-    warnings,
-  });
+  const result = (fileName: string, data: Blob): ExportResult => ({ fileName, data, plates: kept.length, warnings });
 
   switch (request.format) {
     case 'bambu': {
       let target = printer;
       if (!printer.bambu) {
-        const fallback = printerByKey(FALLBACK_BAMBU);
-        // Bambu presets with the chosen printer's bed and height.
+        // The default printer's Bambu presets with the chosen printer's bed and height.
+        const fallback = printerByKey(DEFAULT_PRINTER);
         target = { ...printer, model: fallback.model, vendor: fallback.vendor, bambu: fallback.bambu };
         warnings.unshift(
           `${printer.model} is not a Bambu Lab printer, so the project starts from the ${fallback.model} presets ` +
             `with a ${formatG(printer.width)} x ${formatG(printer.depth)} mm bed.`,
         );
       }
-      return result(`${base}.3mf`, MIME_3MF, writeBambuProject(kept, request.palette, target));
+      return result(`${base}.3mf`, writeBambuProject(model, target));
     }
     case 'prusa':
-      warnings.push(...prusaNotes(kept, request.palette, printer));
-      return result(`${base}.3mf`, MIME_3MF, writePrusaProject(kept, request.palette, printer, base));
+      warnings.push(...prusaNotes(model, printer));
+      return result(`${base}.3mf`, writePrusaProject(model, printer, base));
     case '3mf':
-      return result(`${base}.3mf`, MIME_3MF, writeGeneric3mf(kept, request.palette, printer, base));
+      return result(`${base}.3mf`, writeGeneric3mf(model, printer, base));
     case 'stl-zip':
-      return result(`${base}-stl.zip`, MIME_ZIP, writeStlZip(kept, request.palette, base));
+      return result(`${base}-stl.zip`, writeStlZip(model, base));
     case 'stl':
       // Sections are separate prints: one file each, zipped.
-      if (kept.length > 1) {
-        return result(`${base}-stl.zip`, MIME_ZIP, writeStlZip(kept, request.palette, base, { combined: true }));
-      }
-      return result(`${base}.stl`, MIME_STL, writeStl(kept[0]));
+      if (model.plates.length > 1) return result(`${base}-stl.zip`, writeStlZip(model, base, { combined: true }));
+      return result(`${base}.stl`, writeStl(model.plates[0]));
     default:
       throw new Error(`Unknown export format: ${String(request.format)}`);
   }

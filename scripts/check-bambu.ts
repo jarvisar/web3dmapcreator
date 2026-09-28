@@ -445,7 +445,7 @@ async function main() {
   for (const fixture of fixtures()) {
     const exported = exportFixture(fixture, 'bambu');
     const source = join(folder, `${fixture.name}.3mf`);
-    writeFileSync(source, exported.data);
+    writeFileSync(source, new Uint8Array(await exported.data.arrayBuffer()));
     try {
       const expected = readProject(source);
       const saved = await resave(bambu, bambuData, folder, source, `${fixture.name}-saved`, notes);
@@ -464,7 +464,7 @@ async function main() {
   for (const [format, fixture] of [['3mf', fixtures()[1]], ['prusa', fixtures()[1]], ['3mf', fixtures()[0]], ['prusa', fixtures()[0]]] as const) {
     const name = `${fixture.name}-${format === '3mf' ? 'generic' : 'prusa'}`;
     const source = join(folder, `${name}.3mf`);
-    writeFileSync(source, exportFixture(fixture, format).data);
+    writeFileSync(source, new Uint8Array(await exportFixture(fixture, format).data.arrayBuffer()));
     try {
       const before = readPlain(source);
       const after = readPlain(await resave(bambu, bambuData, folder, source, `${name}-bambu`, notes));

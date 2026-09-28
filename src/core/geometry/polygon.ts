@@ -55,13 +55,6 @@ export function ringPerimeter(ring: Ring): number {
   return sum;
 }
 
-/** Twice area over perimeter: tells a 2 m x 60 m wall from a small house of the same area. */
-export function effectiveWidth(polygon: Polygon): number {
-  let perimeter = 0;
-  for (const ring of polygon) perimeter += ringPerimeter(ring);
-  return perimeter > 0 ? (2 * polygonArea(polygon)) / perimeter : 0;
-}
-
 export type Box = [number, number, number, number];
 
 export function ringBounds(ring: Ring): Box {
@@ -203,10 +196,6 @@ export function toPaths(mp: MultiPolygon | Polygon[]): Paths64 {
   return paths;
 }
 
-function ringsToPaths(rings: Ring[]): Paths64 {
-  return rings.filter((r) => r.length >= 3).map((ring) => toPath(ring, true));
-}
-
 function fromTree(tree: PolyTree64): MultiPolygon {
   const out: MultiPolygon = [];
   const strays: Ring[] = [];
@@ -310,13 +299,6 @@ export function union(...sets: (MultiPolygon | Polygon[])[]): MultiPolygon {
   return run(ClipType.Union, paths, null);
 }
 
-/** Union of plain rings whose orientation is not trusted (each ring is filled). */
-export function unionRings(rings: Ring[]): MultiPolygon {
-  const paths = ringsToPaths(rings);
-  if (!paths.length) return [];
-  return run(ClipType.Union, paths, null);
-}
-
 export function difference(subject: MultiPolygon, clip: MultiPolygon): MultiPolygon {
   if (!subject.length) return [];
   if (!clip.length) return run(ClipType.Union, toPaths(subject), null);
@@ -332,16 +314,7 @@ export function difference(subject: MultiPolygon, clip: MultiPolygon): MultiPoly
 function clipToRect(rect: Rect64, paths: Paths64): Paths64 {
   const out: Paths64 = [];
   for (const path of paths) {
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const { x, y } of path) {
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-    }
+    const [minX, minY, maxX, maxY] = pathBounds(path);
     if (maxX < rect.left || minX > rect.right || maxY < rect.top || minY > rect.bottom) continue;
     let kept = path;
     if (minX < rect.left) kept = clipSide(kept, 0, rect.left);
@@ -351,6 +324,30 @@ function clipToRect(rect: Rect64, paths: Paths64): Paths64 {
     if (kept.length >= 3) out.push(kept);
   }
   return out;
+}
+
+function pathBounds(path: Path64): Box {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const { x, y } of path) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return [minX, minY, maxX, maxY];
+}
+
+/** A box in mm grown by `margin`, as Clipper units rounded outwards. */
+function rectFor(box: Box, margin: number): Rect64 {
+  return {
+    left: Math.floor((box[0] - margin) * SCALE),
+    top: Math.floor((box[1] - margin) * SCALE),
+    right: Math.ceil((box[2] + margin) * SCALE),
+    bottom: Math.ceil((box[3] + margin) * SCALE),
+  };
 }
 
 /** Keeps x >= v, x <= v, y >= v or y <= v for sides 0 to 3. */
@@ -391,31 +388,14 @@ export class ClipSet {
     this.paths = [];
     for (const set of sets) for (const p of toPaths(set)) this.paths.push(p);
     this.boxes = new Float64Array(this.paths.length * 4);
-    this.paths.forEach((path, i) => {
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      for (const { x, y } of path) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-      this.boxes.set([minX, minY, maxX, maxY], i * 4);
-    });
+    this.paths.forEach((path, i) => this.boxes.set(pathBounds(path), i * 4));
   }
   get empty(): boolean {
     return this.paths.length === 0;
   }
   /** The rings cut to a box, much cheaper than clipping against all of them. */
   within(box: Box, margin = 0): Paths64 {
-    const rect = {
-      left: Math.floor((box[0] - margin) * SCALE),
-      top: Math.floor((box[1] - margin) * SCALE),
-      right: Math.ceil((box[2] + margin) * SCALE),
-      bottom: Math.ceil((box[3] + margin) * SCALE),
-    };
+    const rect = rectFor(box, margin);
     const near: Paths64 = [];
     for (let i = 0; i < this.paths.length; i++) {
       const b = i * 4;
@@ -497,13 +477,7 @@ export function normalize(mp: MultiPolygon | Polygon[]): MultiPolygon {
 export function clipToBox(mp: MultiPolygon | Polygon[], box: Box, margin = 1): MultiPolygon {
   const paths = toPaths(mp);
   if (!paths.length) return [];
-  const rect = {
-    left: Math.floor((box[0] - margin) * SCALE),
-    top: Math.floor((box[1] - margin) * SCALE),
-    right: Math.ceil((box[2] + margin) * SCALE),
-    bottom: Math.ceil((box[3] + margin) * SCALE),
-  };
-  const clipped = clipToRect(rect, paths);
+  const clipped = clipToRect(rectFor(box, margin), paths);
   if (!clipped.length) return [];
   return run(ClipType.Union, clipped, null);
 }
@@ -589,6 +563,7 @@ export function segmentDistance(px: number, py: number, ax: number, ay: number, 
   const dy = by - ay;
   const length2 = dx * dx + dy * dy;
   let t = length2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / length2 : 0;
-  t = Math.max(0, Math.min(1, t));
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
   return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
 }

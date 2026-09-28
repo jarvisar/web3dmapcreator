@@ -2,11 +2,12 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { Map as MlMap, NavigationControl, ScaleControl, setWorkerUrl } from 'maplibre-gl';
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { IControl } from 'maplibre-gl';
-import { Move, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { areaGeoBounds, modelSizeMm, validateArea } from '../../core/geo/area';
 import type { AreaSpec, ModelSettings } from '../../core/settings';
 import { Segmented } from '../components/Segmented';
+import { AREA_HINT } from '../lib/area';
 import { formatMmPair, formatSizePair } from '../lib/format';
 import { dismissMapHint, setArea, setBasemap, useApp } from '../state/store';
 import type { BasemapKey } from '../state/store';
@@ -173,8 +174,7 @@ export function MapView({ active }: { active: boolean }) {
       </div>
       {!hintDismissed && (
         <div className="map-hint floating" role="note">
-          <Move size={15} aria-hidden="true" />
-          <span>Drag the area to move it. Drag a corner to resize, or the top handle to rotate.</span>
+          <span>{AREA_HINT}</span>
           <button type="button" className="icon-btn icon-btn-sm" aria-label="Dismiss tip" onClick={dismissMapHint}>
             <X size={14} aria-hidden="true" />
           </button>

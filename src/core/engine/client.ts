@@ -11,6 +11,7 @@ import type {
 } from './protocol';
 
 interface Pending {
+  message: Extract<ToWorker, { type: 'generate' | 'export' }>;
   resolve: (value: never) => void;
   reject: (error: Error) => void;
   onProgress?: (event: ProgressEvent) => void;
@@ -23,32 +24,60 @@ export class CancelledError extends Error {
   }
 }
 
+export interface EngineOptions {
+  createWorker?: () => Worker;
+  /** A working worker was dropped, and its model with it. Nothing can be exported until the next generate. */
+  onReplaced?: () => void;
+}
+
 // The pipeline yields often, but a single native-speed loop can still hold
 // the worker for a moment. After this long the worker is replaced instead.
 const CANCEL_GRACE_MS = 1500;
 
 export class EngineClient {
-  private worker: Worker;
+  private worker: Worker | null = null;
+  /** Whether the current worker has sent anything, to tell a failed load from a crash. */
+  private heardFrom = false;
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private activeGenerate: number | null = null;
 
-  constructor(private readonly createWorker: () => Worker = defaultWorker) {
-    this.worker = this.spawn();
+  constructor(private readonly options: EngineOptions = {}) {}
+
+  private ensureWorker(): Worker {
+    if (this.worker) return this.worker;
+    const worker = (this.options.createWorker ?? defaultWorker)();
+    worker.onmessage = (event: MessageEvent<FromWorker>) => {
+      this.heardFrom = true;
+      this.receive(event.data);
+    };
+    worker.onerror = (event) => {
+      event.preventDefault();
+      // Usually the script failed to load, e.g. a tab left open across a deploy.
+      const message = this.heardFrom
+        ? event.message || 'The generator stopped unexpectedly. Try again.'
+        : 'The generator could not start. Reload the page and try again.';
+      this.dropWorker();
+      this.rejectAll(() => new Error(message));
+    };
+    this.worker = worker;
+    this.heardFrom = false;
+    return worker;
   }
 
-  private spawn(): Worker {
-    const worker = this.createWorker();
-    worker.onmessage = (event: MessageEvent<FromWorker>) => this.receive(event.data);
-    worker.onerror = (event) => {
-      const error = new Error(event.message || 'The generator stopped unexpectedly');
-      for (const [id, pending] of this.pending) {
-        pending.reject(error);
-        this.pending.delete(id);
-      }
-      this.activeGenerate = null;
-    };
-    return worker;
+  private dropWorker() {
+    if (!this.worker) return;
+    this.worker.terminate();
+    this.worker = null;
+    this.activeGenerate = null;
+    if (this.heardFrom) this.options.onReplaced?.();
+  }
+
+  private rejectAll(error: (id: number) => Error) {
+    for (const [id, pending] of this.pending) {
+      this.pending.delete(id);
+      pending.reject(error(id));
+    }
   }
 
   private receive(message: FromWorker) {
@@ -72,53 +101,57 @@ export class EngineClient {
     }
   }
 
-  private send(message: ToWorker) {
-    this.worker.postMessage(message);
+  private request<T>(message: Pending['message'], onProgress?: (event: ProgressEvent) => void): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(message.id, { message, resolve: resolve as (value: never) => void, reject, onProgress });
+      try {
+        this.ensureWorker().postMessage(message);
+      } catch (error) {
+        // new Worker() itself can throw, e.g. when a content policy blocks it.
+        this.pending.delete(message.id);
+        if (this.activeGenerate === message.id) this.activeGenerate = null;
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
   }
 
   generate(request: GenerateRequest, onProgress?: (event: ProgressEvent) => void): Promise<GenerateResult> {
     if (this.activeGenerate !== null) this.cancel();
     const id = this.nextId++;
     this.activeGenerate = id;
-    return new Promise<GenerateResult>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (value: never) => void, reject, onProgress });
-      this.send({ type: 'generate', id, request });
-    });
+    return this.request<GenerateResult>({ type: 'generate', id, request }, onProgress);
   }
 
   export(request: ExportRequest, onProgress?: (event: ProgressEvent) => void): Promise<ExportResult> {
-    const id = this.nextId++;
-    return new Promise<ExportResult>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (value: never) => void, reject, onProgress });
-      this.send({ type: 'export', id, request });
-    });
+    return this.request<ExportResult>({ type: 'export', id: this.nextId++, request }, onProgress);
   }
 
-  get busy(): boolean {
-    return this.activeGenerate !== null;
-  }
-
-  /** Cancel the running generation. Resolves once the worker is free again. */
+  /** Cancel the running generation. The promise rejects with CancelledError. */
   cancel(): void {
     const id = this.activeGenerate;
-    if (id === null) return;
-    this.send({ type: 'cancel', id });
+    if (id === null || !this.worker) return;
+    this.worker.postMessage({ type: 'cancel', id } satisfies ToWorker);
+    const worker = this.worker;
     setTimeout(() => {
-      if (!this.pending.has(id)) return;
-      // Still busy: replace the worker. Downloaded data cached in it is lost.
-      this.worker.terminate();
-      for (const [pendingId, pending] of this.pending) {
+      if (!this.pending.has(id) || this.worker !== worker) return;
+      // Still busy: replace the worker. Downloaded data cached in it is lost,
+      // and so is its model, so pending exports fail. Each generate cancels
+      // the one before, so only the newest is sent again to the new worker.
+      const generates = [...this.pending.values()].filter((p) => p.message.type === 'generate');
+      const retry = generates.length && generates[generates.length - 1].message.id !== id ? generates[generates.length - 1] : null;
+      this.dropWorker();
+      for (const pending of generates) {
+        if (pending === retry) continue;
+        this.pending.delete(pending.message.id);
         pending.reject(new CancelledError());
-        this.pending.delete(pendingId);
       }
-      this.activeGenerate = null;
-      this.worker = this.spawn();
+      if (retry) this.pending.delete(retry.message.id);
+      this.rejectAll(() => new Error('The generator was restarted. Generate the model again.'));
+      if (retry) {
+        this.activeGenerate = retry.message.id;
+        this.request(retry.message, retry.onProgress).then(retry.resolve as (value: unknown) => void, retry.reject);
+      }
     }, CANCEL_GRACE_MS);
-  }
-
-  dispose() {
-    this.worker.terminate();
-    this.pending.clear();
   }
 }
 

@@ -53,7 +53,7 @@ await download('default');
 
 if (allFormats) {
   // Open the Export section and try each format, then multi-plate.
-  const exportHeader = page.getByRole('button', { name: /^export/i }).first();
+  const exportHeader = page.locator('button[aria-controls="section-export"]');
   await exportHeader.click();
   await page.waitForTimeout(300);
   for (const name of ['PrusaSlicer project', '3MF with colours', 'STL, one file per colour', 'Single STL']) {
@@ -61,7 +61,7 @@ if (allFormats) {
     await download(name);
   }
   await page.getByRole('radio', { name: /Bambu Studio project/i }).click();
-  await page.getByRole('switch', { name: /multi-plate/i }).click();
+  await page.getByRole('checkbox', { name: /multi-plate/i }).click();
   await page.waitForTimeout(300);
   await page.screenshot({ path: join(folder, '4-export-panel.png') });
   await download('Bambu multi-plate');

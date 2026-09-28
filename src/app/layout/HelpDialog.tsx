@@ -1,7 +1,9 @@
+import { useEffect, useState } from 'react';
+import { CACHE_LIMIT, cacheSize, clearCache } from '../../core/data/cache';
 import { Dialog } from '../components/Dialog';
 import { GithubMark } from '../components/Icons';
-import { keepUnits } from '../lib/format';
-import { setHelpOpen, useApp } from '../state/store';
+import { formatBytes, keepUnits } from '../lib/format';
+import { setHelpOpen, toast, useApp } from '../state/store';
 import { REPO_URL } from './TopBar';
 
 const STEPS = [
@@ -33,6 +35,37 @@ const TIPS = [
   'The water and the terrain are separate parts, so water can be a different colour or left out.',
 ];
 
+function StoredData() {
+  const [bytes, setBytes] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    void cacheSize().then((size) => live && setBytes(size));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  async function clear() {
+    await clearCache();
+    setBytes(await cacheSize());
+    toast('Downloaded map data cleared', 'info');
+  }
+
+  return (
+    <p className="help-text">
+      Downloaded map data is kept in this browser, up to {formatBytes(CACHE_LIMIT)}, so an area loads faster the next time.{' '}
+      {bytes !== null && bytes > 0 && (
+        <>
+          It holds {formatBytes(bytes)} right now.{' '}
+          <button type="button" className="link-btn" onClick={() => void clear()}>
+            Clear it
+          </button>
+        </>
+      )}
+    </p>
+  );
+}
+
 export function HelpDialog() {
   const open = useApp((state) => state.ui.helpOpen);
   return (
@@ -43,15 +76,10 @@ export function HelpDialog() {
       </p>
 
       <ol className="help-steps">
-        {STEPS.map((step, index) => (
+        {STEPS.map((step) => (
           <li key={step.title}>
-            <span className="help-step-number" aria-hidden="true">
-              {index + 1}
-            </span>
-            <div>
-              <h3>{step.title}</h3>
-              <p>{keepUnits(step.text)}</p>
-            </div>
+            <h3>{step.title}</h3>
+            <p>{keepUnits(step.text)}</p>
           </li>
         ))}
       </ol>
@@ -104,9 +132,10 @@ export function HelpDialog() {
         downloaded straight from their public sources. Place search sends what you type to Photon (photon.komoot.io). Your
         settings are saved in this browser only.
       </p>
+      {open && <StoredData />}
 
       <p className="help-footer">
-        <a href={REPO_URL} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">
+        <a href={REPO_URL} target="_blank" rel="noreferrer" className="btn btn-sm">
           <GithubMark size={15} />
           Source code and issues on GitHub
         </a>

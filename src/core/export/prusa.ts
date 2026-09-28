@@ -13,22 +13,22 @@
 // to the bed its position falls on, so sections are placed on those virtual
 // beds. PrusaSlicer 3.0 (alpha) reads a 3MF like this as plain shapes.
 
-import type { Palette, Printer } from '../settings';
-import type { Plate } from '../types';
+import type { Printer } from '../settings';
 import {
   ATTRIBUTION,
   APP_NAME,
-  CONTENT_TYPES_NAMESPACE,
+  CONFIG_CONTENT_TYPE,
   CORE_NAMESPACE,
   DESCRIPTION,
   FilamentTable,
+  MIME_3MF,
   MODEL_PATH,
-  MODEL_RELATIONSHIP,
   ModelStream,
-  RELATIONSHIPS_NAMESPACE,
   XML_HEADER,
-  preparePlates,
+  contentTypes,
+  modelRelationship,
   triangleCount,
+  type PreparedModel,
 } from './common';
 import { escapeText, fixed6, quoteattr } from './format';
 import { sideBySide } from './sections';
@@ -58,7 +58,7 @@ export function prusaBedOrigin(index: number, bedWidth: number, bedDepth: number
 }
 
 /** XY translation of each plate: one per bed while they fit, else side by side on the first bed. */
-export function prusaPlacement(bounds: [number, number, number, number][], bedWidth: number, bedDepth: number): [number, number][] {
+function prusaPlacement(bounds: [number, number, number, number][], bedWidth: number, bedDepth: number): [number, number][] {
   if (bounds.length > PRUSA_MAX_BEDS) return sideBySide(bounds, bedWidth, bedDepth);
   return bounds.map(([west, south, east, north], i) => {
     const [ox, oy] = prusaBedOrigin(i, bedWidth, bedDepth);
@@ -66,8 +66,7 @@ export function prusaPlacement(bounds: [number, number, number, number][], bedWi
   });
 }
 
-export function writePrusaProject(plates: Plate[], palette: Palette, printer: Printer, title = 'City Model'): Uint8Array {
-  const model = preparePlates(plates, palette);
+export function writePrusaProject(model: PreparedModel, printer: Printer, title = 'City Model'): Blob {
   const bottom = model.extents.minZ;
   const extruders = new FilamentTable();
   const layout = model.plates.map((plate, index) => {
@@ -100,18 +99,10 @@ export function writePrusaProject(plates: Plate[], palette: Palette, printer: Pr
       ` <metadata name="Application">${APP_NAME}</metadata>\n` +
       ' <resources>\n',
   );
+  // PrusaSlicer takes a volume's vertices as the index range its triangles
+  // use, and every part has its own vertices, so parts stay apart.
   for (const { plate, id } of layout) {
-    out.text(`  <object id="${id}" name=${quoteattr(plate.name)} type="model">\n   <mesh>\n    <vertices>\n`);
-    for (const p of plate.parts) out.vertices(p.part.positions);
-    out.text('    </vertices>\n    <triangles>\n');
-    // Each part's vertices follow the previous part's, and PrusaSlicer takes a
-    // volume's vertices as the index range its triangles use, so parts stay apart.
-    let offset = 0;
-    for (const p of plate.parts) {
-      out.triangles(p.part.indices, offset);
-      offset += p.part.positions.length / 3;
-    }
-    out.text('    </triangles>\n   </mesh>\n  </object>\n');
+    out.meshObject(id, plate.name, plate.parts.map((p) => p.part));
   }
   out.text(' </resources>\n <build>\n');
   layout.forEach(({ id }, i) => {
@@ -141,22 +132,8 @@ export function writePrusaProject(plates: Plate[], palette: Palette, printer: Pr
   }
   config.push('</config>\n');
   zip.file(PRUSA_MODEL_CONFIG_PATH, config.join(''));
-  zip.file(
-    '[Content_Types].xml',
-    XML_HEADER +
-      `<Types xmlns="${CONTENT_TYPES_NAMESPACE}">\n` +
-      ' <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n' +
-      ' <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n' +
-      ' <Default Extension="config" ContentType="application/xml"/>\n' +
-      '</Types>\n',
-  );
-  // PrusaSlicer refuses a 3MF without this file.
-  zip.file(
-    '_rels/.rels',
-    XML_HEADER +
-      `<Relationships xmlns="${RELATIONSHIPS_NAMESPACE}">\n` +
-      ` <Relationship Target="/${MODEL_PATH}" Id="rel-1" Type="${MODEL_RELATIONSHIP}"/>\n` +
-      '</Relationships>\n',
-  );
-  return zip.finish();
+  zip.file('[Content_Types].xml', contentTypes(CONFIG_CONTENT_TYPE));
+  // PrusaSlicer refuses a 3MF without this file. Written the way PrusaSlicer writes it.
+  zip.file('_rels/.rels', modelRelationship(`Target="/${MODEL_PATH}" Id="rel-1"`));
+  return zip.finish(MIME_3MF);
 }

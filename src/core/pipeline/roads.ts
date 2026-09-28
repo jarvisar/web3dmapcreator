@@ -35,7 +35,6 @@ export interface RoadResult {
   rail: MultiPolygon;
   /** Every ground ribbon together. */
   footprint: MultiPolygon;
-  pieces: RoadPiece[];
   /** Centerlines of bridge-flagged pieces, in model mm. */
   bridgeLines: Vec2[][];
 }
@@ -44,12 +43,6 @@ export function groupOf(piece: SubSegment): RoadGroup {
   if (piece.roadClass === RAIL_CLASS) return 'rail';
   if (MINOR_ROAD_CLASSES.has(piece.roadClass) || piece.roadClass === 'pedestrian') return 'path';
   return 'road';
-}
-
-export async function buildRoads(features: SourceFeature[], ctx: Context): Promise<RoadResult> {
-  const { pieces, bridgeLines } = await collectRoadPieces(features, ctx);
-  const ribbons = await bufferRoads(pieces, ctx);
-  return { ...ribbons, pieces, bridgeLines };
 }
 
 /** Split, filter and size every road and rail centerline near the model. */

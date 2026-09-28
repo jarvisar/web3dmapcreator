@@ -1,5 +1,5 @@
 import { LucideProvider } from 'lucide-react';
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, Suspense, useEffect, useRef } from 'react';
 import { Toasts } from './components/Toasts';
 import { HelpDialog } from './layout/HelpDialog';
 import { TopBar } from './layout/TopBar';
@@ -19,6 +19,18 @@ export function App() {
   const needsViewer = useApp((state) => state.generation.result !== null || state.generation.status === 'running');
   const drawer = narrow && drawerOpen;
 
+  // The drawer closes itself after a search or preset. Focus was inside it,
+  // and it is inert now, so hand focus to the button that opens it.
+  const wasOpen = useRef(drawer);
+  useEffect(() => {
+    const closed = wasOpen.current && !drawer;
+    wasOpen.current = drawer;
+    const active = document.activeElement;
+    if (closed && (active === document.body || document.getElementById('sidebar')?.contains(active))) {
+      document.querySelector<HTMLElement>('.drawer-toggle')?.focus();
+    }
+  }, [drawer]);
+
   useEffect(() => {
     if (!drawer) return;
     const onKey = (event: KeyboardEvent) => {
@@ -32,7 +44,7 @@ export function App() {
   }, [drawer]);
 
   return (
-    <LucideProvider size={16} strokeWidth={1.75}>
+    <LucideProvider size={14} strokeWidth={2}>
       <div className={`app${narrow ? ' is-narrow' : ''}${drawer ? ' drawer-open' : ''}`}>
         <TopBar narrow={narrow} />
         <aside id="sidebar" className="sidebar" aria-label="Model settings" inert={narrow && !drawerOpen}>
@@ -42,7 +54,7 @@ export function App() {
         <main className="main" aria-label={view === 'map' ? 'Map' : '3D model'}>
           <MapView active={view === 'map'} />
           {needsViewer && (
-            <Suspense fallback={<div className="viewer viewer-loading" />}>
+            <Suspense fallback={null}>
               <ModelView active={view === 'model'} />
             </Suspense>
           )}

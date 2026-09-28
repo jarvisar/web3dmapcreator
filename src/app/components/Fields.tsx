@@ -1,31 +1,25 @@
 import { useId } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
+import { Checkbox } from './Checkbox';
 import { HelpTip } from './HelpTip';
-import { Switch } from './Switch';
 
-interface SwitchFieldProps {
+interface CheckFieldProps {
   label: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
   help?: string;
   disabled?: boolean;
-  hint?: ReactNode;
 }
 
-export function SwitchField({ label, checked, onChange, help, disabled, hint }: SwitchFieldProps) {
-  const labelId = useId();
+export function CheckField({ label, checked, onChange, help, disabled }: CheckFieldProps) {
+  const id = useId();
   return (
-    <div className={`field${disabled ? ' is-disabled' : ''}`}>
-      <div className="field-row">
-        <span className="field-label">
-          <span id={labelId} className="field-label-text" onClick={() => !disabled && onChange(!checked)}>
-            {label}
-          </span>
-          {help && <HelpTip text={help} label={label} />}
-        </span>
-        <Switch checked={checked} onChange={onChange} labelledBy={labelId} disabled={disabled} />
-      </div>
-      {hint && <div className="field-hint">{hint}</div>}
+    <div className={`field check-field${disabled ? ' is-disabled' : ''}`}>
+      <label className="check-label" htmlFor={id}>
+        <Checkbox id={id} checked={checked} onChange={onChange} disabled={disabled} />
+        {label}
+      </label>
+      {help && <HelpTip text={help} label={label} />}
     </div>
   );
 }

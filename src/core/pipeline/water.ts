@@ -9,7 +9,18 @@
 // level and the shore around cut water is kept at or above it, so the bank
 // always shows above the water.
 
-import { densifyRing, clipToBox, intersection, multiArea, polygonArea, union } from '../geometry/polygon';
+import {
+  boxesOverlap,
+  ClipSet,
+  clipToBox,
+  densifyRing,
+  differenceSet,
+  intersection,
+  multiArea,
+  polygonArea,
+  ringBounds,
+  union,
+} from '../geometry/polygon';
 import { interiorPoints, type HeightField } from '../terrain/heightfield';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
 import { isPrintableWater, isUntypedWater, recessedWaterKind } from './classify';
@@ -24,6 +35,10 @@ export const SHEET_THICKNESS_MM = 1.2;
 const SHORE_LEVEL_PERCENTILE = 0.1;
 const MINIMUM_AREA_MM2 = 0.25;
 const UNTYPED_BASIN_MAX_M2 = 5000;
+// Level samples are 1 mm apart until a body would need more than this many.
+const MAXIMUM_SAMPLES = 2 ** 18;
+// Cut bodies overlapping by less than this only share an edge.
+const OVERLAP_MM2 = 0.01;
 
 export type WaterKind = 'cut' | 'sheet' | 'basin';
 
@@ -46,9 +61,7 @@ export interface WaterResult {
   all: MultiPolygon;
 }
 
-function sourceAreaM2(feature: SourceFeature, ctx: Context): number {
-  // The whole uncropped feature: a small crop must not turn a large river into a pond.
-  const polygons = projectPolygons(feature.geometry, ctx.projection);
+function sourceAreaM2(polygons: Polygon[], ctx: Context): number {
   const scale = ctx.projection.mmPerMetre;
   let area = 0;
   for (const polygon of polygons) area += polygonArea(polygon);
@@ -71,18 +84,30 @@ function ringKey(polygon: Polygon): string {
     .join('|');
 }
 
+function medianLevel(hf: HeightField, polygon: Polygon): number {
+  const spacing = Math.max(1, Math.sqrt(polygonArea(polygon) / MAXIMUM_SAMPLES));
+  const interior = interiorPoints(polygon, spacing);
+  const samples: Vec2[] = interior.length >= 8 ? interior : densifyRing(polygon[0], 1.5);
+  return hf.percentileOver(samples, 0.5);
+}
+
 export async function solveWater(features: SourceFeature[], ctx: Context): Promise<WaterResult> {
   const { settings, heightfield: hf } = ctx;
   const water = settings.water;
-  const bodies: WaterBody[] = [];
+  const cutBodies: WaterBody[] = [];
+  const sheetPolygons: Polygon[] = [];
+  const basinPolygons: Polygon[] = [];
   const classifyBasins = water.recessPonds || water.skipPonds;
   const areaScale = ctx.projection.mmPerMetre ** 2;
   const seenBasins = new Set<string>();
 
   for (let index = 0; index < features.length; index++) {
+    if (index % 16 === 0) await ctx.progress.checkpoint(index / features.length);
     const feature = features[index];
+    let projected: Polygon[] | null = null;
+    const source = () => (projected ??= projectPolygons(feature.geometry, ctx.projection));
     let basinKind = classifyBasins ? recessedWaterKind(feature) : null;
-    if (classifyBasins && !basinKind && isUntypedWater(feature) && sourceAreaM2(feature, ctx) < UNTYPED_BASIN_MAX_M2) {
+    if (classifyBasins && !basinKind && isUntypedWater(feature) && sourceAreaM2(source(), ctx) < UNTYPED_BASIN_MAX_M2) {
       basinKind = 'untyped_water';
     }
     if (basinKind && water.skipPonds) {
@@ -91,7 +116,10 @@ export async function solveWater(features: SourceFeature[], ctx: Context): Promi
     }
     if (!basinKind && !isPrintableWater(feature)) continue;
 
-    const clipped = intersection(clipToBox(projectPolygons(feature.geometry, ctx.projection), ctx.cropBox), ctx.cropSet);
+    const clipped = intersection(clipToBox(source(), ctx.cropBox), ctx.cropSet);
+    // Decided on the whole feature, like basins: a lake with only a corner in
+    // the model, or a river a round crop splits, is still cut water.
+    const cut = !basinKind && sourceAreaM2(source(), ctx) >= water.cutMinAreaM2;
     for (const polygon of clipped) {
       const area = polygonArea(polygon);
       if (area < MINIMUM_AREA_MM2) continue;
@@ -99,49 +127,67 @@ export async function solveWater(features: SourceFeature[], ctx: Context): Promi
         const key = ringKey(polygon);
         if (seenBasins.has(key)) continue;
         seenBasins.add(key);
-        const bank = hf.minOver(densifyRing(polygon[0], 1.5));
-        const bed = bank - water.pondDepthMm;
-        bodies.push({ polygon, kind: 'basin', bed, top: bed + Math.min(water.pondWaterMm, water.pondDepthMm), areaM2: area / areaScale });
-        continue;
+        basinPolygons.push(polygon);
+      } else if (cut) {
+        const bed = medianLevel(hf, polygon);
+        cutBodies.push({ polygon, kind: 'cut', bed, top: bed - CUT_WATER_DROP_MM, areaM2: area / areaScale });
+      } else {
+        sheetPolygons.push(polygon);
       }
-      const interior = interiorPoints(polygon, 1.0);
-      const samples: Vec2[] = interior.length >= 8 ? interior : densifyRing(polygon[0], 1.5);
-      const bed = hf.percentileOver(samples, 0.5);
-      const areaM2 = area / areaScale;
-      const cut = areaM2 >= water.cutMinAreaM2;
-      bodies.push({
-        polygon,
-        kind: cut ? 'cut' : 'sheet',
-        bed,
-        top: cut ? bed - CUT_WATER_DROP_MM : bed + SHEET_OFFSET_MM,
-        areaM2,
-      });
     }
-    if (index % 16 === 0) await ctx.progress.checkpoint(index / features.length);
   }
 
-  raiseCutWaterToShore(hf, bodies);
-  flattenUnderWater(hf, bodies);
+  // A pond mapped inside a river would stack a recessed floor, or a sheet,
+  // on top of the river's fill, so only what lies outside cut water is kept.
+  const cutSet = new ClipSet([cutBodies.map((b) => b.polygon)]);
+  const outsideCut = (polygon: Polygon): Polygon[] => {
+    const kept = differenceSet([polygon], cutSet).filter((piece) => polygonArea(piece) >= MINIMUM_AREA_MM2);
+    if (multiArea(kept) < polygonArea(polygon) - 1e-6) count(ctx, 'water_trimmed_to_cut');
+    return kept;
+  };
+  const bodies: WaterBody[] = [...cutBodies];
+  for (const polygon of sheetPolygons) {
+    for (const piece of outsideCut(polygon)) {
+      const bed = medianLevel(hf, piece);
+      bodies.push({ polygon: piece, kind: 'sheet', bed, top: bed + SHEET_OFFSET_MM, areaM2: polygonArea(piece) / areaScale });
+    }
+  }
+  for (const polygon of basinPolygons) {
+    for (const piece of outsideCut(polygon)) {
+      const bank = hf.minOver(densifyRing(piece[0], 1.5));
+      const bed = bank - water.pondDepthMm;
+      const top = bed + Math.min(water.pondWaterMm, water.pondDepthMm);
+      bodies.push({ polygon: piece, kind: 'basin', bed, top, areaM2: polygonArea(piece) / areaScale });
+    }
+  }
+  await ctx.progress.checkpoint(0.9);
 
-  const cut = union(bodies.filter((b) => b.kind === 'cut').map((b) => b.polygon));
-  const basins = union(bodies.filter((b) => b.kind === 'basin').map((b) => b.polygon));
-  const sheets = union(bodies.filter((b) => b.kind === 'sheet').map((b) => b.polygon));
-  ctx.stats.water_bodies = bodies.length;
-  ctx.stats.water_cut_bodies = bodies.filter((b) => b.kind === 'cut').length;
-  ctx.stats.water_basins = bodies.filter((b) => b.kind === 'basin').length;
+  raiseCutWaterToShore(hf, bodies, ctx.crop);
+  const levelled = mergeConnectedCut(bodies, areaScale);
+  flattenUnderWater(hf, levelled);
+
+  const cut = union(levelled.filter((b) => b.kind === 'cut').map((b) => b.polygon));
+  const basins = union(levelled.filter((b) => b.kind === 'basin').map((b) => b.polygon));
+  const sheets = union(levelled.filter((b) => b.kind === 'sheet').map((b) => b.polygon));
+  ctx.stats.water_bodies = levelled.length;
+  ctx.stats.water_cut_bodies = levelled.filter((b) => b.kind === 'cut').length;
+  ctx.stats.water_basins = levelled.filter((b) => b.kind === 'basin').length;
   ctx.stats.water_cut_area_mm2 = Math.round(multiArea(cut));
-  return { bodies, cut, basins, sheets, all: union(cut, basins, sheets) };
+  return { bodies: levelled, cut, basins, sheets, all: union(cut, basins, sheets) };
 }
 
 /**
  * Cut water can't stand below the land holding it in: raise each cut body to
- * the low tenth of the dry nodes bordering its connected water. The frame is
- * not a shore, since water cropped by it has seabed at its edge nodes.
+ * the low tenth of the dry nodes bordering its connected water. Only nodes in
+ * the model count. The grid runs on past the crop, and water the crop cut off
+ * has seabed there.
  */
-function raiseCutWaterToShore(hf: HeightField, bodies: WaterBody[]): void {
+function raiseCutWaterToShore(hf: HeightField, bodies: WaterBody[], crop: Polygon): void {
   const ordinary = bodies.filter((b) => b.kind !== 'basin');
   if (!ordinary.some((b) => b.kind === 'cut')) return;
   const { cols, rows } = hf;
+  const inModel = new Uint8Array(cols * rows);
+  for (const n of hf.nodesInside(crop)) inModel[n] = 1;
   const inside = ordinary.map((b) => hf.nodesInside(b.polygon));
   const wet = new Uint8Array(cols * rows);
   for (const nodes of inside) for (const n of nodes) wet[n] = 1;
@@ -168,7 +214,7 @@ function raiseCutWaterToShore(hf: HeightField, bodies: WaterBody[]): void {
           if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
           const n = nr * cols + nc;
           if (!wet[n]) {
-            if (nr > 0 && nr < rows - 1 && nc > 0 && nc < cols - 1) shore.add(n);
+            if (inModel[n]) shore.add(n);
           } else if (component[n] < 0) {
             component[n] = label;
             stack.push(n);
@@ -181,8 +227,10 @@ function raiseCutWaterToShore(hf: HeightField, bodies: WaterBody[]): void {
   ordinary.forEach((body, i) => {
     if (body.kind !== 'cut') return;
     const labels = new Set(inside[i].map((n) => component[n]));
+    // A loop, not push(...shore): a lake with many islands has more shore
+    // nodes than a call can take as arguments.
     const heights: number[] = [];
-    for (const label of labels) if (label >= 0) heights.push(...shores[label]);
+    for (const label of labels) if (label >= 0) for (const h of shores[label]) heights.push(h);
     if (!heights.length) return;
     heights.sort((a, b) => a - b);
     const level = heights[Math.floor(SHORE_LEVEL_PERCENTILE * (heights.length - 1))];
@@ -191,6 +239,67 @@ function raiseCutWaterToShore(hf: HeightField, bodies: WaterBody[]): void {
       body.top = level - CUT_WATER_DROP_MM;
     }
   });
+}
+
+/**
+ * Overlapping cut bodies are one stretch of water mapped twice (a harbour
+ * mapped over the rivers running into it). Each group becomes one body at
+ * the area-weighted median of their levels, which the largest body usually
+ * decides. Separate levels would print as steps in open water. Bodies that
+ * only touch keep their own levels, so a river mapped in pieces can still
+ * step down a slope.
+ */
+function mergeConnectedCut(bodies: WaterBody[], areaScale: number): WaterBody[] {
+  const cut = bodies.filter((b) => b.kind === 'cut');
+  if (cut.length < 2) return bodies;
+  const boxes = cut.map((b) => ringBounds(b.polygon[0]));
+  const parent = cut.map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) i = parent[i] = parent[parent[i]];
+    return i;
+  };
+  for (let i = 0; i < cut.length; i++) {
+    for (let j = i + 1; j < cut.length; j++) {
+      if (find(i) === find(j) || !boxesOverlap(boxes[i], boxes[j])) continue;
+      // Both sides cut to the shared box first: a whole coastline against
+      // hundreds of small lakes is otherwise very slow.
+      const [a, b] = [boxes[i], boxes[j]];
+      const shared: [number, number, number, number] = [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.min(a[3], b[3])];
+      const overlap = intersection(clipToBox([cut[i].polygon], shared, 0), clipToBox([cut[j].polygon], shared, 0));
+      if (multiArea(overlap) > OVERLAP_MM2) parent[find(j)] = find(i);
+    }
+  }
+  const groups = new Map<number, WaterBody[]>();
+  cut.forEach((body, i) => {
+    const root = find(i);
+    const group = groups.get(root);
+    if (group) group.push(body);
+    else groups.set(root, [body]);
+  });
+  if (groups.size === cut.length) return bodies;
+
+  const out = bodies.filter((b) => b.kind !== 'cut');
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      out.push(group[0]);
+      continue;
+    }
+    const sorted = [...group].sort((a, b) => a.bed - b.bed);
+    const total = sorted.reduce((sum, b) => sum + b.areaM2, 0);
+    let level = sorted[sorted.length - 1].bed;
+    let covered = 0;
+    for (const body of sorted) {
+      covered += body.areaM2;
+      if (covered >= total / 2) {
+        level = body.bed;
+        break;
+      }
+    }
+    for (const polygon of union(group.map((b) => b.polygon))) {
+      out.push({ polygon, kind: 'cut', bed: level, top: level - CUT_WATER_DROP_MM, areaM2: polygonArea(polygon) / areaScale });
+    }
+  }
+  return out;
 }
 
 /**

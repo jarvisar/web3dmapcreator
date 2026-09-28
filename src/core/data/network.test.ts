@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchDem } from './dem';
 import type { OvertureFeature } from './features';
-import { fetchOverture, getLatestRelease, getReleaseIndex } from './overture';
+import { fetchOverture, getLatestIndex } from './overture';
 
 // About 830 m x 1.1 km of the Chicago Loop.
 const LOOP = { west: -87.635, south: 41.875, east: -87.625, north: 41.885 };
@@ -16,9 +16,8 @@ function meets(feature: OvertureFeature): boolean {
 
 describe.skipIf(process.env.NETWORK !== '1')('live data', () => {
   it('finds the latest release and its index', async () => {
-    const release = await getLatestRelease();
-    expect(release).toMatch(/^\d{4}-\d{2}-\d{2}\.\d+$/);
-    const index = await getReleaseIndex(release);
+    const index = await getLatestIndex();
+    expect(index.release).toMatch(/^\d{4}-\d{2}-\d{2}\.\d+$/);
     for (const type of ['building', 'building_part', 'segment', 'water', 'land', 'land_use', 'land_cover', 'infrastructure']) {
       expect(index.files.some((file) => file.type === type)).toBe(true);
     }
@@ -28,6 +27,7 @@ describe.skipIf(process.env.NETWORK !== '1')('live data', () => {
   it('downloads buildings, roads and water for the Chicago Loop', async () => {
     const started = performance.now();
     const data = await fetchOverture({ bounds: LOOP, types: ['building', 'segment', 'water'] });
+    expect(data.warnings).toEqual([]);
     const seconds = (performance.now() - started) / 1000;
     console.log(
       `Overture ${data.release}: ${(data.bytes / 1e6).toFixed(1)} MB in ${seconds.toFixed(1)} s, ` +

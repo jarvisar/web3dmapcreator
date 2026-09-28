@@ -6,7 +6,7 @@ Everything runs in the browser. The page starts a Web Worker that downloads the 
 
 ## Units and scale
 
-One model unit is one printed millimetre. The default scale is 0.07 mm per real metre (about 1:14,286), the scale the Blender add-on used. At that scale a 6.5 m residential street prints 0.455 mm wide, which is just over one line of a 0.4 mm nozzle. **Fit to size** picks the scale from the longest side instead.
+One model unit is one printed millimetre. The default scale is 0.07 mm per real metre (about 1:14,286), the scale the Blender add-on used. At that scale a 6.5 m residential street prints 0.455 mm wide, which is just over one line of a 0.4 mm nozzle. `Fit to size` picks the scale from the longest side instead.
 
 Coordinates go from WGS84 through a local East/North/Up frame centred on the area, then get rotated so the area's own "up" is +Y, then scaled. Every layer goes through that one projection (`src/core/geo/projection.ts`). The area itself is defined in metres around a centre, so a 2 km square is a 2 km square anywhere on the globe.
 
@@ -36,13 +36,15 @@ Every layer samples this same grid (`src/core/terrain/heightfield.ts`). A road c
 
 Water polygons are clipped to the area and sorted into three kinds:
 
-- **Cut water.** Rivers, lakes and the sea above 5,000 m². These are cut through the base. The water fill is a separate solid from the underside of the model up to the water surface, so it prints as its own colour from the bed up.
+- **Cut water.** Rivers, lakes and the sea above 5,000 m², measured on the whole feature, so a lake that only reaches into a corner of the area is still cut. These are cut through the base. The water fill is a separate solid from the underside of the model up to the water surface, so it prints as its own colour from the bed up.
 - **Ponds, fountains and basins.** Identified by their tags and classes, never by size or name, plus untyped water under 5,000 m². These are recessed 1 mm into the terrain with 0.8 mm of water in them.
 - **Water sheets.** Other small water. A thin flat slab sits 0.18 mm above the terrain, which is flattened under it.
 
-A body's level is the median of the terrain inside it, because elevation data reports open water as a noisy plateau at its surface. Some data carries bathymetry instead, so cut water is never set below the low tenth of its connected shoreline. The grid under cut water is flattened to the level and the shore around it is raised to at least that level. Cut water then sits 0.25 mm under the bank, so one printed layer of bank always shows.
+Ponds and sheets that lie in cut water are trimmed to the part outside it, so the parts don't overlap.
 
-With **Keep ground under structures** on, the terrain is kept under roads, buildings and mapped piers that stand over cut water or a basin, so nothing hangs over an opening. Turning it off clips roads and buildings at the water's edge instead.
+A body's level is the median of the terrain inside it, because elevation data reports open water as a noisy plateau at its surface. Some data carries bathymetry instead, so cut water is never set below the low tenth of its connected shoreline. Only shore inside the area counts, so the sea running off the edge isn't dragged down to the seabed. Cut water mapped as several overlapping polygons, like a harbour and the river flowing into it, becomes one body at one level. The grid under cut water is flattened to the level and the shore around it is raised to at least that level. Cut water then sits 0.25 mm under the bank, so one printed layer of bank always shows.
+
+With `Keep ground under structures over water` on, the terrain is kept under roads, buildings and mapped piers that stand over cut water or a basin, so nothing hangs over an opening. Turning it off clips roads and buildings at the water's edge instead.
 
 ## Surfaces
 
@@ -58,7 +60,7 @@ Widths come from the mapped width or a class default, clamped between 0.45 and 0
 
 ## Bridges
 
-Bridges are off by default. When on, pieces flagged as bridges and unflagged roads crossing cut water become decks. Connected pieces are solved as one network. Loose ends touch down on the road surface, except where the model's edge cut the bridge off. The deck climbs no steeper than 8% towards a height that clears whatever is under it by 0.4 mm. A network that never rises 0.2 mm above the road prints as a road, unless it crosses open water. Piers stand every 30 m, clear of the ends and of roads below, on ground kept for them in the water.
+Bridges are off by default. When on, pieces flagged as bridges and unflagged roads crossing cut water become decks. Connected pieces are solved as one network, including a ramp that ends partway along another deck. Loose ends touch down on the road surface, except where the model's edge cut the bridge off. The deck climbs no steeper than 8% towards a height that clears whatever is under it by 0.4 mm. A network that never rises 0.2 mm above the road prints as a road, unless it crosses open water. Piers stand every 30 m inside the area, clear of the ends and of roads below, on ground kept for them in the water.
 
 ## Buildings
 
@@ -82,7 +84,7 @@ Parts are separate solids that overlap slightly (roads and slabs reach 0.15 mm i
 
 ## Export
 
-- **Bambu Studio / OrcaSlicer project (.3mf).** A native project with one filament per colour and Bambu PLA line, and one part per layer with its filament assigned. Each plate is one object, laid out like Bambu's own plate list.
+- **Bambu Studio project (.3mf).** A native project with one filament per colour and Bambu PLA line, and one part per layer with its filament assigned. Each plate is one object, laid out like Bambu's own plate list.
 - **PrusaSlicer project (.3mf).** One object with a volume per part and an extruder per colour.
 - **3MF with colours.** A core 3MF with a base material per colour, for other tools.
 - **STL.** One file per colour in a zip, or one combined file.

@@ -1,8 +1,9 @@
 import { Crosshair, LoaderCircle, MapPin, Search, SquareDashed, X } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { areaFromBounds, parseBoundsText, parseLatLon } from '../../core/geo/area';
+import { parseBoundsText, parseLatLon } from '../../core/geo/area';
 import type { GeoBounds, LonLat } from '../../core/types';
+import { areaForBounds } from '../lib/area';
 import { NARROW_QUERY } from '../lib/browser';
 import { formatNumber } from '../lib/format';
 import { setArea, setDrawerOpen } from '../state/store';
@@ -68,6 +69,8 @@ const coord = (value: number) => formatNumber(value, 5);
 export function PlaceSearch({ inputId }: { inputId?: string }) {
   const [text, setText] = useState('');
   const [results, setResults] = useState<Suggestion[]>([]);
+  // The query the results are for. Enter only picks results that match what is typed.
+  const [resultsFor, setResultsFor] = useState('');
   const [status, setStatus] = useState<'idle' | 'loading' | 'error' | 'empty'>('idle');
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -81,6 +84,7 @@ export function PlaceSearch({ inputId }: { inputId?: string }) {
     const local = localSuggestion(query);
     if (local) {
       setResults([local]);
+      setResultsFor(query);
       setStatus('idle');
       setActive(0);
       return;
@@ -99,6 +103,7 @@ export function PlaceSearch({ inputId }: { inputId?: string }) {
         const data = (await response.json()) as { features?: PhotonFeature[] };
         const found = (data.features ?? []).map(describeFeature).filter((item): item is Suggestion => item !== null);
         setResults(found);
+        setResultsFor(query);
         setActive(0);
         setStatus(found.length ? 'idle' : 'empty');
       } catch (error) {
@@ -123,13 +128,7 @@ export function PlaceSearch({ inputId }: { inputId?: string }) {
     } else if (item.kind === 'point') {
       setArea((area) => ({ ...area, center: item.center }), { focus: 'always', placeName: '' });
     } else {
-      setArea(
-        (area) => ({
-          ...areaFromBounds(item.bounds, area.shape === 'rounded' ? 'rounded' : 'rectangle'),
-          cornerRadius: area.cornerRadius,
-        }),
-        { focus: 'always', placeName: '' },
-      );
+      setArea((area) => areaForBounds(item.bounds, area), { focus: 'always', placeName: '' });
     }
     skipSearch.current = label;
     setText(label);
@@ -146,7 +145,7 @@ export function PlaceSearch({ inputId }: { inputId?: string }) {
       setActive((index) => (index + step + results.length) % results.length);
     } else if (event.key === 'Enter') {
       const item = results[active] ?? results[0];
-      if (item && open) {
+      if (item && open && resultsFor === text.trim()) {
         event.preventDefault();
         pick(item);
       }

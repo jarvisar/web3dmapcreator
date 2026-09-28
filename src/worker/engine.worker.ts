@@ -8,12 +8,13 @@ import type { OvertureData } from '../core/data/features';
 import { fetchOverture } from '../core/data/overture';
 import type { ExportRequest, FromWorker, GenerateRequest, GenerateResult, ProgressEvent, ToWorker } from '../core/engine/protocol';
 import { exportPlates } from '../core/export';
+import { BAMBU_MAX_PLATES } from '../core/export/sections';
 import { CancelError, Progress } from '../core/pipeline/context';
 import { rowFilter } from '../core/pipeline/filter';
 import { dataBoundsFor, generateModel, neededTypes, type ModelSpec } from '../core/pipeline/generate';
 import { meshLayers, partsBounds } from '../core/pipeline/mesh';
 import { buildPlates } from '../core/pipeline/plates';
-import { printerByKey, type ModelSettings } from '../core/settings';
+import { printerByKey, sanitizeSettings, type ModelSettings } from '../core/settings';
 import type { GeoBounds, ModelStats } from '../core/types';
 
 const ctx = self as unknown as {
@@ -46,6 +47,7 @@ function downloadKey(s: ModelSettings): string {
     s.land.enabled,
     s.trees.enabled,
     s.trees.mapped,
+    s.trees.forestScatter,
     s.trees.landCoverScatter,
     s.supports,
   ]);
@@ -60,9 +62,16 @@ async function loadData(request: GenerateRequest, job: Running, report: (e: Prog
   const bounds = dataBoundsFor(area);
   const key = `${boundsKey(bounds)}|${downloadKey(settings)}`;
   const mb = (bytes: number) => `${(bytes / 1e6).toFixed(1)} MB`;
+  let downloaded = 0;
+  let overtureDone = false;
 
   const loadOverture = async (): Promise<OvertureData> => {
-    if (overture?.key === key) return overture.data;
+    if (overture?.key === key) {
+      overtureDone = true;
+      return overture.data;
+    }
+    // Let the last area's data go before the next one comes in.
+    overture = null;
     const data = await fetchOverture({
       bounds,
       types: neededTypes(settings),
@@ -77,6 +86,8 @@ async function loadData(request: GenerateRequest, job: Running, report: (e: Prog
         }),
     });
     overture = { key, data };
+    overtureDone = true;
+    for (const stats of Object.values(data.stats)) downloaded += stats.bytes - stats.cachedBytes;
     return data;
   };
 
@@ -86,16 +97,31 @@ async function loadData(request: GenerateRequest, job: Running, report: (e: Prog
     const cellM = Math.max(area.widthM, area.heightM) / settings.terrain.resolution;
     const demKey = `${boundsKey(bounds)}|${Math.round(cellM * 10)}`;
     if (elevation?.key === demKey) return elevation.dem;
-    const dem = await fetchDem({ bounds, targetSpacingM: cellM, signal: job.abort.signal });
+    elevation = null;
+    let demDownloaded = 0;
+    const dem = await fetchDem({
+      bounds,
+      targetSpacingM: cellM,
+      signal: job.abort.signal,
+      onProgress: (p) => {
+        demDownloaded = p.downloaded;
+        // The map data drives the bar. Elevation only shows if it is still going after that.
+        if (overtureDone) {
+          report({ stage: 'elevation', label: 'Downloading elevation', fraction: 0.28, detail: `${p.tilesDone} of ${p.tilesTotal} tiles` });
+        }
+      },
+    });
     elevation = { key: demKey, dem };
+    downloaded += demDownloaded;
     return dem;
   };
 
   const [data, dem] = await Promise.all([loadOverture(), loadElevation()]);
-  return { data, dem };
+  return { data, dem, downloaded };
 }
 
 async function generate(id: number, request: GenerateRequest) {
+  request = { ...request, settings: sanitizeSettings(request.settings) };
   const started = performance.now();
   const timings: Record<string, number> = {};
   const report = (event: ProgressEvent) => post({ type: 'progress', id, progress: event });
@@ -103,7 +129,7 @@ async function generate(id: number, request: GenerateRequest) {
   running = job;
   try {
     report({ stage: 'data', label: 'Finding map data', fraction: 0.01 });
-    const { data, dem } = await loadData(request, job, report);
+    const { data, dem, downloaded } = await loadData(request, job, report);
     timings.download = (performance.now() - started) / 1000;
     if (job.progress.cancelled) throw new CancelError();
 
@@ -123,14 +149,20 @@ async function generate(id: number, request: GenerateRequest) {
     timings.mesh = (performance.now() - t2) / 1000;
     lastSpec = spec;
 
-    const warnings = [...spec.warnings];
+    const warnings = [...data.warnings, ...spec.warnings];
+    if (dem?.tilesMissing) {
+      warnings.push(
+        `${dem.tilesMissing} of ${dem.tilesUsed + dem.tilesMissing} elevation tiles were missing and read as sea level, so the terrain may have a step.`,
+      );
+    }
     if (meshed.failed) warnings.push(`${meshed.failed} small pieces could not be meshed and were left out.`);
+    if (meshed.fallbacks) warnings.push(`${meshed.fallbacks} pieces only follow the terrain along their edges and may show flat spots.`);
     const result: GenerateResult = {
       parts: meshed.parts,
       bounds: partsBounds(meshed.parts),
       mmPerMetre: spec.mmPerMetre,
       release: data.release,
-      stats: userStats(spec.stats, data.bytes),
+      stats: userStats(spec.stats, downloaded),
       warnings,
       timings,
     };
@@ -139,6 +171,8 @@ async function generate(id: number, request: GenerateRequest) {
     const cancelled = error instanceof CancelError || job.progress.cancelled || (error as Error)?.name === 'AbortError';
     post({ type: 'error', id, message: cancelled ? 'Cancelled' : describe(error), cancelled });
   } finally {
+    // If one download failed, stop the other one too.
+    job.abort.abort();
     if (running === job) running = null;
   }
 }
@@ -156,18 +190,19 @@ async function exportModel(id: number, request: ExportRequest) {
       bedWidth: printer.width,
       bedDepth: printer.depth,
       exclude: request.excludeParts,
+      maxPlates: request.format === 'bambu' ? BAMBU_MAX_PLATES : undefined,
       progress,
     });
     post({ type: 'progress', id, progress: { stage: 'export', label: 'Writing the file', fraction: 0.85 } });
     const result = exportPlates(plates, request);
-    post({ type: 'exported', id, result }, [result.data.buffer]);
+    post({ type: 'exported', id, result });
   } catch (error) {
     post({ type: 'error', id, message: describe(error) });
   }
 }
 
 /** The handful of counts worth showing, under readable names. The pipeline keeps many more. */
-function userStats(stats: ModelStats, bytes: number): ModelStats {
+function userStats(stats: ModelStats, downloaded: number): ModelStats {
   const n = (key: string) => (typeof stats[key] === 'number' ? (stats[key] as number) : 0);
   const out: ModelStats = {};
   const add = (label: string, value: number | string) => {
@@ -184,7 +219,7 @@ function userStats(stats: ModelStats, bytes: number): ModelStats {
   add('Bridge piers', n('bridge_piers'));
   add('Trees', n('trees'));
   add('Terrain grid', typeof stats.terrain_grid === 'string' ? `${stats.terrain_grid} cells` : '');
-  add('Data downloaded', `${(bytes / 1e6).toFixed(1)} MB`);
+  add('Data downloaded', downloaded > 0 ? `${(downloaded / 1e6).toFixed(1)} MB` : 'None, all cached');
   return out;
 }
 

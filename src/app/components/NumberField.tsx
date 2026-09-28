@@ -43,6 +43,8 @@ export function NumberInput({
   const shown = value * scale;
   const [text, setText] = useState(() => formatNumber(shown, decimals));
   const focused = useRef(false);
+  // What the field held when it was focused, for Escape.
+  const before = useRef(value);
 
   useEffect(() => {
     if (!focused.current) setText(formatNumber(value * scale, decimals));
@@ -56,6 +58,8 @@ export function NumberInput({
   }
 
   function finish() {
+    // Untouched: keep the stored value rather than its rounded display.
+    if (text === formatNumber(shown, decimals)) return;
     const parsed = parseDecimal(text);
     if (parsed === null) {
       setText(formatNumber(shown, decimals));
@@ -71,7 +75,10 @@ export function NumberInput({
       return;
     }
     if (event.key === 'Escape') {
-      setText(formatNumber(shown, decimals));
+      // Typing commits as it goes, so Escape puts the old value back.
+      event.preventDefault();
+      if (before.current !== value) onChange(before.current);
+      setText(formatNumber(before.current * scale, decimals));
       return;
     }
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
@@ -98,6 +105,7 @@ export function NumberInput({
         aria-describedby={describedBy}
         onFocus={(event) => {
           focused.current = true;
+          before.current = value;
           event.currentTarget.select();
         }}
         onBlur={() => {

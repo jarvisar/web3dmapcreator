@@ -5,11 +5,12 @@ import {
   COLOUR_GROUPS,
   DEFAULT_EXPORT,
   DEFAULT_PALETTE,
-  DEFAULT_SETTINGS,
+  EXPORT_FORMATS,
+  MIN_SECTION_MM,
   PRINTERS,
-  cloneSettings,
+  sanitizeSettings,
 } from '../../core/settings';
-import type { AreaSpec, ExportSettings, ModelSettings, Palette, SurfaceCategory } from '../../core/settings';
+import type { AreaSpec, ExportSettings, ModelSettings, Palette } from '../../core/settings';
 
 const KEY = 'jarvizar-city-model:v1';
 
@@ -25,6 +26,8 @@ export interface SavedState {
   showBed?: boolean;
   sizeUnit?: 'km' | 'm';
   mapHintDismissed?: boolean;
+  /** The URL hash the app last wrote, to tell its own hash from a share link. */
+  hash?: string;
 }
 
 type Json = Record<string, unknown>;
@@ -44,19 +47,10 @@ function merge<T>(defaults: T, saved: unknown): T {
   return defaults;
 }
 
-const SURFACES: SurfaceCategory[] = ['paved', 'sand', 'rock', 'green', 'forest'];
 const HEX = /^#[0-9a-f]{6}$/i;
 
 function readSettings(saved: unknown): ModelSettings | undefined {
-  if (!isObject(saved)) return undefined;
-  const settings = merge(cloneSettings(DEFAULT_SETTINGS), saved);
-  const priority = settings.land.priority;
-  const valid = priority.length === SURFACES.length && SURFACES.every((item) => priority.includes(item));
-  if (!valid) settings.land.priority = [...DEFAULT_SETTINGS.land.priority];
-  if (settings.scale.mode !== 'fixed' && settings.scale.mode !== 'fit') settings.scale.mode = 'fixed';
-  if (!(settings.scale.mmPerMetre > 0)) settings.scale.mmPerMetre = DEFAULT_SETTINGS.scale.mmPerMetre;
-  if (!(settings.scale.fitMm > 0)) settings.scale.fitMm = DEFAULT_SETTINGS.scale.fitMm;
-  return settings;
+  return isObject(saved) ? sanitizeSettings(saved) : undefined;
 }
 
 function readPalette(saved: unknown): Palette | undefined {
@@ -75,11 +69,11 @@ function readPalette(saved: unknown): Palette | undefined {
 function readExport(saved: unknown): ExportSettings | undefined {
   if (!isObject(saved)) return undefined;
   const settings = merge({ ...DEFAULT_EXPORT }, saved);
-  if (!['bambu', 'prusa', '3mf', 'stl-zip', 'stl'].includes(settings.format)) settings.format = DEFAULT_EXPORT.format;
+  if (!(EXPORT_FORMATS as readonly string[]).includes(settings.format)) settings.format = DEFAULT_EXPORT.format;
   const printer = PRINTERS.find((item) => item.key === settings.printer) ?? PRINTERS.find((item) => item.key === DEFAULT_EXPORT.printer)!;
   settings.printer = printer.key;
-  settings.sectionWidthMm = Math.min(printer.width, Math.max(20, settings.sectionWidthMm));
-  settings.sectionHeightMm = Math.min(printer.depth, Math.max(20, settings.sectionHeightMm));
+  settings.sectionWidthMm = Math.min(printer.width, Math.max(MIN_SECTION_MM, settings.sectionWidthMm));
+  settings.sectionHeightMm = Math.min(printer.depth, Math.max(MIN_SECTION_MM, settings.sectionHeightMm));
   return settings;
 }
 
@@ -116,10 +110,12 @@ export function loadSaved(): SavedState {
     showBed: typeof ui.showBed === 'boolean' ? ui.showBed : undefined,
     sizeUnit: ui.sizeUnit === 'km' || ui.sizeUnit === 'm' ? ui.sizeUnit : undefined,
     mapHintDismissed: typeof ui.mapHintDismissed === 'boolean' ? ui.mapHintDismissed : undefined,
+    hash: typeof raw.hash === 'string' ? raw.hash : undefined,
   };
 }
 
-export function saveState(state: {
+export function saveState(
+  state: {
   area: AreaSpec;
   settings: ModelSettings;
   palette: Palette;
@@ -127,10 +123,12 @@ export function saveState(state: {
   placeName: string;
   fileName: string | null;
   ui: { sections: object; basemap: string; showBed: boolean; sizeUnit: string; mapHintDismissed: boolean };
-}): void {
+  },
+  hash: string,
+): void {
   const { sections, basemap, showBed, sizeUnit, mapHintDismissed } = state.ui;
   const data = {
-    v: 1,
+    hash,
     area: state.area,
     settings: state.settings,
     palette: state.palette,

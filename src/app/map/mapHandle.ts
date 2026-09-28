@@ -11,10 +11,6 @@ export function registerMap(map: MlMap | null): void {
   current = map;
 }
 
-export function getMap(): MlMap | null {
-  return current;
-}
-
 /**
  * The area resized to fill most of the visible map, centred on it. Keeps the
  * shape and rotation. Unrotated rectangles take the view's proportions, other

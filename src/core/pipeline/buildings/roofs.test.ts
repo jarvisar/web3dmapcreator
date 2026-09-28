@@ -112,6 +112,22 @@ describe('roof semantics', () => {
     }
   });
 
+  it('ignores a roof height that would make a needle', () => {
+    const props = { num_floors: 3, roof_shape: 'gabled', roof_height: 5000 };
+    const roof = resolveRoof(props, resolveVerticalProfile(props, 3, 10), false, null, 10);
+    expect(roof.implausible).toBe(true);
+    expect(roof.source).toBe('default+floors');
+    expect(roof.roofTopM).toBeCloseTo(12, 10);
+  });
+
+  it('keeps a tall roof that comes out of the mapped height', () => {
+    const props = { height: 828, roof_shape: 'pyramidal', roof_height: 244 };
+    const roof = resolveRoof(props, resolveVerticalProfile(props, 3, 10), false, null, 60);
+    expect(roof.implausible).toBeFalsy();
+    expect(roof.source).toBe('roof_height');
+    expect([roof.wallTopM, roof.roofTopM]).toEqual([584, 828]);
+  });
+
   it('gives an ambiguous crown no legacy addition', () => {
     const props = { height: 162.7, min_height: 140, roof_shape: 'dome', roof_height: 40 };
     expect(resolveRoof(props, resolveVerticalProfile(props, 3, 10), true, null, 20).roofTopM).toBeCloseTo(162.7, 10);

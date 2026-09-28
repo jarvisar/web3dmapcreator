@@ -176,6 +176,27 @@ describe('remoteFile', () => {
     expect(most).toBe(2);
   });
 
+  it('keeps the limit per host, so a busy host does not hold up another', async () => {
+    configureHttp({ maxInFlight: 2 });
+    const URL_B = 'https://other.example.org/b.bin';
+    let hold = true;
+    const held: (() => void)[] = [];
+    const started: string[] = [];
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      started.push(url);
+      const [start, end] = /bytes=(\d+)-(\d+)/.exec(new Headers(init?.headers).get('range') ?? '')!.slice(1).map(Number);
+      if (url === URL_A && hold) await new Promise<void>((resolve) => held.push(resolve));
+      return new Response(data.slice(start, end + 1), { status: 206 });
+    });
+    const slow = Array.from({ length: 5 }, (_, i) => remoteFile(URL_A, data.length).slice(i * 10, i * 10 + 10));
+    expect((await remoteFile(URL_B, data.length).slice(0, 10)).byteLength).toBe(10);
+    expect(started.filter((url) => url === URL_A)).toHaveLength(2);
+    hold = false;
+    for (const resolve of held) resolve();
+    await Promise.all(slow);
+    expect(started.filter((url) => url === URL_A)).toHaveLength(5);
+  });
+
   it('stops queued and running requests on abort', async () => {
     configureHttp({ maxInFlight: 1 });
     const started: string[] = [];

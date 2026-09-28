@@ -14,7 +14,7 @@ function ViewToggle() {
   return (
     <div className="view-toggle" role="group" aria-label="View">
       <button type="button" className="view-btn" aria-pressed={view === 'map'} onClick={() => setView('map')}>
-        <MapIcon size={15} aria-hidden="true" />
+        <MapIcon size={14} aria-hidden="true" />
         Map
       </button>
       <button
@@ -29,7 +29,7 @@ function ViewToggle() {
         onFocus={() => setHover(true)}
         onBlur={() => setHover(false)}
       >
-        <Box size={15} aria-hidden="true" />
+        <Box size={14} aria-hidden="true" />
         3D model
       </button>
       <Tooltip anchor={anchor} open={hover && !hasModel} placement="bottom">
@@ -48,16 +48,20 @@ export function TopBar({ narrow }: { narrow: boolean }) {
           <button
             type="button"
             className="btn btn-ghost drawer-toggle"
+            // The text is hidden on small phones, so the name can't come from it.
+            aria-label="Settings"
             aria-expanded={drawerOpen}
             aria-controls="sidebar"
             onClick={() => setDrawerOpen(!drawerOpen)}
           >
-            {drawerOpen ? <X size={18} aria-hidden="true" /> : <SlidersHorizontal size={18} aria-hidden="true" />}
-            <span className="drawer-toggle-text">Settings</span>
+            {drawerOpen ? <X size={16} aria-hidden="true" /> : <SlidersHorizontal size={16} aria-hidden="true" />}
+            <span className="drawer-toggle-text" aria-hidden="true">
+              Settings
+            </span>
           </button>
         )}
         <a className="brand" href="./" aria-label="Jarvizar City Model home">
-          <Logo size={26} />
+          <Logo size={24} />
           <span className="brand-name">
             Jarvizar <span className="brand-light">City Model</span>
           </span>
@@ -67,12 +71,14 @@ export function TopBar({ narrow }: { narrow: boolean }) {
         <ViewToggle />
       </div>
       <div className="topbar-end">
-        <button type="button" className="btn btn-ghost topbar-help" onClick={() => setHelpOpen(true)}>
-          <CircleQuestionMark size={18} aria-hidden="true" />
-          <span className="topbar-label">Help</span>
+        <button type="button" className="btn btn-ghost topbar-help" aria-label="Help" onClick={() => setHelpOpen(true)}>
+          <CircleQuestionMark size={15} aria-hidden="true" />
+          <span className="topbar-label" aria-hidden="true">
+            Help
+          </span>
         </button>
-        <a className="icon-btn topbar-github" href={REPO_URL} target="_blank" rel="noreferrer" aria-label="Source code on GitHub" title="Source code on GitHub">
-          <GithubMark size={18} />
+        <a className="topbar-github" href={REPO_URL} target="_blank" rel="noreferrer" aria-label="Source code on GitHub" title="Source code on GitHub">
+          <GithubMark size={16} />
         </a>
       </div>
     </header>

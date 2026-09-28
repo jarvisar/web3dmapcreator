@@ -5,21 +5,30 @@ import type { MultiPolygon } from '../types';
 import { multiBounds, ringBounds } from './polygon';
 import { rowCrossings } from './scanline';
 
+// 32 MB. A 400 x 400 mm model keeps 0.1 mm cells, and a 2 m one gets
+// about 0.35 mm cells instead of 400 million of them.
+const MAXIMUM_CELLS = 2 ** 25;
+
 export class RasterMask {
+  /** The cell size used, which is coarser than asked for on a very large region. */
+  readonly cell: number;
   private readonly bits: Uint8Array;
   private readonly minX: number;
   private readonly minY: number;
   private readonly cols: number;
   private readonly rows: number;
 
-  constructor(polygons: MultiPolygon, private readonly cell: number) {
+  constructor(polygons: MultiPolygon, cell: number) {
     const box = multiBounds(polygons);
     if (!Number.isFinite(box[0])) {
+      this.cell = cell;
       this.minX = this.minY = 0;
       this.cols = this.rows = 0;
       this.bits = new Uint8Array(0);
       return;
     }
+    cell = Math.max(cell, Math.sqrt(((box[2] - box[0]) * (box[3] - box[1])) / MAXIMUM_CELLS));
+    this.cell = cell;
     this.minX = box[0] - cell;
     this.minY = box[1] - cell;
     this.cols = Math.ceil((box[2] - this.minX) / cell) + 2;

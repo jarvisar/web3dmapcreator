@@ -1,25 +1,12 @@
-import {
-  ArrowDown,
-  ArrowUp,
-  Bridge,
-  Building,
-  ChevronDown,
-  Droplet,
-  Frame,
-  Layers,
-  Mountain,
-  Road,
-  ShieldCheck,
-  TreeDeciduous,
-  Trees,
-} from 'lucide-react';
+import { ArrowDown, ArrowUp } from 'lucide-react';
 import { useId } from 'react';
 import type { ReactNode } from 'react';
 import type { ModelSettings, SurfaceCategory } from '../../core/settings';
+import type { ColourGroup } from '../../core/types';
+import { Checkbox } from '../components/Checkbox';
+import { CheckField } from '../components/Fields';
 import { HelpTip } from '../components/HelpTip';
 import { NumberField } from '../components/NumberField';
-import { SwitchField } from '../components/Fields';
-import { Switch } from '../components/Switch';
 import { formatInteger, formatNumber, keepUnits, listJoin } from '../lib/format';
 import { patchSettings, resetSettingsSection, setSupports, toggleLayer, useApp } from '../state/store';
 import type { LayerKey, SettingsSection } from '../state/store';
@@ -28,30 +15,30 @@ import { Section } from './Section';
 interface LayerRowProps {
   layer: LayerKey;
   label: string;
-  icon: ReactNode;
+  /** Colour the layer prints in, shown as a dot. */
+  group: ColourGroup;
   on: boolean;
   onToggle: (on: boolean) => void;
-  switchLabel?: string;
+  checkLabel?: string;
   summary: string;
   help: string;
   children: ReactNode;
   resetKey?: SettingsSection;
 }
 
-function LayerRow({ layer, label, icon, on, onToggle, switchLabel, summary, help, children, resetKey }: LayerRowProps) {
+function LayerRow({ layer, label, group, on, onToggle, checkLabel, summary, help, children, resetKey }: LayerRowProps) {
   const open = useApp((state) => state.ui.layers[layer] ?? false);
+  const colour = useApp((state) => state.palette[group].hex);
   const bodyId = useId();
   return (
     <div className={`layer${on ? '' : ' is-off'}${open ? ' is-open' : ''}`}>
       <div className="layer-head">
-        <Switch checked={on} onChange={onToggle} label={switchLabel ?? label} />
+        <Checkbox checked={on} onChange={onToggle} label={checkLabel ?? label} />
         <button type="button" className="layer-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => toggleLayer(layer)}>
-          <span className="layer-icon" aria-hidden="true">
-            {icon}
-          </span>
+          <span className="dot" style={{ background: colour }} aria-hidden="true" />
           <span className="layer-name">{label}</span>
           <span className="layer-summary">{summary}</span>
-          <ChevronDown className="layer-chevron" size={15} aria-hidden="true" />
+          <span className="triangle" aria-hidden="true" />
         </button>
       </div>
       {open && (
@@ -139,13 +126,13 @@ function WaterOptions({ water }: { water: ModelSettings['water'] }) {
         unit="m²"
         help="Rivers, lakes and the sea at least this large are cut right through the base. Smaller water stays as a thin sheet on the terrain."
       />
-      <SwitchField
+      <CheckField
         label="Skip ponds, fountains and basins"
         checked={water.skipPonds}
         onChange={(skipPonds) => patchSettings('water', { skipPonds })}
         help="Leave out mapped ponds, fountains, basins and small unnamed water entirely. Overrides the recess below."
       />
-      <SwitchField
+      <CheckField
         label="Recess ponds and fountains"
         checked={water.recessPonds}
         disabled={water.skipPonds}
@@ -221,7 +208,7 @@ function LandOptions({ land }: { land: ModelSettings['land'] }) {
         unit="mm"
         help="How far land surfaces, roads, buildings and piers reach below the terrain surface, so the parts overlap and join in the slicer."
       />
-      <SwitchField
+      <CheckField
         label="Slope beaches into water"
         checked={land.taperBeaches}
         onChange={(taperBeaches) => patchSettings('land', { taperBeaches })}
@@ -322,26 +309,26 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
           ) : undefined
         }
       />
-      <SwitchField
+      <CheckField
         label="Include paths and footways"
         checked={roads.includePaths}
         onChange={(includePaths) => patchSettings('roads', { includePaths })}
         help="Pedestrian paths and footways. In a dense city they are most of the roads."
       />
-      <SwitchField
+      <CheckField
         label="Skip sidewalks and crossings"
         checked={roads.skipSidewalks}
         disabled={!roads.includePaths}
         onChange={(skipSidewalks) => patchSettings('roads', { skipSidewalks })}
         help="Leave out sidewalks and crossings mapped beside streets. Park paths, trails and footbridges stay. Without this every downtown street prints as three lines."
       />
-      <SwitchField
+      <CheckField
         label="Railways"
         checked={roads.includeRail}
         onChange={(includeRail) => patchSettings('roads', { includeRail })}
         help="Railway and tram lines, printed like roads."
       />
-      <SwitchField
+      <CheckField
         label="Airports"
         checked={roads.includeAirports}
         onChange={(includeAirports) => patchSettings('roads', { includeAirports })}
@@ -483,13 +470,13 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
         unit="m"
         help="Real metres per floor, for buildings mapped with a floor count but no height."
       />
-      <SwitchField
+      <CheckField
         label="Roof shapes"
         checked={buildings.roofShapes}
         onChange={(roofShapes) => patchSettings('buildings', { roofShapes })}
         help="Build gabled, hipped, skillion, pyramid and dome roofs where they are mapped. Off keeps every roof flat."
       />
-      <SwitchField
+      <CheckField
         label="Restore missing main bodies"
         checked={buildings.restoreMainBodies}
         onChange={(restoreMainBodies) => patchSettings('buildings', { restoreMainBodies })}
@@ -537,25 +524,25 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
 function TreeOptions({ trees }: { trees: ModelSettings['trees'] }) {
   return (
     <>
-      <SwitchField
+      <CheckField
         label="Mapped trees"
         checked={trees.mapped}
         onChange={(mapped) => patchSettings('trees', { mapped })}
         help="Individually mapped trees."
       />
-      <SwitchField
+      <CheckField
         label="Scatter in forests"
         checked={trees.forestScatter}
         onChange={(forestScatter) => patchSettings('trees', { forestScatter })}
         help="Fill mapped forests and woods with scattered trees."
       />
-      <SwitchField
+      <CheckField
         label="Scatter in satellite forest"
         checked={trees.landCoverScatter}
         onChange={(landCoverScatter) => patchSettings('trees', { landCoverScatter })}
         help="Also scatter trees in forest from satellite land cover. That is where wooded hillsides come from when nobody mapped the trees."
       />
-      <SwitchField
+      <CheckField
         label="Keep trees off roads"
         checked={trees.avoidRoads}
         onChange={(avoidRoads) => patchSettings('trees', { avoidRoads })}
@@ -649,7 +636,7 @@ function RimOptions({ rim }: { rim: ModelSettings['rim'] }) {
   );
 }
 
-export function layerSummary(settings: ModelSettings): string {
+function layerSummary(settings: ModelSettings): string {
   const on = [
     settings.terrain.elevation ? 'terrain' : 'flat base',
     settings.water.enabled && 'water',
@@ -672,13 +659,13 @@ export function LayersPanel() {
   const roadExtras = [roads.includePaths && 'paths', roads.includeRail && 'rail', roads.includeAirports && 'airports'].filter(Boolean);
 
   return (
-    <Section id="layers" title="Layers" icon={<Layers size={16} />} summary={layerSummary(settings)}>
-      <div className="layers">
+    <Section id="layers" title="Layers" summary={layerSummary(settings)}>
+      <div className="list-box">
         <LayerRow
           layer="terrain"
           label="Terrain"
-          switchLabel="Terrain elevation"
-          icon={<Mountain size={16} />}
+          checkLabel="Terrain elevation"
+          group="terrain"
           on={terrain.elevation}
           onToggle={(elevation) => patchSettings('terrain', { elevation })}
           summary={terrain.elevation ? `Elevation ×${formatNumber(terrain.exaggeration, 2)} · ${terrain.resolution} cells` : 'Flat base'}
@@ -691,7 +678,7 @@ export function LayersPanel() {
         <LayerRow
           layer="water"
           label="Water"
-          icon={<Droplet size={16} />}
+          group="water"
           on={water.enabled}
           onToggle={(enabled) => patchSettings('water', { enabled })}
           summary={water.enabled ? `Cut above ${formatInteger(water.cutMinAreaM2)} m²${water.skipPonds ? ' · no ponds' : ''}` : 'Off, cuts stay open'}
@@ -704,7 +691,7 @@ export function LayersPanel() {
         <LayerRow
           layer="land"
           label="Parks and land cover"
-          icon={<Trees size={16} />}
+          group="green"
           on={land.enabled}
           onToggle={(enabled) => patchSettings('land', { enabled })}
           summary={land.enabled ? `${mm(land.riseMm)} rise` : 'Off'}
@@ -717,7 +704,7 @@ export function LayersPanel() {
         <LayerRow
           layer="roads"
           label="Roads"
-          icon={<Road size={16} />}
+          group="roads"
           on={roads.enabled}
           onToggle={(enabled) => patchSettings('roads', { enabled })}
           summary={roads.enabled ? `${mm(roads.thicknessMm)}${roadExtras.length ? ` · ${roadExtras.join(', ')}` : ''}` : 'Off'}
@@ -730,7 +717,7 @@ export function LayersPanel() {
         <LayerRow
           layer="bridges"
           label="Bridges"
-          icon={<Bridge size={16} />}
+          group="roads"
           on={bridges.enabled}
           onToggle={(enabled) => patchSettings('bridges', { enabled })}
           summary={bridges.enabled ? `${mm(bridges.clearanceMm)} clearance` : 'Off, built as roads'}
@@ -743,7 +730,7 @@ export function LayersPanel() {
         <LayerRow
           layer="buildings"
           label="Buildings"
-          icon={<Building size={16} />}
+          group="buildings"
           on={buildings.enabled}
           onToggle={(enabled) => patchSettings('buildings', { enabled })}
           summary={buildings.enabled ? `Height ×${formatNumber(buildings.heightScale, 2)}${buildings.roofShapes ? ' · roofs' : ''}` : 'Off'}
@@ -756,7 +743,7 @@ export function LayersPanel() {
         <LayerRow
           layer="trees"
           label="Trees"
-          icon={<TreeDeciduous size={16} />}
+          group="trees"
           on={trees.enabled}
           onToggle={(enabled) => patchSettings('trees', { enabled })}
           summary={trees.enabled ? `${trees.spacingM} m spacing` : 'Off'}
@@ -769,7 +756,7 @@ export function LayersPanel() {
         <LayerRow
           layer="rim"
           label="Border rim"
-          icon={<Frame size={16} />}
+          group="rim"
           on={rim.enabled}
           onToggle={(enabled) => patchSettings('rim', { enabled })}
           summary={rim.enabled ? `${mm(rim.heightMm)} high` : 'Off'}
@@ -779,22 +766,13 @@ export function LayersPanel() {
           <RimOptions rim={rim} />
         </LayerRow>
 
-        <div className="layer layer-plain">
-          <div className="layer-head">
-            <Switch checked={settings.supports} onChange={setSupports} label="Keep ground under structures over water" />
-            <div className="layer-toggle layer-toggle-static">
-              <span className="layer-icon" aria-hidden="true">
-                <ShieldCheck size={16} />
-              </span>
-              <span className="layer-name layer-name-wrap">Keep ground under structures over water</span>
-              <HelpTip
-                label="Keep ground under structures over water"
-                text="Keeps a strip of ground under roads, buildings and bridge piers that stand in water cut from the terrain, so they have something to print on."
-              />
-            </div>
-          </div>
-        </div>
       </div>
+      <CheckField
+        label="Keep ground under structures over water"
+        checked={settings.supports}
+        onChange={setSupports}
+        help="Keeps a strip of ground under roads, buildings and bridge piers that stand in water cut from the terrain, so they have something to print on."
+      />
     </Section>
   );
 }

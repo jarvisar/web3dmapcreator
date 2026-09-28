@@ -40,11 +40,12 @@ const RELEASE_LISTING_URL = 'https://overturemaps-us-west-2.s3.us-west-2.amazona
 const RELEASE_NAME = /^\d{4}-\d{2}-\d{2}\.\d+$/;
 const LATEST_TTL_MS = 60 * 60 * 1000;
 // Releases come out about once a month, so a saved answer holds for hours.
+// Only a release named by the catalog whose index was read is saved.
 const SAVED_RELEASE_KEY = 'overture-latest-release';
 const SAVED_RELEASE_TTL_MS = 6 * 60 * 60 * 1000;
 const PROGRESS_INTERVAL_MS = 100;
-// Row groups in progress at a time. Enough to keep the shared request limit
-// busy, while a large area does not pile up downloaded chunks waiting to be
+// Row groups in progress at a time. Enough to keep the request limit busy,
+// while a large area does not pile up downloaded chunks waiting to be
 // decoded.
 const GROUPS_AT_ONCE = 8;
 
@@ -54,6 +55,10 @@ export const MAX_TYPE_BYTES = 250e6;
 export const MAX_TOTAL_BYTES = 300e6;
 
 const BASE_COLUMNS: readonly string[] = ['id', 'geometry', 'bbox'];
+
+// A model can't be built without these. When a release has no files for one
+// of the other types, that layer is left out with a warning instead.
+const ESSENTIAL_TYPES: readonly OvertureType[] = ['building', 'segment', 'water'];
 
 // Read on top of id, geometry and bbox. A column a file does not have is
 // skipped, so a schema change loses that property instead of failing.
@@ -290,33 +295,45 @@ async function releaseFromListing(): Promise<string> {
   return latestFromListing(new TextDecoder().decode(bytes));
 }
 
-async function findLatestRelease(): Promise<string> {
+async function findLatestIndex(): Promise<ReleaseIndex> {
   const saved = await loadSavedRelease();
   const now = Date.now();
-  if (saved && saved.time <= now && now - saved.time < SAVED_RELEASE_TTL_MS) return saved.release;
+  if (saved && saved.time <= now && now - saved.time < SAVED_RELEASE_TTL_MS) return getReleaseIndex(saved.release);
   const errors: unknown[] = [];
-  for (const find of [releaseFromCatalog, releaseFromListing]) {
+  for (const [find, fromCatalog] of [[releaseFromCatalog, true], [releaseFromListing, false]] as const) {
+    let release: string;
     try {
-      const release = await find();
+      release = await find();
       checkRelease(release);
-      saveRelease(release);
-      return release;
     } catch (error) {
       errors.push(error);
+      continue;
+    }
+    try {
+      const index = await getReleaseIndex(release);
+      // The listing can show a release folder before its index is published,
+      // so only the catalog's answer is saved.
+      if (fromCatalog) saveRelease(release);
+      return index;
+    } catch (error) {
+      if (!saved || saved.release === release) throw error;
+      break;
     }
   }
   // An old answer beats none: a release's files stay up for 60 days.
-  if (saved) return saved.release;
+  if (saved) return getReleaseIndex(saved.release);
   throw unavailable(errors);
 }
 
 /**
- * The newest Overture release. The answer is kept for an hour in memory and
- * six in the byte cache. When stac.overturemaps.org does not answer, S3's
- * listing of release folders is used, then an older saved answer.
+ * The index of the newest Overture release that has one. The answer is kept
+ * for an hour in memory, and the release name for six hours in the byte
+ * cache. When stac.overturemaps.org does not answer, S3's listing of release
+ * folders is used. When the new release's index can't be read, the last
+ * saved release is used instead.
  */
-export function getLatestRelease(signal?: AbortSignal): Promise<string> {
-  return memo('overture-latest', LATEST_TTL_MS, findLatestRelease, signal);
+export function getLatestIndex(signal?: AbortSignal): Promise<ReleaseIndex> {
+  return memo('overture-latest', LATEST_TTL_MS, findLatestIndex, signal);
 }
 
 function httpsHref(aws: Record<string, unknown> | undefined): string | undefined {
@@ -382,6 +399,12 @@ async function loadIndex(release: string): Promise<ReleaseIndex> {
       files = await readIndex(await fetchBytes(url, undefined, { refresh: true }));
     }
   } catch (error) {
+    if (error instanceof HttpError && (error.status === 403 || error.status === 404)) {
+      throw new Error(
+        `Could not find the file index for Overture release ${release}. The release may not be published yet, or may be too old.`,
+        { cause: error },
+      );
+    }
     throw serverTrouble(error) ? unavailable([error]) : error;
   }
   if (!files.length) throw new Error(`The Overture index for release ${release} lists no files`);
@@ -744,6 +767,18 @@ function checkBounds(bounds: GeoBounds): void {
   if (west < -180 || east > 180 || south < -90 || north > 90) throw new Error('The area bounds are outside the world');
 }
 
+/**
+ * Warnings for the requested types the release has no files for. Throws when
+ * one of them is a type the model can't be built without.
+ */
+export function checkTypes(index: ReleaseIndex, types: readonly OvertureType[]): string[] {
+  const listed = new Set(index.files.map((file) => file.type));
+  const missing = types.filter((type) => !listed.has(type));
+  const essential = missing.find((type) => ESSENTIAL_TYPES.includes(type));
+  if (essential) throw new Error(`Overture release ${index.release} has no ${OVERTURE_LABEL[essential]} data, so the model can't be built.`);
+  return missing.map((type) => `Overture release ${index.release} has no ${OVERTURE_LABEL[type]} data, so the model was built without it.`);
+}
+
 function boxMeets(box: readonly number[], bounds: GeoBounds): boolean {
   return box[0] < bounds.east && box[2] > bounds.west && box[1] < bounds.north && box[3] > bounds.south;
 }
@@ -752,6 +787,8 @@ interface OpenFile {
   type: OvertureType;
   file: IndexedFile;
   buffer: RemoteFile;
+  /** The same file read past the cache, which replaces what was cached. */
+  fresh: RemoteFile;
   plan: ReadPlan;
   /** Geometry has one value per row, so its pages can be read on their own. */
   flatGeometry: boolean;
@@ -794,6 +831,24 @@ function describe(error: unknown, signal: AbortSignal, what: string): unknown {
   return new Error(`Could not read ${what}: ${error.message}`, { cause: error });
 }
 
+/**
+ * Runs `read` on the file, and once more past the cache when what it read
+ * does not parse. Wrong cached bytes of the right length would otherwise
+ * break the area for good.
+ */
+async function withFreshRetry<T>(
+  files: { buffer: RemoteFile; fresh: RemoteFile },
+  signal: AbortSignal,
+  read: (buffer: RemoteFile) => Promise<T>,
+): Promise<T> {
+  try {
+    return await read(files.buffer);
+  } catch (error) {
+    if (signal.aborted || isDownloadError(error) || error instanceof AreaTooLargeError) throw error;
+    return read(files.fresh);
+  }
+}
+
 async function openFile(
   type: OvertureType,
   file: IndexedFile,
@@ -803,21 +858,34 @@ async function openFile(
 ): Promise<OpenFile> {
   try {
     const size = file.size > 0 ? file.size : await fetchByteLength(file.href, signal);
-    const buffer = remoteFile(file.href, size, { signal, onBytes: (bytes, cached) => tracker.add(type, bytes, cached) });
-    const metadata = await parquetMetadataAsync(buffer, { initialFetchSize: footerGuess(type, file, size) });
-    const plan = planRead(metadata, type, bounds);
-    return { type, file, buffer, plan, flatGeometry: isFlat(plan.metadata, 'geometry') };
+    const onBytes = (bytes: number, cached: boolean) => tracker.add(type, bytes, cached);
+    const files = {
+      buffer: remoteFile(file.href, size, { signal, onBytes }),
+      fresh: remoteFile(file.href, size, { signal, onBytes, refresh: true }),
+    };
+    const plan = await withFreshRetry(files, signal, async (buffer) =>
+      planRead(await parquetMetadataAsync(buffer, { initialFetchSize: footerGuess(type, file, size) }), type, bounds),
+    );
+    return { type, file, ...files, plan, flatGeometry: isFlat(plan.metadata, 'geometry') };
   } catch (error) {
     throw describe(error, signal, `the Overture ${type} file ${fileName(file)}`);
   }
 }
 
 /** First pass: every selected column but geometry, and from those the rows to keep. */
-async function readAttributes(job: Job, bounds: GeoBounds, keep: OvertureFilter | undefined, signal: AbortSignal, tracker: Tracker): Promise<void> {
+async function readAttributes(
+  job: Job,
+  buffer: RemoteFile,
+  bounds: GeoBounds,
+  keep: OvertureFilter | undefined,
+  signal: AbortSignal,
+  tracker: Tracker,
+): Promise<void> {
   const { open, group } = job;
   const { type, plan } = open;
+  job.kept = [];
   const rows = await parquetReadObjects({
-    file: open.buffer,
+    file: buffer,
     metadata: plan.metadata,
     columns: plan.columns.filter((column) => column !== 'geometry'),
     rowStart: group.rowStart,
@@ -874,12 +942,12 @@ function tryParseWkb(bytes: Uint8Array): Geometry | undefined {
 }
 
 /** Second pass: the geometry of the kept rows. */
-async function readGeometry(job: Job): Promise<{ features: OvertureFeature[]; skipped: number }> {
+async function readGeometry(job: Job, buffer: RemoteFile): Promise<{ features: OvertureFeature[]; skipped: number }> {
   const { open } = job;
   const chunk = geometryChunk(job.rowGroup);
   if (!chunk) throw new Error('a row group has no geometry chunk');
   const decoder = columnDecoder(open.plan.metadata, chunk, RAW_GEOMETRY);
-  const values = await readRows((start, end) => open.buffer.slice(start, end), decoder, job.reads);
+  const values = await readRows((start, end) => buffer.slice(start, end), decoder, job.reads);
   const features: OvertureFeature[] = [];
   let skipped = 0;
   job.kept.forEach((kept, i) => {
@@ -945,8 +1013,10 @@ function jobName(job: Job): string {
 /**
  * Downloads the Overture features of `types` whose bbox meets `bounds` and
  * that `keep` accepts. Files and row groups are read concurrently, within the
- * shared request limit. The result is in a fixed order (type, file URL, row)
+ * request limit. The result is in a fixed order (type, file URL, row)
  * whatever order the downloads finish in, and holds each id once per type.
+ * A type the release has no files for comes back empty with a warning,
+ * unless it is buildings, roads or water.
  *
  * Throws AreaTooLargeError before any geometry is downloaded when the plan
  * passes the limits, and OvertureUnavailableError when Overture's servers do
@@ -968,23 +1038,22 @@ export async function fetchOverture(options: FetchOvertureOptions): Promise<Over
   const tracker = new Tracker(types, options.onProgress);
   const readSoFar = (type: OvertureType) => tracker.stats[type].bytes;
   try {
-    let release = options.release;
-    if (release === undefined) {
+    let index: ReleaseIndex;
+    if (options.release === undefined) {
       tracker.say('Finding the latest Overture release');
-      release = await getLatestRelease(signal);
+      index = await getLatestIndex(signal);
     } else {
-      checkRelease(release);
+      tracker.say('Reading the Overture file index');
+      index = await getReleaseIndex(options.release, signal);
     }
-    tracker.say('Reading the Overture file index');
-    const index = await getReleaseIndex(release, signal);
+    const release = index.release;
+    const warnings = checkTypes(index, types);
 
     const selected: { type: OvertureType; file: IndexedFile }[] = [];
     let footers = 0;
     for (const type of types) {
-      const files = index.files.filter((file) => file.type === type);
-      if (!files.length) throw new Error(`Overture release ${release} lists no ${type} files`);
-      for (const file of files) {
-        if (!boxMeets(file.bbox, bounds)) continue;
+      for (const file of index.files) {
+        if (file.type !== type || !boxMeets(file.bbox, bounds)) continue;
         selected.push({ type, file });
         tracker.stats[type].files++;
         footers += footerGuess(type, file, file.size || DEFAULT_FOOTER_GUESS);
@@ -1019,7 +1088,7 @@ export async function fetchOverture(options: FetchOvertureOptions): Promise<Over
       GROUPS_AT_ONCE,
       async (job) => {
         try {
-          await readAttributes(job, bounds, keep, signal, tracker);
+          await withFreshRetry(job.open, signal, (buffer) => readAttributes(job, buffer, bounds, keep, signal, tracker));
           await planGeometry(job);
         } catch (error) {
           throw describe(error, signal, jobName(job));
@@ -1044,7 +1113,7 @@ export async function fetchOverture(options: FetchOvertureOptions): Promise<Over
       async (job) => {
         let result: { features: OvertureFeature[]; skipped: number };
         try {
-          result = await readGeometry(job);
+          result = await withFreshRetry(job.open, signal, (buffer) => readGeometry(job, buffer));
         } catch (error) {
           throw describe(error, signal, jobName(job));
         }
@@ -1072,7 +1141,7 @@ export async function fetchOverture(options: FetchOvertureOptions): Promise<Over
       bytes += tracker.stats[type].bytes;
     }
     tracker.finish(count);
-    return { release, bounds: { ...bounds }, features, bytes, stats: tracker.stats };
+    return { release, bounds: { ...bounds }, features, bytes, stats: tracker.stats, warnings };
   } catch (error) {
     controller.abort(error);
     throw outer?.aborted ? outer.reason : error;

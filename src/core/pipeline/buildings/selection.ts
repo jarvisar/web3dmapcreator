@@ -17,7 +17,7 @@ import {
   text,
   type Props,
 } from './heights';
-import { interiorGridPoints, pointInRings, polygonArea, ringBounds, signedArea, type Bounds } from './planar';
+import { interiorGridPoints, pointInRings, planarArea, planarBounds, signedArea, type Bounds } from './planar';
 
 // A partless building at least this much inside another building's parts is
 // that building's outline published twice. The margin only absorbs vertices
@@ -106,7 +106,7 @@ class LonLat {
 function boundsOf(rings: readonly LonLatRing[]): Bounds {
   const box: Bounds = [Infinity, Infinity, -Infinity, -Infinity];
   for (const ring of rings) {
-    const b = ringBounds(ring);
+    const b = planarBounds(ring);
     if (b[0] < box[0]) box[0] = b[0];
     if (b[1] < box[1]) box[1] = b[1];
     if (b[2] > box[2]) box[2] = b[2];
@@ -127,7 +127,7 @@ function samples(rings: readonly LonLatRing[]): Vec2[] {
       ring = rings[i];
     }
   }
-  const [minX, minY, maxX, maxY] = ringBounds(ring);
+  const [minX, minY, maxX, maxY] = planarBounds(ring);
   const spacing = Math.max(maxX - minX, maxY - minY) / 12;
   if (!(spacing > 0)) return [];
   return interiorGridPoints([ring], spacing, 200);
@@ -139,7 +139,7 @@ const polygonBoxes = new WeakMap<readonly LonLatPolygon[], Bounds[]>();
 
 function insideAny(x: number, y: number, polygons: readonly LonLatPolygon[]): boolean {
   let boxes = polygonBoxes.get(polygons);
-  if (!boxes) polygonBoxes.set(polygons, (boxes = polygons.map((polygon) => ringBounds(polygon[0]))));
+  if (!boxes) polygonBoxes.set(polygons, (boxes = polygons.map((polygon) => planarBounds(polygon[0]))));
   for (let i = 0; i < polygons.length; i++) {
     const b = boxes[i];
     if (x < b[0] || x > b[2] || y < b[1] || y > b[3]) continue;
@@ -398,7 +398,7 @@ function sparsePartsLeaveMainMass(building: SourceFeature, parts: readonly Sourc
   let total = 0;
   let covered = 0;
   for (const polygon of parentPolygons) {
-    const area = polygonArea(polygon);
+    const area = planarArea(polygon);
     const points = footprintSamples([polygon]);
     if (area <= 0 || !points.length) return false;
     total += area;

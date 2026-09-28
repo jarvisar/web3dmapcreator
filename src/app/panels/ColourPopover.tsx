@@ -145,7 +145,7 @@ export function ColourPopover({ group, anchor, onClose }: ColourPopoverProps) {
   );
 }
 
-export function isLight(hex: string): boolean {
+function isLight(hex: string): boolean {
   const value = parseInt(hex.slice(1), 16);
   const r = (value >> 16) & 255;
   const g = (value >> 8) & 255;

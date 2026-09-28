@@ -8,7 +8,7 @@ import {
   isWaterDeck,
   recessedWaterKind,
 } from './classify';
-import { hasBridgeFlag, splitSegment, slicePolyline } from './linework';
+import { splitSegment, slicePolyline } from './linework';
 import type { SourceFeature } from './source';
 
 function polygon(props: Record<string, unknown>): SourceFeature {
@@ -137,12 +137,5 @@ describe('linear referencing', () => {
     expect(piece[0]).toEqual([25, 0]);
     expect(piece[piece.length - 1]).toEqual([75, 0]);
     expect(piece).toHaveLength(3);
-  });
-
-  it('finds bridge flags on road and rail', () => {
-    expect(hasBridgeFlag({ road_flags: [{ values: ['is_bridge'], between: [0, 0.5] }] })).toBe(true);
-    expect(hasBridgeFlag({ rail_flags: [{ values: ['is_bridge'], between: null }] })).toBe(true);
-    expect(hasBridgeFlag({ road_flags: [{ values: ['is_tunnel'] }] })).toBe(false);
-    expect(hasBridgeFlag({ road_flags: null })).toBe(false);
   });
 });

@@ -24,6 +24,7 @@ import {
   ringArea,
   ringBounds,
   SCALE,
+  segmentDistance,
   type Box,
 } from './polygon';
 import { rowCrossings } from './scanline';
@@ -112,7 +113,10 @@ export function clipRegion(polygons: MultiPolygon): ClipRegion {
 export function meshSolid(solid: Solid, out: MeshBuilder, clip?: MultiPolygon | ClipRegion, stats?: MeshStats): void {
   const region = clip && !Array.isArray(clip) ? clip : clip ? clipRegion(clip) : undefined;
   if (solid.kind === 'mesh') {
-    if (region && !pointInMulti(solid.anchor[0], solid.anchor[1], region.polygons)) return;
+    // A tree can't be cut, so one crossing a section edge is left out of both
+    // sections rather than overhanging the next one. Trees are kept inside
+    // the model outline, so only the section's box needs checking.
+    if (region && (!pointInMulti(solid.anchor[0], solid.anchor[1], region.polygons) || !withinBox(solid.positions, region.box))) return;
     out.append(solid.positions, solid.indices);
     if (stats) stats.solids++;
     return;
@@ -126,11 +130,14 @@ export function meshSolid(solid: Solid, out: MeshBuilder, clip?: MultiPolygon | 
     if (!inside) polygons = intersection([solid.polygon], region.polygons);
   }
   for (const polygon of polygons) {
-    let result = meshPrism(polygon, solid, out);
+    let result = meshPrism(polygon, solid, out, false, true);
     // Rings touching at a vertex (a pinch), or a hole's corner lying on
-    // another ring's edge, which defeats both triangulators. Shrinking parts
-    // the rings, and nothing was written by the refused attempt.
-    if (result === 'pinched' || result === 'failed') {
+    // another ring's edge, which defeats both triangulators. A draped cap
+    // whose constrained triangulation failed would fall back to a flat film,
+    // and the same nudge usually lets it through. Shrinking parts the rings
+    // and moves every vertex a little, and nothing was written by the refused
+    // attempt.
+    if (result === 'pinched' || result === 'failed' || result === 'fallback') {
       result = 'ok';
       for (const piece of shrink(polygon)) {
         const r = meshPrism(piece, solid, out, true);
@@ -152,15 +159,16 @@ type Cap = { points: Vec2[]; boundaryCount: number; rings: number[][]; triangles
 
 /**
  * Mesh a single polygon as a prism. Returns 'ok', 'fallback' when the
- * constrained triangulation failed and ear clipping was used instead,
- * 'pinched' (nothing written) when rings touch at a vertex, or 'failed' when
- * nothing usable could be built.
+ * constrained triangulation failed and ear clipping was used instead (with
+ * `strict`, nothing is written then), 'pinched' (nothing written) when rings
+ * touch at a vertex, or 'failed' when nothing usable could be built.
  */
 export function meshPrism(
   polygon: Polygon,
   solid: Pick<PrismSolid, 'top' | 'bottom' | 'drape' | 'lattice'>,
   out: MeshBuilder,
   allowPinch = false,
+  strict = false,
 ): 'ok' | 'fallback' | 'pinched' | 'failed' {
   const rings = prepareRings(polygon, solid.drape);
   if (!rings) return 'failed';
@@ -173,9 +181,13 @@ export function meshPrism(
   let result: 'ok' | 'fallback' = 'ok';
   if (solid.drape > 0) {
     cap = constrainedCap(rings, solid.drape, solid.lattice, expected);
+    if (!cap && strict) return 'fallback';
     if (!cap) result = 'fallback';
   }
   if (!cap) cap = earcutCap(rings, expected);
+  // Ear clipping can go wrong around many holes close together (a harbour
+  // full of piers). The constrained triangulation of the outline alone copes.
+  if (!cap && solid.drape <= 0) cap = constrainedCap(rings, 0, undefined, expected);
   if (!cap) return 'failed';
 
   const top = solid.top;
@@ -229,6 +241,17 @@ export function meshPrism(
     }
   }
   return result;
+}
+
+function withinBox(positions: ArrayLike<number>, box: Box): boolean {
+  // Positions are float32, so allow for their rounding.
+  const slack = 1e-4;
+  for (let i = 0; i < positions.length; i += 3) {
+    const x = positions[i];
+    const y = positions[i + 1];
+    if (x < box[0] - slack || x > box[2] + slack || y < box[1] - slack || y > box[3] + slack) return false;
+  }
+  return true;
 }
 
 function evaluate(height: HeightFn | number, x: number, y: number): number {
@@ -380,8 +403,9 @@ function constrainedCap(
   const step = lattice?.step ?? spacing;
   const x0 = lattice?.x0 ?? 0;
   const y0 = lattice?.y0 ?? 0;
-  addLattice(points, ids, x0, y0, step);
-  if (points.length === boundaryCount && boundaryCount < 4) return null;
+  if (step > 0) addLattice(points, ids, x0, y0, step);
+  // A lone triangle with nothing inside it is its own cap.
+  if (points.length === boundaryCount && boundaryCount < 4) return earcutCap(rings, expected);
 
   const coords = new Float64Array(points.length * 2);
   for (let i = 0; i < points.length; i++) {
@@ -611,7 +635,7 @@ function addLattice(points: Vec2[], rings: number[][], x0: number, y0: number, s
             for (const e of list) {
               const [ax, ay] = points[edges[e]];
               const [bx, by] = points[edges[e + 1]];
-              if (distance(x, y, ax, ay, bx, by) < margin) {
+              if (segmentDistance(x, y, ax, ay, bx, by) < margin) {
                 clear = false;
                 break;
               }
@@ -622,14 +646,4 @@ function addLattice(points: Vec2[], rings: number[][], x0: number, y0: number, s
       }
     }
   }
-}
-
-function distance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const length2 = dx * dx + dy * dy;
-  let t = length2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / length2 : 0;
-  if (t < 0) t = 0;
-  else if (t > 1) t = 1;
-  return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
 }

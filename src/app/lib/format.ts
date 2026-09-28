@@ -19,11 +19,6 @@ export function formatSizePair(widthM: number, heightM: number): string {
   return `${Math.round(widthM)} × ${Math.round(heightM)} m`;
 }
 
-export function formatDistance(metres: number): string {
-  if (metres >= 1000) return `${(metres / 1000).toFixed(2)} km`;
-  return `${Math.round(metres)} m`;
-}
-
 export function formatMm(value: number): string {
   if (value >= 100) return formatInteger(value);
   if (value >= 10) return value.toFixed(0);
@@ -46,9 +41,10 @@ export function formatCount(value: number): string {
   return formatInteger(value);
 }
 
+/** Decimal units, like the download figures in the model details. */
 export function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${formatNumber(bytes / (1024 * 1024), 1)} MB`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  if (bytes >= 1e6) return `${formatNumber(bytes / 1e6, 1)} MB`;
+  if (bytes >= 1e3) return `${Math.round(bytes / 1e3)} KB`;
   return `${bytes} B`;
 }
 
@@ -63,9 +59,16 @@ export function formatSeconds(seconds: number): string {
   return formatElapsed(seconds);
 }
 
-/** Loose decimal parse: accepts commas as thousands separators and unicode minus signs. */
+/**
+ * Loose decimal parse that accepts unicode minus signs. A comma is a decimal
+ * point ("0,4" from a comma-decimal keyboard) unless it groups thousands
+ * ("5,000", "1,250.5").
+ */
 export function parseDecimal(text: string): number | null {
-  const cleaned = text.replace(/[−–﹣－]/g, '-').replace(/[\s,]/g, '').trim();
+  let cleaned = text.replace(/[−–﹣－]/g, '-').replace(/\s/g, '');
+  // "0,075" is a decimal. Grouped thousands never start with a zero.
+  const thousands = /^[-+]?[1-9]\d{0,2}(,\d{3})+(\.\d*)?$/.test(cleaned);
+  cleaned = thousands ? cleaned.replace(/,/g, '') : cleaned.replace(',', '.');
   if (!cleaned || !/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(cleaned)) return null;
   const value = Number(cleaned);
   return Number.isFinite(value) ? value : null;

@@ -129,4 +129,6 @@ export interface OvertureData {
   /** Bytes read, from the network or the cache. */
   bytes: number;
   stats: Record<OvertureType, OvertureTypeStats>;
+  /** Things the user should know about, e.g. a type the release did not have. Can be shown as they are. */
+  warnings: string[];
 }

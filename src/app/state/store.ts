@@ -7,6 +7,7 @@ import {
   DEFAULT_EXPORT,
   DEFAULT_PALETTE,
   DEFAULT_SETTINGS,
+  MIN_SECTION_MM,
   cloneSettings,
   printerByKey,
 } from '../../core/settings';
@@ -41,7 +42,6 @@ export interface ResultMeta {
   version: number;
   /** Area and settings the model was made from, to tell when it is stale. */
   key: string;
-  area: AreaSpec;
   bounds: [number, number, number, number, number, number];
   mmPerMetre: number;
   release: string;
@@ -123,7 +123,8 @@ export const DEFAULT_SECTIONS: Record<SectionKey, boolean> = {
 
 function initialState(): AppState {
   const saved = loadSaved();
-  const hashArea = readHashArea();
+  // The app keeps its own area in the hash too. Only a different hash is a share link.
+  const hashArea = typeof location !== 'undefined' && location.hash !== saved.hash ? readHashArea() : null;
   return {
     area: normalizeArea(hashArea ?? saved.area ?? DEFAULT_AREA),
     settings: saved.settings ?? cloneSettings(DEFAULT_SETTINGS),
@@ -195,14 +196,6 @@ export function setArea(next: AreaSpec | ((area: AreaSpec) => AreaSpec), options
   });
 }
 
-export function focusMapOnArea(mode: MapFocus['mode'] = 'always'): void {
-  set((state) => ({ ui: { ...state.ui, mapFocus: { seq: state.ui.mapFocus.seq + 1, mode } } }));
-}
-
-export function setPlaceName(placeName: string): void {
-  set({ placeName });
-}
-
 // -------------------------------------------------------------- settings
 
 export type SettingsSection = { [K in keyof ModelSettings]: ModelSettings[K] extends object ? K : never }[keyof ModelSettings];
@@ -221,11 +214,7 @@ export function setSupports(supports: boolean): void {
   });
 }
 
-export function resetSettingsSection(key: SettingsSection | 'supports'): void {
-  if (key === 'supports') {
-    setSupports(DEFAULT_SETTINGS.supports);
-    return;
-  }
+export function resetSettingsSection(key: SettingsSection): void {
   set((state) => {
     const settings = { ...state.settings, [key]: structuredClone(DEFAULT_SETTINGS[key]) } as ModelSettings;
     return { settings, generation: withStale(state.generation, state.area, settings) };
@@ -263,8 +252,8 @@ export function patchExport(patch: Partial<ExportSettings>): void {
     const next = { ...state.exportSettings, ...patch };
     const bed = printerByKey(next.printer);
     next.printer = bed.key;
-    next.sectionWidthMm = Math.min(bed.width, Math.max(20, next.sectionWidthMm));
-    next.sectionHeightMm = Math.min(bed.depth, Math.max(20, next.sectionHeightMm));
+    next.sectionWidthMm = Math.min(bed.width, Math.max(MIN_SECTION_MM, next.sectionWidthMm));
+    next.sectionHeightMm = Math.min(bed.depth, Math.max(MIN_SECTION_MM, next.sectionHeightMm));
     return { exportSettings: next };
   });
 }
@@ -287,11 +276,6 @@ export function setView(view: View): void {
 export function toggleSection(key: SectionKey): void {
   const sections = get().ui.sections;
   patchUi({ sections: { ...sections, [key]: !sections[key] } });
-}
-
-export function openSection(key: SectionKey): void {
-  const sections = get().ui.sections;
-  if (!sections[key]) patchUi({ sections: { ...sections, [key]: true } });
 }
 
 export function toggleLayer(key: LayerKey): void {
@@ -340,6 +324,10 @@ export function patchGeneration(patch: Partial<GenerationState>): void {
 
 export function patchExporting(patch: Partial<ExportState>): void {
   set((state) => ({ exporting: { ...state.exporting, ...patch } }));
+}
+
+export function dismissExportError(): void {
+  patchExporting({ error: null });
 }
 
 export function dismissGenerationError(): void {

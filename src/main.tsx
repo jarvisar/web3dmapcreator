@@ -1,4 +1,3 @@
-import '@fontsource-variable/inter';
 import './app/styles/base.css';
 import './app/styles/controls.css';
 import './app/styles/shell.css';

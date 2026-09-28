@@ -11,8 +11,8 @@
 import type { HeightFn } from '../../geometry/solid';
 import type { Polygon, Ring, Vec2 } from '../../types';
 import { num, positive } from '../source';
-import { lengthMetres, prop, text, type Props, type VerticalProfile } from './heights';
-import { cleanRing, EPSILON, ringCentroid, signedArea } from './planar';
+import { lengthMetres, MAXIMUM_HEIGHT_M, prop, text, type Props, type VerticalProfile } from './heights';
+import { cleanPlanarRing, EPSILON, ringCentroid, signedArea } from './planar';
 
 export type RoofKind = 'flat' | 'skillion' | 'gabled' | 'hipped' | 'pyramid' | 'dome' | 'unsupported';
 
@@ -63,6 +63,8 @@ export interface RoofProfile {
   orientation: string | null;
   /** flat, default or roof_height, with +floors or +parent_corroborated_walls where the roof sits above the walls. */
   source: string;
+  /** roof_height was skipped: taller than MAXIMUM_HEIGHT_M, or it would have lifted the top past it. */
+  implausible?: boolean;
 }
 
 export function isShaped(roof: RoofProfile): boolean {
@@ -103,6 +105,11 @@ export function resolveRoof(
   if (kind === 'unsupported') return { ...flat(`unsupported:${shape}`), kind };
 
   let roofHeight = positive(lengthMetres(prop(props, 'roof_height', 'roof:height')));
+  // Only a roof on top of floor-count walls can raise the building. Otherwise
+  // it comes out of the mapped height, or matches a parent that was checked.
+  const onTop = profile.heightSource === 'num_floors';
+  const implausible = roofHeight !== null && (onTop ? top + roofHeight : roofHeight) > MAXIMUM_HEIGHT_M;
+  if (implausible) roofHeight = null;
   const explicitRoof = roofHeight !== null;
   let source = 'roof_height';
   if (roofHeight === null) {
@@ -135,8 +142,8 @@ export function resolveRoof(
     wallTop = Math.max(top - roofHeight, profile.bottomM + MINIMUM_WALL_FRACTION * thickness);
     roofTop = top;
   }
-  if (roofTop - wallTop <= 1e-6) return flat('flat:no_room');
-  return { kind, shape, wallTopM: wallTop, roofTopM: roofTop, directionDeg: direction, orientation, source };
+  if (roofTop - wallTop <= 1e-6) return { ...flat('flat:no_room'), implausible };
+  return { kind, shape, wallTopM: wallTop, roofTopM: roofTop, directionDeg: direction, orientation, source, implausible };
 }
 
 // ------------------------------------------------------------------ geometry
@@ -167,7 +174,7 @@ export function clipRingLinear(ring: readonly Vec2[], values: readonly number[])
       output.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
     }
   }
-  return cleanRing(output, EPSILON);
+  return cleanPlanarRing(output, EPSILON);
 }
 
 /** The ridge axis u, the across axis v, and the footprint's extents along them. */

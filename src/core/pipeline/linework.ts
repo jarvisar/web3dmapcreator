@@ -190,15 +190,3 @@ export function splitSegment(
   }
   return out;
 }
-
-/** Whether any stretch of a segment is flagged a bridge. */
-export function hasBridgeFlag(props: Record<string, unknown>): boolean {
-  for (const field of FLAG_FIELDS) {
-    for (const rule of rules(props[field])) {
-      const values = rule.values;
-      if (Array.isArray(values) && values.includes('is_bridge')) return true;
-      if (values === 'is_bridge') return true;
-    }
-  }
-  return false;
-}

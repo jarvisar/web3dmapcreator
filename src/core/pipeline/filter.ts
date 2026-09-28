@@ -18,6 +18,7 @@ export function rowFilter(settings: ModelSettings, bounds: GeoBounds): RowFilter
     ((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / selection > MAXIMUM_EXTENT_RATIO;
   const trees = settings.trees.enabled;
   const mappedTrees = trees && settings.trees.mapped;
+  const forestTrees = trees && settings.trees.forestScatter;
   const surfaces = settings.land.enabled;
   const decks = settings.supports;
 
@@ -39,18 +40,18 @@ export function rowFilter(settings: ModelSettings, bounds: GeoBounds): RowFilter
         if (decks && (WATER_DECK.has(cls) || WATER_DECK.has(subtype))) return true;
         const category = LAND_CLASS[cls] ?? LAND_CLASS[subtype];
         if (!category || regional(bbox)) return false;
-        return surfaces || (trees && category === 'forest');
+        return surfaces || (forestTrees && category === 'forest');
       }
       case 'land_use': {
         if (decks && (WATER_DECK.has(cls) || WATER_DECK.has(subtype))) return true;
         const category = LAND_USE_CLASS[cls] ?? LAND_USE_CLASS[subtype];
         if (!category || regional(bbox)) return false;
-        return surfaces || (trees && category === 'forest');
+        return surfaces || (forestTrees && category === 'forest');
       }
       case 'land_cover': {
         const category = LAND_COVER_SUBTYPE[subtype] ?? LAND_COVER_SUBTYPE[cls];
         if (!category || regional(bbox)) return false;
-        return surfaces || (trees && settings.trees.landCoverScatter && category === 'forest');
+        return surfaces || (forestTrees && settings.trees.landCoverScatter && category === 'forest');
       }
       case 'infrastructure':
         if (subtype === 'airport') {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { HeightField, interiorPoints, lineCrossings } from './heightfield';
+import { HeightField, interiorPoints } from './heightfield';
 
 describe('HeightField', () => {
   it('samples bilinearly and clamps outside the grid', () => {
@@ -51,17 +51,13 @@ describe('HeightField', () => {
     const points: [number, number][] = [[1, 0], [2, 0], [9, 0], [4, 0], [5, 0]];
     expect(field.percentileOver(points, 0.5)).toBe(4);
     expect(field.minOver(points)).toBe(1);
-    expect(field.maxOver(points)).toBe(9);
+    expect(field.min()).toBe(0);
+    expect(field.max()).toBe(10);
   });
 });
 
-describe('scanline helpers', () => {
-  it('counts a vertex on the scanline once', () => {
-    const diamond = [[[0, -1], [1, 0], [0, 1], [-1, 0]] as [number, number][]];
-    expect(lineCrossings(diamond, 0)).toEqual([-1, 1]);
-  });
-
-  it('places interior points on a regular grid', () => {
+describe('interiorPoints', () => {
+  it('places points on a regular grid', () => {
     const square = [[[0, 0], [4, 0], [4, 4], [0, 4]] as [number, number][]];
     expect(interiorPoints(square, 1)).toHaveLength(16);
     expect(interiorPoints(square, 1, 5)).toHaveLength(5);

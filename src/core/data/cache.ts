@@ -3,13 +3,18 @@
 // no IndexedDB (Node, some private windows), a full disk or a broken database
 // the data is simply downloaded again. Overture file URLs include the release,
 // so a cached range never goes stale.
+//
+// The page and the worker each load their own copy of this module, with their
+// own connection to the same database. Either one can clear it while the
+// other is using it.
 
 export interface ByteCache {
   get(key: string): Promise<ArrayBuffer | undefined>;
   put(key: string, data: ArrayBuffer): Promise<void>;
 }
 
-export const DEFAULT_CACHE_LIMIT = 400e6;
+/** Writes past this many bytes evict the least recently used entries. */
+export const CACHE_LIMIT = 400e6;
 
 const DB_NAME = 'city-model-downloads';
 const DB_VERSION = 1;
@@ -28,9 +33,11 @@ export interface CacheEntry {
   used: number;
 }
 
-let limit = DEFAULT_CACHE_LIMIT;
 let opening: Promise<IDBDatabase | null> | null = null;
-// Bytes stored, measured on first write and kept up to date after that.
+let connection: IDBDatabase | null = null;
+// Bytes stored, measured on first write and kept up to date after that. The
+// other thread's writes and clears make it drift, which only means an extra
+// trim that measures again.
 let stored: number | null = null;
 // Reads only record their time here. It is written in batches.
 const touched = new Map<string, number>();
@@ -57,15 +64,13 @@ function openDb(): Promise<IDBDatabase | null> {
     }
     let settled = false;
     const finish = (db: IDBDatabase | null) => {
-      if (settled) {
-        db?.close();
-        return;
-      }
+      if (settled) return;
       settled = true;
       clearTimeout(timer);
       resolve(db);
     };
     // A database held open by an old version in another tab can block forever.
+    // Callers go without the cache until then, and a late open is still used.
     const timer = setTimeout(() => finish(null), OPEN_TIMEOUT_MS);
     try {
       const request = factory.open(DB_NAME, DB_VERSION);
@@ -76,12 +81,16 @@ function openDb(): Promise<IDBDatabase | null> {
       };
       request.onsuccess = () => {
         const db = request.result;
+        // Deleting the database (from the other thread, or the browser's site
+        // data settings) closes this connection. The next use opens a new one.
         db.onversionchange = () => {
           db.close();
-          opening = null;
-          stored = null;
+          forget(db);
         };
-        finish(db);
+        db.onclose = () => forget(db);
+        connection = db;
+        if (settled) opening = Promise.resolve(db);
+        else finish(db);
       };
       request.onerror = () => finish(null);
       request.onblocked = () => finish(null);
@@ -90,6 +99,14 @@ function openDb(): Promise<IDBDatabase | null> {
     }
   });
   return opening;
+}
+
+function forget(db: IDBDatabase): void {
+  // A newer connection may have opened since.
+  if (connection !== db) return;
+  connection = null;
+  opening = null;
+  stored = null;
 }
 
 function result<T>(request: IDBRequest<T>): Promise<T> {
@@ -120,9 +137,12 @@ function finished(tx: IDBTransaction): Promise<void> {
       clearTimeout(timer);
       resolve();
     };
-    tx.onerror = () => {
+    tx.onerror = (event) => {
       clearTimeout(timer);
-      reject(tx.error);
+      // While a request's error bubbles up, tx.error is still null. It is only
+      // set once the transaction aborts.
+      const source = event.target as { error?: DOMException | null } | null;
+      reject(source?.error ?? tx.error ?? new Error('IndexedDB transaction failed'));
     };
     tx.onabort = () => {
       clearTimeout(timer);
@@ -214,11 +234,11 @@ async function writeTouches(): Promise<void> {
 
 function put(key: string, data: ArrayBuffer): Promise<void> {
   // One download may not push out more than a quarter of everything else.
-  if (data.byteLength > limit / 4) return Promise.resolve();
+  if (data.byteLength > CACHE_LIMIT / 4) return Promise.resolve();
   return serial(async () => {
     const db = await openDb();
     if (!db) return;
-    stored ??= (await readEntries(db)).reduce((sum, entry) => sum + entry.size, 0);
+    const before = (stored ??= (await readEntries(db)).reduce((sum, entry) => sum + entry.size, 0));
     try {
       const tx = db.transaction([DATA, ENTRIES], 'readwrite');
       tx.objectStore(DATA).put(data, key);
@@ -227,10 +247,10 @@ function put(key: string, data: ArrayBuffer): Promise<void> {
       stored += data.byteLength;
     } catch (error) {
       // Out of quota: make room for later writes instead of retrying this one.
-      if (isQuotaError(error)) await trim(db, stored / 2);
+      if (isQuotaError(error)) await trim(db, before / 2);
       return;
     }
-    if (stored > limit) await trim(db, limit * TRIM_TO);
+    if (stored > CACHE_LIMIT) await trim(db, CACHE_LIMIT * TRIM_TO);
   });
 }
 
@@ -260,20 +280,6 @@ export function clearCache(): Promise<void> {
     tx.objectStore(ENTRIES).clear();
     await finished(tx);
     stored = 0;
-  });
-}
-
-/**
- * Size limit for writes made from this thread (the page and the worker each
- * load their own copy of this module). Trims right away when it is exceeded.
- */
-export function setCacheLimit(bytes: number): Promise<void> {
-  limit = Math.max(0, bytes);
-  return serial(async () => {
-    const db = await openDb();
-    if (!db) return;
-    stored ??= (await readEntries(db)).reduce((sum, entry) => sum + entry.size, 0);
-    if (stored > limit) await trim(db, limit * TRIM_TO);
   });
 }
 

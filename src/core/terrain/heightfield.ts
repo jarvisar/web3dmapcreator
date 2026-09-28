@@ -6,7 +6,7 @@
 
 import type { Box } from '../geometry/polygon';
 import { rowCrossings } from '../geometry/scanline';
-import type { Polygon, Ring, Vec2 } from '../types';
+import type { Polygon, Vec2 } from '../types';
 
 export class HeightField {
   readonly minX: number;
@@ -58,18 +58,6 @@ export class HeightField {
 
   get maxY(): number {
     return this.minY + (this.rows - 1) * this.step;
-  }
-
-  nodeX(c: number): number {
-    return this.minX + c * this.step;
-  }
-
-  nodeY(r: number): number {
-    return this.minY + r * this.step;
-  }
-
-  clone(): HeightField {
-    return new HeightField(this.minX, this.minY, this.step, this.cols, this.rows, this.values.slice());
   }
 
   min(): number {
@@ -189,12 +177,6 @@ export class HeightField {
     return Number.isFinite(m) ? m : 0;
   }
 
-  maxOver(points: Iterable<Vec2>): number {
-    let m = -Infinity;
-    for (const [x, y] of points) m = Math.max(m, this.heightAt(x, y));
-    return Number.isFinite(m) ? m : 0;
-  }
-
   /** An order statistic of the height over points: 0.5 is the median. */
   percentileOver(points: Iterable<Vec2>, fraction: number): number {
     const samples: number[] = [];
@@ -203,23 +185,6 @@ export class HeightField {
     samples.sort((a, b) => a - b);
     return samples[Math.floor(Math.max(0, Math.min(1, fraction)) * (samples.length - 1))];
   }
-}
-
-/** Sorted x positions where the horizontal line at `y` crosses the polygon's edges. */
-export function lineCrossings(polygon: Polygon | Ring[], y: number): number[] {
-  const xs: number[] = [];
-  for (const ring of polygon) {
-    for (let i = 0, n = ring.length, j = n - 1; i < n; j = i++) {
-      const [x1, y1] = ring[j];
-      const [x2, y2] = ring[i];
-      // Half-open rule so a vertex on the line is counted once.
-      if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
-        xs.push(x1 + ((y - y1) / (y2 - y1)) * (x2 - x1));
-      }
-    }
-  }
-  xs.sort((a, b) => a - b);
-  return xs;
 }
 
 /** Points on a regular grid inside a polygon, `spacing` apart. */

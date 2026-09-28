@@ -92,7 +92,8 @@ export function Popover({ anchor, open, onClose, children, placement = 'bottom-s
       style={
         position
           ? { left: position.left, top: position.top, maxHeight: position.maxHeight }
-          : { left: -9999, top: 0, visibility: 'hidden' }
+          : // Not visibility: hidden, which would stop the focus below from landing.
+            { left: -9999, top: 0, opacity: 0 }
       }
     >
       {children}

@@ -1,4 +1,5 @@
-import { CircleCheck, Ruler, TriangleAlert } from 'lucide-react';
+import { CircleCheck, TriangleAlert } from 'lucide-react';
+import { BAMBU_MAX_PLATES, MAX_SECTIONS } from '../../core/export/sections';
 import { effectiveScale } from '../../core/geo/area';
 import { PRINTERS } from '../../core/settings';
 import type { Printer } from '../../core/settings';
@@ -12,7 +13,6 @@ import { patchExport, patchSettings, useApp } from '../state/store';
 import { Section } from './Section';
 
 const RATIOS = [5000, 10000, 14286, 25000, 50000];
-const MAX_PLATES = 36;
 
 function ratioScale(ratio: number): number {
   // 1:14,286 is the add-on's 0.07 mm per metre exactly.
@@ -21,7 +21,7 @@ function ratioScale(ratio: number): number {
 
 const VENDORS: Printer['vendor'][] = ['Bambu Lab', 'Prusa', 'Other'];
 
-export function printerOptions() {
+function printerOptions() {
   return VENDORS.map((vendor) => (
     <optgroup key={vendor} label={vendor}>
       {PRINTERS.filter((printer) => printer.vendor === vendor).map((printer) => (
@@ -33,7 +33,7 @@ export function printerOptions() {
   ));
 }
 
-export function fitSummary(fit: BedFit): string {
+function fitSummary(fit: BedFit): string {
   if (fit.fits) return `fits the ${fit.printer.model.replace(/^Bambu Lab /, '')}`;
   return `${fit.plates} plates`;
 }
@@ -41,13 +41,15 @@ export function fitSummary(fit: BedFit): string {
 export function PrintPanel() {
   const area = useApp((state) => state.area);
   const scale = useApp((state) => state.settings.scale);
-  const terrain = useApp((state) => state.settings.terrain);
+  const baseThicknessMm = useApp((state) => state.settings.terrain.baseThicknessMm);
   const roads = useApp((state) => state.settings.roads);
   const settings = useApp((state) => state.settings);
   const exportSettings = useApp((state) => state.exportSettings);
   const fit = bedFit(area, settings, exportSettings);
   const mmPerMetre = effectiveScale(area, scale);
   const tiny = Math.max(fit.width, fit.depth) < 25;
+  const bambu = exportSettings.format === 'bambu';
+  const maxPlates = bambu ? BAMBU_MAX_PLATES : MAX_SECTIONS;
 
   const summary = `${formatRatio(mmPerMetre)} · ${formatMmPair(fit.width, fit.depth)} · ${fitSummary(fit)}`;
 
@@ -55,7 +57,6 @@ export function PrintPanel() {
     <Section
       id="print"
       title="Print size"
-      icon={<Ruler size={16} />}
       summary={summary}
       badge={!fit.fits ? <span className="badge-dot badge-dot-warning" title="Larger than the bed" /> : undefined}
     >
@@ -156,11 +157,11 @@ export function PrintPanel() {
             <CircleCheck size={15} aria-hidden="true" />
             {fit.rotated ? 'Fits the bed when turned 90°.' : 'Fits the bed.'}
           </p>
-        ) : fit.plates <= MAX_PLATES ? (
+        ) : fit.plates <= maxPlates ? (
           <div className="fit-status">
             <TriangleAlert size={15} aria-hidden="true" />
             <span>
-              Larger than the bed. Split it into {fit.plates} plates ({fit.cols} × {fit.rows}) or reduce the scale.
+              Larger than the bed. Split it into {fit.plates} plates ({fit.cols} × {fit.rows} grid) or reduce the scale.
               {!exportSettings.multiPlate && (
                 <>
                   {' '}
@@ -174,7 +175,9 @@ export function PrintPanel() {
         ) : (
           <p className="fit-status">
             <TriangleAlert size={15} aria-hidden="true" />
-            Too large even for {MAX_PLATES} plates. Reduce the scale or the area.
+            {bambu
+              ? `Too large even for ${BAMBU_MAX_PLATES} plates, the most a Bambu Studio project holds. Reduce the scale or the area.`
+              : `Too large even for ${MAX_SECTIONS} sections. Reduce the scale or the area.`}
           </p>
         )}
       </div>
@@ -182,7 +185,7 @@ export function PrintPanel() {
 
       <NumberField
         label="Base thickness"
-        value={terrain.baseThicknessMm}
+        value={baseThicknessMm}
         onChange={(baseThicknessMm) => patchSettings('terrain', { baseThicknessMm })}
         min={0.1}
         max={20}
@@ -190,18 +193,6 @@ export function PrintPanel() {
         decimals={2}
         unit="mm"
         help="Solid base below the lowest point of the terrain."
-      />
-      <NumberField
-        label="Terrain exaggeration"
-        value={terrain.exaggeration}
-        onChange={(exaggeration) => patchSettings('terrain', { exaggeration })}
-        min={0}
-        max={10}
-        step={0.1}
-        decimals={2}
-        unit="×"
-        disabled={!terrain.elevation}
-        help="Multiplies real height differences in the terrain. 1 is true to scale. Flat cities often look better at 1.5 to 3."
       />
     </Section>
   );

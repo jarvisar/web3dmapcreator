@@ -16,11 +16,17 @@ describe('sectionGrid', () => {
     expect(cells[0].bounds[2]).toBe(cells[1].bounds[0]);
     expect(cells[1].bounds[2]).toBe(cells[2].bounds[0]);
     expect(cells[0].bounds[1]).toBe(cells[3].bounds[3]);
-    expect(new Set(cells.map((c) => c.tolerance)).size).toBe(1);
     expect(cells[0].name).toBe('Section R1 C1');
     // Rows run north to south.
     expect(cells[0].bounds[3]).toBe(123.8);
     expect(cells[5].bounds).toEqual([cells[5].bounds[0], -123.8, 237.3, cells[5].bounds[3]]);
+  });
+
+  it('does not add a section for float noise', () => {
+    // 3 km and 6 km at 0.07 mm/m
+    expect(sectionGrid([0, 0, 3000 * 0.07, 3000 * 0.07], 210, 210)).toHaveLength(1);
+    expect(sectionGrid([0, 0, 6000 * 0.07, 6000 * 0.07], 210, 210)).toHaveLength(4);
+    expect(sectionGrid([0, 0, 210.01, 100], 210, 210)).toHaveLength(2);
   });
 
   it('takes custom limits and bed sizes and rejects bad input', () => {
@@ -39,7 +45,9 @@ describe('sectionGrid', () => {
       [[0, 0, 10000, 10000], 210, 210],
     ];
     for (const [bounds, width, height] of bad) expect(() => sectionGrid(bounds, width, height)).toThrow();
-    expect(() => sectionGrid([0, 0, 10000, 10000], 210, 210)).toThrow(/at most 36 plates/);
+    expect(() => sectionGrid([0, 0, 10000, 10000], 210, 210)).toThrow(/48 x 48 grid/);
+    // Bambu's 36-plate limit is the Bambu writer's business, not the grid's.
+    expect(sectionGrid([0, 0, 1680, 1680], 210, 210)).toHaveLength(64);
     expect(() => sectionGrid([0, 0, 1, 1], 210, 210, 0, 256)).toThrow(/positive/);
   });
 });

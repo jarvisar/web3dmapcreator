@@ -70,6 +70,8 @@ const STAT_KEYS = [
   'duplicate_outlines_suppressed',
   'buildings_rejected_geometry',
   'buildings_invalid_vertical_interval',
+  'building_heights_implausible',
+  'roof_heights_implausible',
   'rejected_too_narrow',
   'rejected_too_slender',
   'buildings_raised_to_minimum',
@@ -350,6 +352,7 @@ export async function buildBuildings(
     }
     const props = feature.props;
     const profile = resolveVerticalProfile(props, floorHeightM, defaultHeightM);
+    if (profile.implausible) stat('building_heights_implausible');
     if (profile.thicknessM <= 0) {
       stat('buildings_invalid_vertical_interval');
       continue;
@@ -367,6 +370,7 @@ export async function buildBuildings(
     let narrow = false;
     let slender = false;
     let emitted = false;
+    let implausibleRoof = false;
 
     for (let m = 0; m < footprint.masses.length; m++) {
       const mass = footprint.masses[m];
@@ -387,6 +391,7 @@ export async function buildBuildings(
       let top = terrain + vertical(profile.topM);
       const bottom = terrain + vertical(profile.bottomM);
       const roof = resolveRoof(props, profile, isPart, parentTopM, projection.metres(widthMm));
+      if (roof.implausible) implausibleRoof = true;
       // The ceiling is the lowest point of the finished top, which a draped
       // underside must stay below where the hill rises over the mass. The
       // peak is its highest point.
@@ -441,6 +446,7 @@ export async function buildBuildings(
       if (grounded) groundPieces.push(...mass.pieces);
     }
 
+    if (implausibleRoof) stat('roof_heights_implausible');
     if (!emitted) {
       stat(narrow ? 'rejected_too_narrow' : slender ? 'rejected_too_slender' : 'buildings_rejected_geometry');
       continue;

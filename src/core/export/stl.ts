@@ -4,16 +4,16 @@
 // lowest point of the whole export at z = 0, so a slicer that loads a
 // section's files together as one multipart object keeps them aligned.
 
-import { COLOUR_GROUPS, type Palette } from '../settings';
-import type { ColourGroup, MeshPart, Plate } from '../types';
-import { FilamentTable, checkPart, emptyExtents, mergeExtents, partGroup, preparePlates, triangleCount } from './common';
+import type { MeshPart } from '../types';
+import { filamentUse, triangleCount, type PreparedModel, type PreparedPlate } from './common';
 import { asciiBytes } from './format';
-import { ZipWriter, type ZipEntry } from './zip';
+import { BlobBuilder, ZipWriter } from './zip';
 
 export const STL_HEADER = 'Jarvizar City Model - (c) OpenStreetMap contributors, Overture Maps Foundation';
+const MIME_STL = 'model/stl';
 const RECORD = 50;
 const MAX_TRIANGLES = 0xffffffff;
-// Records per chunk streamed into a ZIP entry, about 1 MB.
+// Records per streamed chunk, about 1 MB.
 const CHUNK_RECORDS = 20000;
 
 /** The 80-byte header: ASCII, NUL padded, never starting with "solid". */
@@ -78,34 +78,15 @@ function plateOffset(bounds: [number, number, number, number], bottom: number): 
   return [-(west + east) / 2, -(south + north) / 2, -bottom];
 }
 
-/** Every part of one plate in one file: XY centred on the plate bounds, lowest point at z = 0. */
-export function writeStl(plate: Plate): Uint8Array {
-  if (!plate.parts.length) throw new Error(`${plate.name}: a plate needs at least one part`);
-  const extents = emptyExtents();
-  for (const part of plate.parts) mergeExtents(extents, checkPart(part));
-  const total = plate.parts.reduce((sum, part) => sum + triangleCount(part), 0);
-  checkCount(total);
-  const out = new Uint8Array(84 + RECORD * total);
-  out.set(stlHeader());
-  const view = new DataView(out.buffer);
-  view.setUint32(80, total, true);
-  const offset = plateOffset(plate.bounds, extents.minZ);
-  let at = 84;
-  for (const part of plate.parts) {
-    const n = triangleCount(part);
-    fillRecords(view, at, part, 0, n, offset);
-    at += n * RECORD;
-  }
-  return out;
-}
-
-function streamFile(entry: ZipEntry, parts: MeshPart[], offset: Offset, scratch: Uint8Array): void {
+// One binary STL in chunks. The sink must be done with a chunk when it
+// returns: `scratch` is reused.
+function streamStl(sink: (chunk: Uint8Array) => void, parts: MeshPart[], offset: Offset, scratch: Uint8Array): void {
   const total = parts.reduce((sum, part) => sum + triangleCount(part), 0);
   checkCount(total);
   const head = new Uint8Array(84);
   head.set(stlHeader());
   new DataView(head.buffer).setUint32(80, total, true);
-  entry.bytes(head);
+  sink(head);
   const view = new DataView(scratch.buffer, scratch.byteOffset, scratch.byteLength);
   const capacity = Math.floor(scratch.length / RECORD);
   let used = 0;
@@ -117,12 +98,27 @@ function streamFile(entry: ZipEntry, parts: MeshPart[], offset: Offset, scratch:
       used += take;
       t += take;
       if (used === capacity) {
-        entry.bytes(scratch.subarray(0, used * RECORD));
+        sink(scratch.subarray(0, used * RECORD));
         used = 0;
       }
     }
   }
-  if (used) entry.bytes(scratch.subarray(0, used * RECORD));
+  if (used) sink(scratch.subarray(0, used * RECORD));
+}
+
+/** Every part of one plate in one file: XY centred on the plate bounds, lowest point at z = 0. */
+export function writeStl(plate: PreparedPlate): Blob {
+  const out = new BlobBuilder();
+  const parts = plate.parts.map((p) => p.part);
+  const offset = plateOffset(plate.bounds, plate.extents.minZ);
+  // The builder keeps its chunks, so each one is copied out of the scratch buffer.
+  streamStl((chunk) => out.push(chunk.slice()), parts, offset, new Uint8Array(CHUNK_RECORDS * RECORD));
+  return out.finish(MIME_STL);
+}
+
+function zipStl(zip: ZipWriter, name: string, parts: MeshPart[], offset: Offset, scratch: Uint8Array): void {
+  const entry = zip.entry(name);
+  streamStl((chunk) => entry.bytes(chunk), parts, offset, scratch);
   entry.close();
 }
 
@@ -150,25 +146,11 @@ export interface StlZipOptions {
  * section, and the label names the colour groups printed in it.
  * Combined, each plate is one `<base>[_R1C1].stl`.
  */
-export function writeStlZip(plates: Plate[], palette: Palette, base: string, options: StlZipOptions = {}): Uint8Array {
-  const model = preparePlates(plates, palette);
+export function writeStlZip(model: PreparedModel, base: string, options: StlZipOptions = {}): Blob {
   const bottom = model.extents.minZ;
   const stem = fileStem(base);
-  const filaments = new FilamentTable();
-  const groups = new Map<number, Set<ColourGroup>>();
-  const slots = model.plates.map((plate) =>
-    plate.parts.map((p) => {
-      const slot = filaments.slot(p.colour);
-      if (!groups.has(slot)) groups.set(slot, new Set());
-      groups.get(slot)!.add(partGroup(p.part));
-      return slot;
-    }),
-  );
-  const digits = String(filaments.filaments.length).length;
-  const labels = new Map<number, string>();
-  for (const [slot, used] of groups) {
-    labels.set(slot, COLOUR_GROUPS.filter((g) => used.has(g.key)).map((g) => g.label.replace(/\s+/g, '-')).join('+'));
-  }
+  const { filaments, slots, labels } = filamentUse(model);
+  const digits = String(filaments.length).length;
   const tags = model.plates.length > 1 ? uniqueTags(model.plates.map((p, i) => sectionTag(p.name, i))) : null;
 
   const zip = new ZipWriter();
@@ -178,13 +160,14 @@ export function writeStlZip(plates: Plate[], palette: Palette, base: string, opt
     const offset = plateOffset(plate.bounds, bottom);
     const parts = plate.parts.map((p) => p.part);
     if (options.combined) {
-      streamFile(zip.entry(`${name}.stl`), parts, offset, scratch);
+      zipStl(zip, `${name}.stl`, parts, offset, scratch);
       return;
     }
     for (const slot of [...new Set(slots[i])].sort((a, b) => a - b)) {
-      const { hex } = filaments.filaments[slot - 1];
-      const file = `${name}_${String(slot).padStart(digits, '0')}_${labels.get(slot)}_${hex.slice(1)}.stl`;
-      streamFile(zip.entry(file), parts.filter((_, k) => slots[i][k] === slot), offset, scratch);
+      const { hex } = filaments[slot - 1];
+      const label = labels[slot - 1].map((l) => l.replace(/\s+/g, '-')).join('+');
+      const file = `${name}_${String(slot).padStart(digits, '0')}_${label}_${hex.slice(1)}.stl`;
+      zipStl(zip, file, parts.filter((_, k) => slots[i][k] === slot), offset, scratch);
     }
   });
   return zip.finish();

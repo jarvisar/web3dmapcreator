@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { lineCrossings } from '../terrain/heightfield';
 import type { Vec2 } from '../types';
 import { rowCrossings } from './scanline';
 
@@ -11,7 +10,25 @@ function random(seed: number) {
   };
 }
 
+// The plain one-row scan rowCrossings has to agree with.
+function lineCrossings(rings: Vec2[][], y: number): number[] {
+  const xs: number[] = [];
+  for (const ring of rings) {
+    for (let i = 0, n = ring.length, j = n - 1; i < n; j = i++) {
+      const [x1, y1] = ring[j];
+      const [x2, y2] = ring[i];
+      if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) xs.push(x1 + ((y - y1) / (y2 - y1)) * (x2 - x1));
+    }
+  }
+  return xs.sort((a, b) => a - b);
+}
+
 describe('rowCrossings', () => {
+  it('counts a vertex on the row once', () => {
+    const diamond: Vec2[][] = [[[0, -1], [1, 0], [0, 1], [-1, 0]]];
+    expect(rowCrossings(diamond, 0, 1, 0, 1)).toEqual([[-1, 1]]);
+  });
+
   it('matches the per-row scan on random rings, including vertices on the rows', () => {
     const next = random(7);
     for (let trial = 0; trial < 50; trial++) {

@@ -34,13 +34,17 @@ export function plate(name: string, parts: MeshPart[], bounds: [number, number, 
   return { name, parts, bounds };
 }
 
-export function unzip(data: Uint8Array): Record<string, Uint8Array> {
-  return unzipSync(data);
+export async function blobBytes(blob: Blob): Promise<Uint8Array> {
+  return new Uint8Array(await blob.arrayBuffer());
 }
 
-export function unzipText(data: Uint8Array): Record<string, string> {
+export async function unzip(data: Blob): Promise<Record<string, Uint8Array>> {
+  return unzipSync(await blobBytes(data));
+}
+
+export async function unzipText(data: Blob): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
-  for (const [name, bytes] of Object.entries(unzipSync(data))) out[name] = strFromU8(bytes);
+  for (const [name, bytes] of Object.entries(await unzip(data))) out[name] = strFromU8(bytes);
   return out;
 }
 

@@ -58,8 +58,3 @@ export function signedVolume(positions: ArrayLike<number>, indices: ArrayLike<nu
   }
   return volume / 6;
 }
-
-export function isClosed(positions: ArrayLike<number>, indices: ArrayLike<number>): boolean {
-  const report = edgeReport(indices, positions.length / 3);
-  return report.open === 0 && report.repeated === 0;
-}

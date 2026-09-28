@@ -6,10 +6,12 @@ import { formatAreaHash, parseAreaHash } from './shareLink';
 import { setArea, useApp } from './store';
 
 let started = false;
+let written = '';
 
 export function writeHashNow(): void {
   const hash = formatAreaHash(useApp.getState().area);
   if (location.hash !== hash) history.replaceState(history.state, '', hash);
+  written = hash;
 }
 
 export function startSync(): void {
@@ -34,17 +36,28 @@ export function startSync(): void {
       state.ui.mapHintDismissed !== previous.ui.mapHintDismissed
     ) {
       clearTimeout(saveTimer);
-      saveTimer = window.setTimeout(() => saveState(useApp.getState()), 300);
+      saveTimer = window.setTimeout(() => saveState(useApp.getState(), written), 300);
     }
     if (state.area !== previous.area) {
       clearTimeout(hashTimer);
-      hashTimer = window.setTimeout(writeHashNow, 400);
+      hashTimer = window.setTimeout(() => {
+        writeHashNow();
+        // The saved copy has to know this hash, or a reload reads it as a share link.
+        saveState(useApp.getState(), written);
+      }, 400);
     }
   });
 
-  window.addEventListener('pagehide', () => {
+  // The URL keeps whatever hash was written last, even if a newer one was
+  // still waiting, so save that one to recognise it after a reload.
+  const flush = () => {
     clearTimeout(saveTimer);
-    saveState(useApp.getState());
+    saveState(useApp.getState(), written);
+  };
+  window.addEventListener('pagehide', flush);
+  // Phones can discard a background tab without a pagehide.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush();
   });
 
   // A link pasted into the address bar of an open tab.

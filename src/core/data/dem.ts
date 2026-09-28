@@ -194,6 +194,8 @@ export interface DemProgress {
   tilesTotal: number;
   /** Bytes read so far, from the network or the cache. */
   bytes: number;
+  /** The part of `bytes` that came from the network. */
+  downloaded: number;
 }
 
 export interface FetchDemOptions {
@@ -231,6 +233,7 @@ export async function fetchDem(options: FetchDemOptions): Promise<DemMosaic> {
   let used = 0;
   let missing = 0;
   let bytes = 0;
+  let downloaded = 0;
   let last = -Infinity;
   const report = (force = false) => {
     if (!options.onProgress) return;
@@ -238,7 +241,7 @@ export async function fetchDem(options: FetchDemOptions): Promise<DemMosaic> {
     if (!force && now - last < PROGRESS_INTERVAL_MS) return;
     last = now;
     const done = used + missing;
-    options.onProgress({ message: `Downloading elevation tiles (${done}/${total})`, tilesDone: done, tilesTotal: total, bytes });
+    options.onProgress({ message: `Downloading elevation tiles (${done}/${total})`, tilesDone: done, tilesTotal: total, bytes, downloaded });
   };
 
   const outer = options.signal;
@@ -248,8 +251,9 @@ export async function fetchDem(options: FetchDemOptions): Promise<DemMosaic> {
   const forward = () => controller.abort(outer?.reason);
   outer?.addEventListener('abort', forward, { once: true });
   const signal = controller.signal;
-  const onBytes = (count: number) => {
+  const onBytes = (count: number, fromCache: boolean) => {
     bytes += count;
+    if (!fromCache) downloaded += count;
     report();
   };
 

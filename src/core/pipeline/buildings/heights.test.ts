@@ -62,6 +62,16 @@ describe('absolute heights', () => {
     expect(lengthMetres([20, 40])).toBeNull();
   });
 
+  it('reads heights and floor counts past any real building as missing', () => {
+    const typo = resolveVerticalProfile({ height: 3000, num_floors: 12 }, 3, 10);
+    expect([typo.topM, typo.heightSource, typo.implausible]).toEqual([36, 'num_floors', true]);
+    const floors = resolveVerticalProfile({ num_floors: 900, class: 'office' }, 3, 10);
+    expect([floors.topM, floors.heightSource]).toEqual([20, 'class_default:office']);
+    const base = resolveVerticalProfile({ height: 30, min_height: 2500 }, 3, 10);
+    expect([base.bottomM, base.minHeightSource]).toEqual([0, 'ground']);
+    expect(resolveVerticalProfile({ height: 828, num_floors: 163 }, 3, 10).implausible).toBe(false);
+  });
+
   it('treats OSM levels as top levels, not added to the minimum', () => {
     const profile = resolveVerticalProfile({ 'building:levels': 10, 'building:min_level': 8 }, 3, 10);
     expect([profile.bottomM, profile.topM]).toEqual([24, 30]);

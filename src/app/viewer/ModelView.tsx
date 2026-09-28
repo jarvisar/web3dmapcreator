@@ -17,7 +17,7 @@ import { Tooltip } from '../components/HelpTip';
 import { COARSE_QUERY, DARK_QUERY, downloadBlob, prefersDark, useMediaQuery } from '../lib/browser';
 import { formatCount, formatMm, formatRatio, formatSeconds, capitalise } from '../lib/format';
 import { generateModel } from '../state/actions';
-import { fileBase } from '../state/derived';
+import { fileBase, generationProblem } from '../state/derived';
 import { getModelParts } from '../state/model';
 import { setHiddenParts, setShowBed, toast, togglePartHidden, useApp } from '../state/store';
 import { ViewerEngine } from './ViewerEngine';
@@ -53,14 +53,46 @@ function ToolButton({ label, onClick, pressed, children }: { label: string; onCl
 
 type Panel = 'parts' | 'info' | 'warnings' | null;
 
+// Its own component, so progress updates don't re-render the whole viewer.
+function Banner() {
+  const running = useApp((state) => state.generation.status === 'running');
+  const label = useApp((state) => state.generation.progress?.label ?? 'Starting');
+  const percent = useApp((state) => Math.round((state.generation.progress?.fraction ?? 0) * 100));
+  const problem = useApp((state) => generationProblem(state.area, state.settings));
+  const exporting = useApp((state) => state.exporting.status === 'running');
+  if (running) {
+    return (
+      <div className="banner floating">
+        <span className="spinner" aria-hidden="true" />
+        <span>{label}</span>
+        <span className="banner-muted">{percent}%</span>
+      </div>
+    );
+  }
+  return (
+    <div className="banner floating">
+      <span>Settings changed since this model was made.</span>
+      <button
+        type="button"
+        className="btn btn-primary btn-sm"
+        disabled={problem !== null || exporting}
+        title={problem ?? (exporting ? 'Wait for the download to finish' : undefined)}
+        onClick={() => void generateModel()}
+      >
+        <RefreshCw size={14} aria-hidden="true" />
+        Regenerate
+      </button>
+    </div>
+  );
+}
+
 export default function ModelView({ active }: { active: boolean }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<ViewerEngine | null>(null);
   const [lost, setLost] = useState(false);
   const [panel, setPanel] = useState<Panel>(null);
   const result = useApp((state) => state.generation.result);
-  const status = useApp((state) => state.generation.status);
-  const progress = useApp((state) => state.generation.progress);
+  const running = useApp((state) => state.generation.status === 'running');
   const stale = useApp((state) => state.generation.stale);
   const palette = useApp((state) => state.palette);
   const hidden = useApp((state) => state.ui.hiddenParts);
@@ -97,6 +129,8 @@ export default function ModelView({ active }: { active: boolean }) {
   useEffect(() => {
     const current = useApp.getState().generation.result;
     if (current && engineRef.current) engineRef.current.setModel(getModelParts(), current.bounds);
+    // A card from the last model (its warnings, say) may not apply to this one.
+    setPanel(null);
   }, [version]);
 
   useEffect(() => engineRef.current?.setPalette(palette), [palette]);
@@ -120,7 +154,6 @@ export default function ModelView({ active }: { active: boolean }) {
   const size = result
     ? { w: result.bounds[3] - result.bounds[0], d: result.bounds[4] - result.bounds[1], h: result.bounds[5] - result.bounds[2] }
     : null;
-  const running = status === 'running';
   const stats = result ? Object.entries(result.stats).filter(([, value]) => value !== '' && value !== null) : [];
   const totalTime = result ? Object.values(result.timings).reduce((sum, value) => sum + value, 0) : 0;
   const allHidden = result ? result.parts.every((part) => hidden.includes(part.id)) : false;
@@ -172,22 +205,22 @@ export default function ModelView({ active }: { active: boolean }) {
         <div className="viewer-overlay viewer-top-right">
           <div className="toolbar floating" role="toolbar" aria-label="View">
             <ToolButton label="Reset view" onClick={() => engineRef.current?.resetView()}>
-              <RotateCcw size={17} aria-hidden="true" />
+              <RotateCcw size={15} aria-hidden="true" />
             </ToolButton>
             <ToolButton label="View from above" onClick={() => engineRef.current?.topView()}>
-              <SquareDashed size={17} aria-hidden="true" />
+              <SquareDashed size={15} aria-hidden="true" />
             </ToolButton>
             <ToolButton label={showBed ? 'Hide print bed' : 'Show print bed'} pressed={showBed} onClick={() => setShowBed(!showBed)}>
-              <Grid2x2 size={17} aria-hidden="true" />
+              <Grid2x2 size={15} aria-hidden="true" />
             </ToolButton>
             <ToolButton label="Parts" pressed={panel === 'parts'} onClick={() => setPanel(panel === 'parts' ? null : 'parts')}>
-              <Layers size={17} aria-hidden="true" />
+              <Layers size={15} aria-hidden="true" />
             </ToolButton>
             <ToolButton label="Model details" pressed={panel === 'info'} onClick={() => setPanel(panel === 'info' ? null : 'info')}>
-              <Info size={17} aria-hidden="true" />
+              <Info size={15} aria-hidden="true" />
             </ToolButton>
             <ToolButton label="Save screenshot" onClick={screenshot}>
-              <Camera size={17} aria-hidden="true" />
+              <Camera size={15} aria-hidden="true" />
             </ToolButton>
           </div>
 
@@ -205,7 +238,7 @@ export default function ModelView({ active }: { active: boolean }) {
                   return (
                     <li key={part.id}>
                       <label className="part-row">
-                        <input type="checkbox" checked={visible} onChange={() => togglePartHidden(part.id)} />
+                        <input type="checkbox" className="checkbox" checked={visible} onChange={() => togglePartHidden(part.id)} />
                         <span className="dot" style={{ background: palette[ROLE_GROUP[part.role]].hex }} aria-hidden="true" />
                         <span className="part-name">{part.name}</span>
                         <span className="part-count">{formatCount(part.triangles)}</span>
@@ -248,28 +281,14 @@ export default function ModelView({ active }: { active: boolean }) {
 
       {result && (stale || running) && (
         <div className="viewer-overlay viewer-banner">
-          {running ? (
-            <div className="banner floating">
-              <span className="spinner" aria-hidden="true" />
-              <span>{progress?.label ?? 'Starting'}</span>
-              <span className="banner-muted">{Math.round((progress?.fraction ?? 0) * 100)}%</span>
-            </div>
-          ) : (
-            <div className="banner floating">
-              <span>Settings changed since this model was made.</span>
-              <button type="button" className="btn btn-primary btn-sm" onClick={() => void generateModel()}>
-                <RefreshCw size={14} aria-hidden="true" />
-                Regenerate
-              </button>
-            </div>
-          )}
+          <Banner />
         </div>
       )}
 
       {result && allHidden && (
         <div className="viewer-empty">
           <p>Every part is hidden.</p>
-          <button type="button" className="btn btn-secondary btn-sm" onClick={() => setHiddenParts([])}>
+          <button type="button" className="btn btn-sm" onClick={() => setHiddenParts([])}>
             Show all parts
           </button>
         </div>
@@ -293,7 +312,7 @@ export default function ModelView({ active }: { active: boolean }) {
               The browser reset the graphics, often because memory ran low. It usually comes back by itself. Reloading
               keeps your settings, but the model has to be generated again.
             </p>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => location.reload()}>
+            <button type="button" className="btn btn-sm" onClick={() => location.reload()}>
               Reload the page
             </button>
           </div>

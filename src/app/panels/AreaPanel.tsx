@@ -1,12 +1,12 @@
-import { ClipboardPaste, Copy, Link, MapPin, RotateCcw, Scan, TriangleAlert, CircleAlert } from 'lucide-react';
+import { ClipboardPaste, Copy, Link, RotateCcw, Scan, TriangleAlert, CircleAlert } from 'lucide-react';
 import { useId } from 'react';
-import { areaFromBounds, areaGeoBounds, areaKm2, parseBoundsText, validateArea, MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
+import { areaGeoBounds, areaKm2, parseBoundsText, validateArea, MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
 import type { AreaShape } from '../../core/settings';
 import { ShapeIcon } from '../components/Icons';
 import { NumberField, NumberInput } from '../components/NumberField';
 import { SliderField } from '../components/Fields';
 import { Segmented } from '../components/Segmented';
-import { SHAPES, SHAPE_LABELS, constrainSize } from '../lib/area';
+import { SHAPES, SHAPE_LABELS, areaForBounds, constrainSize } from '../lib/area';
 import { copyText, readClipboardText } from '../lib/browser';
 import { formatNumber, formatSizePair } from '../lib/format';
 import { areaForView } from '../map/mapHandle';
@@ -21,7 +21,7 @@ import { Section } from './Section';
 const SEARCH_ID = 'place-search-input';
 const LARGE_AREA_KM2 = 25;
 
-export function areaSummary(placeName: string, shape: AreaShape, widthM: number, heightM: number): string {
+function areaSummary(placeName: string, shape: AreaShape, widthM: number, heightM: number): string {
   const size = formatSizePair(widthM, heightM);
   return placeName ? `${placeName} · ${size}` : `${SHAPE_LABELS[shape]} · ${size}`;
 }
@@ -85,10 +85,7 @@ export function AreaPanel() {
     }
     try {
       const bounds = parseBoundsText(text);
-      setArea(
-        (current) => ({ ...areaFromBounds(bounds, current.shape === 'rounded' ? 'rounded' : 'rectangle'), cornerRadius: current.cornerRadius }),
-        { focus: 'always', placeName: '' },
-      );
+      setArea((current) => areaForBounds(bounds, current), { focus: 'always', placeName: '' });
       toast('Area set from the pasted bounds', 'success');
     } catch (error) {
       toast(error instanceof Error ? `Could not read the bounds: ${error.message}` : 'Could not read the bounds', 'error');
@@ -112,7 +109,7 @@ export function AreaPanel() {
   }
 
   return (
-    <Section id="area" title="Area" icon={<MapPin size={16} />} summary={areaSummary(placeName, area.shape, area.widthM, area.heightM)}>
+    <Section id="area" title="Area" summary={areaSummary(placeName, area.shape, area.widthM, area.heightM)}>
       <div className="search-row">
         <PlaceSearch inputId={SEARCH_ID} />
         <PresetsMenu />
@@ -220,19 +217,19 @@ export function AreaPanel() {
       )}
 
       <div className="action-grid">
-        <button type="button" className="btn btn-secondary btn-sm" onClick={() => void pasteBounds()}>
+        <button type="button" className="btn btn-sm" onClick={() => void pasteBounds()}>
           <ClipboardPaste size={15} aria-hidden="true" />
           Paste bounds
         </button>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={() => void copyBounds()}>
+        <button type="button" className="btn btn-sm" onClick={() => void copyBounds()}>
           <Copy size={15} aria-hidden="true" />
           Copy bounds
         </button>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={fitToView}>
+        <button type="button" className="btn btn-sm" onClick={fitToView}>
           <Scan size={15} aria-hidden="true" />
           Fit to map view
         </button>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={() => void copyLink()}>
+        <button type="button" className="btn btn-sm" onClick={() => void copyLink()}>
           <Link size={15} aria-hidden="true" />
           Copy share link
         </button>

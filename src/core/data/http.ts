@@ -1,12 +1,12 @@
-// Downloads for the data layer. Every request shares one limit on requests in
-// flight, network errors and 429 or 5xx answers are retried with backoff, and
-// content that cannot change is looked up in the byte cache first.
+// Downloads for the data layer. Requests to each host share a limit on
+// requests in flight, network errors and 429 or 5xx answers are retried with
+// backoff, and content that cannot change is looked up in the byte cache first.
 
 import type { AsyncBuffer } from 'hyparquet';
 import { persistentCache, type ByteCache } from './cache';
 
 export interface HttpConfig {
-  /** Requests in flight across the whole data layer. Browsers allow 6 per host anyway. */
+  /** Requests in flight to one host. Browsers allow 6 per host over HTTP/1.1 anyway. */
   maxInFlight: number;
   /** Retries after the first attempt. */
   retries: number;
@@ -24,7 +24,7 @@ const MAX_WAIT_MS = 10000;
 
 export function configureHttp(options: Partial<HttpConfig>): void {
   Object.assign(config, options);
-  drain();
+  for (const queue of queues.values()) drain(queue);
 }
 
 let byteCache: ByteCache | null = persistentCache;
@@ -98,38 +98,57 @@ export class NetworkError extends Error {
 // Stalled or short transfers. Worth another attempt.
 class TransferError extends Error {}
 
-let active = 0;
-const waiting: (() => void)[] = [];
+interface HostQueue {
+  active: number;
+  waiting: (() => void)[];
+}
 
-function acquire(signal?: AbortSignal): Promise<void> {
+// Browsers keep a connection pool per host, so each host gets its own queue.
+// With one shared queue, a few hundred elevation tiles asked for at once held
+// up every Overture read behind them.
+const queues = new Map<string, HostQueue>();
+
+function queueFor(url: string): HostQueue {
+  let host: string;
+  try {
+    host = new URL(url).host;
+  } catch {
+    host = '';
+  }
+  let queue = queues.get(host);
+  if (!queue) queues.set(host, (queue = { active: 0, waiting: [] }));
+  return queue;
+}
+
+function acquire(queue: HostQueue, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.reject(signal.reason);
-  if (active < config.maxInFlight && !waiting.length) {
-    active++;
+  if (queue.active < config.maxInFlight && !queue.waiting.length) {
+    queue.active++;
     return Promise.resolve();
   }
   return new Promise((resolve, reject) => {
     const start = () => {
       signal?.removeEventListener('abort', cancel);
-      active++;
+      queue.active++;
       resolve();
     };
     const cancel = () => {
-      const index = waiting.indexOf(start);
-      if (index >= 0) waiting.splice(index, 1);
+      const index = queue.waiting.indexOf(start);
+      if (index >= 0) queue.waiting.splice(index, 1);
       reject(signal?.reason);
     };
-    waiting.push(start);
+    queue.waiting.push(start);
     signal?.addEventListener('abort', cancel, { once: true });
   });
 }
 
-function release(): void {
-  active--;
-  drain();
+function release(queue: HostQueue): void {
+  queue.active--;
+  drain(queue);
 }
 
-function drain(): void {
-  while (active < config.maxInFlight && waiting.length) waiting.shift()?.();
+function drain(queue: HostQueue): void {
+  while (queue.active < config.maxInFlight && queue.waiting.length) queue.waiting.shift()?.();
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -257,7 +276,8 @@ async function readBody(response: Response, expected: number | undefined, onChun
 }
 
 async function transferOnce(t: Transfer): Promise<ArrayBuffer> {
-  await acquire(t.signal);
+  const queue = queueFor(t.url);
+  await acquire(queue, t.signal);
   const controller = new AbortController();
   const forward = () => controller.abort(t.signal?.reason);
   t.signal?.addEventListener('abort', forward, { once: true });
@@ -303,7 +323,7 @@ async function transferOnce(t: Transfer): Promise<ArrayBuffer> {
   } finally {
     clearTimeout(timer);
     t.signal?.removeEventListener('abort', forward);
-    release();
+    release(queue);
   }
 }
 
@@ -351,8 +371,9 @@ export function fetchBytes(url: string, signal?: AbortSignal, options: Omit<Requ
 
 /** File size from a HEAD request, for files the Overture index gives no size for. */
 export function fetchByteLength(url: string, signal?: AbortSignal): Promise<number> {
+  const queue = queueFor(url);
   return withRetries(url, signal, async () => {
-    await acquire(signal);
+    await acquire(queue, signal);
     try {
       const response = await fetch(url, { method: 'HEAD', signal });
       if (!response.ok) throw new HttpError(response.status, url, parseRetryAfter(response.headers.get('retry-after')));
@@ -360,7 +381,7 @@ export function fetchByteLength(url: string, signal?: AbortSignal): Promise<numb
       if (!Number.isFinite(length) || length <= 0) throw new Error(`No file size for ${url}`);
       return length;
     } finally {
-      release();
+      release(queue);
     }
   });
 }

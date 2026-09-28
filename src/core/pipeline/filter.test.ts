@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { cloneSettings } from '../settings';
 import { rowFilter } from './filter';
+import { neededTypes } from './generate';
 
 const bounds = { west: 0, south: 0, east: 0.01, north: 0.01 };
 const small: [number, number, number, number] = [0.001, 0.001, 0.002, 0.002];
@@ -47,5 +48,35 @@ describe('rowFilter', () => {
     // Land cover is still read for forest scatter, but parks are not.
     expect(keep('land_cover', { subtype: 'forest' }, small)).toBe(true);
     expect(keep('land_use', { class: 'park' }, small)).toBe(false);
+  });
+
+  it('reads forests for trees only when they are scattered', () => {
+    const settings = cloneSettings();
+    settings.trees.enabled = true;
+    settings.trees.forestScatter = false;
+    settings.land.enabled = false;
+    settings.supports = false;
+    const keep = rowFilter(settings, bounds);
+    expect(keep('land', { subtype: 'tree', class: 'tree' }, small)).toBe(true);
+    for (const type of ['land', 'land_use', 'land_cover'] as const) {
+      expect(keep(type, { subtype: 'forest', class: 'forest' }, small)).toBe(false);
+    }
+    expect(neededTypes(settings)).toContain('land');
+    expect(neededTypes(settings)).not.toContain('land_use');
+    expect(neededTypes(settings)).not.toContain('land_cover');
+    settings.trees.forestScatter = true;
+    expect(rowFilter(settings, bounds)('land_use', { subtype: 'forest', class: 'forest' }, small)).toBe(true);
+    expect(neededTypes(settings)).toEqual(expect.arrayContaining(['land', 'land_use', 'land_cover']));
+  });
+
+  it('reads mapped piers for their ground with land cover off', () => {
+    const settings = cloneSettings();
+    settings.land.enabled = false;
+    settings.trees.enabled = false;
+    expect(neededTypes(settings)).toEqual(expect.arrayContaining(['land', 'land_use', 'infrastructure']));
+    expect(neededTypes(settings)).not.toContain('land_cover');
+    expect(rowFilter(settings, bounds)('land_use', { subtype: 'pier', class: 'pier' }, small)).toBe(true);
+    settings.supports = false;
+    expect(neededTypes(settings)).not.toContain('land');
   });
 });
