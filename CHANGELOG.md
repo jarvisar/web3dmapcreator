@@ -13,6 +13,7 @@
 
 ### Changed
 
+- The site moved to https://citymodel.jarvisar.com/. The old web3dmapcreator.jarvisar.com address redirects there. Browsers keep saved settings and cached map data per address, so those start fresh on the new one.
 - New look: the system font, gradient buttons, a dark header, section bars and checkboxes for the layers. Dark mode follows the same style.
 - One Download button, in the bar under the settings. Export errors show there too, instead of inside the Export section.
 - The layer list shows the filament colour of each layer.
