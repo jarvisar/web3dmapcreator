@@ -10,8 +10,10 @@ of this document.
 The add-on turns a WGS84 selection into an FDM city miniature: terrain, land
 surfaces, roads/rail, schematic bridges, trees, and building massing from
 Overture Maps, with optional LiDAR building measurements. Blender 3.6 is
-the local development/test target. Packaging also supports the Blender 4.2+
-extension layout; that does not establish runtime validation on 4.2+.
+the local development target; Blender-facing tests also run on 5.2, where the
+extension layout installs and validates. 4.2 and 4.5 share that code path but
+are not run locally. It is being prepared for public release to beginners:
+see `docs/USER_GUIDE.md` and `docs/TROUBLESHOOTING.md` for user-facing behaviour.
 
 Coordinates are **west, south, east, north**. `data/projection.py` converts
 WGS84 through local ENU metres to model millimetres, with X east, Y north, Z up.
@@ -45,15 +47,55 @@ provides cropping without changing the geographic scale.
 
 ## Architecture and data flow
 
-`__init__.py` registers `config`, `operators`, and `ui`; the scene settings live
-at `scene.jarvizar_city_model`. UI panels are in View3D → Sidebar → City Model.
-`operators.py` coordinates downloads, LiDAR preparation, generation, export,
-and generated-model cleanup.
+`__init__.py` registers the classes of `_MODULES` in order (`config`,
+`operators`, `operators_setup`, `operators_area`, `operators_palette`,
+`operators_export`, `ui`); the scene settings live at `scene.jarvizar_city_model`.
+UI panels are in View3D → Sidebar → City Model. `operators.py` coordinates
+downloads, LiDAR preparation, generation, 3MF export, and generated-model
+cleanup. Feature operators live in their own modules with their draw helpers,
+so `ui.py` calls them in a line or two:
+
+- `operators_setup.py`: Downloader Setup dialog (copy command, Detect, Test),
+  Copy Support Info (`data/support.py`), Reset Settings. The add-on never runs pip.
+- `operators_area.py`: Find Place (`data/geocode.py`, Nominatim or a typed
+  `lat, lon`), Resize Area, map/bboxfinder links, My Areas presets saved in
+  `user_resource("CONFIG")`, size hints (`data/area.py`).
+- `operators_palette.py`: the Colours sub-panel (`settings.palette`, presets in
+  `data/palette.py`).
+- `operators_export.py`: Add Frame (`data/export_frame.py`) and Export STL
+  (`data/export_stl.py`).
+
+Operators that change scene data poll false while generating, downloading
+(`download_modal.is_downloading()`) or preparing LiDAR.
+
+Robustness rules (from the release audit; `test_release_fixes.py`,
+`blender_release_fixes.py`):
+
+- Call `data/folders.ensure_writable` before any `TemporaryDirectory`/`mkdtemp`
+  in a user-chosen folder: on Windows `mkdtemp` retries a refused folder up to
+  TMP_MAX times (two billion in Python 3.10/3.11) and froze Blender. Exports pass
+  `create=False` (a missing destination folder stays an error); the cache root
+  is created. `data/lidar.py` still has this pattern.
+- `operators._cache_root` refuses an empty Cache Directory and a `//` path in an
+  unsaved file; `settings_snapshot` uses it. A `//` path set in a saved file is
+  stored absolute (update callback), since Save As does not remap it.
+- Exports call `collections.update_from_edit_mode` first and skip parts with
+  no triangles. A single-plate 3MF larger than the bed exports with a warning.
+- Find the Principled BSDF by node type, not by name: with Translate New Data
+  (on by default in 5.x) the node is named in the interface language.
+- Failure text: the worker reports only the cause; the foreground adds
+  "Generation failed:" once and prints the phase. A failed worker's log is kept
+  as `<cache>/logs/generation-<UTC>.log` (newest 20).
+- Coordinates go through `projection.normalize_minus`; range errors name the
+  field. `SurfaceSettings.check_basin_water` runs only when a basin is built.
 
 `ui.py` keeps the main panel to the workflow in order of use: area (with the
-**Presets** menu, which passes `data/bounds_presets.txt` lines to
-`jarvizar.paste_bounds`), print scale, Download / Prepare LiDAR (shown once
-LiDAR is on) / Generate / Export, then the last status. Everything set rarely
+**Presets** menu, which passes built-in `data/bounds_presets.txt` lines and
+My Areas to `jarvizar.paste_bounds`, and the Find Place/Resize/Draw/Map row),
+print scale with size hints, the first-run downloader box when no working
+downloader is found, Download / Prepare LiDAR (shown once LiDAR is on) /
+Generate / Export (with Add Frame and Export STL), then the last status.
+Everything set rarely
 is a closed sub-panel; a feature's toggle is its sub-panel's header checkbox,
 so the closed headers are the feature list. Water and LiDAR Buildings are not
 greyed by their headers: cuts and basins outlive the water fill, and Prepare
@@ -78,22 +120,36 @@ Keep math and selection policy testable without Blender. A module being under
 imported by Blender: do not add eager native-library imports to them.
 
 Workflow: **Download / Cache Data → optionally Prepare LiDAR Buildings → Generate
-Model → Export 3MF for Bambu**. Generation is offline. Missing essential layers
-are errors; missing/stale/invalid optional LiDAR falls back to source buildings.
+Model → Export 3MF for Bambu** (or Export STL). Generation is offline. Missing
+essential layers are errors (interactive Generate offers
+`jarvizar.download_then_generate` first); missing/stale/invalid optional LiDAR
+falls back to source buildings.
 
 ### External Python and caches
 
-- `scripts/setup_overture_env.ps1` and `.sh` create/reuse `.venv-overture` and
-  install `requirements-downloader.txt` (`overturemaps==1.0.2`). They do not
-  install the optional LiDAR requirements. Python 3.11 is the local interpreter;
-  setup scripts accept Python 3.10+ for the base downloader.
-- For LiDAR, explicitly install `requirements-lidar.txt` in that environment:
-  `laspy[lazrs]==2.7.0`, `pyproj==3.7.2`, `shapely==2.1.2`, `pyshp==2.3.1`, plus the downloader
-  requirements. Never install wheels into Blender or pip-install at add-on
-  runtime. DEM downloading uses only the standard library.
+- The downloader setup ships in `jarvizar_city_model/setup/`: the requirement
+  pins (`requirements-downloader.txt`: `overturemaps==1.0.2`;
+  `requirements-lidar.txt`: `laspy[lazrs]==2.7.0`, `pyproj==3.7.2`,
+  `shapely==2.1.2`, `pyshp==2.3.1`, plus the downloader requirements) and
+  `setup_downloader.ps1/.sh/.cmd`, which create a per-user venv outside the
+  add-on folder (`%LOCALAPPDATA%\JarvizarCityModel\downloader-venv`, macOS
+  Application Support, `~/.local/share/jarvizar-city-model`). Change pins only
+  there; the repo-root `requirements-*.txt` are `-r` wrappers.
+  `scripts/setup_overture_env.ps1/.sh` hand off to them to create/reuse the
+  repo `.venv-overture` (downloader requirements only; install
+  `requirements-lidar.txt` explicitly for LiDAR). Python 3.11 is the local
+  interpreter; the scripts accept 3.10+ and prefer 3.11–3.13.
+- Never install wheels into Blender or pip-install at add-on runtime: the user
+  runs the setup script. `data/environment.py` (pure) validates an interpreter
+  by running `external/probe_downloader.py` (30 s timeout, process tree killed,
+  no console window), rejects Blender's own Python and the Store placeholder,
+  and caches results per path for the session; drawing never starts a process.
+  DEM downloading uses only the standard library.
 - Interpreter resolution: scene **Override** → preference `overture_python_path`
-  → `JARVIZAR_OVERTURE_PYTHON`. Blank Override is normal. A valid scene path is
-  promoted to an empty preference; disk persistence requires saving preferences.
+  → `JARVIZAR_OVERTURE_PYTHON` → the per-user default venv if it exists. A
+  configured path that is missing is an error, not a fallback. Blank Override is
+  normal. A valid scene path is promoted to an empty preference; disk
+  persistence requires saving preferences.
 - Cache root defaults to Blender's DATAFILES `jarvizar_city_model/cache`;
   `JARVIZAR_CITY_CACHE` overrides the default and the scene can choose a path.
   `CacheBundle` creates `bbox_<12-character SHA256>` from bounds formatted to
@@ -113,7 +169,19 @@ are errors; missing/stale/invalid optional LiDAR falls back to source buildings.
   and the terrain sampler applies relative relief. Do not treat terrain heights
   as building heights or directly mix orthometric and ellipsoid Z values.
 
-Overture and DEM downloads use blocking `subprocess.run`; the UI waits. LiDAR
+Overture and DEM downloads run through `data/download_job.py` (no bpy):
+non-blocking `Popen` of `download_overture.py` then `download_dem.py` (no
+console window, `--parent-pid`), each writing into a private
+`jarvizar_download_*` folder in the cache root and committed (`os.replace` +
+`merge_manifest`) only after its helper succeeds. Cancel or failure leaves
+cached files unchanged; an earlier committed step stays. Helpers print one JSON
+result line on stdout and `progress: <text>` lines on stderr. Cancel kills the
+whole process tree and waits for exit before removing the folder. Each run logs
+to `<cache root>/logs/download-<UTC>.log` (newest 20 kept); `classify_failure`
+turns raw output into advice. `download_to_cache`/`download_dem_to_cache` are
+blocking wrappers. Interactive Download is modal (`blender/download_modal.py`:
+progress box, Esc/Cancel Download, area locked, scene looked up by name);
+background Blender stays synchronous. LiDAR
 uses a modal timer and an external worker in interactive Blender, with a progress
 panel and Esc/button cancellation. A file load or window closure calls its `cancel()`,
 which stops the worker. Undo replaces every ID, so the operator looks its scene
@@ -190,7 +258,8 @@ and clearing are guarded while generation owns the scene.
 `external/generate_model.py` uses the unchanged synchronous pipeline and writes
 one private `.blend` library plus a versioned result. Foreground publication
 appends that root, maps worker material roles to staged copies of the local
-palette (preserving custom shaders), and seals the imported ID set before yielding
+palette (preserving custom shaders; colours come from the scene palette, which
+never reaches the worker), and seals the imported ID set before yielding
 to the event loop. Cleanup after that yield uses only those captured IDs, so user
 objects created while generation runs are never swept up. The next timer tick
 validates and commits; cancellation queued during append is handled before this
@@ -201,7 +270,7 @@ Peak memory includes the foreground model, a separate Blender worker during
 construction, and both meshes during import. Worker progress is best effort;
 private model/result publication is mandatory. Atomic JSON replacement retries
 brief Windows reader conflicts. Generation remains offline and retains existing
-FDM geometry/defaults. Download cancellation is a separate outstanding task.
+FDM geometry/defaults.
 
 ## Geometry rules worth preserving
 
@@ -238,8 +307,26 @@ same-category outlines are unioned in 2D, with pinch vertices split and moved
 Boolean basin recesses weld coincident vertices).
 Use `merge_buildings_and_trees=False` for per-building source IDs, height/roof
 decisions, and foundation metadata; merged buildings retain material slots but
-no per-building metadata. Generation updates shared `JCM_*` viewport and shader
-colors, overwriting manual palette edits.
+no per-building metadata. Generation applies the scene palette
+(`settings.palette`, a POINTER group that `settings_snapshot` leaves out) to the
+shared `JCM_*` viewport and shader colours, overwriting manual material edits;
+`GenerationTransaction` stages materials from it in `begin()` and
+`import_model()`. Changing a palette colour recolours existing `JCM_*` materials
+at once (skipped while generating); **Read Colours From Model** copies material
+edits into the palette. `data/palette.py` (pure) maps colour groups onto the
+unchanged material roles and holds Bambu Studio 2.8's PLA Basic/Matte catalogue
+and the presets; the Default preset equals `materials.PALETTE`/`MATTE_ROLES`
+bit for bit (`test_palette.py`). Colours use subtype `COLOR_GAMMA`, so stored
+values are hex/255 as the export writes them.
+
+Blender 5 gives every material a node tree and deprecates `Material.use_nodes`
+(removed in 6.0): `materials.NODE_TREES_ALWAYS` skips it, and
+`surface_principled` finds the Principled BSDF on the output EEVEE renders
+(pre-5.0 files without nodes open with an extra active EEVEE output). Blender
+5's Exact Boolean adds each cutter material missing from the target as a result
+slot (empty for a cutter without materials), and every slot exports as a
+filament, so cutters carry the target's materials. Zero-area faces have a zero
+normal in 3.6 and +Z in Blender 5.
 
 ### Buildings and roofs
 
@@ -1025,10 +1112,14 @@ types and relationships. Every part is a named `normal_part` whose `extruder`
 metadata assigns its filament: one filament per distinct colour and Bambu PLA
 line in order of first use, taken from each material's Principled base colour
 (else viewport colour) as raw linear bytes and its `jarvizar_filament` line
-(PLA Basic or Matte, which picks the preset and `filament_ids`). The palette
-uses Bambu's exact codes: PLA Matte Caramel buildings, PLA Matte Ivory White
-terrain and supports, PLA Basic Bambu Green parks, PLA Basic Dark Gray roads,
-bridges, piers and paving. A part mixing materials takes the filament of
+(PLA Basic or Matte, which picks the preset and `filament_ids`). On Blender 5
+the colour is `surface_principled`'s Base Color unless it is still the 0.8 node
+default, then the viewport colour; 3.6/4.x keep `PrincipledBSDFWrapper`. Colours
+and lines come from the Colours sub-panel; the Default preset uses Bambu's exact
+codes: PLA Matte Caramel buildings, PLA Matte Ivory White terrain and supports,
+PLA Basic Bambu Green parks, PLA Basic Dark Gray roads, bridges, piers and
+paving. The model carries a `Copyright` metadata entry with the map-data
+attribution, which Bambu Studio keeps on save. A part mixing materials takes the filament of
 its most common one; only its other triangles carry Bambu `paint_color`
 states. Coordinates are model millimetres at six decimals. The `BambuStudio-`
 Application prefix is required: Bambu gates project loading on it and
@@ -1056,6 +1147,14 @@ If the scene contains a mesh named exactly `cutout`,
 along the frame's local thickness axis. The frame is neither exported nor used
 as a subtraction solid; its scene Z is not a height limit. No frame means full
 export. Invalid frames or unclosable cuts fail rather than exporting uncropped.
+`jarvizar.add_cutout_frame` (outlines in `data/export_frame.py`) creates a
+convex Rectangle, Rounded Rectangle, Circle (≤0.1 mm chord) or flat-sided
+Hexagon frame sized to the bed less a margin, the model's XY bounds or custom
+mm: a 6 mm × 2 mm ring 2 mm above the model, in the scene collection,
+render-disabled. Replacing a frame keeps its world centre and rotation.
+Cropped export is not reproducible run to run on any Blender version (BMesh
+element sets hash by address), so compare cropped files canonically; uncropped
+exports are byte-reproducible and identical between 3.6 and 5.2.
 Frame-axis detection must verify a through opening in candidate cross-sections;
 the largest face-normal area alone can select a side wall on a tall frame.
 
@@ -1101,6 +1200,16 @@ rotated and other-bed fixtures). The live crop script accepts
 `--multi-plate`, `--printer` and section size options. See
 [3MF format and verification](docs/EXPORT_3MF.md).
 
+`jarvizar.export_stl` (`operators_export.py`) runs the same pipeline
+(`export_geometry` road cut and crop, `export_grid`/`export_sections` without
+the bed limit, `part_arrays`) and `data/export_stl.py` streams binary STL with
+an OSM/Overture header: one file per colour
+(`<base>[_R1C1]_<n>_<label>_<RRGGBB>.stl`) or one combined file. Its datum
+matches the 3MF (lowest point at Z=0, XY centred on the export or on each
+section's cell). A solid mixing colours goes whole to its most common colour;
+only the 3MF paints faces. Files are staged in `.jcm-stl-*` and published as a
+set; earlier files of that base carrying our names and header are replaced.
+
 ## Development and verification
 
 Run from the repository root; local `.venv-overture` includes optional LiDAR
@@ -1117,7 +1226,11 @@ Keep `-t tests` for sibling fixture imports. Check exit status and success marke
 use `--python-exit-code 1`. Repository scripts prepend the checkout to `sys.path`,
 so installed-copy verification must run separately. `--factory-startup` isolates
 tests but does not load saved preferences; supply downloader paths explicitly,
-or omit it when intentionally testing installation preferences.
+or omit it when intentionally testing installation preferences. Run
+Blender-facing tests on 3.6 and 5.x (5.2 is installed; launch it from
+PowerShell). `--python-expr "import warnings; warnings.simplefilter('always')"`
+before `--python` shows deprecations Blender otherwise hides. On 4.2+ factory
+settings are offline: tests that download need `--online-mode`.
 
 [Verification commands](.claude/commands/verify.md) give full live-run examples.
 Select focused checks based on the change:
@@ -1129,7 +1242,8 @@ Select focused checks based on the change:
 | Roads / surface ownership | `test_road_network.py`, `test_airports.py`, `blender_airport_paving.py`, `test_deck_graph.py`, `test_deck_mesh.py`, `test_bridge_supports.py`, `blender_short_bridges.py`, `blender_bridge_caps.py` (cached), `blender_road_cut.py`, `blender_road_cut_export.py`, `blender_shore_roads.py`, `blender_surface_priority.py`, `blender_surface_priority_settings.py` and related live scripts |
 | Buildings / LiDAR | Building/roof/duplicate tests and `test_lidar_*.py`; `blender_lidar.py`, `blender_lidar_envelope.py`, `blender_lidar_facets.py`, `blender_lidar_minimum.py`, `blender_lidar_preference.py`, `blender_lidar_operator.py`; `blender_lidar_regression.py` for cached off/on mesh fingerprints |
 | Anchored LiDAR / mapped rock | `test_lidar_relief.py`, `test_lidar_offer.py`, `blender_lidar_relief.py`; verify anchor alignment, class/coverage rejection, transactional fallback, source suppression, and unchanged disabled-LiDAR mesh fingerprints |
-| Export / trees / clipboard | `test_export_3mf.py`, `test_export_sections.py`, `blender_export_cutout.py`, `blender_export_plates.py`, installed Bambu `bambu_export_plates.py` and the live crop script; `blender_tree_printability.py`, `blender_tree_road_clearance.py`; `test_projection.py`, `test_bounds_presets.py` and windowed `blender_gui_paste.py` |
+| Export / trees / clipboard | `test_export_3mf.py`, `test_export_sections.py`, `test_export_stl.py`, `blender_export_cutout.py`, `blender_export_plates.py`, `blender_export_extras.py` (frames, STL), installed Bambu `bambu_export_plates.py` and the live crop script; `blender_tree_printability.py`, `blender_tree_road_clearance.py`; `test_projection.py`, `test_bounds_presets.py` and windowed `blender_gui_paste.py` |
+| Setup / downloads / area / colours | `test_environment.py`, `test_support_report.py`, `test_setup_package.py`, `blender_setup_tools.py -- <downloader python>`, `blender_setup_extension.py -- <downloader python>` (4.2+); `test_download_job.py`, `blender_download_operator.py`, windowed `blender_download_gui.py`; `test_area.py`, `test_geocode.py`, `blender_area_tools.py`; `test_palette.py`, `blender_palette.py` |
 
 For geometry work, compare identical inputs/settings, check closure **and winding**,
 then inspect focused renders and seating/overlap probes. `render_preview.py`
@@ -1201,3 +1315,39 @@ keep mutable Refresh tests isolated. Review obsolete scratchpad experiments
 after the investigation, preserving baselines explicitly; do not blanket-delete
 existing scratchpad, autosaves, user scenes, exports, or installation rollback
 copies. `.gitignore` does not limit disk use.
+
+# Writing style
+
+This applies to all code comments and anything public (READMEs, docs, PR descriptions). Write it like a developer leaving useful context for another developer, not like a technical writer, a tutorial, or an AI trying to make the codebase look well documented.
+
+My older READMEs are the reference for tone: pre-2024 versions in jarvisar/solar-system, sorting-algos, interpreter, exoplanet-classifier, senior-design, cors-proxy, and the datavis projects. Don't use my newer repos as a reference, some of those are AI generated.
+
+## General
+
+- Plain, direct, and practical. Use a normal word when one works. Nothing corporate, academic, or overly polished.
+- Short sentences. Describe actual behavior with concrete details, numbers, and examples.
+- Focus on intent: what something is supposed to do, why a decision was made, and any constraints or tradeoffs.
+- Call out real limits, exceptions, and edge cases. If something is uncertain, just say so.
+- Qualifiers like "currently", "for now", "normally", "only when needed", "this should still..." or "we don't want..." are fine when they clarify scope.
+- Keep it proportional to the problem. Don't invent terminology or structure for simple behavior.
+- Longer docs can use headings, bullets, examples, commands, and implementation notes when they make it easier to scan. Not just to look thorough.
+- No em dashes, semicolons, emojis, arrows, bold scattered through sentences, or other punctuation and formatting regular people don't use.
+- No AI patterns: "it's not just X, it's Y", rhetorical flourishes, intros that restate the title, "Overall, ..." wrap-ups, repeated summaries, filler adjectives like powerful, seamless, or robust.
+
+## READMEs
+
+- Open with a sentence or two on what it is. e.g. "This is a simple proxy server that adds the necessary headers to allow Cross-Origin Resource Sharing (CORS) for a specified website." or "My first real Three.js project."
+- Link the live build if there is one: "Visit the [GitHub Pages site](...) to access the latest deployment."
+- Controls and usage as short imperatives: "Use W/S to increase or decrease throttle. Use A/D to roll. Press the escape key at any time to exit flight mode."
+- State limits plainly: "Currently the maximum amount is 512." or "Note that large searches can take up to 15 seconds to process."
+- Small side notes can go on an h6 line: "###### Note: Assembly generator currently only supports integers"
+- Usual sections, only when there's something to put in them: Usage or How to Use, Features, Local Installation (numbered steps with the command in backticks), Known Issues & Limitations, Screenshots, Credits.
+- Title Case headings. "&" is fine in titles ("Solar System & Flight Simulator").
+- Backticks for buttons, keys, files, branches, and commands.
+- Keep it short. Most of my older READMEs were 250 to 550 words, bigger projects around 1,200 to 1,500.
+
+## Code comments
+
+- Sparse. Only for non-obvious logic, reasons behind a decision, edge cases, limitations, unusual behavior, or something another developer might be tempted to "fix".
+- Don't narrate straightforward code or restate the function name. Don't add doc blocks just to have them.
+- Short and plain, a fragment is fine. e.g. "# Use WSL to run the commands if on Windows" or "# If the input contains an equal sign, skip code generation"

@@ -6,20 +6,25 @@ import json
 import time
 import subprocess
 import tempfile
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
 import bpy
 from bpy.types import Operator
-from bpy.props import IntProperty, StringProperty
+from bpy.props import BoolProperty, IntProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
 from .blender.collections import (
     clear_generated,
     generated_objects,
+    update_from_edit_mode,
 )
+from .data.folders import ensure_writable
 from .blender.generation import GenerationTransaction
 from .blender.generation_modal import GenerationSession, active_session, is_generating
+from .blender.download_modal import DownloadSession, active_download, is_downloading
+from .data.download_job import OFFLINE_MESSAGE, DownloadJob, cached_message, using_cache_message
 from .data.generation_job import GenerationCancelled
 from .data.cache import (
     ALL_TYPES,
@@ -42,8 +47,6 @@ from .data.land import has_bridge_flag, recessed_water_kind
 from .config import preferred_python_path, storage_limits
 from .data.overture import (
     OvertureDownloadError,
-    download_dem_to_cache,
-    download_to_cache,
     resolve_python,
 )
 from .data.projection import (
@@ -51,6 +54,7 @@ from .data.projection import (
     create_fixed_scale_transform,
     create_miniature_transform,
     format_degrees,
+    normalize_minus,
     parse_bounds_text,
 )
 from .geometry.building_generation import generate_buildings
@@ -72,18 +76,25 @@ from .geometry.basins import recess_terrain_basins, cut_water_land_surfaces
 
 
 def _bounds_from_settings(settings) -> Bounds:
-    try:
-        values = tuple(
-            float(value.strip())
-            for value in (settings.west, settings.south, settings.east, settings.north)
-        )
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise ValueError("Bounding-box fields must contain decimal degrees") from exc
+    values = []
+    for label in ("West", "South", "East", "North"):
+        text = normalize_minus(str(getattr(settings, label.lower(), "") or "")).strip()
+        try:
+            values.append(float(text))
+        except ValueError:
+            hint = "; use a point for decimals" if "," in text else ""
+            raise ValueError(f"{label} is not a number: {text or 'empty'}{hint}") from None
     return Bounds(*values).validate()
 
 
 def _cache_root(settings) -> Path:
-    return Path(bpy.path.abspath(settings.cache_directory)).expanduser()
+    value = (settings.cache_directory or "").strip()
+    if not value:
+        raise ValueError("Cache Directory is empty: choose a folder in Setup and Cache")
+    if value.startswith("//") and not bpy.data.filepath:
+        raise ValueError("Cache Directory is relative to a .blend file that is not saved: "
+                         "save the file or choose a full folder path in Setup and Cache")
+    return Path(bpy.path.abspath(value)).expanduser()
 
 
 def _cache_bundle(settings) -> CacheBundle:
@@ -154,15 +165,28 @@ def _essential_types(settings) -> tuple:
     )
 
 
+def _damaged_cache(layer: str) -> str:
+    return (f"The cached {layer} data is damaged. Turn on Refresh Existing Cache "
+            "and click Download / Cache Data.")
+
+
 def _load_features(bundle: CacheBundle, feature_type: str):
     path = bundle.data_path(feature_type)
     if not path.is_file():
         return []
-    return load_feature_collection(path)
+    try:
+        return load_feature_collection(path)
+    except (KeyError, TypeError, AttributeError, ValueError) as exc:
+        if isinstance(exc.__cause__, OSError):
+            raise  # A locked or unreadable file, not a damaged one.
+        raise ValueError(_damaged_cache(feature_type)) from exc
 
 
 def _load_polygons(bundle: CacheBundle, feature_type: str):
-    return list(polygon_features(_load_features(bundle, feature_type)))
+    try:
+        return list(polygon_features(_load_features(bundle, feature_type)))
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ValueError(_damaged_cache(feature_type)) from exc
 
 
 def _bridge_lines(bundle: CacheBundle, transform):
@@ -204,11 +228,9 @@ class JARVIZAR_OT_paste_bounds(Operator):
     bl_idname = "jarvizar.paste_bounds"
     bl_label = "Paste Bounding Box"
     bl_description = (
-        "Fill all four bounding-box fields from one line of decimal degrees, "
-        "west,south,east,north -- the format the Copy button on "
-        "prochitecture.com/blender-osm puts on the clipboard. Reads the "
-        "clipboard directly; asks for the text if the clipboard does not hold "
-        "a box"
+        "Fill West, South, East and North from one line on the clipboard, for "
+        "example -84.5337,39.0855,-84.4742,39.1109. Asks for the text if the "
+        "clipboard does not hold four numbers"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -272,26 +294,50 @@ class JARVIZAR_OT_paste_bounds(Operator):
         return {"FINISHED"}
 
 
+def _download_offer(context):
+    """The data Generate lacks when a download can be offered, else nothing."""
+    settings = context.scene.jarvizar_city_model
+    try:
+        bundle = _cache_bundle(settings)
+        missing = list(bundle.missing_types(_essential_types(settings)))
+        if settings.terrain_source == "DEM" and settings.generate_terrain and not bundle.has_dem():
+            missing.append("elevation")
+        if not missing or _offline() or not JARVIZAR_OT_download_cache.poll(context):
+            return []
+        _resolve_downloader(context, settings)
+    except (ValueError, OSError, OvertureDownloadError):
+        return []
+    return missing
+
+
+def _generate_after_download():
+    """Start generation once the download's modal handler has returned."""
+    def start():
+        if JARVIZAR_OT_generate_model.poll(bpy.context):
+            bpy.ops.jarvizar.generate_model("EXEC_DEFAULT")
+    bpy.app.timers.register(start, first_interval=0.1)
+
+
 class JARVIZAR_OT_download_cache(Operator):
     bl_idname = "jarvizar.download_cache"
     bl_label = "Download / Cache Data"
     bl_description = (
         "Download the source data the enabled features need, with the official "
-        "Overture client and the public elevation tile service"
+        "Overture client and the public elevation tile service. Esc or Cancel "
+        "stops it and keeps the existing cache"
     )
     bl_options = {"REGISTER"}
 
+    # Set when Generate offered the download: generate after it succeeds.
+    then_generate: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
+
     @classmethod
     def poll(cls, context):
-        return not is_generating()
+        return not (is_generating() or is_downloading() or JARVIZAR_OT_prepare_lidar._running)
 
     def execute(self, context):
         settings = context.scene.jarvizar_city_model
         try:
-            if _offline():
-                raise OvertureDownloadError(
-                    "Blender online access is disabled; enable it before downloading"
-                )
             bundle = _cache_bundle(settings)
             required = _required_types(settings)
             needs_dem = settings.terrain_source == "DEM" and settings.generate_terrain
@@ -305,51 +351,90 @@ class JARVIZAR_OT_download_cache(Operator):
                 settings.force_redownload or not bundle.has_dem()
             )
             if not missing and not dem_missing:
-                manifest = bundle.read_manifest()
-                counts = manifest.get("feature_counts", {})
-                message = "Using cache: " + ", ".join(
-                    f"{counts.get(item, '?')} {item}" for item in required
-                )
+                message = using_cache_message(bundle.read_manifest(), required)
+                settings.last_status = message
+                self.report({"INFO"}, message)
+                if self.then_generate:
+                    _generate_after_download()
+                return {"FINISHED"}
+            if _offline():
+                raise OvertureDownloadError(OFFLINE_MESSAGE)
+
+            job = DownloadJob(
+                _resolve_downloader(context, settings), bundle, missing,
+                dem_columns=max(64, int(settings.terrain_resolution) * 2) if dem_missing else None,
+            )
+            layers = [*missing, "elevation tiles"] if dem_missing else list(missing)
+            settings.last_status = f"Downloading {', '.join(layers)}..."
+            if bpy.app.background:
+                message = cached_message(job.run(), required, bundle.has_dem())
                 settings.last_status = message
                 self.report({"INFO"}, message)
                 return {"FINISHED"}
-
-            python_path = _resolve_downloader(context, settings)
-            context.window_manager.progress_begin(0, 100)
-            manifest = bundle.read_manifest()
-            if missing:
-                settings.last_status = f"Downloading {', '.join(missing)}..."
-                manifest = download_to_cache(python_path, bundle, missing)
-                context.window_manager.progress_update(70)
-            if dem_missing:
-                settings.last_status = "Downloading elevation tiles..."
-                manifest = download_dem_to_cache(
-                    python_path,
-                    bundle,
-                    columns=max(64, int(settings.terrain_resolution) * 2),
-                )
-                context.window_manager.progress_update(100)
-
-            counts = manifest.get("feature_counts", {})
-            parts = [f"{counts.get(item, 0)} {item}" for item in required]
-            if bundle.has_dem():
-                dem = manifest.get("dem", {}) or {}
-                parts.append(
-                    f"DEM {dem.get('columns', '?')}x{dem.get('rows', '?')} "
-                    f"({dem.get('min_m', 0):.0f}-{dem.get('max_m', 0):.0f} m)"
-                )
-            message = f"Cached release {manifest.get('release', 'unknown')}: " + ", ".join(
-                parts
-            )
-            settings.last_status = message
-            self.report({"INFO"}, message)
-            return {"FINISHED"}
+            self._session = DownloadSession(
+                context, job, required, on_success=_generate_after_download if self.then_generate else None)
+            try:
+                self._session.start()
+                context.window_manager.modal_handler_add(self)
+            except Exception as exc:
+                self._session.detach()
+                raise OvertureDownloadError(f"Could not start the download: {exc}") from exc
+            return {"RUNNING_MODAL"}
         except (ValueError, OSError, OvertureDownloadError) as exc:
             settings.last_status = f"Download failed: {exc}"
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        finally:
-            context.window_manager.progress_end()
+
+    def modal(self, context, event):
+        session = self._session
+        if session.done:
+            return {"CANCELLED"}
+        if event.type == "ESC":
+            session.request_cancel()
+            return {"RUNNING_MODAL"}
+        if event.type == "TIMER":
+            result = session.advance()
+            if result != {"RUNNING_MODAL"}:
+                self.report({"ERROR"} if session.error else {"INFO"}, session.message)
+            return result
+        return {"PASS_THROUGH"}
+
+    def cancel(self, context):
+        # Blender drops the modal handler without another event when a file
+        # is loaded or the window closes; stop the helper rather than orphan it.
+        session = getattr(self, "_session", None)
+        if session is not None:
+            session.detach()
+
+
+class JARVIZAR_OT_download_then_generate(Operator):
+    bl_idname = "jarvizar.download_then_generate"
+    bl_label = "Download Missing Data"
+    bl_description = "Download the data the model needs, then generate it"
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context):
+        return JARVIZAR_OT_download_cache.poll(context)
+
+    def invoke(self, context, event):
+        self._missing = _download_offer(context)
+        if not self._missing:
+            return {"CANCELLED"}
+        # Blender 3.6 has no confirm_text and shows OK.
+        options = {"confirm_text": "Download and Generate"} if bpy.app.version >= (4, 2, 0) else {}
+        return context.window_manager.invoke_props_dialog(self, width=320, **options)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Not cached yet:")
+        for line in textwrap.wrap(", ".join(getattr(self, "_missing", ())), 40):
+            layout.label(text=line)
+        layout.label(text="Download it now, then generate?")
+
+    def execute(self, context):
+        result = bpy.ops.jarvizar.download_cache("INVOKE_DEFAULT", then_generate=True)
+        return {"FINISHED"} if result & {"RUNNING_MODAL", "FINISHED"} else {"CANCELLED"}
 
 
 def _lidar_signature(settings, bundle, transform=None):
@@ -386,7 +471,7 @@ class JARVIZAR_OT_prepare_lidar(Operator):
 
     @classmethod
     def poll(cls, context):
-        return not cls._running and not is_generating()
+        return not cls._running and not is_generating() and not is_downloading()
 
     def finish(self, context, result):
         settings = context.scene.jarvizar_city_model
@@ -528,7 +613,8 @@ class JARVIZAR_OT_prepare_lidar(Operator):
                 if cached is not None:
                     return self.finish(context, summarize_prepared(cached, reused=True))
             if _offline():
-                raise ValueError("Blender online access is disabled; no current prepared result matches these settings")
+                raise ValueError("Blender online access is off (Edit > Preferences > System > Network) "
+                                 "and no prepared result matches these settings")
             settings.lidar_preparation_status = 'Preparing LiDAR buildings... (Esc to cancel)'
             settings.lidar_progress = 0.
             settings.lidar_progress_known = False
@@ -590,6 +676,22 @@ class JARVIZAR_OT_cancel_generation(Operator):
         return {"FINISHED"}
 
 
+class JARVIZAR_OT_cancel_download(Operator):
+    bl_idname = "jarvizar.cancel_download"
+    bl_label = "Cancel Download"
+    bl_description = "Stop the download and keep the existing cache"
+
+    @classmethod
+    def poll(cls, context):
+        return is_downloading()
+
+    def execute(self, context):
+        session = active_download()
+        if session is not None:
+            session.request_cancel()
+        return {"FINISHED"}
+
+
 class JARVIZAR_OT_move_surface_priority(Operator):
     bl_idname = "jarvizar.move_surface_priority"
     bl_label = "Move Surface Priority"
@@ -618,7 +720,15 @@ class JARVIZAR_OT_generate_model(Operator):
 
     @classmethod
     def poll(cls, context):
-        return not is_generating() and not JARVIZAR_OT_prepare_lidar._running
+        return not is_generating() and not JARVIZAR_OT_prepare_lidar._running and not is_downloading()
+
+    def invoke(self, context, event):
+        # Missing data that a download could fetch is offered, not reported
+        # as a failure; the download then starts generation itself.
+        if not bpy.app.background and _download_offer(context):
+            bpy.ops.jarvizar.download_then_generate("INVOKE_DEFAULT")
+            return {"CANCELLED"}
+        return self.execute(context)
 
     def execute(self, context):
         if bpy.app.background:
@@ -693,9 +803,9 @@ class JARVIZAR_OT_generate_model(Operator):
             missing = bundle.missing_types(required)
             if missing:
                 raise ValueError(
-                    "No cached "
+                    "No downloaded map data for this area ("
                     + ", ".join(missing)
-                    + ". Run Download / Cache Data first."
+                    + "). Click Download / Cache Data first."
                 )
 
             transform = _transform_from_settings(settings, bounds)
@@ -712,6 +822,8 @@ class JARVIZAR_OT_generate_model(Operator):
                     grid = ElevationGrid.load(bundle.path)
                 except ElevationGridError as exc:
                     raise ValueError(str(exc)) from exc
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValueError(_damaged_cache("elevation")) from exc
                 if not grid.matches(*bounds.as_tuple()):
                     raise ValueError(
                         "Cached elevation grid does not cover this bounding box; "
@@ -1147,11 +1259,13 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
 
     @classmethod
     def poll(cls, context):
-        return not is_generating()
+        return not is_generating() and not is_downloading()
 
     def execute(self, context):
         scene = context.scene
         settings = scene.jarvizar_city_model
+        # Objects still in Edit Mode export their edits, not the mesh from before.
+        update_from_edit_mode(scene)
         objects = generated_objects(scene)
         if not objects:
             settings.last_status = "Nothing to export: generate a model first"
@@ -1165,14 +1279,24 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
         # and each part carries its filament as Bambu's own extruder setting
         # rather than a colour left for the importer to map.
         from .blender.export_cutout import export_geometry, export_grid, export_sections, part_arrays
+        from .data.area import fits_bed
         from .data.export_3mf import part_name_map
         from .data.export_plates import PRINTERS, PlateWriter
 
+        exported = []
+
         def plate_parts(objects, depsgraph):
             names = part_name_map(objects)
-            return ((names[obj.name], *part_arrays(obj, depsgraph)) for obj in objects)
+            for obj in objects:
+                arrays = part_arrays(obj, depsgraph)
+                # An object whose faces were all deleted has nothing to print.
+                if not arrays[1]:
+                    continue
+                exported.append(obj.name)
+                yield (names[obj.name], *arrays)
 
         printer = PRINTERS[settings.bambu_printer]
+        bed_status = ""
         try:
             with export_geometry(context, objects) as (parts, stats, opening):
                 if not parts:
@@ -1180,6 +1304,7 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
                 # Publish only after the whole project is written. Staging
                 # alongside the destination keeps replacement atomic.
                 destination = Path(self.filepath)
+                ensure_writable(destination.parent, create=False)
                 with tempfile.TemporaryDirectory(prefix=".jcm-3mf-", dir=destination.parent) as folder:
                     staged = Path(folder) / "project.3mf"
                     with PlateWriter(Path(folder) / "3dmodel.model", printer) as writer:
@@ -1190,19 +1315,27 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
                                 if not sections:
                                     raise ValueError("No section received geometry inside cutout's inner opening")
                                 depsgraph = context.evaluated_depsgraph_get()
-                                part_count = 0
                                 for section, section_parts in sections:
                                     writer.add_plate(section.name, plate_parts(section_parts, depsgraph),
                                                      section.bounds)
-                                    part_count += len(section_parts)
                             export_status = f"{writer.plate_count} Bambu plates"
                         else:
                             depsgraph = context.evaluated_depsgraph_get()
                             writer.add_plate("Map", plate_parts(parts, depsgraph))
-                            part_count = len(parts)
                             export_status = "one Bambu plate"
+                            west, south, east, north = writer.plate_bounds[-1]
+                            if not fits_bed(east - west, north - south, printer.width, printer.depth):
+                                bed_status = (
+                                    f"; the model is {east - west:.0f} x {north - south:.0f} mm, larger "
+                                    f"than the {printer.model} bed ({printer.bed}): add a cutout frame "
+                                    "with Multi-Plate Export, or choose a smaller area")
                         writer.close(staged)
-                    staged.replace(destination)
+                    try:
+                        staged.replace(destination)
+                    except PermissionError as exc:
+                        raise ValueError(f"Close {destination.name} in other programs "
+                                         "or choose another name") from exc
+                part_count = len(exported)
                 crop_status = ""
                 if opening:
                     crop_status = (f"; cutout: {stats['inside_objects']} inside objects, "
@@ -1216,9 +1349,9 @@ class JARVIZAR_OT_export_3mf(Operator, ExportHelper):
 
         settings.last_status = (
             f"Exported {part_count} parts as {export_status} for {printer.model} "
-            f"with {len(writer.palette)} filaments to {destination.name}{crop_status}"
+            f"with {len(writer.palette)} filaments to {destination.name}{bed_status}{crop_status}"
         )
-        self.report({"INFO"}, settings.last_status)
+        self.report({"WARNING"} if bed_status else {"INFO"}, settings.last_status)
         return {"FINISHED"}
 
 
@@ -1229,7 +1362,7 @@ class JARVIZAR_OT_cache_storage(Operator):
 
     @classmethod
     def poll(cls, context):
-        return not is_generating() and not JARVIZAR_OT_prepare_lidar._running
+        return not is_generating() and not JARVIZAR_OT_prepare_lidar._running and not is_downloading()
 
     def invoke(self, context, event):
         from .external.lidar_storage import CacheStorage
@@ -1286,7 +1419,7 @@ class JARVIZAR_OT_clear_model(Operator):
 
     @classmethod
     def poll(cls, context):
-        return not is_generating()
+        return not is_generating() and not is_downloading()
 
     def execute(self, context):
         removed = clear_generated(context.scene)
@@ -1300,9 +1433,11 @@ CLASSES = (
     JARVIZAR_OT_cache_storage,
     JARVIZAR_OT_cancel_lidar,
     JARVIZAR_OT_cancel_generation,
+    JARVIZAR_OT_cancel_download,
     JARVIZAR_OT_move_surface_priority,
     JARVIZAR_OT_paste_bounds,
     JARVIZAR_OT_download_cache,
+    JARVIZAR_OT_download_then_generate,
     JARVIZAR_OT_prepare_lidar,
     JARVIZAR_OT_generate_model,
     JARVIZAR_OT_export_3mf,

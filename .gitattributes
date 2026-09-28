@@ -1,0 +1,4 @@
+# Setup scripts run on other systems: sh needs LF, cmd.exe expects CRLF.
+*.sh text eol=lf
+*.cmd text eol=crlf
+.githooks/* text eol=lf

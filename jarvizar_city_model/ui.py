@@ -8,18 +8,20 @@ sub-panel's header checkbox, so the closed headers double as the feature list.
 
 from __future__ import annotations
 
-import math
-import os
-from pathlib import Path
 import textwrap
 
 from bpy.types import Menu, Panel
 
-from .config import preferred_python_path
+from .data.area import real_size_m
 from .data.bounds_presets import load_presets
-from .data.projection import WGS84_SEMI_MAJOR_AXIS_M, WGS84Bounds
+from .data.projection import WGS84Bounds, normalize_minus
 from .blender.generation_modal import active_session, is_generating
+from .blender.download_modal import active_download
 from .operators import JARVIZAR_OT_prepare_lidar
+from .operators_area import draw_area_tools, draw_size_notes, draw_user_presets
+from .operators_export import draw_export_extras
+from .operators_palette import draw_palette
+from .operators_setup import draw_downloader_status, draw_first_run, draw_help
 
 
 def _wrapped(layout, text, region_width, limit=0, icon="NONE"):
@@ -76,6 +78,21 @@ def _lidar_progress(layout, settings, region_width):
     box.operator('jarvizar.cancel_lidar', icon='CANCEL')
 
 
+def _download_progress(layout, session, region_width):
+    status = session.status()
+    box = layout.box()
+    box.label(text=status["title"], icon="TIME")
+    stage = status["stage"]
+    if status["stage_count"] > 1:
+        stage += f" ({status['stage_index']}/{status['stage_count']})"
+    box.label(text=stage)
+    _wrapped(box, status["message"], region_width, limit=3)
+    elapsed = int(status["elapsed"])
+    box.label(text=f"Elapsed {elapsed // 60}:{elapsed % 60:02d}")
+    box.operator("jarvizar.cancel_download", icon="CANCEL")
+    box.label(text="Esc also cancels")
+
+
 def _scale_summary(settings):
     """Describe what the chosen scale means before anything is generated.
 
@@ -96,23 +113,16 @@ def _scale_summary(settings):
     ]
     try:
         bounds = WGS84Bounds(
-            west=float(settings.west),
-            south=float(settings.south),
-            east=float(settings.east),
-            north=float(settings.north),
+            west=float(normalize_minus(settings.west)),
+            south=float(normalize_minus(settings.south)),
+            east=float(normalize_minus(settings.east)),
+            north=float(normalize_minus(settings.north)),
         )
+        # Measured as the model transform measures it, so this is the size generated.
+        width_m, height_m = real_size_m(bounds)
     except (TypeError, ValueError):
         return [f"Ratio {ratio}", "Bounding box is not valid decimal degrees", *roads]
-
-    latitude = math.radians(bounds.center_latitude)
-    width_m = math.radians(bounds.width_degrees) * WGS84_SEMI_MAJOR_AXIS_M * math.cos(latitude)
-    height_m = math.radians(bounds.height_degrees) * WGS84_SEMI_MAJOR_AXIS_M
     return [f"{width_m * scale:.0f} x {height_m * scale:.0f} mm at {ratio}", *roads]
-
-
-def _python_configured(settings):
-    return bool(settings.overture_python_path.strip() or preferred_python_path().strip()
-                or os.environ.get("JARVIZAR_OVERTURE_PYTHON", "").strip())
 
 
 def _offer_detail_lines(details, areas=3):
@@ -145,6 +155,7 @@ class JARVIZAR_MT_bounds_presets(Menu):
             self.layout.operator("jarvizar.paste_bounds", text=name).text = bounds
         if not presets:
             self.layout.label(text="No presets in data/bounds_presets.txt")
+        draw_user_presets(self.layout)
 
 
 class JARVIZAR_PT_city_model(Panel):
@@ -161,6 +172,9 @@ class JARVIZAR_PT_city_model(Panel):
 
         if _lidar_preparing(settings):
             _lidar_progress(layout, settings, width)
+        download = active_download()
+        if download is not None:
+            _download_progress(layout, download, width)
 
         session = active_session()
         if session is not None:
@@ -173,6 +187,8 @@ class JARVIZAR_PT_city_model(Panel):
             return
 
         box = layout.box()
+        # The running download is for the area it started with.
+        box.enabled = download is None
         row = box.row()
         row.label(text="Area", icon="WORLD")
         row.menu("JARVIZAR_MT_bounds_presets", text="Presets")
@@ -186,6 +202,7 @@ class JARVIZAR_PT_city_model(Panel):
         # own row: at the default sidebar width the heading row only has room
         # for the short Presets menu.
         box.operator("jarvizar.paste_bounds", text="Paste Coordinates", icon="PASTEDOWN")
+        draw_area_tools(box, context)
 
         box = layout.box()
         box.label(text="Print Scale", icon="DRIVER_DISTANCE")
@@ -198,14 +215,12 @@ class JARVIZAR_PT_city_model(Panel):
             column.prop(settings, "target_width_mm")
             column.prop(settings, "target_height_mm")
             box.prop(settings, "preserve_aspect_ratio")
+        draw_size_notes(box, context)
 
         # The workflow, top to bottom.  Generate is the one button pressed on
         # every iteration, so it is the largest target.
         column = layout.column()
-        if not _python_configured(settings):
-            row = column.row()
-            row.alert = True
-            _wrapped(row, "Overture Python not set; see Setup and Cache", width, icon="ERROR")
+        draw_first_run(column, context)
         row = column.row()
         row.scale_y = 1.2
         row.operator("jarvizar.download_cache", icon="IMPORT")
@@ -225,11 +240,14 @@ class JARVIZAR_PT_city_model(Panel):
         box.prop(settings, "multi_plate_export")
         if settings.multi_plate_export:
             column = box.column(align=True)
-            column.prop(settings, "section_width_mm")
-            column.prop(settings, "section_height_mm")
+            # Full labels truncate the values at the default sidebar width.
+            column.label(text="Max Section Size (mm)")
+            column.prop(settings, "section_width_mm", text="Width")
+            column.prop(settings, "section_height_mm", text="Height")
         row = box.row()
         row.scale_y = 1.2
         row.operator("jarvizar.export_3mf", icon="EXPORT")
+        draw_export_extras(box, context)
 
         _wrapped(layout.box(), settings.last_status, width, limit=4, icon="INFO")
         layout.operator("jarvizar.clear_model", icon="TRASH")
@@ -506,6 +524,15 @@ class JARVIZAR_PT_lidar_sources(_SubPanel, Panel):
         row.prop(settings, "lidar_download_workers")
 
 
+class JARVIZAR_PT_colours(_SubPanel, Panel):
+    bl_label = "Colours"
+    bl_idname = "JARVIZAR_PT_colours"
+
+    def draw(self, context):
+        layout, settings = _panel(self, context)
+        draw_palette(layout, settings)
+
+
 class JARVIZAR_PT_setup(_SubPanel, Panel):
     bl_label = "Setup and Cache"
     bl_idname = "JARVIZAR_PT_setup"
@@ -514,16 +541,10 @@ class JARVIZAR_PT_setup(_SubPanel, Panel):
         layout, settings = _panel(self, context)
         _labelled(layout, settings, "cache_directory")
 
-        _heading(layout, "Overture Python")
-        stored = preferred_python_path().strip()
+        _heading(layout, "Downloader")
         # An empty override box reads as "nothing is configured" unless the
         # panel says plainly what will actually be used, so it always does.
-        if stored:
-            tail = Path(stored)
-            layout.label(text=f"...{Path(tail.parent.parent.name) / tail.parent.name / tail.name}",
-                         icon="CHECKMARK")
-        else:
-            _wrapped(layout, "Not set in Preferences > Add-ons", context.region.width, icon="ERROR")
+        draw_downloader_status(layout, context)
         _labelled(layout, settings, "overture_python_path", text="Override for this scene")
 
         _heading(layout, "LiDAR Storage")
@@ -535,7 +556,8 @@ class JARVIZAR_PT_setup(_SubPanel, Panel):
         layout.operator('jarvizar.cache_storage', text='Review Cache Cleanup', icon='DISK_DRIVE')
 
         _heading(layout, "Scene")
-        layout.prop(settings, "set_scene_units")
+        layout.prop(settings, "set_scene_units", text="Millimetre Scene Units")
+        draw_help(layout)
 
 
 CLASSES = (
@@ -550,5 +572,6 @@ CLASSES = (
     JARVIZAR_PT_buildings,
     JARVIZAR_PT_lidar,
     JARVIZAR_PT_lidar_sources,
+    JARVIZAR_PT_colours,
     JARVIZAR_PT_setup,
 )

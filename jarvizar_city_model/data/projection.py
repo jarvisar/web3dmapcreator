@@ -119,6 +119,13 @@ BOUNDS_TEXT_EXAMPLE = "-84.53576,39.08541,-84.48473,39.11475"
 
 _BOUNDS_TEXT_SEPARATORS = re.compile(r"[,;\s]+")
 _BOUNDS_TEXT_WRAPPERS = "()[]{}<>\"' \t\r\n"
+# Minus signs web pages and word processors use in place of "-".
+_MINUS_SIGNS = str.maketrans({"−": "-", "–": "-", "﹣": "-", "－": "-"})
+
+
+def normalize_minus(text: str) -> str:
+    """Replace typographic minus signs with the ASCII hyphen-minus."""
+    return text.translate(_MINUS_SIGNS)
 
 
 def parse_bounds_text(text: str) -> WGS84Bounds:
@@ -136,15 +143,17 @@ def parse_bounds_text(text: str) -> WGS84Bounds:
 
     if not isinstance(text, str):
         raise ValueError("Bounding-box text must be a string")
-    cleaned = text.strip()
+    cleaned = normalize_minus(text).strip()
     if "=" in cleaned:
         # A box copied out of a URL or a query arrives as "bbox=w,s,e,n".
         cleaned = cleaned.rsplit("=", 1)[1]
     cleaned = cleaned.strip(_BOUNDS_TEXT_WRAPPERS)
     tokens = [token for token in _BOUNDS_TEXT_SEPARATORS.split(cleaned) if token]
     if len(tokens) != 4:
+        # Eight numbers are usually four written with decimal commas.
+        hint = "; use a point for decimals" if len(tokens) == 8 else ""
         raise ValueError(
-            f"Expected 4 numbers as west,south,east,north; found {len(tokens)}"
+            f"Expected 4 numbers as west,south,east,north; found {len(tokens)}{hint}"
         )
     values = []
     for name, token in zip(BOUNDS_TEXT_ORDER, tokens):

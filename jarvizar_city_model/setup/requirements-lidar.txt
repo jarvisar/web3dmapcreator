@@ -1,0 +1,7 @@
+# Optional LiDAR building packages, installed into the same downloader
+# environment. Never install these into Blender's Python.
+-r requirements-downloader.txt
+laspy[lazrs]==2.7.0
+pyproj==3.7.2
+shapely==2.1.2
+pyshp==2.3.1

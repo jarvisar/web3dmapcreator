@@ -66,6 +66,13 @@ def _walk_collections(root: bpy.types.Collection) -> List[bpy.types.Collection]:
     return result
 
 
+def update_from_edit_mode(scene: bpy.types.Scene) -> None:
+    """Write pending Edit Mode changes into their meshes before an export reads them."""
+    for obj in scene.objects:
+        if obj.mode == "EDIT":
+            obj.update_from_editmode()
+
+
 def generated_objects(scene: bpy.types.Scene) -> List[bpy.types.Object]:
     """Every mesh this add-on generated, in a stable order."""
     found: List[bpy.types.Object] = []

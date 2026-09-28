@@ -15,7 +15,9 @@ Blender's float32 vertices.
   `<object name="Terrain" type="model">` with its mesh; each plate is an
   object with `<components>` referencing its parts (parts are written first,
   as the 3MF core specification requires) and one `<build><item>` translation
-  placing it on its virtual plate with a shared Z datum.
+  placing it on its virtual plate with a shared Z datum. It also carries
+  `<metadata name="Copyright">` with the map-data attribution; Bambu Studio
+  keeps it when saving.
 - `Metadata/model_settings.config`: per plate an `<object id>` with `name` and
   `extruder` metadata and a `<part id subtype="normal_part">` per part with
   its own `name` and `extruder`; then a `<plate>` per plate with `plater_id`,
@@ -35,9 +37,12 @@ Blender's float32 vertices.
 Filaments are one per distinct colour and Bambu PLA line, numbered in order of
 first use across all parts and plates. A material's colour is its Principled
 BSDF base colour, or its viewport colour without nodes, scaled to bytes
-without gamma conversion, the convention every previous export used. Its line
-is its `jarvizar_filament` property, `PLA Basic` or `PLA Matte`, else PLA
-Basic; the palette sets PLA Matte on terrain and buildings. Each filament gets
+without gamma conversion, the convention every previous export used. On
+Blender 5, where every material has nodes, a Base Color still at the node
+default counts as unset and the viewport colour is used. Its line is its
+`jarvizar_filament` property, `PLA Basic` or `PLA Matte`, else PLA Basic; the
+Colours sub-panel sets each group's line (the Default preset uses PLA Matte on
+terrain and buildings). Each filament gets
 that line's preset for the printer (`Bambu PLA Matte @BBL P1S 0.4 nozzle`) and
 its `filament_ids` (`GFA00` Basic, `GFA01` Matte). Palette colours that are
 Bambu filaments (Caramel, Ivory White, Bambu Green, Dark Gray) are their hex

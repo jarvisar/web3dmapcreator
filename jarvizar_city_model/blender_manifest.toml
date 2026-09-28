@@ -3,12 +3,14 @@ id = "jarvizar_city_model"
 version = "0.25.8"
 name = "Jarvizar City Model"
 tagline = "Generate printable city miniatures from Overture data"
-maintainer = "Jarvizar workflow"
+maintainer = "Jarvizar"
 type = "add-on"
+tags = ["Import-Export", "Modeling"]
 blender_version_min = "4.2.0"
 license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2026 Jarvizar"]
 
 [permissions]
-network = "Download Overture map data, elevation tiles and public LiDAR"
-files = "Cache downloaded map data for model generation"
-clipboard = "Paste bounding box coordinates"
+network = "Download map data, elevation tiles and LiDAR; search places"
+files = "Cache downloaded data and write exported models"
+clipboard = "Paste coordinates; copy setup commands and support reports"

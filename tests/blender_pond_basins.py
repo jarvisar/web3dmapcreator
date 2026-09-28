@@ -125,11 +125,15 @@ def test_disabled_and_parameters():
     bodies, _ = solve_water_bodies([pond], Transform(), field, custom)
     near(bodies[0].bed_mm,-1.7)
     near(bodies[0].top_mm,-.6)
+    invalid = SurfaceSettings(pond_recess_depth_mm=.5, pond_water_thickness_mm=.8)
     try:
-        SurfaceSettings(pond_recess_depth_mm=.5, pond_water_thickness_mm=.8)
+        solve_water_bodies([pond], Transform(), field, invalid)
         raise AssertionError('Invalid dimensions accepted')
-    except ValueError:
-        pass
+    except ValueError as exc:
+        assert 'Basin Water Thickness' in str(exc), exc
+    # An area without a basin never uses the recess dimensions.
+    bodies, _ = solve_water_bodies([feature('river', rectangle(12,-2,24,22))], Transform(), field, invalid)
+    assert len(bodies) == 1 and not bodies[0].basin_kind
 
 
 def test_skipped_basins_leave_no_trace():
@@ -181,6 +185,17 @@ def test_slopes_and_duplicate_basins():
     recess_terrain_basins(field, bodies, target, 1.3)
     near(hits(target.objects[0],3,3).z, -.8)
     near(hits(target.objects[0],5.1,3).z, .51)
+
+
+def test_recess_keeps_the_terrain_material_slots():
+    # Each slot exports as a filament; Blender 5 adds one for a cutter without the terrain's material.
+    field = ModelHeightField(0,0,20,20,3,3,[0]*9)
+    bodies, _ = solve_water_bodies([feature('pond', rectangle(2,2,5,5))], Transform(), field)
+    target = collection('material_basin_terrain')
+    material = bpy.data.materials.new('basin terrain material')
+    generate_terrain_solid(field, 1.3, target, material)
+    recess_terrain_basins(field, bodies, target, 1.3)
+    assert [slot.material for slot in target.objects[0].material_slots] == [material]
 
 
 def test_failure_keeps_original_terrain():
@@ -284,6 +299,7 @@ test_basins()
 test_disabled_and_parameters()
 test_skipped_basins_leave_no_trace()
 test_slopes_and_duplicate_basins()
+test_recess_keeps_the_terrain_material_slots()
 test_failure_keeps_original_terrain()
 test_mapped_water_basins_recess_instead_of_ordinary_water_slabs()
 test_overlapping_parts_share_a_level_and_river_overlap_is_skipped()

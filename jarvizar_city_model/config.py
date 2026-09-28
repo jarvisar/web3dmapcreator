@@ -20,6 +20,7 @@ from .data.land import DEFAULT_SURFACE_PRIORITY, MINIMUM_WATER_CUT_AREA_M2
 from .external.lidar_downloads import DEFAULT_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS
 from .external.lidar_footprint import DEFAULT_MINIMUM_FOOTPRINT_AREA_MM2
 from .external.lidar_storage import DEFAULT_CACHE_GIB, DEFAULT_FREE_GIB
+from .operators_palette import JARVIZAR_PG_palette
 
 
 def _default_cache_directory() -> str:
@@ -29,6 +30,19 @@ def _default_cache_directory() -> str:
     return bpy.utils.user_resource(
         "DATAFILES", path="jarvizar_city_model/cache", create=False
     )
+
+
+def _absolute_cache_directory(settings, context):
+    """Store a folder picked relative to the saved .blend as a full path.
+
+    Save As does not remap a relative path, so the cache would otherwise be
+    lost as soon as the file moves.
+    """
+    value = settings.cache_directory
+    if value.startswith("//") and bpy.data.filepath:
+        absolute = bpy.path.abspath(value)
+        if absolute != value:
+            settings.cache_directory = absolute
 
 
 class JARVIZAR_AP_preferences(AddonPreferences):
@@ -60,12 +74,24 @@ class JARVIZAR_AP_preferences(AddonPreferences):
         default="",
         subtype="FILE_PATH",
     )
+    place_search_url: StringProperty(
+        name="Place Search URL",
+        description=(
+            "Nominatim-compatible search address used by Find Place. Leave empty "
+            "for nominatim.openstreetmap.org"
+        ),
+        default="",
+    )
 
     def draw(self, context):
+        from .operators_setup import draw_downloader_status
+
         layout = self.layout
         layout.prop(self, "overture_python_path")
+        draw_downloader_status(layout.box(), context, preferences=True)
         layout.prop(self, "lidar_cache_gib")
         layout.prop(self, "lidar_free_gib")
+        layout.prop(self, "place_search_url")
         layout.label(
             text="Scenes leave their own field blank to use this.",
             icon="INFO",
@@ -88,6 +114,15 @@ def preferred_python_path() -> str:
     if addon is None or not hasattr(addon.preferences, "overture_python_path"):
         return ""
     return str(addon.preferences.overture_python_path or "")
+
+
+def place_search_url() -> str:
+    """Return the add-on preference's place search address, or an empty string."""
+    try:
+        addon = bpy.context.preferences.addons.get(__package__)
+    except AttributeError:
+        return ""
+    return str(getattr(addon.preferences, "place_search_url", "") or "").strip() if addon else ""
 
 
 class JARVIZAR_PG_city_model_settings(PropertyGroup):
@@ -239,10 +274,9 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     terrain_smoothing: IntProperty(
         name="Terrain Smoothing (cells)",
         description=(
-            "Radius of a mean filter over the terrain grid. The elevation "
-            "tiles carry a metre or two of pixel noise, which prints as "
-            "one-layer coins along roads; one cell halves those and barely "
-            "moves the hills. Zero uses the tiles as they are"
+            "Averages terrain heights over this many grid cells to remove the "
+            "metre or two of elevation noise that prints as bumps along roads. "
+            "0 uses the heights as downloaded"
         ),
         default=1,
         min=0,
@@ -492,10 +526,7 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     )
     maximum_road_width_mm: FloatProperty(
         name="Maximum Road Width (mm)",
-        description=(
-            "Widest printed road or deck; wider classes are narrowed to it. A "
-            "motorway at true scale is nearly a millimetre and reads as a runway"
-        ),
+        description="Widest printed road or deck; wider classes are narrowed to it",
         default=0.7,
         min=0.1,
         soft_max=5.0,
@@ -576,8 +607,7 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         name="Bridge Clearance (mm)",
         description=(
             "Printed gap between a deck's underside and what it crosses: the "
-            "terrain, a road's top, or a lower deck. Two 0.2 mm layers of "
-            "daylight is what makes a bridge read as one"
+            "terrain, a road's top, or a lower deck"
         ),
         default=0.4,
         min=0.0,
@@ -587,8 +617,8 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     bridge_maximum_grade: FloatProperty(
         name="Maximum Deck Grade",
         description=(
-            "Steepest rise over run a deck may climb or fall. A deck too short "
-            "to reach its clearance at this grade humps as high as it can"
+            "Steepest rise over run a deck may climb or fall (0.08 = 8%). A deck "
+            "too short to reach its clearance at this grade rises as high as it can"
         ),
         default=0.08,
         min=0.01,
@@ -657,11 +687,10 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
         default=True,
     )
     minimum_water_cut_area_m2: FloatProperty(
-        name="Minimum Cut Area (m2)",
+        name="Minimum Cut Area (m²)",
         description=(
-            "Smallest real-world water area cut out of the terrain. Below this "
-            "a body is left as a surface slab, which keeps ponds and fountains "
-            "from punching holes through the base"
+            "Smallest real-world water area cut through the base. Smaller water "
+            "is left as a surface slab"
         ),
         default=MINIMUM_WATER_CUT_AREA_M2,
         min=0.0,
@@ -732,10 +761,8 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     surface_embed_mm: FloatProperty(
         name="Embed Into Terrain (mm)",
         description=(
-            "How far roads, land surfaces, buildings, and piers reach below the "
-            "terrain surface. Their undersides follow the ground, so this only "
-            "has to make the solids overlap in the slicer; anything more is "
-            "colour buried inside the terrain"
+            "How far roads, land surfaces, buildings and piers extend below the "
+            "terrain surface, so the parts overlap in the slicer"
         ),
         default=0.15,
         min=0.02,
@@ -877,9 +904,10 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     # ------------------------------------------------------------------ cache
     cache_directory: StringProperty(
         name="Cache Directory",
-        description="Local directory for downloaded Overture GeoJSON and manifests",
+        description="Folder where downloaded map data is stored",
         default=_default_cache_directory(),
         subtype="DIR_PATH",
+        update=_absolute_cache_directory,
     )
     overture_python_path: StringProperty(
         name="Override",
@@ -892,7 +920,10 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     )
     force_redownload: BoolProperty(
         name="Refresh Existing Cache",
-        description="Replace matching cached files with data from the current release",
+        description=(
+            "Download every layer again from the latest release on the next "
+            "Download, instead of reusing cached files. Leave off normally"
+        ),
         default=False,
     )
     last_status: StringProperty(name="Status", default="Ready")
@@ -901,8 +932,14 @@ class JARVIZAR_PG_city_model_settings(PropertyGroup):
     generation_progress: FloatProperty(name="Progress", default=0.0, min=0.0, max=1.0,
                                        subtype="FACTOR", options={"SKIP_SAVE"})
 
+    # --------------------------------------------------------------- colours
+    # Material colours and Bambu PLA lines (operators_palette.py). A pointer,
+    # so generation_modal.settings_snapshot leaves it out: colours never reach
+    # the worker and are applied when the model's materials are staged.
+    palette: PointerProperty(type=JARVIZAR_PG_palette)
 
-CLASSES = (JARVIZAR_AP_preferences, JARVIZAR_PG_city_model_settings)
+
+CLASSES = (JARVIZAR_AP_preferences, JARVIZAR_PG_palette, JARVIZAR_PG_city_model_settings)
 
 
 def register_scene_properties() -> None:

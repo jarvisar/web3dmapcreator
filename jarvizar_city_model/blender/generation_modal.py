@@ -21,7 +21,9 @@ def settings_snapshot(settings):
     result = {prop.identifier: getattr(settings, prop.identifier) for prop in settings.bl_rna.properties
               if prop.identifier not in _RUNTIME and not prop.is_readonly
               and prop.type in {"BOOLEAN", "INT", "FLOAT", "STRING", "ENUM"}}
-    result["cache_directory"] = str(Path(bpy.path.abspath(settings.cache_directory)).expanduser().resolve())
+    from ..operators import _cache_root  # operators imports this module
+
+    result["cache_directory"] = str(_cache_root(settings).resolve())
     return result
 
 
@@ -123,9 +125,23 @@ class GenerationSession:
             return self._finish(True)
         except Exception as exc:
             self.error = True
-            self.request_cancel(f"Generation failed during {self.phase}: {exc}")
+            print(f"Generation failed during {self.phase}: {exc}")
+            self._keep_log()
+            # The cause comes first so it fits the status box.
+            self.request_cancel(f"Generation failed: {exc}")
             # Cleanup happens on the next tick, after confirming worker exit.
             return {"RUNNING_MODAL"}
+
+    def _keep_log(self):
+        """Keep the worker log for Copy Support Info; cleanup deletes its folder."""
+        if self.job is None or self.job.process is None or self.job.process.poll() is None:
+            return
+        try:
+            kept = self.job.keep_log(Path(self.inputs["cache_directory"]) / "logs")
+        except (OSError, KeyError):
+            return
+        if kept is not None:
+            print(f"Generation worker log kept at {kept}")
 
     def _remove_timer(self):
         if self.timer is not None:

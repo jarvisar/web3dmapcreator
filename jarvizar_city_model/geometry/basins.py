@@ -93,7 +93,9 @@ def _recessed_mesh(terrain, basins, collection, original_bottom, bottom, upper, 
             if not faces:
                 return None
         cutter_builder.add_raw([(x, y, upper if z else body.bed_mm) for x, y, z in vertices], faces)
-    cutter = cutter_builder.build(collection)
+    # Blender 5 adds a cutter material missing from the terrain as a slot of
+    # the result, an empty one for a cutter without materials; share them.
+    cutter = cutter_builder.build(collection, materials=list(terrain.data.materials))
     work = terrain.copy()
     work.data = terrain.data.copy()
     collection.objects.link(work)

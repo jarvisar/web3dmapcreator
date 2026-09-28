@@ -70,7 +70,8 @@ def _cut_terrain_geometry(heightfield, thickness_mm: float):
         else:
             kept.append(tuple(face))
     if not kept:
-        raise ValueError("Terrain solid has no dry land left to build")
+        raise ValueError("No land left after cutting water. Include some land in the area, or "
+                         "turn off Cut Water From Terrain in the Water panel")
 
     values = heightfield.values
 

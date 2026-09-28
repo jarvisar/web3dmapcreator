@@ -85,13 +85,15 @@ class SurfaceSettings:
     # change, cut, fill, slab exclusion or support. Overrides the recess.
     skip_ponds_and_fountains: bool = False
 
-    def __post_init__(self):
-        if self.recess_ponds_and_fountains and not self.skip_ponds_and_fountains and not (
+    def check_basin_water(self):
+        """Checked when a basin is built, so an area without one never fails on it."""
+        if not (
             math.isfinite(self.pond_recess_depth_mm)
             and math.isfinite(self.pond_water_thickness_mm)
             and 0 < self.pond_water_thickness_mm <= self.pond_recess_depth_mm
         ):
-            raise ValueError("Pond/fountain water thickness must be positive and not exceed recess depth")
+            raise ValueError("Basin Water Thickness must be above 0 and no more than Recess Depth "
+                             "(Water panel)")
 
 
 def _draped_slab(rings, draped, thickness: float, spacing: float):
@@ -361,6 +363,7 @@ def solve_water_bodies(
                 failed_meshes += 1
                 continue
             if basin_kind:
+                settings.check_basin_water()
                 bank = heightfield.minimum_over(
                     point for ring in rings for point in densify_ring(ring, settings.drape_spacing_mm)
                 )

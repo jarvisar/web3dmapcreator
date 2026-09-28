@@ -9,6 +9,7 @@ from .collections import (
     GENERATED_KEY, ROOT_COLLECTION_NAME, STAGING_KEY, STAGING_ROOT_NAME, ROLE_KEY, _walk_collections,
     create_city_hierarchy, generated_roots, hierarchy_data, preserve_user_links, removable_meshes,
 )
+from ..data.palette import role_palette, settings_palette
 from .materials import MATERIAL_ROLE_KEY, _material_name, model_materials
 
 
@@ -63,10 +64,14 @@ class GenerationTransaction:
         for datablock in sorted(reserved, key=lambda item: item.name):
             self._rename(datablock, _PREVIOUS_PREFIX + datablock.name)
 
+    def _materials(self):
+        # The scene palette's colours, read when the materials are staged.
+        return model_materials(staging=True, palette=role_palette(settings_palette(self.settings.palette)))
+
     def begin(self):
         self._reserve_names()
         self.hierarchy = create_city_hierarchy(self.scene, staging=True)
-        self.materials = model_materials(staging=True)
+        self.materials = self._materials()
         return self.hierarchy, self.materials
 
     def _new_data(self):
@@ -78,11 +83,12 @@ class GenerationTransaction:
         """Append one private worker result in a single synchronous allocation scope.
 
         Preserve the foreground palette's custom shaders by assigning local
-        staged copies to imported meshes. Worker materials only identify roles.
+        staged copies to imported meshes. Worker materials only identify roles;
+        the colours are the foreground scene palette's.
         """
         try:
             self._reserve_names()
-            self.materials = model_materials(staging=True)
+            self.materials = self._materials()
             before_materials = set(bpy.data.materials)
             with bpy.data.libraries.load(str(path), link=False) as (source, target):
                 if root_name not in source.collections:

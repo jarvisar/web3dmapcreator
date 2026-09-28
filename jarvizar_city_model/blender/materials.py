@@ -60,9 +60,36 @@ _ROUGHNESS = {
 }
 _DEFAULT_ROUGHNESS = 0.88
 
+# Blender 5 gives every material a node tree and deprecates Material.use_nodes,
+# so a node tree no longer means the material was set up in the shader editor.
+NODE_TREES_ALWAYS = bpy.app.version >= (5, 0, 0)
+
 
 def _material_name(key: str) -> str:
     return "JCM_" + "".join(part.capitalize() for part in key.split("_"))
+
+
+def surface_principled(material):
+    """The Principled BSDF wired to the output EEVEE renders, or None.
+
+    The output is chosen as Blender chooses it: an EEVEE output before an
+    All output, the active one first. A pre-5.0 file whose material did not
+    use nodes opens in Blender 5 with an added, active EEVEE output whose
+    Principled BSDF holds the old viewport colour.
+    """
+    tree = material.node_tree
+    if tree is None:
+        return None
+    output = rank = None
+    for node in tree.nodes:
+        if node.bl_idname == "ShaderNodeOutputMaterial" and node.target in {"ALL", "EEVEE"}:
+            candidate = (node.target == "EEVEE", node.is_active_output)
+            if rank is None or candidate > rank:
+                output, rank = node, candidate
+    if output is None or not output.inputs["Surface"].is_linked:
+        return None
+    node = output.inputs["Surface"].links[0].from_node
+    return node if node.bl_idname == "ShaderNodeBsdfPrincipled" else None
 
 
 def get_or_create_material(name: str, color, roughness: float = _DEFAULT_ROUGHNESS, *, staging=False):
@@ -76,8 +103,16 @@ def get_or_create_material(name: str, color, roughness: float = _DEFAULT_ROUGHNE
     rgba = (*color[:3], color[3] if len(color) > 3 else 1.0)
     material.diffuse_color = rgba
     material.roughness = roughness
-    material.use_nodes = True
-    principled = material.node_tree.nodes.get("Principled BSDF")
+    if not NODE_TREES_ALWAYS:
+        material.use_nodes = True
+    principled = surface_principled(material) if NODE_TREES_ALWAYS else None
+    if principled is None and material.node_tree is not None:
+        nodes = material.node_tree.nodes
+        principled = nodes.get("Principled BSDF")
+        if principled is None or principled.type != "BSDF_PRINCIPLED":
+            # With Translate New Data on, Blender names new nodes in the
+            # interface language ("BSDF guidée", "BSDF Principista").
+            principled = next((node for node in nodes if node.type == "BSDF_PRINCIPLED"), None)
     if principled is not None:
         principled.inputs["Base Color"].default_value = rgba
         if "Roughness" in principled.inputs:
@@ -86,15 +121,22 @@ def get_or_create_material(name: str, color, roughness: float = _DEFAULT_ROUGHNE
     return material
 
 
-def model_materials(*, staging=False) -> Dict[str, bpy.types.Material]:
-    """Return every material the generators use, keyed by their role name."""
+def model_materials(*, staging=False, palette=None) -> Dict[str, bpy.types.Material]:
+    """Return every material the generators use, keyed by their role name.
+
+    ``palette`` maps roles to (colour, PLA line), as the scene palette does;
+    a missing role uses PALETTE and MATTE_ROLES.
+    """
+    palette = palette or {}
+    chosen = {key: palette.get(key) or (color, "PLA Matte" if key in MATTE_ROLES else "PLA Basic")
+              for key, color in PALETTE.items()}
     materials = {
         key: get_or_create_material(
             _material_name(key), color, _ROUGHNESS.get(key, _DEFAULT_ROUGHNESS), staging=staging
         )
-        for key, color in PALETTE.items()
+        for key, (color, _line) in chosen.items()
     }
     for role, material in materials.items():
         material[MATERIAL_ROLE_KEY] = role
-        material[FILAMENT_KEY] = "PLA Matte" if role in MATTE_ROLES else "PLA Basic"
+        material[FILAMENT_KEY] = chosen[role][1]
     return materials

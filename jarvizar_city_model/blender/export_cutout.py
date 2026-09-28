@@ -22,8 +22,12 @@ import numpy as np
 from ..data.export_plates import DEFAULT_COLOR, DEFAULT_LINE, FILAMENT_LINES
 from ..geometry.planar import ear_clip, point_in_ring, signed_area
 from ..geometry.surface_priority import ROAD_CUT_AT_EXPORT_KEY, cut_roads_at_export
-from .materials import FILAMENT_KEY
+from .materials import FILAMENT_KEY, NODE_TREES_ALWAYS, surface_principled
 from .mesh_utils import _prism_geometry
+
+
+# Base Color of a new Principled BSDF.
+_PRINCIPLED_DEFAULT_BASE = 0.8
 
 
 class CutoutError(ValueError):
@@ -917,12 +921,22 @@ def export_sections(context, sources, grid):
 def material_color(material):
     """A material's #RRGGBB filament colour: its Principled base colour, else its viewport colour.
 
+    Blender 5 gives every material a Principled BSDF, so there a base colour
+    left at the node default defers to the viewport colour; a material given
+    only a viewport colour keeps it.
+
     Values are the material's stored linear components scaled to bytes, the
     convention every previous export used, so palettes stay comparable.
     """
     if material is None:
         return DEFAULT_COLOR
-    color = PrincipledBSDFWrapper(material, is_readonly=True).base_color
+    if NODE_TREES_ALWAYS:
+        principled = surface_principled(material)
+        color = principled.inputs["Base Color"].default_value if principled is not None else None
+        if color is None or all(abs(c - _PRINCIPLED_DEFAULT_BASE) < 1e-6 for c in color[:3]):
+            color = material.diffuse_color
+    else:
+        color = PrincipledBSDFWrapper(material, is_readonly=True).base_color
     return "#%02X%02X%02X" % tuple(min(255, max(0, round(c * 255))) for c in color[:3])
 
 

@@ -1,0 +1,4 @@
+# Packages for the separate downloader environment. Kept outside Blender
+# because they include native libraries and a newer NumPy than Blender bundles.
+# The repository's requirements files include these; change pins only here.
+overturemaps==1.0.2

@@ -4,6 +4,7 @@ import atexit
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -114,6 +115,22 @@ class GenerationJob:
             if not isinstance(payload.get(key), str):
                 raise ValueError("Incomplete generation worker result")
         return payload
+
+    def keep_log(self, folder, keep=20):
+        """Copy the worker log to *folder* as generation-<UTC>.log; keep the newest *keep*."""
+        source = self.directory / "worker.log"
+        if self.cleaned or not source.is_file():
+            return None
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / time.strftime("generation-%Y%m%dT%H%M%SZ.log", time.gmtime())
+        shutil.copyfile(source, target)
+        for old in sorted(folder.glob("generation-*.log"))[:-keep]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        return target
 
     def cleanup(self):
         if self.cleaned:

@@ -52,15 +52,18 @@ def run(request_path):
             setattr(settings, key, value)
         driver = SimpleNamespace(report=lambda *args: None, _generation_progress=progress)
         if operators.JARVIZAR_OT_generate_model.execute_sync(driver, bpy.context) != {"FINISHED"}:
-            raise ValueError(settings.last_status)
+            # The foreground adds its own "Generation failed:" prefix.
+            raise ValueError(settings.last_status.removeprefix("Generation failed: "))
         root = collections.generated_roots(bpy.context.scene)[0]
         progress("Writing finished model", 1.0)
         bpy.data.libraries.write(str(directory / "model.blend"), {root}, fake_user=False, compress=False)
         protocol.write_json(directory / "result.json", {"protocol": protocol.PROTOCOL, "ok": True,
             "root": root.name, "message": settings.last_status, "lidar_status": settings.lidar_generation_status})
     except Exception as exc:
+        # The phase goes to the worker log; the status shows only the cause.
+        print(f"Generation failed during {phase_name}: {exc}", flush=True)
         protocol.write_json(directory / "result.json", {"protocol": protocol.PROTOCOL, "ok": False,
-            "error": f"{phase_name}: {exc}"})
+            "error": str(exc)})
         raise
     finally:
         addon.unregister()

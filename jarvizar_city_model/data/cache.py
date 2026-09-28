@@ -39,10 +39,15 @@ class Bounds:
         values = (self.west, self.south, self.east, self.north)
         if not all(isinstance(value, (int, float)) for value in values):
             raise ValueError("Bounding-box values must be numeric")
-        if not (-180.0 <= self.west < self.east <= 180.0):
-            raise ValueError("Require -180 <= west < east <= 180")
-        if not (-90.0 <= self.south < self.north <= 90.0):
-            raise ValueError("Require -90 <= south < north <= 90")
+        if not (-180.0 <= self.west <= 180.0 and -180.0 <= self.east <= 180.0):
+            raise ValueError("West and East must be between -180 and 180")
+        if not self.west < self.east:
+            raise ValueError("West must be less than East "
+                             "(areas across the 180th meridian are not supported)")
+        if not (-90.0 <= self.south <= 90.0 and -90.0 <= self.north <= 90.0):
+            raise ValueError("South and North must be between -90 and 90")
+        if not self.south < self.north:
+            raise ValueError("South must be less than North")
         return self
 
     def as_tuple(self) -> Tuple[float, float, float, float]:

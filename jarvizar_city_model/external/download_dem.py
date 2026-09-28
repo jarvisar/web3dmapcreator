@@ -28,6 +28,9 @@ Two files are written next to each other:
 ``terrain.f32``
     ``rows * columns`` little-endian float32 metres, row-major, starting at the
     south-west corner and increasing north.
+
+Stdout carries only the final JSON result line.  Human-readable
+``progress: ...`` lines go to stderr.
 """
 
 from __future__ import annotations
@@ -56,6 +59,24 @@ MAXIMUM_TILES = 256
 
 class DemError(RuntimeError):
     pass
+
+
+def _progress(text: str) -> None:
+    print(f"progress: {text}", file=sys.stderr, flush=True)
+
+
+def _watch_parent(pid) -> None:
+    """Exit when the owning Blender exits; best effort."""
+    if not pid:
+        return
+    try:
+        try:
+            from .lidar_worker import watch_parent
+        except ImportError:
+            from lidar_worker import watch_parent
+        watch_parent(pid)
+    except Exception as exc:  # noqa: BLE001 - the owner still stops this process
+        print(f"Not watching the owning process ({type(exc).__name__})", file=sys.stderr, flush=True)
 
 
 # --------------------------------------------------------------------------
@@ -251,16 +272,23 @@ def build_mosaic(
     north: float,
     zoom: int,
     timeout: float = 60.0,
+    progress=None,
 ) -> Dict[str, object]:
-    """Fetch every covering tile and decode it into one elevation mosaic."""
+    """Fetch every covering tile and decode it into one elevation mosaic.
+
+    ``progress(index, total)`` is called before each tile is fetched.
+    """
     x0, y0, x1, y1 = _tile_range(west, south, east, north, zoom)
     columns = (x1 - x0 + 1) * TILE_SIZE
     rows = (y1 - y0 + 1) * TILE_SIZE
     mosaic = array.array("f", [0.0]) * (columns * rows)
     covered = 0
     missing = 0
+    total = (x1 - x0 + 1) * (y1 - y0 + 1)
     for tile_y in range(y0, y1 + 1):
         for tile_x in range(x0, x1 + 1):
+            if progress is not None:
+                progress(covered + missing + 1, total)
             payload = _fetch_tile(zoom, tile_x, tile_y, timeout)
             if payload is None:
                 missing += 1
@@ -386,9 +414,11 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--target-spacing-m", type=float, default=25.0)
     parser.add_argument("--zoom", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--parent-pid", type=int, default=0)
     args = parser.parse_args(argv)
 
     try:
+        _watch_parent(args.parent_pid)
         west, south, east, north = args.bbox
         if east <= west or north <= south:
             raise DemError("Require west < east and south < north")
@@ -408,12 +438,19 @@ def main(argv: List[str] | None = None) -> int:
             else choose_zoom(west, south, east, north, args.target_spacing_m)
         )
         zoom = max(MINIMUM_ZOOM, min(MAXIMUM_ZOOM, zoom))
-        mosaic = build_mosaic(west, south, east, north, zoom, timeout=args.timeout)
+        mosaic = build_mosaic(
+            west, south, east, north, zoom, timeout=args.timeout,
+            progress=lambda index, total: _progress(
+                f"Downloading elevation tiles ({index}/{total})"
+            ),
+        )
+        _progress("Resampling the elevation grid")
         grid = resample_to_grid(
             mosaic, west, south, east, north, zoom, columns, rows
         )
         minimum = min(grid)
         maximum = max(grid)
+        _progress("Writing the elevation grid")
         header = write_grid(
             args.output_dir,
             grid,

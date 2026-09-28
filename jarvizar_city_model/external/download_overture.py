@@ -2,6 +2,9 @@
 
 This file intentionally has no Blender imports.  Keeping PyArrow, Shapely and
 their native libraries outside Blender avoids ABI and NumPy conflicts.
+
+Stdout carries only the final JSON result line.  Human-readable
+``progress: ...`` lines go to stderr.
 """
 
 from __future__ import annotations
@@ -10,7 +13,29 @@ import argparse
 import importlib.metadata
 import json
 import sys
+import time
 from pathlib import Path
+
+
+PROGRESS_INTERVAL_S = 2.0
+
+
+def _progress(text: str) -> None:
+    print(f"progress: {text}", file=sys.stderr, flush=True)
+
+
+def _watch_parent(pid) -> None:
+    """Exit when the owning Blender exits; best effort."""
+    if not pid:
+        return
+    try:
+        try:
+            from .lidar_worker import watch_parent
+        except ImportError:
+            from lidar_worker import watch_parent
+        watch_parent(pid)
+    except Exception as exc:  # noqa: BLE001 - the owner still stops this process
+        print(f"Not watching the owning process ({type(exc).__name__})", file=sys.stderr, flush=True)
 
 
 def _empty_feature_collection(path: Path) -> None:
@@ -29,6 +54,7 @@ def _stac_index(release):
     import pyarrow.parquet as pq
 
     if release not in _STAC_INDEXES:
+        _progress("Reading the Overture file index")
         url = f"https://stac.overturemaps.org/{release}/collections.parquet"
         with urlopen(url, timeout=120) as response:
             table = pq.read_table(io.BytesIO(response.read()), columns=["assets", "bbox"])
@@ -63,7 +89,8 @@ def _intersecting_files(feature_type, bbox, release):
     return files
 
 
-def _download_one(feature_type, bbox, release, output_path):
+def _download_one(feature_type, bbox, release, output_path, report=None):
+    """Write one type's intersecting features; ``report(count)`` follows the batches."""
     import pyarrow.compute as pc
     import pyarrow.dataset as ds
     import pyarrow.fs as fs
@@ -102,6 +129,8 @@ def _download_one(feature_type, bbox, release, output_path):
             if batch.num_rows:
                 writer.write_batch(batch)
                 count += batch.num_rows
+                if report is not None:
+                    report(count)
     return count, fields
 
 
@@ -111,6 +140,7 @@ def main(argv=None) -> int:
     parser.add_argument("--bbox", nargs=4, type=float)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--types", nargs="+", default=["building", "building_part"])
+    parser.add_argument("--parent-pid", type=int, default=0)
     args = parser.parse_args(argv)
 
     try:
@@ -135,13 +165,27 @@ def main(argv=None) -> int:
         parser.error("--bbox and --output-dir are required unless --probe is used")
 
     try:
+        _watch_parent(args.parent_pid)
+        _progress("Finding the latest Overture release")
         release = get_latest_release()
+        _progress(f"Overture release {release}")
         args.output_dir.mkdir(parents=True, exist_ok=True)
         counts = {}
         schemas = {}
-        for feature_type in args.types:
+        total = len(args.types)
+        for index, feature_type in enumerate(args.types, 1):
+            label = f"Downloading {feature_type} ({index}/{total})"
+            _progress(label)
+            shown = [time.monotonic()]
+
+            def report(count, label=label, shown=shown):
+                now = time.monotonic()
+                if now - shown[0] >= PROGRESS_INTERVAL_S:
+                    shown[0] = now
+                    _progress(f"{label}: {count:,} features")
+
             output = args.output_dir / f"{feature_type}.geojson"
-            count, fields = _download_one(feature_type, tuple(args.bbox), release, output)
+            count, fields = _download_one(feature_type, tuple(args.bbox), release, output, report)
             counts[feature_type] = count
             schemas[feature_type] = fields
         print(

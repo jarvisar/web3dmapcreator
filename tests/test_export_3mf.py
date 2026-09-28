@@ -96,6 +96,7 @@ class PlateWriterTests(unittest.TestCase):
         self.assertEqual([[c.get('objectid') for c in o.findall('m:components/m:component', NS)] for o in objects],
                          [[], [], ['1', '2'], [], ['4']])
         self.assertTrue(model.find("m:metadata[@name='Application']", NS).text.startswith('BambuStudio-'))
+        self.assertIn('© OpenStreetMap contributors', model.find("m:metadata[@name='Copyright']", NS).text)
         first = objects[0].find('m:mesh/m:vertices/m:vertex', NS)
         self.assertEqual((first.get('x'), first.get('y'), first.get('z')), ('-100.000000', '-50.000000', '-3.000000'))
         self.assertEqual(len(objects[0].findall('m:mesh/m:triangles/m:triangle', NS)), 12)

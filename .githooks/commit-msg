@@ -1,0 +1,22 @@
+#!/bin/sh
+# Keeps AI tools out of this repository's authorship.
+# Removes Claude/Anthropic co-author, "Generated with" and session lines from
+# the commit message, and refuses a commit whose author or committer is an AI
+# identity. Enabled with: git config core.hooksPath .githooks
+
+message_file="$1"
+pattern="^[[:space:]]*co-authored-by:.*(claude|anthropic)|generated with.*claude|claude\.(ai|com)/(code|claude-code)|^[[:space:]]*claude-session:"
+
+identity="$(git var GIT_AUTHOR_IDENT) $(git var GIT_COMMITTER_IDENT)"
+if printf "%s\n" "$identity" | grep -qiE "claude|anthropic"; then
+    echo "commit-msg: author or committer is an AI identity; commit refused." >&2
+    echo "commit-msg: set git user.name and user.email to your own." >&2
+    exit 1
+fi
+
+if grep -qiE "$pattern" "$message_file"; then
+    grep -viE "$pattern" "$message_file" > "$message_file.clean" || true
+    mv "$message_file.clean" "$message_file"
+    echo "commit-msg: removed AI attribution lines from the commit message." >&2
+fi
+exit 0

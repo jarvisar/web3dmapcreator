@@ -16,7 +16,7 @@ import bpy
 from mathutils import Matrix
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from blender_export_cutout import addon, mesh_object, rectangle, fingerprint, audit
+from blender_export_cutout import addon, mesh_object, rectangle, fingerprint, audit, oriented
 from jarvizar_city_model.blender.collections import create_city_hierarchy, GENERATED_KEY
 from jarvizar_city_model.blender.export_cutout import export_geometry, export_grid, export_sections
 from jarvizar_city_model.data.export_3mf import MODEL, NS, SETTINGS
@@ -229,7 +229,7 @@ class PlateTests(unittest.TestCase):
             expected = abs(sum(a[0]*b[1]-b[0]*a[1]
                                for a,b in zip(ring,ring[1:]+ring[:1]))) * 1.5
             self.assertAlmostEqual(audit(parts[0].data), expected, delta=expected*2e-6)
-            for face in parts[0].data.polygons:
+            for face in oriented(parts[0].data):
                 if abs(face.normal.z) > .9:
                     zs = [parts[0].data.vertices[i].co.z for i in face.vertices]
                     self.assertLess(max(zs)-min(zs), 1e-6)

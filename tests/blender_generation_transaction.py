@@ -21,6 +21,9 @@ from jarvizar_city_model.blender import collections, generation, materials
 from jarvizar_city_model.data.cache import ALL_TYPES, Bounds, CacheBundle
 from blender_smoke import polygon, linestring, point, write_collection, write_synthetic_dem
 
+# Material.use_nodes is deprecated in Blender 5, where every material uses nodes.
+USE_NODES = bpy.app.version < (5, 0, 0)
+
 
 def geometry_digest(objects):
     result = []
@@ -55,7 +58,7 @@ def scene_snapshot():
                                   repr(dict(c.items()))) for c in bpy.data.collections]
     data["scene_links"] = sorted(c.as_pointer() for c in scene.collection.children)
     data["palette"] = [(m.as_pointer(), m.name, tuple(m.diffuse_color), m.roughness,
-                        m.use_nodes, repr(dict(m.items())),
+                        m.use_nodes if USE_NODES else None, repr(dict(m.items())),
                         [(n.name, n.type, [(s.name, repr(s.default_value[:]) if hasattr(s.default_value, "__len__")
                                           else repr(s.default_value)) for s in n.inputs
                                          if hasattr(s, "default_value")])
@@ -83,6 +86,7 @@ class TransactionTests(unittest.TestCase):
         settings.terrain_resolution = 16
         settings.generate_border_rim = True
         settings.use_lidar_buildings = True  # Exercise missing optional data fallback.
+        settings.generate_trees = True  # Off by default; the tree phase is tested here.
         settings.maximum_trees = 4
         settings.cut_roads_at_export = False  # Cut roads during generation, as a phase.
         self.bundle = CacheBundle(Path(self.temp.name), bounds)
@@ -134,7 +138,8 @@ class TransactionTests(unittest.TestCase):
         material.diffuse_color = (.7, .1, .2, 1)
         material.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (.2,.3,.4,1)
         material.node_tree.nodes.new("ShaderNodeValue").outputs[0].default_value = .37
-        material.use_nodes = False
+        if USE_NODES:
+            material.use_nodes = False
         material["user_note"] = "preserve custom nodes"
         self.settings.lidar_generation_status = "previous LiDAR result"
         units = bpy.context.scene.unit_settings
@@ -245,7 +250,8 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(shared.materials[0], terrain_material)
         self.assertEqual(terrain_material["user_note"], "preserve custom nodes")
         self.assertAlmostEqual(terrain_material.node_tree.nodes["Value"].outputs[0].default_value, .37)
-        self.assertTrue(terrain_material.use_nodes)
+        if USE_NODES:
+            self.assertTrue(terrain_material.use_nodes)
         self.assertAlmostEqual(terrain_material.diffuse_color[0], materials.PALETTE["terrain"][0])
         self.assertGreater(collections.clear_generated(bpy.context.scene), 0)
         self.assertIn(helper.name, bpy.context.scene.objects)

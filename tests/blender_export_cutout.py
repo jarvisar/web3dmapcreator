@@ -54,6 +54,24 @@ def fingerprint(obj):
         obj.select_get(), obj.hide_get(), [(m.name,m.type) for m in obj.modifiers])
 
 
+def oriented(mesh):
+    """Faces with a normal. Zero-area faces get a zero normal in 3.6 and +Z in Blender 5."""
+    return [f for f in mesh.polygons if f.area > 1e-9]
+
+
+def within_opening(opening, part):
+    """Every vertex inside the opening, allowing two float32 steps at the part's largest coordinate.
+
+    A tilted frame puts crop corners hundreds of millimetres from the origin,
+    where float32 spacing exceeds the frame's own tolerance; Blender 5 rounds
+    those corners differently from 3.6.
+    """
+    points = [part.matrix_world @ v.co for v in part.data.vertices]
+    slack = max((abs(c) for p in points for c in p), default=0) * 2 ** -22
+    relaxed = Opening(opening.ring, opening.matrix_world, opening.tolerance + slack)
+    return all(relaxed.contains(relaxed.inverse @ p) for p in points)
+
+
 def audit(mesh):
     bm = bmesh.new()
     try:
@@ -87,8 +105,7 @@ class CutoutTests(unittest.TestCase):
             for part in parts:
                 audit(part.data)
                 if opening:
-                    self.assertTrue(all(opening.contains(opening.inverse @ part.matrix_world @ v.co)
-                                        for v in part.data.vertices), part.name)
+                    self.assertTrue(within_opening(opening, part), part.name)
             callback(parts, stats, opening)
         self.assertEqual(set(bpy.data.objects), objects)
         self.assertEqual(set(bpy.data.meshes), meshes)
@@ -266,8 +283,8 @@ class CutoutTests(unittest.TestCase):
             face.material_index=int(face.normal.z>0.5)
         def check(parts,stats,opening):
             self.assertEqual([slot.material for slot in parts[0].material_slots],[override,blue])
-            self.assertTrue(all(f.material_index==1 for f in parts[0].data.polygons if f.normal.z>0.5))
-            self.assertTrue(all(f.material_index==0 for f in parts[0].data.polygons if f.normal.z< -0.5))
+            self.assertTrue(all(f.material_index==1 for f in oriented(parts[0].data) if f.normal.z>0.5))
+            self.assertTrue(all(f.material_index==0 for f in oriented(parts[0].data) if f.normal.z< -0.5))
         self.crop([obj],check)
 
     def test_tangent_outside_and_on_boundary(self):
@@ -331,7 +348,7 @@ class CutoutTests(unittest.TestCase):
         def check(parts, stats, opening):
             self.assertAlmostEqual(audit(parts[0].data), 200, places=4)
             self.assertTrue(all(f.material_index == int(f.normal.z > .5)
-                                for f in parts[0].data.polygons))
+                                for f in oriented(parts[0].data)))
         with patch.object(cutter, '_scan_fill_section', side_effect=failed_fill):
             self.crop([obj], check)
 
@@ -418,6 +435,26 @@ class CutoutTests(unittest.TestCase):
             self.assertAlmostEqual(max(p[0] for p in points)-min(p[0] for p in points),17)
             self.assertAlmostEqual(max(p[1] for p in points)-min(p[1] for p in points),11)
 
+    def test_filament_colour_is_the_shader_colour_else_the_viewport_colour(self):
+        viewport=bpy.data.materials.new('viewport only')
+        viewport.diffuse_color=(1,0,0,1)
+        self.assertEqual(cutter.material_color(viewport),'#FF0000')
+        shader=bpy.data.materials.new('shader')
+        if bpy.app.version < (5, 0, 0):
+            shader.use_nodes=True
+        shader.diffuse_color=(1,0,0,1)
+        shader.node_tree.nodes['Principled BSDF'].inputs['Base Color'].default_value=(0,0,1,1)
+        self.assertEqual(cutter.material_color(shader),'#0000FF')
+        if bpy.app.version >= (5, 0, 0):
+            # Pre-5.0 materials without nodes open with an added EEVEE output.
+            tree=shader.node_tree
+            output=tree.nodes.new('ShaderNodeOutputMaterial')
+            output.target='EEVEE'
+            principled=tree.nodes.new('ShaderNodeBsdfPrincipled')
+            principled.inputs['Base Color'].default_value=(0,1,0,1)
+            tree.links.new(principled.outputs['BSDF'],output.inputs['Surface'])
+            self.assertEqual(cutter.material_color(shader),'#00FF00')
+
     def test_invalid_destination_restores_scene(self):
         frame(rectangle(10,10))
         obj=self.source('terrain',rectangle(20,20))
@@ -450,7 +487,8 @@ class CutoutTests(unittest.TestCase):
         materials=[]
         for i,color in enumerate(((0.2,0.3,0.4,1),(1,1,1,1))):
             mat=bpy.data.materials.new(f'semantic material {i}')
-            mat.use_nodes=True
+            if bpy.app.version < (5, 0, 0):  # Blender 5 materials always use nodes.
+                mat.use_nodes=True
             mat.node_tree.nodes['Principled BSDF'].inputs['Base Color'].default_value=color
             materials.append(mat)
         sources=[]

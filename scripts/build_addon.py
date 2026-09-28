@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 import zipfile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = PROJECT_ROOT / "jarvizar_city_model"
 DIST_ROOT = PROJECT_ROOT / "dist"
+# Setup scripts run on other systems whatever the checkout's line endings:
+# sh fails on CRLF and cmd.exe expects it. Values are (line ending, mode).
+SCRIPT_FORMATS = {".sh": (b"\n", 0o755), ".cmd": (b"\r\n", 0o644)}
 
 
 def read_version() -> str:
@@ -39,7 +43,19 @@ def write_archive(path: Path, extension_layout: bool) -> None:
         for source in source_files():
             relative = source.relative_to(PACKAGE_ROOT)
             archive_name = relative if extension_layout else Path(PACKAGE_ROOT.name) / relative
-            archive.write(source, archive_name.as_posix())
+            script_format = SCRIPT_FORMATS.get(source.suffix)
+            if script_format is None:
+                archive.write(source, archive_name.as_posix())
+                continue
+            ending, mode = script_format
+            data = source.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", ending)
+            info = zipfile.ZipInfo(archive_name.as_posix(), time.localtime(source.stat().st_mtime)[:6])
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = (0o100000 | mode) << 16
+            archive.writestr(info, data)
+        # The GPL requires the license text to travel with every copy.
+        license_name = "LICENSE" if extension_layout else f"{PACKAGE_ROOT.name}/LICENSE"
+        archive.write(PROJECT_ROOT / "LICENSE", license_name)
 
 
 def main() -> None:
