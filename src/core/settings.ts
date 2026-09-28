@@ -335,11 +335,12 @@ const f = (line: FilamentLine, name: string): PaletteEntry => ({ hex: FILAMENTS[
 const IVORY = f('PLA Matte', 'Ivory White');
 const CARAMEL = f('PLA Matte', 'Caramel');
 const DARK_GRAY = f('PLA Basic', 'Dark Gray');
+const ASH_GRAY = f('PLA Matte', 'Ash Gray');
 const BAMBU_GREEN = f('PLA Basic', 'Bambu Green');
+const FOREST = f('PLA Basic', 'Mistletoe Green');
 // The add-on's original non-Bambu colours of the Default preset (stored as
 // 0-1 floats there, written here as the hex the export produced).
 const WATER: PaletteEntry = { hex: '#5CB2D1', line: 'PLA Basic' };
-const FOREST: PaletteEntry = { hex: '#0F2E14', line: 'PLA Basic' };
 const SAND: PaletteEntry = { hex: '#8C6338', line: 'PLA Basic' };
 const RIM: PaletteEntry = { hex: '#29292B', line: 'PLA Basic' };
 
@@ -353,8 +354,8 @@ export interface PalettePreset {
 export const PALETTE_PRESETS: PalettePreset[] = [
   {
     key: 'DEFAULT', name: 'Default',
-    description: 'Matte Caramel buildings, Matte Ivory White terrain, Basic Dark Gray roads and paving, Basic Bambu Green parks',
-    palette: { terrain: IVORY, buildings: CARAMEL, roads: DARK_GRAY, paved: DARK_GRAY, water: WATER,
+    description: 'Matte Caramel buildings, Matte Ivory White terrain, Matte Ash Gray roads and paving, Basic Bambu Green parks',
+    palette: { terrain: IVORY, buildings: CARAMEL, roads: ASH_GRAY, paved: ASH_GRAY, water: WATER,
       green: BAMBU_GREEN, forest: FOREST, trees: FOREST, sand: SAND, rock: SAND, rim: RIM },
   },
   {

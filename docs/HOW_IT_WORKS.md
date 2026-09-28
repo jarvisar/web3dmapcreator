@@ -99,23 +99,30 @@ Measuring follows the add-on:
 
 - The ground is a plane fitted to ground returns within 25 m of the footprint, or a nearby ground height where no plane fits.
 - A building needs returns across its footprint and observed ground around it. Otherwise it keeps its mapped shape and the reason is counted.
-- The roof envelope starts from the second highest return in each cell. Cells are 0.035 mm printed, kept between 0.5 and 0.8 m. The grid is smoothed, filled and faired, turned into a TIN, and simplified with quadric edge collapse down to a facet budget, with the outline kept exact.
+- The roof envelope starts from the second highest return in each cell. Cells are 0.035 mm printed, kept between 0.5 and 0.8 m. The grid is smoothed, filled and faired, then fitted with planes and triangulated (below), with the outline kept exact.
 - Where the envelope doesn't fit, it falls back to roof planes, flat terraces and finally a single height.
 - `Measure > Heights only` keeps the mapped shapes and only corrects their heights.
 
 Where several surveys cover a building, one is picked by coverage, classification and capture date against the building's construction year. A measurement far from the mapped height is only used with `Prefer LiDAR on conflicts` on. With it off, mapped parts with more detail than the measurement are kept, like a tower on a podium measured as one flat top.
 
-Two things the add-on doesn't do. Clipping the collapsed raster to the footprint leaves a rim vertex every half metre along the walls, and a rim vertex on a straight stretch of outline is removed when the roof around it stays within half a cell. That took a Chicago block's roofs from 342 rim edges each to 54. And the flat underside is triangulated from the outline instead of copying the roof's triangles. Together the Loop preset's buildings went from 1.15 million triangles to 330,000.
+From the faired grid on, the web app goes its own way. The add-on simplified a TIN of the grid with a quadric edge collapse priced against the faces as they were. That let a vertex slide down a wall a little at a time until a penthouse was a pyramid, made pitched roofs a crumple of facets, and left flat roofs a few centimetres off level here and there, which a slicer prints as speckled part-layers. Now (`regularize.ts`, `delatin.ts`, `coarsen.ts`):
 
-A measured roof is a solid of its own: the simplified TIN on top, a flat underside and walls along the outline, standing on a prism down to the terrain. Section cuts clip the TIN with a constrained triangulation, so the pieces stay closed. Constrainautor can rescan forever when an outline grazes a TIN vertex, so its work is capped and a stuck cut is retried with the outline moved in by a millionth of its size. A Paris building on the model's edge used to hang generation there.
+- Planes are grown over the grid much like roofer (3D BAG) does on points: a cell joins a plane within 0.3 m of it when the slope of its 3 x 3 neighbourhood is within 25 degrees of the plane's. A second, looser pass (1.3 m, any slope) catches rough roofs, like one covered in plant or a lattice crown. Planes under 3 degrees are made exactly level.
+- Every cell then takes a plane or keeps its measured height, whichever costs least. Moving a cell costs how far it moves, square to the plane, and each cell edge between two labels costs a fixed amount, sized so a bump about 0.3 mm across and one 0.2 mm layer tall, printed, is the smallest that stays. Rooftop plant, parapets, chimneys and vents go, a penthouse stays. Raising a cell costs at most a layer, so a pit narrower than 0.3 mm closes however deep it is, as it would in the slicer. Ridges, hips and steps end up where the planes meet.
+- The grid is triangulated by greedy insertion (a port of Delatin) until every cell is within a cell's pitch of the TIN up and down on a flat part, and half a pitch across a wall, so a diagonal wall runs straight past the staircase of cells it crosses. Merging vertices along straight steps then removes most of what insertion put there.
+- Spires skip the tidying, keep their upper returns rather than the median, which rounds a tip off by metres, and are held to a quarter of the error.
+- Clipping to the footprint leaves a rim vertex every half metre along the walls, and one on a straight stretch of outline is removed when the roof around it stays within half a cell. The flat underside is triangulated from the outline instead of copying the roof's triangles.
 
-The measurement code was checked against the add-on's Python (algorithm 29) on the same point clouds. Given the same footprint and ground, the envelope and simplification give identical results, down to the order floats are summed in. That takes a few things another developer might want to tidy:
+Relief narrower than about 0.3 mm doesn't print as anything but a blob, so it's left off rather than kept for the 3D view. At a larger print scale the same rules keep more of it. On the `Chicago - The Loop (small)` preset the buildings come to 298,000 triangles. The add-on's way took 1.15 million, and 326,000 with the thinned rim and the underside from the outline.
 
-- `simplify.ts` iterates in CPython's set order (`pyset.ts`). Changing that changes which edges collapse first.
+A measured roof is a solid of its own: the TIN on top, a flat underside and walls along the outline, standing on a prism down to the terrain. Section cuts clip the TIN with a constrained triangulation, so the pieces stay closed. Constrainautor can rescan forever when an outline grazes a TIN vertex, so its work is capped and a stuck cut is retried with the outline moved in by a millionth of its size. A Paris building on the model's edge used to hang generation there.
+
+Up to the faired grid, the measurement code was checked against the add-on's Python (algorithm 29) on the same point clouds. Given the same footprint and ground it gave the same grid, down to the order floats are summed in. That takes a few things another developer might want to tidy:
+
 - `geos.ts` reproduces GEOS 3.13's minimum rotated rectangle and double-double line intersections, and CPython's `math.dist`. The measurement grid follows the rectangle's longest side, and opposite sides are equal to within rounding. A generic rectangle fit turned half of all grids by 180 degrees.
 - `centroid` and `rotate` follow GEOS and `shapely.affinity` operation for operation, and the envelope uses a single footprint as given rather than through Clipper, which rounds to 0.1 mm.
 
-Buffers still come from Clipper rather than GEOS, so the 25 m ring the ground is fitted in has slightly different arcs. On a block of 42 Chicago buildings, 22 matched the add-on exactly. The other 20 had the same outcome with the ground up to 0.7 mm apart, which is enough for the simplification to keep different edges: their roof tops were 2 cm apart at the median and 3.5 m (0.27 mm printed) at worst, where one side kept a spire's tip.
+Buffers still come from Clipper rather than GEOS, so the 25 m ring the ground is fitted in has slightly different arcs, and the ground can come out up to 0.7 mm apart.
 
 ## Meshes
 

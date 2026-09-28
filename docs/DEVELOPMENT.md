@@ -68,7 +68,7 @@ With `--lidar`, point data and batch results are kept in `out/lidar-cache` (or `
 
 `npm test` covers the projection, the classifiers, linear referencing, water, roads, bridges, land cover, buildings and roofs (checked against the add-on's rules), the mesher, the exporters and the data layer against small parquet fixtures. The pipeline tests build models and check that every part is made of closed, consistently wound shells.
 
-The LiDAR tests run offline. The rectangle, centroid and rotation tests compare against Shapely output saved in `src/core/lidar/testdata/`. The envelope and edge collapse tests use point clouds from an exact copy of numpy's random generator (`src/core/lidar/test-helpers.ts`), so their expected values match the add-on's. The readers are tested against small synthetic EPT and COPC files with a pass-through decoder, and discovery against canned catalog answers.
+The LiDAR tests run offline. The rectangle, centroid and rotation tests compare against Shapely output saved in `src/core/lidar/testdata/`. The envelope tests use point clouds from an exact copy of numpy's random generator (`src/core/lidar/test-helpers.ts`), as the add-on's did. Where the roof surface now works differently from the add-on, the test says so. The readers are tested against small synthetic EPT and COPC files with a pass-through decoder, and discovery against canned catalog answers.
 
 The live data tests are skipped by default. Run them with:
 

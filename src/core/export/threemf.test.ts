@@ -23,10 +23,10 @@ describe('writeGeneric3mf', () => {
   it('gives each colour a base material and each part an object with it', async () => {
     const { files, model } = await write([plate('Map', [terrain, roads, paved, buildings], [-50, -40, 50, 40])], DEFAULT_PALETTE, printerByKey('P1S'), 'Chicago Loop');
     const bases = findAll(model, 'base').map((b) => [b.attrs.name, b.attrs.displaycolor]);
-    // Roads and paving share Dark Gray in the default palette.
+    // Roads and paving share Ash Gray in the default palette.
     expect(bases).toEqual([
       ['PLA Matte Ivory White', '#FFFFFFFF'],
-      ['PLA Basic Dark Gray', '#545454FF'],
+      ['PLA Matte Ash Gray', '#9B9EA0FF'],
       ['PLA Matte Caramel', '#AE835BFF'],
     ]);
     expect(findAll(model, 'basematerials').map((m) => m.attrs.id)).toEqual(['1']);

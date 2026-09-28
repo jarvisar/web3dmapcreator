@@ -8,7 +8,7 @@ import type { MultiPolygon } from '../types';
 
 // Bump when a change to measurement would give different records, so cached
 // ones are measured again. The add-on's records were algorithm 29.
-export const ALGORITHM_VERSION = 2;
+export const ALGORITHM_VERSION = 6;
 
 export type Method = 'faceted_roof' | 'roof_planes' | 'flat_regions' | 'height_only' | 'roof_p90' | 'supported_roof_height' | 'source_parts';
 

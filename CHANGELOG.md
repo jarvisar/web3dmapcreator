@@ -9,7 +9,7 @@
 - The surveys a model used are listed in `Model details` and in the attribution of exported 3MF files.
 - `Mapped bare rock` builds cliffs and outcrops mapped as bare rock from the LiDAR surface.
 - `scripts/generate.ts --lidar` for the command line.
-- Measured roofs are lighter than the add-on's: rim vertices on straight walls are thinned and the underside comes from the outline, about a quarter of the triangles for the same shape.
+- Measured roofs are fitted with planes instead of the add-on's edge collapse. Flat roofs come out exactly level, so they slice into one clean top layer, pitched roofs keep straight ridges and hips, and rooftop plant, chimneys, parapets and light wells too small to print are left off. Spires keep their tips. With rim vertices on straight walls thinned and the underside taken from the outline, the `Chicago - The Loop (small)` preset's buildings are about 300,000 triangles, against 1.15 million the add-on's way.
 
 ### Changed
 

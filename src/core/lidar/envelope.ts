@@ -1,16 +1,17 @@
-// A robust upper-surface raster over LiDAR returns, collapsed and clipped to
-// a mapped footprint. Ported from the add-on's lidar_envelope.py; the long
+// A robust upper-surface raster over LiDAR returns, triangulated and clipped
+// to a mapped footprint. Ported from the add-on's lidar_envelope.py; the long
 // comments there record why each rule exists, and short versions are kept
 // here next to the code they explain.
 //
 // The upper surface is the second-highest return in each print-scale cell, a
 // moving median over a disc of cells, and a light mean over observed cells
 // away from walls. Unobserved cells copy their nearest observed neighbour.
-// Relief along a steep face narrower than a nozzle is straightened, then an
-// error-bounded edge collapse merges flat roofs into a few faces and wall
-// staircases into straight facets. Nothing detects tiers or architecture: the
-// returns alone say where the walls are. The one thing mapped data decides is
-// whose wall stands on a shared outline.
+// Relief along a steep face narrower than a nozzle is straightened. From there
+// on the web app goes its own way: the roof is fitted with planes and tidied of
+// anything too small to print (regularize.ts), then triangulated within a set
+// distance of the grid (delatin.ts, coarsen.ts). Nothing detects tiers or
+// architecture: the returns alone say where the walls are. The one thing
+// mapped data decides is whose wall stands on a shared outline.
 //
 // Rasters are Float64Arrays in the numpy (nx, ny) layout, cell (i, j) at
 // i * ny + j, x along i. Shifts that numpy's roll wraps around wrap here too.
@@ -35,8 +36,10 @@ import {
   rotate,
   type Box,
 } from './shapes';
+import { coarsen } from './coarsen';
+import { gridTin } from './delatin';
+import { regularize } from './regularize';
 import { thinRim } from './rim';
-import { collapse, MIN_GAP } from './simplify';
 
 export class UnsupportedFit extends Error {}
 
@@ -51,12 +54,17 @@ const UPPER_RANK = 2;
 // The quantile of a scan shadow's cells that its pooled height takes.
 const UPPER_QUANTILE = 0.9;
 const MIN_VOTES = 4;
-// Collapse error, in cells squared, under which an edge is always merged.
-// Calibrated on Chicago towers at 0.5 m: 4-5 m facets on a curved face.
-export const COLLAPSE_TOLERANCE = 32;
-// A collapsed vertex may leave the faces it replaces by this many cells.
+// Spires are judged against a ring this many cells out, three times over.
 const DEVIATION_CELLS = 2;
+// No raster cell may end up further than this many cells' pitch from the roof,
+// measured square to it: up or down on a flat roof, across on a wall. Spires
+// are held to a quarter of that, since at print scale they're the landmarks.
+const ERROR_CELLS = 1;
+const SPIRE_WEIGHT = 4;
+const ACROSS_CELLS = 0.5;
 const SPIRE_SHARE = 0.8;
+// Vertices this close to the outline in plan are moved onto it.
+export const SNAP_GAP = 0.0025;
 // Relief along a steep face narrower than half the window (0.3 mm printed)
 // is straightened where no height level moves further than the reach.
 const FAIR_WINDOW_MM = 0.6;
@@ -67,6 +75,11 @@ const NEIGHBOUR_FACADE_M = 4;
 const FACADE_BAND_M = 1.5;
 // Printed length along the outline under which a dip in that band is a notch.
 const NOTCH_MM = 0.4;
+// Rooftop relief under about this width and a layer's height, printed, is
+// tidied away (regularize.ts). Most of a nozzle line: anything narrower prints
+// as a blob if at all. The layer is the usual one for a 0.4 mm nozzle.
+const MIN_FEATURE_MM = 0.3;
+const LAYER_MM = 0.2;
 /** Printed mm per ground metre, horizontal and vertical, when none is given. */
 export const DEFAULT_SURFACE_SCALE: [number, number] = [0.07, 0.077];
 
@@ -769,6 +782,8 @@ function pick(samples: Xyz, keep: number[]): Xyz {
 
 interface Surface {
   heights: Grid;
+  /** Each cell's upper return before the rank filter, -Infinity where there is none. */
+  upper: Grid;
   raster: Raster;
   observed: Mask;
   within: Mask;
@@ -838,7 +853,7 @@ function componentSurface(
   heights = lifted;
   if (zone) heights = neighbourFacades(heights, within, raster.mask(zone), nx, ny, pitch, rise);
   if (notch) heights = rimNotches(heights, within, nx, ny, pitch, notch);
-  return { heights: fill(heights, within, nx, ny), raster, observed: ranked.observed, within };
+  return { heights: fill(heights, within, nx, ny), upper: grid, raster, observed: ranked.observed, within };
 }
 
 function hasSpires(polygon: MultiPolygon, samples: Xyz, pitch: number, window: number, rise: number, zone: MultiPolygon | null): boolean {
@@ -869,62 +884,50 @@ interface Faces {
   faces: number;
 }
 
-/** Straighten the raster's faces, triangulate it over the component, collapse it and clip it. */
-function surfaces(polygon: MultiPolygon, heights: Grid, raster: Raster, threshold: number, budget: number, rise: number, fairing: [number, number]): Faces {
+/**
+ * Straighten the raster's faces, tidy it, triangulate it within a set distance
+ * of the grid and clip it to the component. Not the add-on's way: its collapse
+ * bounded each merge by the distance to the faces as they then were, which
+ * let a vertex slide down a wall a little at a time until a penthouse became a
+ * pyramid. Here every cell stays within the error of the surface.
+ */
+function surfaces(polygon: MultiPolygon, heights: Grid, upper: Grid, raster: Raster, budget: number, rise: number, fairing: [number, number], feature: number, layer: number): Faces {
   const { pitch, nx, ny } = raster;
   const spire = spires(heights, nx, ny, rise);
   const faired = fair(heights, nx, ny, pitch, fairing[0], fairing[1], spire);
+  // The median rounds a spire's tip off by metres, so a spire keeps its upper returns.
+  for (let c = 0; c < faired.length; c++) if (spire[c] && upper[c] > faired[c]) faired[c] = upper[c];
   const mask = raster.mask(buffer(polygon, pitch * 1.5));
-  const index = new Int32Array(nx * ny).fill(-1);
-  let count = 0;
-  for (let c = 0; c < nx * ny; c++) if (mask[c]) index[c] = count++;
-  const vertices = new Float64Array(count * 3);
-  const fine: number[] = [];
+  const regular = regularize(faired, nx, ny, pitch, feature / pitch, layer, spire, mask);
+  let weight: Float32Array | undefined;
   for (let i = 0; i < nx; i++) {
     for (let j = 0; j < ny; j++) {
-      const c = i * ny + j;
-      const k = index[c];
-      if (k < 0) continue;
-      vertices[3 * k] = raster.cornerX(i);
-      vertices[3 * k + 1] = raster.cornerY(j);
-      vertices[3 * k + 2] = faired[c];
-      if (spire[c]) fine.push(k);
+      if (!spire[i * ny + j]) continue;
+      weight ??= new Float32Array(nx * ny).fill(1);
+      for (let a = Math.max(0, i - 1); a <= Math.min(nx - 1, i + 1); a++) for (let b = Math.max(0, j - 1); b <= Math.min(ny - 1, j + 1); b++) weight[a * ny + b] = SPIRE_WEIGHT;
     }
   }
-  // Split each cell along the diagonal whose corners are closest in height.
-  // A fixed diagonal folds every cell a diagonal wall cuts into a notch.
-  const first: number[] = [];
-  const second: number[] = [];
-  for (let i = 0; i + 1 < nx; i++) {
-    for (let j = 0; j + 1 < ny; j++) {
-      const a = index[i * ny + j];
-      const b = index[(i + 1) * ny + j];
-      const c = index[(i + 1) * ny + j + 1];
-      const d = index[i * ny + j + 1];
-      if (a < 0 || b < 0 || c < 0 || d < 0) continue;
-      const ha = faired[i * ny + j];
-      const hb = faired[(i + 1) * ny + j];
-      const hc = faired[(i + 1) * ny + j + 1];
-      const hd = faired[i * ny + j + 1];
-      if (Math.abs(hb - hd) < Math.abs(ha - hc)) {
-        first.push(a, b, d);
-        second.push(b, c, d);
-      } else {
-        first.push(a, b, c);
-        second.push(a, c, d);
-      }
-    }
-  }
-  if (!first.length) throw new UnsupportedFit('incomplete clipped upper surface');
-  const collapsed = collapse(vertices, Uint32Array.from([...first, ...second]), threshold, budget, {
-    deviation: DEVIATION_CELLS * pitch,
-    fine,
+  const tolerance = { bound: ERROR_CELLS * pitch, across: ACROSS_CELLS * pitch, pitch, mask, weight };
+  const grid = gridTin(regular, nx, ny, tolerance, budget);
+  const kept = coarsen(grid.coords, grid.triangles, regular, nx, ny, tolerance);
+  const index = new Map<number, number>();
+  const triangles = new Uint32Array(kept.length);
+  kept.forEach((v, k) => {
+    if (!index.has(v)) index.set(v, index.size);
+    triangles[k] = index.get(v)!;
   });
-  snapToBoundary(collapsed.vertices, polygon, MIN_GAP / 4);
-  const clipped = clipTin({ vertices: collapsed.vertices, triangles: collapsed.faces }, polygon);
+  const vertices = new Float64Array(index.size * 3);
+  for (const [v, k] of index) {
+    const i = grid.coords[2 * v];
+    const j = grid.coords[2 * v + 1];
+    vertices[3 * k] = raster.cornerX(i);
+    vertices[3 * k + 1] = raster.cornerY(j);
+    vertices[3 * k + 2] = regular[i * ny + j];
+  }
+  snapToBoundary(vertices, polygon, SNAP_GAP);
+  const clipped = clipTin({ vertices, triangles }, polygon);
   if (!clipped) throw new UnsupportedFit('incomplete clipped upper surface');
-  // Not in the add-on: the clip leaves a rim vertex every cell along straight
-  // walls, which only cost triangles.
+  // The clip leaves a rim vertex every cell along straight walls, which only cost triangles.
   const tin = thinRim(clipped, pitch / 2);
   let clippedArea = 0;
   const v = tin.vertices;
@@ -934,7 +937,7 @@ function surfaces(polygon: MultiPolygon, heights: Grid, raster: Raster, threshol
     const c = 3 * tin.triangles[t + 2];
     clippedArea += ((v[b] - v[a]) * (v[c + 1] - v[a + 1]) - (v[c] - v[a]) * (v[b + 1] - v[a + 1])) / 2;
   }
-  return { tin, area: clippedArea, faces: collapsed.faces.length / 3 };
+  return { tin, area: clippedArea, faces: kept.length / 3 };
 }
 
 interface EnvelopeParts {
@@ -953,10 +956,11 @@ function envelope(
   window: number,
   tolerance: number,
   budget: number,
-  threshold: number,
   fairing: [number, number],
   zone: MultiPolygon | null,
   notch: number,
+  feature: number,
+  layer: number,
 ): EnvelopeParts {
   const tins: Tin[] = [];
   const residuals: number[] = [];
@@ -984,7 +988,7 @@ function envelope(
     const raw = surface.raster.upper(insideOf(usable, buffer(polygon, pitch)));
     for (let c = 0; c < raw.length; c++) if (Number.isFinite(raw[c])) residuals.push(Math.abs(surface.heights[c] - raw[c]));
     const share = Math.max(1, Math.floor((budget * area(polygon)) / total));
-    const part = surfaces(polygon, surface.heights, surface.raster, threshold, share, tolerance, fairing);
+    const part = surfaces(polygon, surface.heights, surface.upper, surface.raster, share, tolerance, fairing, feature, layer);
     const expected = area(polygon);
     if (!part.tin.triangles.length || Math.abs(part.area - expected) > Math.max(0.00001, expected * 1e-5)) {
       throw new UnsupportedFit('incomplete clipped upper surface');
@@ -1117,7 +1121,6 @@ export function fitRoofEnvelope(
       [pitch, window, tolerance] = envelopeParameters(scale, density);
     }
     const budget = facetBudget(pitch);
-    const threshold = COLLAPSE_TOLERANCE * pitch * pitch;
     const parts = envelope(
       components,
       observed,
@@ -1126,10 +1129,11 @@ export function fitRoofEnvelope(
       window,
       tolerance,
       budget,
-      threshold,
       [FAIR_WINDOW_MM / scale[0], FAIR_REACH_MM / scale[0]],
       zone,
       NOTCH_MM / scale[0],
+      MIN_FEATURE_MM / scale[0],
+      LAYER_MM / scale[1],
     );
     let triangles = 0;
     for (const tin of parts.tins) triangles += tin.triangles.length / 3;
@@ -1168,8 +1172,8 @@ export function fitRoofEnvelope(
           envelope_components: components.length,
           envelope_return_density_m2: Math.round((density ?? 0) * 100) / 100,
           surface_retained_samples: samples.count,
-          envelope_collapsed_faces: parts.faces,
-          envelope_collapse_tolerance_m2: threshold,
+          envelope_faces: parts.faces,
+          envelope_error_m: ERROR_CELLS * pitch,
           envelope_smoothing_p95_m: residual,
         },
       },

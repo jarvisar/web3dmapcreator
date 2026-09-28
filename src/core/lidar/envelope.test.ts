@@ -5,10 +5,9 @@ import { describe, expect, it } from 'vitest';
 import { difference, intersection, multiArea, pointInPolygon, union } from '../geometry/polygon';
 import type { Tin } from '../geometry/tinclip';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
-import { envelopeParameters, facetBudget, fitRoofEnvelope, type EnvelopeFit } from './envelope';
+import { envelopeParameters, facetBudget, fitRoofEnvelope, SNAP_GAP, type EnvelopeFit } from './envelope';
 import type { Xyz } from './points';
 import { rotate } from './shapes';
-import { MIN_GAP } from './simplify';
 import { arange, NumpyRandom } from './test-helpers';
 import shapelyCircle from './testdata/circle.json';
 
@@ -318,7 +317,10 @@ describe('roof envelope', () => {
     const record = fit(footprint, cloud(footprint, (x, y) => (x + y < 40.5 ? 60 : 20)));
     const offsets = riser(record, 40, footprint, 3).map(([x, y]) => (x + y) / Math.SQRT2);
     expect(offsets.length).toBeGreaterThan(0);
-    expect(Math.max(...offsets) - Math.min(...offsets)).toBeLessThan(0.2);
+    // The add-on held this to 0.2 m by moving vertices off the grid. Here they
+    // stay on grid points, and the 0.4 m returns alias against 0.5 m cells into
+    // a staircase, so the wall is held to within one cell's diagonal instead.
+    expect(Math.max(...offsets) - Math.min(...offsets)).toBeLessThan(0.75);
   });
 
   it('does not rib a curved tower face inside the footprint', () => {
@@ -347,13 +349,22 @@ describe('roof envelope', () => {
     }
   });
 
-  it('does not straighten small masses on a roof away', () => {
+  it('keeps masses on a roof that can print and flattens the rest', () => {
     const footprint = box(0, 0, 40, 30);
     const room = box(10, 10, 13, 13);
     const wall = box(20, 5, 22.5, 14);
-    const record = fit(footprint, cloud(footprint, (x, y) => (inside(room, x, y) ? 33 : inside(wall, x, y) ? 32 : 30)));
-    expect(heightAt(record, 11.5, 11.5)).toBeGreaterThan(32.5);
-    expect(heightAt(record, 21.25, 9.5)).toBeGreaterThan(31.5);
+    const plant = box(28, 16, 34, 24);
+    const roof = (x: number, y: number) => (inside(room, x, y) ? 33 : inside(wall, x, y) ? 32 : inside(plant, x, y) ? 34 : 30);
+    // At the default scale the room is 0.21 mm across and the wall 0.18 mm
+    // thick, each about a layer tall: less than a nozzle can print.
+    const record = fit(footprint, cloud(footprint, roof));
+    expect(heightAt(record, 11.5, 11.5)).toBeCloseTo(30, 1);
+    expect(heightAt(record, 21.25, 9.5)).toBeCloseTo(30, 1);
+    expect(heightAt(record, 31, 20)).toBeGreaterThan(33.5);
+    // Printed at 0.2 mm per metre they're three times the size, and stay.
+    const large = fit(footprint, cloud(footprint, roof), undefined, { scale: [0.2, 0.22] });
+    expect(heightAt(large, 11.5, 11.5)).toBeGreaterThan(32.5);
+    expect(heightAt(large, 21.25, 9.5)).toBeGreaterThan(31.5);
   });
 
   it('keeps the steps of stepped tower corners', () => {
@@ -414,7 +425,7 @@ describe('roof envelope', () => {
         const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)));
         distance = Math.min(distance, Math.hypot(x - ax - t * dx, y - ay - t * dy));
       }
-      expect(distance < 1e-9 || distance >= MIN_GAP / 4 - 1e-9).toBe(true);
+      expect(distance < 1e-9 || distance >= SNAP_GAP - 1e-9).toBe(true);
     }
   });
 

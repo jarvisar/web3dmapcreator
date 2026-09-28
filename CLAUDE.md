@@ -24,7 +24,7 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/data/` | Overture GeoParquet reads from S3 (STAC index, row-group pruning, two-pass page reads, hyparquet), Terrarium DEM tiles, IndexedDB byte cache, HTTP retries/limiter |
 | `src/core/geometry/` | Clipper2 wrappers (`polygon.ts`), prism mesher (`mesher.ts`, Delaunator + Constrainautor CDT with earcut fallback), edge/raster indexes, mesh validation |
 | `src/core/terrain/` | `HeightField`: the one grid every layer samples |
-| `src/core/lidar/` | LiDAR: `sources/` discovery (USGS EPT, IGN, NRCan, swisstopo, Flai COPC), `read/` EPT/COPC/LAS reading with an injected LAZ decoder and projector, measurement (`measure.ts`, `envelope.ts`, `simplify.ts`, ground, planes, terraces, selection), `prepare.ts` batching and checkpoints |
+| `src/core/lidar/` | LiDAR: `sources/` discovery (USGS EPT, IGN, NRCan, swisstopo, Flai COPC), `read/` EPT/COPC/LAS reading with an injected LAZ decoder and projector, measurement (`measure.ts`, `envelope.ts`, ground, planes, terraces, selection), roof surfaces (`regularize.ts`, `delatin.ts`, `coarsen.ts`, `rim.ts`), `prepare.ts` batching and checkpoints |
 | `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
 | `src/core/engine/` | Worker protocol and main-thread client |
@@ -71,16 +71,22 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 
 LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
 
-- Measurement is a port of the add-on's `lidar_*.py` (algorithm 29). With the
-  same footprint and ground it gives the same records on the same points.
-  `simplify.ts` sums quadrics in CPython 3.11 set order (`pyset.ts`), tests
-  use a numpy PCG64 copy, and `geos.ts`, `centroid` and `rotate` follow GEOS
-  3.13 and Shapely to the bit (the grid follows the minimum rotated
-  rectangle, whose opposite sides tie). Don't swap any of these for generic
-  versions, or results drift from the add-on.
+- Measurement is a port of the add-on's `lidar_*.py` (algorithm 29) up to the
+  faired roof raster. Tests use a numpy PCG64 copy, and `geos.ts`, `centroid`
+  and `rotate` follow GEOS 3.13 and Shapely to the bit (the grid follows the
+  minimum rotated rectangle, whose opposite sides tie). Don't swap any of
+  these for generic versions, or the raster drifts from the add-on's.
 - Buffers are Clipper's, not GEOS's, so the 25 m ground ring differs at its
-  arcs and the ground can move by up to ~0.7 mm. That is the known remaining
-  difference from the add-on, and the simplification can amplify it.
+  arcs and the ground can move by up to ~0.7 mm.
+- The roof surface on the raster is the web app's own. `regularize.ts` grows
+  planes, then labels each cell with a plane or leaves it as measured,
+  trading how far cells move against boundary length. Anything under about
+  0.3 mm across and a 0.2 mm layer tall, printed, goes, and pits narrower
+  than 0.3 mm go at any depth. `delatin.ts` and `coarsen.ts` triangulate
+  within one cell up and down on flat roofs and half a cell across walls.
+  Don't bring back an edge collapse priced against the current faces: it let
+  vertices slide down walls until penthouses were pyramids. Spire cells skip
+  all of it, keep their upper returns and get a quarter of the error.
 - Records are measured in a metric frame at scale 1 and published in lon/lat.
   Generation projects them like any other feature.
 - A roof envelope is a `CapSolid` (TIN top, flat underside, boundary walls).

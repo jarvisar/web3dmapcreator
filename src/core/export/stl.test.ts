@@ -102,7 +102,7 @@ describe('writeStlZip', () => {
     expect(Object.keys(files)).toEqual([
       'loop_1_Terrain+Rim_FFFFFF.stl',
       'loop_2_Buildings_AE835B.stl',
-      'loop_3_Roads+Paved_545454.stl',
+      'loop_3_Roads+Paved_9B9EA0.stl',
     ]);
     const stls = Object.values(files).map(readStl);
     expect(stls.map((s) => s.count)).toEqual([24, 24, 24]);
@@ -125,9 +125,9 @@ describe('writeStlZip', () => {
     const files = await stlZip(plates, DEFAULT_PALETTE, 'city');
     expect(Object.keys(files)).toEqual([
       'city_R1C1_1_Terrain_FFFFFF.stl',
-      'city_R1C1_2_Trees_0F2E14.stl',
+      'city_R1C1_2_Trees_3F8E43.stl',
       'city_R1C2_1_Terrain_FFFFFF.stl',
-      'city_R1C2_3_Roads_545454.stl',
+      'city_R1C2_3_Roads_9B9EA0.stl',
     ]);
     // Each section is centred on its own cell.
     const eastTerrain = readStl(files['city_R1C2_1_Terrain_FFFFFF.stl']);
