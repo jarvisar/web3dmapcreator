@@ -99,30 +99,6 @@ export function dataBoundsFor(area: AreaSpec) {
   return areaGeoBounds(area, 25);
 }
 
-/** The Overture types the enabled layers read. Water is always read: it shapes the terrain. */
-export function neededTypes(settings: ModelSettings): SourceType[] {
-  const types = new Set<SourceType>(['water']);
-  if (settings.roads.enabled) {
-    types.add('segment');
-    if (settings.roads.includeAirports) types.add('infrastructure');
-  }
-  // Piers and quays keep their ground over cut water. They are mapped in
-  // land and land_use too, which is why those are read even with land off.
-  const decks = settings.supports;
-  if (decks) types.add('infrastructure');
-  if (settings.buildings.enabled) {
-    types.add('building');
-    types.add('building_part');
-  }
-  const trees = settings.trees;
-  const forestTrees = trees.enabled && trees.forestScatter;
-  const rock = settings.buildings.enabled && settings.lidar.enabled && settings.lidar.rockSurfaces && settings.lidar.roofMode === 'envelope';
-  if (settings.land.enabled || decks || forestTrees || rock || (trees.enabled && trees.mapped)) types.add('land');
-  if (settings.land.enabled || decks || forestTrees) types.add('land_use');
-  if (settings.land.enabled || (forestTrees && trees.landCoverScatter)) types.add('land_cover');
-  return [...types];
-}
-
 export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   const { area, settings, data } = input;
   const progress = input.progress ?? new Progress();

@@ -18,11 +18,11 @@ import { prepareLidar, setCheckpointStore, type PreparedLidar } from '../core/li
 import { exportPlates } from '../core/export';
 import { BAMBU_MAX_PLATES } from '../core/export/sections';
 import { CancelError, Progress } from '../core/pipeline/context';
-import { rowFilter } from '../core/pipeline/filter';
-import { dataBoundsFor, generateModel, neededTypes, type ModelSpec } from '../core/pipeline/generate';
+import { dataPlan } from '../core/pipeline/dataPlan';
+import { dataBoundsFor, generateModel, type ModelSpec } from '../core/pipeline/generate';
 import { meshLayers, partsBounds } from '../core/pipeline/mesh';
 import { buildPlates } from '../core/pipeline/plates';
-import { printerByKey, sanitizeSettings, type ModelSettings } from '../core/settings';
+import { printerByKey, sanitizeSettings } from '../core/settings';
 import type { GeoBounds, ModelStats } from '../core/types';
 import { installLidarCodecs } from './lidarCodecs';
 import { lidarPool, lidarPoolSize, surfacePoolSize } from './lidarPool';
@@ -55,23 +55,6 @@ function boundsKey(b: GeoBounds): string {
   return [b.west, b.south, b.east, b.north].map((v) => v.toFixed(6)).join(',');
 }
 
-/** The settings that decide which rows are downloaded. */
-function downloadKey(s: ModelSettings): string {
-  return JSON.stringify([
-    neededTypes(s),
-    s.roads.includeRail,
-    s.roads.includePaths,
-    s.roads.includeAirports,
-    s.land.enabled,
-    s.trees.enabled,
-    s.trees.mapped,
-    s.trees.forestScatter,
-    s.trees.landCoverScatter,
-    s.supports,
-    s.lidar.enabled && s.lidar.rockSurfaces && s.lidar.roofMode === 'envelope',
-  ]);
-}
-
 function post(message: FromWorker, transfer?: Transferable[]) {
   ctx.postMessage(message, transfer);
 }
@@ -79,7 +62,8 @@ function post(message: FromWorker, transfer?: Transferable[]) {
 async function loadData(request: GenerateRequest, job: Running, report: (e: ProgressEvent) => void) {
   const { area, settings } = request;
   const bounds = dataBoundsFor(area);
-  const key = `${boundsKey(bounds)}|${downloadKey(settings)}`;
+  const plan = dataPlan(settings, bounds);
+  const key = `${boundsKey(bounds)}|${plan.key}`;
   const mb = (bytes: number) => `${(bytes / 1e6).toFixed(1)} MB`;
   let downloaded = 0;
   let overtureDone = false;
@@ -93,8 +77,8 @@ async function loadData(request: GenerateRequest, job: Running, report: (e: Prog
     overture = null;
     const data = await fetchOverture({
       bounds,
-      types: neededTypes(settings),
-      keep: rowFilter(settings, bounds),
+      types: plan.types,
+      keep: plan.keep,
       signal: job.abort.signal,
       onProgress: (p) =>
         report({

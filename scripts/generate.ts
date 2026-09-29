@@ -31,8 +31,8 @@ import { prepareLidar, type PreparedLidar } from '../src/core/lidar/prepare';
 import { lidarPoolSize, surfacePoolSize } from '../src/worker/lidarPool';
 import { setUpLidar, threadPool } from './lidar-node';
 import { Progress } from '../src/core/pipeline/context';
-import { rowFilter } from '../src/core/pipeline/filter';
-import { dataBoundsFor, generateModel, neededTypes } from '../src/core/pipeline/generate';
+import { dataPlan } from '../src/core/pipeline/dataPlan';
+import { dataBoundsFor, generateModel } from '../src/core/pipeline/generate';
 import { PRESET_GROUPS } from '../src/app/data/presets';
 import { meshLayers, partsBounds } from '../src/core/pipeline/mesh';
 import { buildPlates } from '../src/core/pipeline/plates';
@@ -105,13 +105,14 @@ async function main() {
 
   const t0 = performance.now();
   const bounds = dataBoundsFor(area);
+  const plan = dataPlan(settings, bounds);
   let lastLabel = '';
   const log = (label: string) => {
     if (label !== lastLabel) console.log(`  ${((performance.now() - t0) / 1000).toFixed(1)}s ${label}`);
     lastLabel = label;
   };
   const [data, dem] = await Promise.all([
-    fetchOverture({ bounds, types: neededTypes(settings), keep: flag('no-filter') ? undefined : rowFilter(settings, bounds), onProgress: (p) => log(p.message) }),
+    fetchOverture({ bounds, types: plan.types, keep: flag('no-filter') ? undefined : plan.keep, onProgress: (p) => log(p.message) }),
     settings.terrain.elevation
       ? fetchDem({ bounds, targetSpacingM: Math.max(area.widthM, area.heightM) / settings.terrain.resolution })
       : Promise.resolve(null),

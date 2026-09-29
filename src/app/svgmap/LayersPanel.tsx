@@ -1,5 +1,4 @@
 import { fieldRange } from '../../core/svgmap/limits';
-import { useId } from 'react';
 import type { ReactNode } from 'react';
 import {
   type FillLayerId,
@@ -10,7 +9,7 @@ import {
   type OutputMode,
 } from '../../core/svgmap/settings';
 import type { FeatureFilters } from '../../core/svgmap/tiles/schema';
-import { Checkbox } from '../components/Checkbox';
+import { LayerDisclosure } from '../components/LayerDisclosure';
 import { CheckField, ColourField, SelectField } from '../components/Fields';
 import { NumberField } from '../components/NumberField';
 import { formatNumber } from '../lib/format';
@@ -80,26 +79,20 @@ function LayerRow({ layer, summary, help, children }: RowProps) {
   const open = useApp((state) => state.ui.layers[key] ?? false);
   const on = useApp((state) => state.svg.layers[layer]);
   const colour = useApp((state) => state.svg.styles[state.svg.mode].colors[layer]);
-  const bodyId = useId();
   const name = LAYER_NAMES[layer];
   return (
-    <div className={`layer${on ? '' : ' is-off'}${open ? ' is-open' : ''}`}>
-      <div className="layer-head">
-        <Checkbox checked={on} onChange={(checked) => patchSvg((svg) => ({ layers: { ...svg.layers, [layer]: checked } }))} label={name} />
-        <button type="button" className="layer-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => toggleLayer(key)}>
-          <span className="dot" style={{ background: colour }} aria-hidden="true" />
-          <span className="layer-name">{name}</span>
-          <span className="layer-summary">{on ? summary : 'Off'}</span>
-          <span className="triangle" aria-hidden="true" />
-        </button>
-      </div>
-      {open && (
-        <div className="layer-body" id={bodyId}>
-          {help && <p className="layer-help">{help}</p>}
-          {children}
-        </div>
-      )}
-    </div>
+    <LayerDisclosure
+      label={name}
+      colour={colour}
+      on={on}
+      onToggle={(checked) => patchSvg((svg) => ({ layers: { ...svg.layers, [layer]: checked } }))}
+      open={open}
+      onExpand={() => toggleLayer(key)}
+      summary={on ? summary : 'Off'}
+    >
+      {help && <p className="layer-help">{help}</p>}
+      {children}
+    </LayerDisclosure>
   );
 }
 

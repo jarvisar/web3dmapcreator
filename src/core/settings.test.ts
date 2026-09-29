@@ -1,5 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_SETTINGS, cloneSettings, sanitizeSettings } from './settings';
+import { DEFAULT_SETTINGS, cloneSettings, modelFieldRange, sanitizeSettings } from './settings';
+
+describe('model field ranges', () => {
+  it('keeps percentage inputs in displayed units and stored values in range', () => {
+    expect(modelFieldRange('bridges', 'maxGrade', 100)).toEqual({ min: 1, max: 50 });
+    expect(modelFieldRange('trees', 'variation', 100)).toEqual({ min: 0, max: 80 });
+    const settings = cloneSettings();
+    settings.bridges.maxGrade = modelFieldRange('bridges', 'maxGrade', 100).max / 100;
+    settings.trees.variation = modelFieldRange('trees', 'variation', 100).max / 100;
+    expect(sanitizeSettings(settings)).toEqual(settings);
+  });
+
+  it('preserves zero and fractional bounds used for printability', () => {
+    expect(modelFieldRange('buildings', 'minWidthMm')).toEqual({ min: 0, max: 2 });
+    expect(modelFieldRange('lidarModel', 'detailMm')).toEqual({ min: 0.02, max: 0.3 });
+    expect(modelFieldRange('scale', 'mmPerMetre')).toEqual({ min: 0.001, max: 2 });
+  });
+});
 
 describe('sanitizeSettings', () => {
   it('keeps valid settings as they are, in a copy', () => {

@@ -206,7 +206,7 @@
 
 .notice-toast {
   display: flex;
-  flex-wrap: wrap;
+  max-width: 100%;
   align-items: center;
   gap: 8px;
   padding: 6px 6px 6px 12px;
@@ -215,8 +215,13 @@
   animation: fade-in 150ms ease-out;
 }
 
-.notice-toast span {
-  flex: 1 1 200px;
+.notice-toast > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.notice-toast > .btn {
+  flex: none;
 }
 
 /* Crash screen */

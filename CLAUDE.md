@@ -91,8 +91,9 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   Tunnels and indoor corridors are skipped.
 - Buildings follow the add-on's selection/height/roof rules. See comments in
   `src/core/pipeline/buildings/`.
-- The row filter (`pipeline/filter.ts`) decides from small columns which rows
-  need geometry. Keep it in step with the classifiers.
+- `pipeline/dataPlan.ts` selects data types and filters rows from small
+  columns before geometry is read. Its requirements also key the worker's
+  cached download. Keep the filter in step with the classifiers.
 
 Road network tidy (`pipeline/network/`, `roads.tidy`, run in `collectRoadPieces`
 before bridges are split off):

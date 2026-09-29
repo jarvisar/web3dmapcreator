@@ -469,9 +469,8 @@ type SettingsRanges = {
   [G in keyof ModelSettings as ModelSettings[G] extends object ? G : never]: Record<NumberKeys<ModelSettings[G]>, Range>;
 };
 
-// Valid values of every number setting. Each is at least as wide as its input
-// in the settings panels, so nothing the UI accepts is ever changed. Grades
-// and tree size variation are fractions here and percentages in the UI.
+// Valid values of every number setting, shared with the panels. Grades and
+// tree size variation are fractions here and percentages in the UI.
 const RANGES: SettingsRanges = {
   scale: { mmPerMetre: [0.001, 2], fitMm: [20, 2000] },
   terrain: { exaggeration: [0, 10], smoothing: [0, 4, true], resolution: [16, 1024, true], baseThicknessMm: [0.1, 20] },
@@ -501,6 +500,16 @@ const RANGES: SettingsRanges = {
   lidarModel: { detailMm: [0.02, 0.3], waterDepthMm: [0, 3], heightScale: [0.1, 3] },
   rim: { heightMm: [0.1, 30], widthMm: [0.1, 20] },
 };
+
+/** Input bounds in displayed units, matching NumberInput's scale. */
+export function modelFieldRange<G extends keyof SettingsRanges>(
+  group: G,
+  field: keyof SettingsRanges[G],
+  scale = 1,
+): { min: number; max: number } {
+  const [min, max] = RANGES[group][field] as Range;
+  return { min: min * scale, max: max * scale };
+}
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === 'object' && value !== null && !Array.isArray(value);

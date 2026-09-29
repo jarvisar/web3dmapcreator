@@ -1,7 +1,7 @@
 import { CircleCheck, TriangleAlert } from 'lucide-react';
 import { BAMBU_MAX_PLATES, MAX_SECTIONS } from '../../core/export/sections';
 import { effectiveScale } from '../../core/geo/area';
-import { PRINTERS } from '../../core/settings';
+import { modelFieldRange, PRINTERS } from '../../core/settings';
 import type { Printer } from '../../core/settings';
 import { NumberField } from '../components/NumberField';
 import { SelectField } from '../components/Fields';
@@ -77,8 +77,7 @@ export function PrintPanel() {
             label="Scale"
             value={scale.mmPerMetre}
             onChange={(mmPerMetre) => patchSettings('scale', { mmPerMetre })}
-            min={0.001}
-            max={2}
+            {...modelFieldRange('scale', 'mmPerMetre')}
             step={0.005}
             decimals={4}
             unit="mm/m"
@@ -112,8 +111,7 @@ export function PrintPanel() {
           label="Longest side"
           value={scale.fitMm}
           onChange={(fitMm) => patchSettings('scale', { fitMm })}
-          min={20}
-          max={2000}
+          {...modelFieldRange('scale', 'fitMm')}
           step={5}
           decimals={1}
           unit="mm"
@@ -187,8 +185,7 @@ export function PrintPanel() {
         label="Base thickness"
         value={baseThicknessMm}
         onChange={(baseThicknessMm) => patchSettings('terrain', { baseThicknessMm })}
-        min={0.1}
-        max={20}
+        {...modelFieldRange('terrain', 'baseThicknessMm')}
         step={0.1}
         decimals={2}
         unit="mm"

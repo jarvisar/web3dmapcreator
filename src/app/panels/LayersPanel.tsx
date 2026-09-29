@@ -1,11 +1,10 @@
 import { ArrowDown, ArrowUp } from 'lucide-react';
-import { useId } from 'react';
 import type { ReactNode } from 'react';
 import { cellSize } from '../../core/dsm/grid';
 import { effectiveScale } from '../../core/geo/area';
-import type { AreaSpec, LidarRoofMode, ModelSettings, SurfaceCategory } from '../../core/settings';
+import { modelFieldRange, type AreaSpec, type LidarRoofMode, type ModelSettings, type SurfaceCategory } from '../../core/settings';
 import type { ColourGroup } from '../../core/types';
-import { Checkbox } from '../components/Checkbox';
+import { LayerDisclosure } from '../components/LayerDisclosure';
 import { CheckField, SelectField } from '../components/Fields';
 import { HelpTip } from '../components/HelpTip';
 import { NumberField } from '../components/NumberField';
@@ -32,32 +31,27 @@ interface LayerRowProps {
 function LayerRow({ layer, label, group, on, onToggle, checkLabel, summary, help, children, resetKey }: LayerRowProps) {
   const open = useApp((state) => state.ui.layers[layer] ?? false);
   const colour = useApp((state) => state.palette[group].hex);
-  const bodyId = useId();
   return (
-    <div className={`layer${on ? '' : ' is-off'}${open ? ' is-open' : ''}`}>
-      <div className="layer-head">
-        <Checkbox checked={on} onChange={onToggle} label={checkLabel ?? label} />
-        <button type="button" className="layer-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => toggleLayer(layer)}>
-          <span className="dot" style={{ background: colour }} aria-hidden="true" />
-          <span className="layer-name">{label}</span>
-          <span className="layer-summary">{summary}</span>
-          <span className="triangle" aria-hidden="true" />
-        </button>
-      </div>
-      {open && (
-        <div className="layer-body" id={bodyId}>
-          <p className="layer-help">{keepUnits(help)}</p>
-          {children}
-          {resetKey && (
-            <div className="layer-foot">
-              <button type="button" className="link-btn" onClick={() => resetSettingsSection(resetKey)}>
-                Reset {/[A-Z].*[A-Z]/.test(label) ? label : label.toLowerCase()} settings
-              </button>
-            </div>
-          )}
+    <LayerDisclosure
+      label={label}
+      colour={colour}
+      on={on}
+      onToggle={onToggle}
+      checkLabel={checkLabel}
+      open={open}
+      onExpand={() => toggleLayer(layer)}
+      summary={summary}
+    >
+      <p className="layer-help">{keepUnits(help)}</p>
+      {children}
+      {resetKey && (
+        <div className="layer-foot">
+          <button type="button" className="link-btn" onClick={() => resetSettingsSection(resetKey)}>
+            Reset {/[A-Z].*[A-Z]/.test(label) ? label : label.toLowerCase()} settings
+          </button>
         </div>
       )}
-    </div>
+    </LayerDisclosure>
   );
 }
 
@@ -78,8 +72,7 @@ function TerrainOptions({ terrain }: { terrain: ModelSettings['terrain'] }) {
         label="Exaggeration"
         value={terrain.exaggeration}
         onChange={(exaggeration) => patchSettings('terrain', { exaggeration })}
-        min={0}
-        max={10}
+        {...modelFieldRange('terrain', 'exaggeration')}
         step={0.1}
         decimals={2}
         unit="×"
@@ -90,8 +83,7 @@ function TerrainOptions({ terrain }: { terrain: ModelSettings['terrain'] }) {
         label="Smoothing"
         value={terrain.smoothing}
         onChange={(smoothing) => patchSettings('terrain', { smoothing: Math.round(smoothing) })}
-        min={0}
-        max={4}
+        {...modelFieldRange('terrain', 'smoothing')}
         step={1}
         decimals={0}
         unit="cells"
@@ -102,8 +94,7 @@ function TerrainOptions({ terrain }: { terrain: ModelSettings['terrain'] }) {
         label="Resolution"
         value={terrain.resolution}
         onChange={(resolution) => patchSettings('terrain', { resolution: Math.round(resolution) })}
-        min={16}
-        max={1024}
+        {...modelFieldRange('terrain', 'resolution')}
         step={16}
         decimals={0}
         unit="cells"
@@ -122,8 +113,7 @@ function WaterOptions({ water }: { water: ModelSettings['water'] }) {
         label="Cut through the base above"
         value={water.cutMinAreaM2}
         onChange={(cutMinAreaM2) => patchSettings('water', { cutMinAreaM2: Math.round(cutMinAreaM2) })}
-        min={0}
-        max={1000000}
+        {...modelFieldRange('water', 'cutMinAreaM2')}
         step={500}
         decimals={0}
         unit="m²"
@@ -146,8 +136,7 @@ function WaterOptions({ water }: { water: ModelSettings['water'] }) {
         label="Recess depth"
         value={water.pondDepthMm}
         onChange={(pondDepthMm) => patchSettings('water', { pondDepthMm })}
-        min={0.1}
-        max={5}
+        {...modelFieldRange('water', 'pondDepthMm')}
         step={0.1}
         decimals={2}
         unit="mm"
@@ -158,8 +147,7 @@ function WaterOptions({ water }: { water: ModelSettings['water'] }) {
         label="Pond water thickness"
         value={water.pondWaterMm}
         onChange={(pondWaterMm) => patchSettings('water', { pondWaterMm })}
-        min={0.1}
-        max={5}
+        {...modelFieldRange('water', 'pondWaterMm')}
         step={0.1}
         decimals={2}
         unit="mm"
@@ -193,8 +181,7 @@ function LandOptions({ land }: { land: ModelSettings['land'] }) {
         label="Rise above terrain"
         value={land.riseMm}
         onChange={(riseMm) => patchSettings('land', { riseMm })}
-        min={0.02}
-        max={3}
+        {...modelFieldRange('land', 'riseMm')}
         step={0.05}
         decimals={2}
         unit="mm"
@@ -204,8 +191,7 @@ function LandOptions({ land }: { land: ModelSettings['land'] }) {
         label="Embed into terrain"
         value={land.embedMm}
         onChange={(embedMm) => patchSettings('land', { embedMm })}
-        min={0.02}
-        max={1}
+        {...modelFieldRange('land', 'embedMm')}
         step={0.05}
         decimals={2}
         unit="mm"
@@ -221,8 +207,7 @@ function LandOptions({ land }: { land: ModelSettings['land'] }) {
         label="Beach slope width"
         value={land.beachWidthMm}
         onChange={(beachWidthMm) => patchSettings('land', { beachWidthMm })}
-        min={0.1}
-        max={5}
+        {...modelFieldRange('land', 'beachWidthMm')}
         step={0.1}
         decimals={2}
         unit="mm"
@@ -275,8 +260,7 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
         label="Thickness"
         value={roads.thicknessMm}
         onChange={(thicknessMm) => patchSettings('roads', { thicknessMm })}
-        min={0.05}
-        max={5}
+        {...modelFieldRange('roads', 'thicknessMm')}
         step={0.05}
         decimals={2}
         unit="mm"
@@ -286,8 +270,7 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
         label="Minimum width"
         value={roads.minWidthMm}
         onChange={(minWidthMm) => patchSettings('roads', { minWidthMm })}
-        min={0.05}
-        max={5}
+        {...modelFieldRange('roads', 'minWidthMm')}
         step={0.05}
         decimals={2}
         unit="mm"
@@ -298,8 +281,7 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
         label="Maximum width"
         value={roads.maxWidthMm}
         onChange={(maxWidthMm) => patchSettings('roads', { maxWidthMm })}
-        min={0.1}
-        max={5}
+        {...modelFieldRange('roads', 'maxWidthMm')}
         step={0.05}
         decimals={2}
         unit="mm"
@@ -377,8 +359,7 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
           value={roads.gapMm}
           onChange={(gapMm) => patchSettings('roads', { gapMm })}
           disabled={!roads.tidy}
-          min={0}
-          max={2}
+          {...modelFieldRange('roads', 'gapMm')}
           step={0.05}
           decimals={2}
           unit="mm"
@@ -396,8 +377,7 @@ function BridgeOptions({ bridges }: { bridges: ModelSettings['bridges'] }) {
         label="Deck thickness"
         value={bridges.deckThicknessMm}
         onChange={(deckThicknessMm) => patchSettings('bridges', { deckThicknessMm })}
-        min={0.05}
-        max={10}
+        {...modelFieldRange('bridges', 'deckThicknessMm')}
         step={0.05}
         decimals={2}
         unit="mm"
@@ -407,8 +387,7 @@ function BridgeOptions({ bridges }: { bridges: ModelSettings['bridges'] }) {
         label="Clearance"
         value={bridges.clearanceMm}
         onChange={(clearanceMm) => patchSettings('bridges', { clearanceMm })}
-        min={0}
-        max={3}
+        {...modelFieldRange('bridges', 'clearanceMm')}
         step={0.05}
         decimals={2}
         unit="mm"
@@ -418,8 +397,7 @@ function BridgeOptions({ bridges }: { bridges: ModelSettings['bridges'] }) {
         label="Maximum grade"
         value={bridges.maxGrade}
         onChange={(maxGrade) => patchSettings('bridges', { maxGrade })}
-        min={1}
-        max={50}
+        {...modelFieldRange('bridges', 'maxGrade', 100)}
         step={1}
         decimals={1}
         scale={100}
@@ -430,8 +408,7 @@ function BridgeOptions({ bridges }: { bridges: ModelSettings['bridges'] }) {
         label="Minimum lift"
         value={bridges.minLiftMm}
         onChange={(minLiftMm) => patchSettings('bridges', { minLiftMm })}
-        min={0}
-        max={2}
+        {...modelFieldRange('bridges', 'minLiftMm')}
         step={0.05}
         decimals={2}
         unit="mm"
@@ -441,8 +418,7 @@ function BridgeOptions({ bridges }: { bridges: ModelSettings['bridges'] }) {
         label="Pier spacing"
         value={bridges.pierSpacingM}
         onChange={(pierSpacingM) => patchSettings('bridges', { pierSpacingM })}
-        min={1}
-        max={200}
+        {...modelFieldRange('bridges', 'pierSpacingM')}
         step={1}
         decimals={0}
         unit="m"
@@ -452,8 +428,7 @@ function BridgeOptions({ bridges }: { bridges: ModelSettings['bridges'] }) {
         label="Minimum pier size"
         value={bridges.pierMinSizeMm}
         onChange={(pierMinSizeMm) => patchSettings('bridges', { pierMinSizeMm })}
-        min={0.1}
-        max={3}
+        {...modelFieldRange('bridges', 'pierMinSizeMm')}
         step={0.05}
         decimals={2}
         unit="mm"
@@ -470,8 +445,7 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
         label="Height scale"
         value={buildings.heightScale}
         onChange={(heightScale) => patchSettings('buildings', { heightScale })}
-        min={0.1}
-        max={3}
+        {...modelFieldRange('buildings', 'heightScale')}
         step={0.05}
         decimals={2}
         unit="×"
@@ -481,8 +455,7 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
         label="Minimum height"
         value={buildings.minHeightMm}
         onChange={(minHeightMm) => patchSettings('buildings', { minHeightMm })}
-        min={0}
-        max={5}
+        {...modelFieldRange('buildings', 'minHeightMm')}
         step={0.05}
         decimals={2}
         unit="mm"
@@ -492,8 +465,7 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
         label="Raise only footprints over"
         value={buildings.minHeightFootprintMm}
         onChange={(minHeightFootprintMm) => patchSettings('buildings', { minHeightFootprintMm })}
-        min={0}
-        max={10}
+        {...modelFieldRange('buildings', 'minHeightFootprintMm')}
         step={0.05}
         decimals={2}
         unit="mm"
@@ -503,8 +475,7 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
         label="Default height"
         value={buildings.defaultHeightM}
         onChange={(defaultHeightM) => patchSettings('buildings', { defaultHeightM })}
-        min={1}
-        max={100}
+        {...modelFieldRange('buildings', 'defaultHeightM')}
         step={0.5}
         decimals={1}
         unit="m"
@@ -514,8 +485,7 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
         label="Floor height"
         value={buildings.floorHeightM}
         onChange={(floorHeightM) => patchSettings('buildings', { floorHeightM })}
-        min={1}
-        max={10}
+        {...modelFieldRange('buildings', 'floorHeightM')}
         step={0.1}
         decimals={1}
         unit="m"
@@ -537,8 +507,7 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
         label="Minimum width"
         value={buildings.minWidthMm}
         onChange={(minWidthMm) => patchSettings('buildings', { minWidthMm })}
-        min={0}
-        max={2}
+        {...modelFieldRange('buildings', 'minWidthMm')}
         step={0.01}
         decimals={2}
         unit="mm"
@@ -548,8 +517,7 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
         label="Maximum slenderness"
         value={buildings.maxSlenderness}
         onChange={(maxSlenderness) => patchSettings('buildings', { maxSlenderness })}
-        min={0}
-        max={60}
+        {...modelFieldRange('buildings', 'maxSlenderness')}
         step={0.5}
         decimals={1}
         unit="×"
@@ -560,8 +528,7 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
           label="Always keep wider than"
           value={buildings.slendernessExemptMm}
           onChange={(slendernessExemptMm) => patchSettings('buildings', { slendernessExemptMm })}
-          min={0}
-          max={2}
+          {...modelFieldRange('buildings', 'slendernessExemptMm')}
           step={0.05}
           decimals={2}
           unit="mm"
@@ -589,8 +556,7 @@ function LidarOptions({ lidar, scale }: { lidar: ModelSettings['lidar']; scale: 
         label="Smallest footprint"
         value={lidar.minFootprintMm2}
         onChange={(minFootprintMm2) => patchSettings('lidar', { minFootprintMm2 })}
-        min={0}
-        max={10}
+        {...modelFieldRange('lidar', 'minFootprintMm2')}
         step={0.1}
         decimals={2}
         unit="mm²"
@@ -648,8 +614,7 @@ function TreeOptions({ trees }: { trees: ModelSettings['trees'] }) {
         label="Spacing"
         value={trees.spacingM}
         onChange={(spacingM) => patchSettings('trees', { spacingM })}
-        min={2}
-        max={200}
+        {...modelFieldRange('trees', 'spacingM')}
         step={1}
         decimals={0}
         unit="m"
@@ -659,8 +624,7 @@ function TreeOptions({ trees }: { trees: ModelSettings['trees'] }) {
         label="Minimum height"
         value={trees.minHeightMm}
         onChange={(minHeightMm) => patchSettings('trees', { minHeightMm })}
-        min={0.1}
-        max={10}
+        {...modelFieldRange('trees', 'minHeightMm')}
         step={0.1}
         decimals={2}
         unit="mm"
@@ -670,8 +634,7 @@ function TreeOptions({ trees }: { trees: ModelSettings['trees'] }) {
         label="Minimum width"
         value={trees.minWidthMm}
         onChange={(minWidthMm) => patchSettings('trees', { minWidthMm })}
-        min={0.1}
-        max={5}
+        {...modelFieldRange('trees', 'minWidthMm')}
         step={0.1}
         decimals={2}
         unit="mm"
@@ -681,8 +644,7 @@ function TreeOptions({ trees }: { trees: ModelSettings['trees'] }) {
         label="Size variation"
         value={trees.variation}
         onChange={(variation) => patchSettings('trees', { variation })}
-        min={0}
-        max={80}
+        {...modelFieldRange('trees', 'variation', 100)}
         step={1}
         decimals={0}
         scale={100}
@@ -693,8 +655,7 @@ function TreeOptions({ trees }: { trees: ModelSettings['trees'] }) {
         label="Maximum trees"
         value={trees.maxTrees}
         onChange={(maxTrees) => patchSettings('trees', { maxTrees: Math.round(maxTrees) })}
-        min={0}
-        max={500000}
+        {...modelFieldRange('trees', 'maxTrees')}
         step={1000}
         decimals={0}
         help="Upper limit on the number of trees. Every tree adds triangles and slicing time."
@@ -710,8 +671,7 @@ function RimOptions({ rim }: { rim: ModelSettings['rim'] }) {
         label="Height"
         value={rim.heightMm}
         onChange={(heightMm) => patchSettings('rim', { heightMm })}
-        min={0.1}
-        max={30}
+        {...modelFieldRange('rim', 'heightMm')}
         step={0.1}
         decimals={2}
         unit="mm"
@@ -721,8 +681,7 @@ function RimOptions({ rim }: { rim: ModelSettings['rim'] }) {
         label="Width"
         value={rim.widthMm}
         onChange={(widthMm) => patchSettings('rim', { widthMm })}
-        min={0.1}
-        max={20}
+        {...modelFieldRange('rim', 'widthMm')}
         step={0.1}
         decimals={2}
         unit="mm"
@@ -757,8 +716,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
         label="Detail"
         value={lidar.detailMm}
         onChange={(detailMm) => patchSettings('lidarModel', { detailMm })}
-        min={0.02}
-        max={0.3}
+        {...modelFieldRange('lidarModel', 'detailMm')}
         step={0.01}
         decimals={3}
         unit="mm"
@@ -781,8 +739,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
         label="Water depth"
         value={lidar.waterDepthMm}
         onChange={(waterDepthMm) => patchSettings('lidarModel', { waterDepthMm })}
-        min={0}
-        max={3}
+        {...modelFieldRange('lidarModel', 'waterDepthMm')}
         step={0.1}
         decimals={2}
         unit="mm"
@@ -799,8 +756,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
           label="Cut through the base above"
           value={settings.water.cutMinAreaM2}
           onChange={(cutMinAreaM2) => patchSettings('water', { cutMinAreaM2: Math.round(cutMinAreaM2) })}
-          min={0}
-          max={1000000}
+          {...modelFieldRange('water', 'cutMinAreaM2')}
           step={500}
           decimals={0}
           unit="m²"
@@ -811,8 +767,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
         label="Height scale"
         value={lidar.heightScale}
         onChange={(heightScale) => patchSettings('lidarModel', { heightScale })}
-        min={0.1}
-        max={3}
+        {...modelFieldRange('lidarModel', 'heightScale')}
         step={0.05}
         decimals={2}
         unit="×"
@@ -822,8 +777,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
         label="Terrain exaggeration"
         value={settings.terrain.exaggeration}
         onChange={(exaggeration) => patchSettings('terrain', { exaggeration })}
-        min={0}
-        max={10}
+        {...modelFieldRange('terrain', 'exaggeration')}
         step={0.1}
         decimals={2}
         unit="×"

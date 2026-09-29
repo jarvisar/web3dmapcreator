@@ -1,22 +1,13 @@
 import { Download, Eye, LoaderCircle, RefreshCw, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { TaskProgress } from '../components/TaskProgress';
 import { areaHint } from '../lib/area';
 import { PHONE_QUERY, useMediaQuery } from '../lib/browser';
-import { formatCount, formatElapsed, formatInteger, formatMm, formatNumber } from '../lib/format';
+import { formatCount, formatInteger, formatMm, formatNumber } from '../lib/format';
 import { cancelGeneration, exportModel, generateModel } from '../state/actions';
 import { FORMAT_EXTENSIONS, filamentCount, generationProblem, resultGroups } from '../state/derived';
 import { dismissExportError, dismissGenerationError, dismissMapHint, setView, useApp } from '../state/store';
 import { downloadSvg, generateSvg, svgProblem, useSvgKey } from '../svgmap/actions';
 import { cancelRender, renderFraction, useSvgRender } from '../svgmap/render';
-
-function Elapsed({ since }: { since: number }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-  return <span className="progress-time">{formatElapsed((now - since) / 1000)}</span>;
-}
 
 function Progress() {
   const progress = useApp((state) => state.generation.progress);
@@ -25,30 +16,16 @@ function Progress() {
   const fraction = Math.min(1, Math.max(0, progress?.fraction ?? 0));
   const percent = Math.round(fraction * 100);
   return (
-    <div className="progress">
-      <div className="progress-top">
-        <span className="progress-label" aria-live="polite">{cancelling ? 'Cancelling' : (progress?.label ?? 'Starting')}</span>
-        <span className="progress-percent">{percent}%</span>
-      </div>
-      <div
-        className="progress-track"
-        role="progressbar"
-        aria-label="Generation progress"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
-        aria-valuetext={progress?.label}
-      >
-        <div className="progress-fill" style={{ width: `${percent}%` }} />
-      </div>
-      <div className="progress-bottom">
-        <span className="progress-detail">{progress?.detail ?? ''}</span>
-        <Elapsed since={startedAt} />
-        <button type="button" className="btn btn-sm" onClick={cancelGeneration} disabled={cancelling}>
-          Cancel
-        </button>
-      </div>
-    </div>
+    <TaskProgress
+      label={cancelling ? 'Cancelling' : (progress?.label ?? 'Starting')}
+      ariaLabel="Generation progress"
+      valueText={progress?.label}
+      percent={percent}
+      detail={progress?.detail ?? ''}
+      startedAt={startedAt}
+      onCancel={cancelGeneration}
+      cancelling={cancelling}
+    />
   );
 }
 
@@ -163,32 +140,15 @@ function SvgProgress() {
   const percent = Math.round(renderFraction(progress) * 100);
   const counted = progress?.total ? `${formatInteger(progress.done ?? 0)} of ${formatInteger(progress.total)} tiles` : '';
   return (
-    <div className="progress">
-      <div className="progress-top">
-        <span className="progress-label" aria-live="polite">
-          {progress?.message ?? 'Starting'}
-        </span>
-        <span className="progress-percent">{percent}%</span>
-      </div>
-      <div
-        className="progress-track"
-        role="progressbar"
-        aria-label="SVG progress"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
-        aria-valuetext={progress?.message}
-      >
-        <div className="progress-fill" style={{ width: `${percent}%` }} />
-      </div>
-      <div className="progress-bottom">
-        <span className="progress-detail">{counted}</span>
-        <Elapsed since={startedAt} />
-        <button type="button" className="btn btn-sm" onClick={cancelRender}>
-          Cancel
-        </button>
-      </div>
-    </div>
+    <TaskProgress
+      label={progress?.message ?? 'Starting'}
+      ariaLabel="SVG progress"
+      valueText={progress?.message}
+      percent={percent}
+      detail={counted}
+      startedAt={startedAt}
+      onCancel={cancelRender}
+    />
   );
 }
 
