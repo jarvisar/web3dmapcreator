@@ -107,7 +107,7 @@ describe('exportPlates', () => {
     const result = exportPlates(model(), request('prusa', { printer: 'MK4' }));
     expect(result.warnings).toEqual([
       'PrusaSlicer does not read colours from a 3MF. Set the extruder colours to match: ' +
-        '1 Terrain (PLA Matte Ivory White, #FFFFFF), 2 Roads (PLA Matte Ash Gray, #9B9EA0), 3 Buildings (PLA Matte Caramel, #AE835B).',
+        '1 Terrain (PLA Matte Ivory White, #FFFFFF), 2 Roads (PLA Basic Dark Gray, #545454), 3 Buildings (PLA Matte Caramel, #AE835B).',
     ]);
     const roles = ['terrain', 'building', 'road', 'water', 'green', 'forest', 'sand'] as const;
     const busy = [plate('Map', roles.map((role, i) => part(role, role, role, box(i, 0, 0, 1, 1, 1))), [0, 0, 7, 1])];

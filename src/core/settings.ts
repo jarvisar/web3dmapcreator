@@ -377,8 +377,8 @@ export interface PalettePreset {
 export const PALETTE_PRESETS: PalettePreset[] = [
   {
     key: 'DEFAULT', name: 'Default',
-    description: 'Matte Caramel buildings, Matte Ivory White terrain, Matte Ash Gray roads and paving, Basic Bambu Green parks',
-    palette: { terrain: IVORY, buildings: CARAMEL, roads: ASH_GRAY, paved: ASH_GRAY, water: WATER,
+    description: 'Matte Caramel buildings, Matte Ivory White terrain, Basic Dark Gray roads, Matte Ash Gray paving, Basic Bambu Green parks',
+    palette: { terrain: IVORY, buildings: CARAMEL, roads: DARK_GRAY, paved: ASH_GRAY, water: WATER,
       green: BAMBU_GREEN, forest: FOREST, trees: FOREST, sand: SAND, rock: SAND, rim: RIM },
   },
   {

@@ -25,7 +25,7 @@ describe('writePrusaProject', () => {
   const paved = part('paved', 'Paved', 'paved', box(0, 0, -0.15, 10, 10, 0.5));
 
   it('concatenates parts into one object and splits them into volumes by triangle range', async () => {
-    const { files, model, config } = await write([plate('Map', [terrain, roads, buildings, paved], [-50, -40, 50, 40])], DEFAULT_PALETTE, printerByKey('MK4'), 'Loop');
+    const { files, model, config } = await write([plate('Map', [terrain, roads, buildings, paved], [-50, -40, 50, 40])], { ...DEFAULT_PALETTE, paved: DEFAULT_PALETTE.roads }, printerByKey('MK4'), 'Loop');
     const objects = findAll(model, 'object');
     expect(objects.map((o) => [o.attrs.id, o.attrs.name, o.attrs.type])).toEqual([['1', 'Map', 'model']]);
     const vertices = findAll(objects[0], 'vertex');
@@ -51,7 +51,7 @@ describe('writePrusaProject', () => {
     const volumes = findAll(object, 'volume').map((v) => [
       v.attrs.firstid, v.attrs.lastid, volumeMeta(v, 'name'), volumeMeta(v, 'volume_type'), volumeMeta(v, 'extruder'),
     ]);
-    // Roads and paving share one colour, so one extruder.
+    // Roads and paving share one colour here, so one extruder.
     expect(volumes).toEqual([
       ['0', '11', 'Terrain', 'ModelPart', '1'],
       ['12', '23', 'Roads', 'ModelPart', '2'],
