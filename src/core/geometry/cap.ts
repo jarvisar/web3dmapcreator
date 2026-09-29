@@ -3,11 +3,12 @@
 // the outline the cap tiles, plus any section edge it was cut along, so every
 // shell closes by construction.
 
+import Delaunator from 'delaunator';
 import earcut from 'earcut';
 import { orient2d } from 'robust-predicates';
 import { boxesOverlap, ringArea, type Box } from './polygon';
 import type { CapSolid } from './solid';
-import { clipTin, type Tin } from './tinclip';
+import { Bounded, clipTin, type Tin } from './tinclip';
 import type { MultiPolygon } from '../types';
 
 /** Thinnest the cap may be over its underside, as for prisms. */
@@ -172,6 +173,99 @@ export function undersideTriangles(tin: Tin, boundary: [number, number][]): { tr
 }
 
 /**
+ * The flat underside as a constrained Delaunay triangulation of the outline,
+ * for when earcut's can't be used: a long straight stretch of outline with
+ * points all but in line gets slivers from earcut that the fan above adds
+ * the same points to twice. A LiDAR only surface cut along a river has
+ * thousands of such points. Triangles left of an outline edge are inside, and
+ * so is everything reached from them without crossing one. Null when it
+ * doesn't close either.
+ */
+export function constrainedUnderside(tin: Tin, boundary: [number, number][]): { triangles: number[]; points: [number, number][] } | null {
+  const v = tin.vertices;
+  const n = v.length / 3;
+  const local = new Int32Array(n).fill(-1);
+  const ids: number[] = [];
+  for (const edge of boundary) {
+    for (const p of edge) {
+      if (local[p] >= 0) continue;
+      local[p] = ids.length;
+      ids.push(p);
+    }
+  }
+  if (ids.length < 3) return null;
+  const coords = new Float64Array(2 * ids.length);
+  ids.forEach((p, k) => {
+    coords[2 * k] = v[3 * p];
+    coords[2 * k + 1] = v[3 * p + 1];
+  });
+  let del: Delaunator<Float64Array>;
+  let con: Bounded;
+  try {
+    del = new Delaunator(coords);
+    con = new Bounded(del, 1e6 + 1000 * boundary.length);
+    for (const [a, b] of boundary) con.constrainOne(local[a], local[b]);
+  } catch {
+    return null;
+  }
+  const t = del.triangles;
+  const faces = t.length / 3;
+  const m = ids.length;
+  const outline = new Set<number>();
+  for (const [a, b] of boundary) outline.add(local[a] * m + local[b]);
+  const up = new Uint8Array(faces);
+  for (let f = 0; f < faces; f++) {
+    const [a, b, c] = [2 * t[3 * f], 2 * t[3 * f + 1], 2 * t[3 * f + 2]];
+    up[f] = (coords[b] - coords[a]) * (coords[c + 1] - coords[a + 1]) - (coords[b + 1] - coords[a + 1]) * (coords[c] - coords[a]) > 0 ? 1 : 0;
+  }
+  const inside = new Uint8Array(faces);
+  const queue: number[] = [];
+  for (let f = 0; f < faces; f++) {
+    for (let k = 0; k < 3 && !inside[f]; k++) {
+      const a = t[3 * f + k];
+      const b = t[3 * f + ((k + 1) % 3)];
+      if (!outline.has(up[f] ? a * m + b : b * m + a)) continue;
+      inside[f] = 1;
+      queue.push(f);
+    }
+  }
+  while (queue.length) {
+    const f = queue.pop()!;
+    for (let k = 0; k < 3; k++) {
+      const e = 3 * f + k;
+      const o = del.halfedges[e];
+      if (o < 0 || con.isConstrained(e)) continue;
+      const g = Math.floor(o / 3);
+      if (inside[g]) continue;
+      inside[g] = 1;
+      queue.push(g);
+    }
+  }
+  const out: number[] = [];
+  for (let f = 0; f < faces; f++) {
+    if (!inside[f]) continue;
+    const [a, b, c] = [ids[t[3 * f]], ids[t[3 * f + 1]], ids[t[3 * f + 2]]];
+    if (up[f]) out.push(a, b, c);
+    else out.push(a, c, b);
+  }
+  const next = new Int32Array(n).fill(-1);
+  for (const [a, b] of boundary) next[a] = b;
+  const seen = new Uint8Array(n);
+  const loops: number[][] = [];
+  for (const [start] of boundary) {
+    if (seen[start]) continue;
+    const loop: number[] = [];
+    for (let p = start; !seen[p]; p = next[p]) {
+      if (next[p] < 0) return null;
+      seen[p] = 1;
+      loop.push(p);
+    }
+    loops.push(loop);
+  }
+  return capIsClosed(out, loops, n) ? { triangles: out, points: [] } : null;
+}
+
+/**
  * Whether counter-clockwise cap triangles cover the rings exactly: every ring
  * edge is used once in its own direction and every other edge twice, once
  * each way. Area alone can miss a dropped sliver, which leaves a hole.
@@ -242,8 +336,8 @@ export function meshCap(solid: CapSolid, out: Sink, region?: Region): 'ok' | 'em
   const t = tin.triangles;
   for (let i = 0; i < t.length; i += 3) out.triangle(top[t[i]], top[t[i + 1]], top[t[i + 2]]);
   // The underside is flat, so its outline is all it needs. The roof's own
-  // triangles, reversed, are the fallback.
-  const flat = undersideTriangles(tin, boundary) ?? { triangles: Array.from(t), points: [] };
+  // triangles, reversed, are the last resort.
+  const flat = undersideTriangles(tin, boundary) ?? constrainedUnderside(tin, boundary) ?? { triangles: Array.from(t), points: [] };
   const under = new Int32Array(count + flat.points.length).fill(-1);
   const below = (i: number) => {
     if (under[i] < 0) under[i] = i < count ? out.vertex(v[3 * i], v[3 * i + 1], bottom) : out.vertex(...flat.points[i - count], bottom);

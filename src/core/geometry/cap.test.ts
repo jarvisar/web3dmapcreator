@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { capBoundary, meshCap, undersideTriangles } from './cap';
+import { capBoundary, constrainedUnderside, meshCap, undersideTriangles } from './cap';
 import { clipRegion, MeshBuilder } from './mesher';
 import type { CapSolid } from './solid';
 import { clipTin, type Tin } from './tinclip';
@@ -83,6 +83,31 @@ describe('meshCap', () => {
     const out = new MeshBuilder();
     expect(meshCap(cap, out, clipRegion([[[[30, 30], [40, 30], [40, 40], [30, 40]]]]))).toBe('empty');
     expect(out.indexCount).toBe(0);
+  });
+
+  it('covers the underside by constrained triangulation too, every outline vertex used', () => {
+    // A long, barely sloping edge: the clip leaves a point on it at every
+    // grid line, all but in line, like a LiDAR only surface cut along a river.
+    const tin = clipTin(gridTin(40, 0.25, (x, y) => 5 + 0.1 * x + 0.05 * y), [
+      [
+        [[0.3, 0.3], [9.7, 0.31], [9.7, 9.7], [0.3, 9.7]],
+        [[3, 3], [3, 6], [6, 6], [6, 3]],
+      ],
+    ])!;
+    const boundary = capBoundary(tin)!;
+    const under = constrainedUnderside(tin, boundary)!;
+    expect(under).not.toBeNull();
+    const used = new Set(under.triangles);
+    for (const [a] of boundary) expect(used.has(a)).toBe(true);
+    const v = tin.vertices;
+    let area = 0;
+    for (let t = 0; t < under.triangles.length; t += 3) {
+      const [a, b, c] = [3 * under.triangles[t], 3 * under.triangles[t + 1], 3 * under.triangles[t + 2]];
+      const cross = (v[b] - v[a]) * (v[c + 1] - v[a + 1]) - (v[b + 1] - v[a + 1]) * (v[c] - v[a]);
+      expect(cross).toBeGreaterThan(0);
+      area += cross / 2;
+    }
+    expect(area).toBeCloseTo(9.4 * 9.395 - 9, 6);
   });
 
   it('refuses two outline loops touching at a vertex', () => {

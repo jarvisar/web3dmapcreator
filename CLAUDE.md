@@ -105,6 +105,21 @@ before bridges are split off):
   scraps passed every other rule and printed as slivers.
 - Decks and ground never double each other, deck ends never move, and decks
   only meet the ground where their lines meet.
+- The kept carriageway of a divided street moves halfway to its dropped twin
+  (`center.ts`), or the road jogs by half the median wherever the
+  carriageways split. Twins match on class and subclass (a parking aisle
+  isn't a service road's twin, a ramp isn't the motorway's). The shift is
+  sideways only, worked along chains of the street's pieces, changes no
+  faster than 1:3 and is held at zero where three or more ends meet. It never
+  carries a line into the corridor of one it wasn't doubling: upper and lower
+  Wacker each moved towards twins between them and met.
+- `fillGaps` fills ground narrower than the gap between two lines alongside
+  each other with strips from centerline to centerline, in the same union as
+  the roads (`gaps.ts`). A closing of the whole footprint was tried: round
+  joins filleted every block corner, mitred ones left zero-area slivers, and
+  it cost seconds on large areas.
+- Road polygons of one group touching at a single vertex are pulled apart
+  by 0.2 µm (`separateTouching`), or their prisms share a wall edge.
 - Every step has its own switch and the tidy off gives the untidied network.
   Check changes on the regression areas with before/after renders: specks,
   loose ends that met something and doubled length should drop, and no
@@ -183,10 +198,17 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
 - The mesher prices collapses by memoryless quadrics against the current
   faces (the add-on's, so stair walls straighten), and also checks every
   collapse against the grid (`GridBound`): no grid point further than one
-  cell from the surface, square to it. Don't drop that check. Without it
+  cell from the surface (two beside a wall), square to it. Don't drop that check. Without it
   vertices drift until penthouses are pyramids, the reason roof caps moved to
   Delatin. Tiles are simplified in workers with edge points pinned, then the
   seams get their own pass.
+- Walls come out ribbed without two extra steps: `fairFaces` straightens
+  facade relief under 0.3 mm printed before meshing (in `model.ts`, not
+  `compose`, which keeps its parity), and `straightenWalls` puts each wall's
+  foot on a line parallel to its straightened roof edge after meshing. A tall
+  triangle on a crooked stretch of foot faces its own way, and a row of them
+  is the ribs. The cut water outline is simplified at 1.5 cells for the same
+  reason.
 - The model is one `CapSolid`, cut to shapes, sections and cut water by
   `clipTin`. `clipBand` only triangulates the triangles near the outline, and
   a triangle counts as near when an outline edge crosses its box, so both

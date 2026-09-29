@@ -289,7 +289,7 @@ function clipBand(tin: Tin, region: MultiPolygon, eps: number): Tin | null | typ
  * but on a constraint. Its segment tests are counted, and a run far past
  * what a clean one needs gives up.
  */
-class Bounded extends Constrainautor {
+export class Bounded extends Constrainautor {
   constructor(
     del: Delaunator<ArrayLike<number>>,
     private budget: number,

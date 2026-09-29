@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { NumpyRandom } from '../lidar/test-helpers';
 import { compose, cutWater, narrow, STEP_M, type ComposeSettings } from './compose';
-import { despike, fillSmooth, fillVoids, label, straighten } from './filters';
+import { despike, fairFaces, fillSmooth, fillVoids, label, straighten } from './filters';
 import { emptyLayers, type SurfaceLayers } from './layers';
 
 const CELL = 0.5;
@@ -401,6 +401,30 @@ describe('rules', () => {
     expect(out[1 * 12 + 7]).toBe(0);
     expect(out[3 * 12 + 3]).toBe(20);
     expect(out[8 * 12 + 8]).toBe(20);
+  });
+
+  it('fairFaces takes a fin off a facade and keeps corners and spires', () => {
+    const nx = 60;
+    const z = new Float32Array(nx * 40);
+    fill(z, nx, 10, 30, 10, 50, 40);
+    fill(z, nx, 30, 32, 30, 32, 40); // a fin two cells wide off the north wall
+    fill(z, nx, 18, 21, 25, 28, 60); // a spire on the roof
+    const moved = fairFaces(z, nx, 40, 1, 12, 3, new Uint8Array(z.length));
+    expect(moved).toBeGreaterThan(0);
+    for (const [r, c] of [[30, 30], [31, 31]]) expect(z[r * nx + c]).toBe(0);
+    for (const [r, c] of [[10, 10], [29, 49], [10, 49], [29, 10]]) expect(z[r * nx + c]).toBe(40);
+    expect(z[19 * nx + 26]).toBe(60);
+  });
+
+  it('fairFaces leaves what it is told to keep', () => {
+    const nx = 60;
+    const z = new Float32Array(nx * 40);
+    fill(z, nx, 10, 30, 10, 50, 40);
+    fill(z, nx, 30, 32, 30, 32, 40);
+    const keep = new Uint8Array(z.length);
+    fill(keep, nx, 30, 32, 30, 32, 1);
+    fairFaces(z, nx, 40, 1, 12, 3, keep);
+    expect(z[30 * nx + 30]).toBe(40);
   });
 
   it('despike keeps edges', () => {

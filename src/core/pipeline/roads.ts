@@ -15,6 +15,7 @@ import {
   clipToBox,
   offsetPolygons,
   pointInPolygon,
+  separateTouching,
   union,
 } from '../geometry/polygon';
 import { EdgeIndex } from '../geometry/edgeindex';
@@ -23,6 +24,7 @@ import { MINIMUM_BRIDGE_M } from './bridges';
 import { count, type Context } from './context';
 import { MINOR_ROAD_CLASSES, polylineLength, RAIL_CLASS, RAIL_WIDTH_M, SIDEPATH_SUBCLASSES, splitSegment, type SubSegment } from './linework';
 import { tidyNetwork } from './network';
+import { gapStrips } from './network/gaps';
 import { projectLines, projectPolygons, str, type SourceFeature } from './source';
 
 // Clipped ends land on the window's edge to Clipper's precision.
@@ -140,9 +142,14 @@ export async function bufferRoads(
   pieces: RoadPiece[],
   ctx: Context,
 ): Promise<{ road: MultiPolygon; path: MultiPolygon; rail: MultiPolygon; footprint: MultiPolygon }> {
+  // Ground too thin to print between two roads side by side is filled in
+  // (network/gaps.ts), in the same union as the roads either side of it.
+  const roads = ctx.settings.roads;
+  const strips = roads.tidy && roads.fillGaps ? gapStrips(pieces, roads.gapMm) : null;
+  if (strips) count(ctx, 'road_gaps_filled', strips.road.length + strips.rail.length + strips.path.length);
   const buffer = async (group: RoadGroup, fraction: number) => {
     const lines = pieces.filter((p) => p.group === group).map((p) => ({ points: p.points, width: p.widthMm }));
-    const ribbons = bufferLines(lines, 'round');
+    const ribbons = bufferLines(lines, 'round', strips?.[group]);
     await ctx.progress.checkpoint(fraction);
     return ribbons;
   };
@@ -151,9 +158,10 @@ export async function bufferRoads(
   let path = await buffer('path', 0.85);
 
   // One owner per spot: streets over rail at level crossings, both over paths.
-  road = dropSmall(intersection(road, ctx.cropSet), 0.02);
-  rail = dropSmall(differenceSet(intersection(rail, ctx.cropSet), new ClipSet([road])), 0.02);
-  path = dropSmall(differenceSet(intersection(path, ctx.cropSet), new ClipSet([road, rail])), 0.02);
+  road = separateTouching(dropSmall(intersection(road, ctx.cropSet), 0.02));
+  rail = separateTouching(dropSmall(differenceSet(intersection(rail, ctx.cropSet), new ClipSet([road])), 0.02));
+  path = separateTouching(dropSmall(differenceSet(intersection(path, ctx.cropSet), new ClipSet([road, rail])), 0.02));
+
   // The groups are disjoint now. Later booleans take touching polygons as they are.
   return { road, path, rail, footprint: [...road, ...rail, ...path] };
 }

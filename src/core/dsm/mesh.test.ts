@@ -3,7 +3,7 @@ import { meshCap } from '../geometry/cap';
 import { MeshBuilder } from '../geometry/mesher';
 import { edgeReport, signedVolume } from '../geometry/validate';
 import { NumpyRandom } from '../lidar/test-helpers';
-import { Collapser, gridSide, meshSurface, rtinBlock, type HeightGrid, type MeshLimits } from './mesh';
+import { Collapser, gridSide, meshSurface, rtinBlock, straightenWalls, type HeightGrid, type MeshLimits } from './mesh';
 
 interface Surface {
   vertices: Float64Array;
@@ -226,6 +226,81 @@ describe('meshSurface', () => {
     expect([report.open, report.repeated]).toEqual([0, 0]);
     const expected = 18 * 24 * 2 + 8 * 10 * 6;
     expect(signedVolume(positions, indices)).toBeCloseTo(expected, -Math.log10(expected * 0.02));
+  });
+});
+
+/** Height of the folds between neighbouring wall faces that turn 1 to 25 degrees: ribs. */
+function ribs(s: Surface): number {
+  const v = s.vertices;
+  const f = s.triangles;
+  const normal = (t: number) => {
+    const [a, b, c] = [3 * f[3 * t], 3 * f[3 * t + 1], 3 * f[3 * t + 2]];
+    const ux = v[b] - v[a];
+    const uy = v[b + 1] - v[a + 1];
+    const uz = v[b + 2] - v[a + 2];
+    const wx = v[c] - v[a];
+    const wy = v[c + 1] - v[a + 1];
+    const wz = v[c + 2] - v[a + 2];
+    return [uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx];
+  };
+  const faces = new Map<string, number>();
+  let total = 0;
+  for (let t = 0; t < f.length / 3; t++) {
+    const n = normal(t);
+    if (Math.abs(n[2]) > 0.25 * Math.hypot(n[0], n[1], n[2])) continue;
+    for (let k = 0; k < 3; k++) {
+      const a = f[3 * t + k];
+      const b = f[3 * t + ((k + 1) % 3)];
+      const key = a < b ? `${a},${b}` : `${b},${a}`;
+      const other = faces.get(key);
+      if (other === undefined) {
+        faces.set(key, t);
+        continue;
+      }
+      const m = normal(other);
+      const cos = (n[0] * m[0] + n[1] * m[1]) / (Math.hypot(n[0], n[1]) * Math.hypot(m[0], m[1]));
+      const angle = (Math.acos(Math.min(1, Math.max(-1, cos))) * 180) / Math.PI;
+      const dz = Math.abs(v[3 * a + 2] - v[3 * b + 2]);
+      const plan = Math.hypot(v[3 * a] - v[3 * b], v[3 * a + 1] - v[3 * b + 1]);
+      if (dz > 2 * plan && angle >= 1 && angle < 25) total += dz;
+    }
+  }
+  return total;
+}
+
+describe('straightenWalls', () => {
+  // A tower turned 45 degrees, so its walls are one-cell stairs, with low
+  // clutter along its foot.
+  const rng = new NumpyRandom(11);
+  const clutter = Array.from({ length: 61 * 61 }, () => rng.random());
+  const g = grid(61, 61, (i, j) => {
+    const d = Math.abs(i - 30) + Math.abs(j - 30);
+    if (d < 16) return 40;
+    return d < 19 && clutter[j * 61 + i] < 0.3 ? 1.5 : 0;
+  });
+
+  it('turns a tall wall on a crooked foot into flat faces', async () => {
+    const limits = LIMITS(1, 16);
+    const before = await meshSurface(g, limits);
+    let after: Surface = before;
+    for (let pass = 0; pass < 2; pass++) after = straightenWalls(after, g, limits, 1);
+    expect(ribs(after)).toBeLessThan(0.7 * ribs(before));
+    expect(after.triangles.length).toBeLessThanOrEqual(before.triangles.length);
+    const { area, flipped } = tiling(after);
+    expect(flipped).toBe(0);
+    expect(area).toBeCloseTo(60 * 60, 9);
+    expect(rimOnly(after, 60, 60)).toBe(true);
+    // The roof and the street away from the walls stay where they were.
+    expect(sample(after, 30, 30)[0]).toBeCloseTo(40, 1);
+    expect(sample(after, 3, 3)[0]).toBeCloseTo(0, 1);
+  });
+
+  it('leaves trees alone', async () => {
+    const trees = { ...g, detail: new Float32Array(g.detail.length).fill(0.4) };
+    const limits = LIMITS(1, 16);
+    const before = await meshSurface(trees, limits);
+    const after = straightenWalls(before, trees, limits, 1);
+    expect(after.vertices).toEqual(before.vertices);
   });
 });
 

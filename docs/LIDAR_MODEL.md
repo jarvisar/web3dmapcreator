@@ -61,15 +61,27 @@ The survey does miss some water, and those are the cases where Overture would he
 
 Overture only adding cells with no returns, or at the survey's water level, would fix the first two and cut no bridges, for 3 to 5 MB more per area. It would also put a map data credit on a model that otherwise needs none, so for now it's left out.
 
-The add-on drops cut cells to the bottom before meshing. Here the surface is meshed whole and then clipped along the cut like any other outline, which `clipTin` already does for the area's shape. For three rings out from the shore the cut cells take their bank's height, so the clip crosses a level surface and the bank comes out as a vertical wall rather than a bevel. Carried further, a riverside tower's roof would spread across the river and only make work for the mesher. The outline is traced along the cells and their one-cell stairs straightened (Clipper's `simplifyPaths` at three quarters of a cell). Land narrower than 0.2 mm beside the water is opened away, as for map land slabs, and pieces under 4 mm² go here too, since the area's shape can cut off new ones.
+The add-on drops cut cells to the bottom before meshing. Here the surface is meshed whole and then clipped along the cut like any other outline, which `clipTin` already does for the area's shape. For three rings out from the shore the cut cells take their bank's height, so the clip crosses a level surface and the bank comes out as a vertical wall rather than a bevel. Carried further, a riverside tower's roof would spread across the river and only make work for the mesher. The outline is traced along the cells and their one-cell stairs straightened (Clipper's `simplifyPaths` at a cell and a half). Each stretch of it is a flat panel of bank wall, and at three quarters of a cell a gently curving shore came out as a row of narrow panels, ribbed like the walls (below). Past about two cells the outline cuts into the detail beside the bank instead of the level strip. Land narrower than 0.2 mm beside the water is opened away, as for map land slabs, and pieces under 4 mm² go here too, since the area's shape can cut off new ones.
 
 ## Mesh
 
 `mesh.ts` triangulates the heights as an RTIN (Mapbox's Martini) in tiles of 512 cells, then collapses edges cheapest first, priced by quadric error against the faces as they are now. That way a wall drawn in one-cell stairs keeps merging into one straight facet, where quadrics accumulated from the start stop at the first stair. Vertices on the edge of the grid only slide along their own side and the corners never move, so the outline stays the exact rectangle.
 
-Priced only against the current faces, a vertex can drift a little with each collapse. That's what turned roof-cap penthouses into pyramids before (see [how it works](HOW_IT_WORKS.md#lidar)). So every collapse is also checked against the grid itself: no grid point may end up more than one cell (0.05 mm printed) from the surface, measured square to it, so across a wall it's how far the wall moved. Tree cells are held to 0.4 of that, so crowns keep enough facets to read round instead of crystalline.
+Priced only against the current faces, a vertex can drift a little with each collapse. That's what turned roof-cap penthouses into pyramids before (see [how it works](HOW_IT_WORKS.md#lidar)). So every collapse is also checked against the grid itself: no grid point may end up more than one cell (0.05 mm printed) from the surface, measured square to it, so across a wall it's how far the wall moved. Points beside a wall get two cells (see Walls). Tree cells are held to 0.4 of one, so crowns keep enough facets to read round instead of crystalline.
 
-Tiles are simplified in the LiDAR workers with the points on their edges pinned, then the seams get a pass of their own. The Chicago Loop test area (1.3 km square, 3.2 million cells) comes out at about 180,000 triangles, and the `Chicago - The Loop (small)` preset at 385,000.
+Tiles are simplified in the LiDAR workers with the points on their edges pinned, then the seams get a pass of their own. The Chicago Loop test area (1.3 km square, 3.2 million cells) comes out at about 145,000 triangles, and the `Chicago - The Loop (small)` preset at 315,000.
+
+## Walls
+
+Next to Micropolitan's models, tall walls here came out ribbed: a facade in narrow vertical stripes, each shaded a little differently. Three things caused it.
+
+- Relief along a facade too narrow to print. The survey sees fins, pilasters and notches a metre or two across, and meshed faithfully each one is a pair of ribs. After compose, `fairFaces` straightens relief narrower than 0.3 mm printed where no height level moves more than 0.14 mm, the building caps' `fair` (`lidar/envelope.ts`) with the same sizes. It runs in `model.ts` rather than in compose, so compose still matches the add-on.
+- A diagonal wall in one-cell stairs only just fits within one cell of a straight line, so with any noise along it the mesher kept a vertex at nearly every stair. Points beside a step of more than four cells may now be two cells from the surface.
+- The foot of the wall. A wall is a band of steep triangles between its roof edge and its foot, and the foot is crooked from whatever stands along it (planters, canopies, a lower wing) as well as the stairs. A triangle from the roof edge down to a short stretch of crooked foot faces the way that stretch does, so a tall wall on a crooked foot is a fan of stripes from roof to street. After meshing, `straightenWalls` simplifies each roof edge to straight lines, moves the wall's foot onto a line parallel to it at the wall's median width, and collapses what's left in line. It doesn't move tree or rim vertices, and nothing moves if it would turn a triangle over.
+
+On the three Micropolitan areas the height of those stripes went down 39% in Chicago, 40% in Philadelphia and 50% in San Francisco, with 21 to 29% fewer triangles. Chicago and Philadelphia now come close to Micropolitan's. San Francisco still has more than twice as much: its streets run at 45 degrees to a north-up grid, the worst case for stairs.
+
+Tried and dropped: snapping cells caught partway up a wall to the roof or the street (slightly worse), building each wall into the triangulation as a pair of constrained lines (worse, and a lot more code), and meshing with the building caps' Delatin (twice the triangles).
 
 ## The Solid
 
@@ -88,6 +100,7 @@ No map data goes into the model, so exports credit only the surveys (`LiDAR: USG
 - Parts of Chicago's L still come out as rows of rounded trees. The ties make the deck rough and a fifth of its returns are filed as vegetation.
 - A roof edge filed as vegetation slopes down to the street instead of standing as a wall.
 - Crane masts wider than three cells stay.
-- Diagonal walls start as one-cell stairs. Most straighten out, some corners stay a bit serrated.
+- Walls at an angle to the grid can still show faint folds, San Francisco's more than most, and round towers come out as flat facets.
+- Straightening facades also trims small pinnacles around a spire, like the Chicago Temple's. The spire itself stays.
 
 Tests are in `src/core/dsm/`.

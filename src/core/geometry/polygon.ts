@@ -504,10 +504,11 @@ export type LineCap = 'round' | 'butt' | 'square';
 
 /**
  * Buffer centerlines into ribbons of the given full width. Joins are round so
- * tight turns and junctions stay solid. The result is one unioned set.
+ * tight turns and junctions stay solid. The result is one unioned set, with
+ * any `extra` polygons in the same union.
  */
-export function bufferLines(lines: { points: Vec2[]; width: number }[], cap: LineCap = 'round'): MultiPolygon {
-  if (!lines.length) return [];
+export function bufferLines(lines: { points: Vec2[]; width: number }[], cap: LineCap = 'round', extra: Polygon[] = []): MultiPolygon {
+  if (!lines.length && !extra.length) return [];
   const endType = cap === 'round' ? EndType.Round : cap === 'square' ? EndType.Square : EndType.Butt;
   // Group by width: ClipperOffset applies one delta per execute.
   const byWidth = new Map<number, Paths64>();
@@ -526,6 +527,7 @@ export function bufferLines(lines: { points: Vec2[]; width: number }[], cap: Lin
     offset.execute(width / 2, solution);
     for (const p of solution) all.push(p);
   }
+  if (extra.length) for (const p of toPaths(extra)) all.push(p);
   if (!all.length) return [];
   return run(ClipType.Union, all, null);
 }
@@ -549,6 +551,28 @@ export function offsetPolygons(mp: MultiPolygon, delta: number, join: 'round' | 
 export function simplifyPolygons(mp: MultiPolygon, epsilon: number): MultiPolygon {
   if (!mp.length) return [];
   return run(ClipType.Union, simplifyPaths(toPaths(mp), epsilon * SCALE, true), null);
+}
+
+/**
+ * Polygons of one set that share a vertex, shrunk by a hair so their prisms
+ * don't share a wall edge. A union leaves polygons touching at a single
+ * point apart, and two solids meeting along an edge don't slice as closed.
+ */
+export function separateTouching(mp: MultiPolygon): MultiPolygon {
+  const owner = new Map<number, number>();
+  const touching = new Set<number>();
+  mp.forEach((polygon, i) => {
+    for (const ring of polygon) {
+      for (const [x, y] of ring) {
+        const key = (Math.round(x * SCALE) + 2 ** 25) * 2 ** 26 + Math.round(y * SCALE) + 2 ** 25;
+        const other = owner.get(key);
+        if (other === undefined) owner.set(key, i);
+        else if (other !== i) touching.add(other).add(i);
+      }
+    }
+  });
+  if (!touching.size) return mp;
+  return mp.flatMap((polygon, i) => (touching.has(i) ? offsetPolygons([polygon], -2 / SCALE) : [polygon]));
 }
 
 /** Drop polygons (and holes) smaller than `minArea` mm². */

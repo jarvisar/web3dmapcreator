@@ -16,7 +16,8 @@ import type { ModelSpec } from '../pipeline/generate';
 import type { AreaSpec, ModelSettings } from '../settings';
 import type { ModelStats, MultiPolygon, Polygon, Ring } from '../types';
 import { compose, ISLAND_MIN_MM2 } from './compose';
-import { meshSurface, type TileJob, type TileResult } from './mesh';
+import { fairFaces, windowMax, windowMin } from './filters';
+import { meshSurface, straightenWalls, type HeightGrid, type TileJob, type TileResult } from './mesh';
 import type { PreparedSurface } from './prepare';
 
 // The mesh may move the surface by one grid cell, and merges an edge while
@@ -26,10 +27,28 @@ const DEVIATION_CELLS = 1;
 const THRESHOLD_CELLS2 = 16;
 const MIN_GAP_CELLS = 0.02;
 const CLUTTER_M = 2;
+// Facade relief narrower than half the window, printed, is straightened
+// where it moves no more than the reach, the same as for building caps
+// (lidar/envelope.ts). Fins, pilasters and notches that narrow don't print,
+// and meshed they're a row of ribs.
+const FAIR_WINDOW_MM = 0.6;
+const FAIR_REACH_MM = 0.14;
+// Points with a wall beside them (a step of this many cells) may be twice as
+// far from the surface. One cell is about all a diagonal wall drawn in
+// stairs leaves for straightening, so any noise along it kept a vertex at
+// every stair.
+const WALL_STEP_CELLS = 4;
+const WALL_DETAIL = 2;
 // Land narrower than twice this beside cut water is opened away, as thin
 // land slabs are. Pieces under ISLAND_MIN_MM2 go, as compose does on the
 // grid, since the area's shape can cut off new ones.
 const SLIVER_MM = 0.1;
+// The cut outline may run this many cells off the cells it follows. Each
+// stretch of it is a flat panel of bank wall, and at three quarters of a cell
+// a gently curving shore came out as a row of narrow panels, ribbed like
+// the walls were. Past about two, the outline cuts into the detail beside
+// the bank instead of the level strip bankHeights leaves.
+const OUTLINE_CELLS = 1.5;
 
 export interface SurfaceModelInput {
   area: AreaSpec;
@@ -39,6 +58,15 @@ export interface SurfaceModelInput {
   /** Simplifies mesh tiles, e.g. in the LiDAR workers. */
   runTile?: (job: TileJob) => Promise<TileResult>;
   concurrency?: number;
+}
+
+/** The mesher's detail, raised to WALL_DETAIL beside a step taller than `step` (trees keep theirs). */
+function wallDetail(heights: Float32Array, detail: Float32Array, nx: number, ny: number, step: number): Float32Array {
+  const high = windowMax(heights, nx, ny, 1);
+  const low = windowMin(heights, nx, ny, 1);
+  const out = Float32Array.from(detail);
+  for (let i = 0; i < out.length; i++) if (detail[i] >= 1 && high[i] - low[i] > step) out[i] = WALL_DETAIL;
+  return out;
 }
 
 /** Grid cells whose centre is inside the ring, one byte each. */
@@ -85,7 +113,7 @@ export function maskOutline(mask: Uint8Array, nx: number, ny: number, x0: number
     for (const [key, j0] of open) box(Math.floor(key / (nx + 1)), key % (nx + 1), j0, j);
     open = next;
   }
-  return simplifyPolygons(union(pieces), 0.75 * Math.min(dx, dy));
+  return simplifyPolygons(union(pieces), OUTLINE_CELLS * Math.min(dx, dy));
 }
 
 /**
@@ -151,14 +179,22 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
     inside,
   );
   for (const [key, value] of Object.entries(result.counts)) stats[`lidar_model_${key}`] = value;
+  const cell = Math.min(dx, dy);
+  const n = nx * ny;
+  const keep = new Uint8Array(n);
+  for (let i = 0; i < n; i++) keep[i] = result.water[i] | result.cut[i] | (result.detail[i] < 1 ? 1 : 0);
+  stats.lidar_model_faired_cells = fairFaces(result.heights, nx, ny, cell, FAIR_WINDOW_MM, FAIR_REACH_MM, keep);
+  const detail = wallDetail(result.heights, result.detail, nx, ny, WALL_STEP_CELLS * cell);
 
   progress.begin('mesh', 'Meshing the LiDAR surface', 0.7, 0.2);
-  const cell = Math.min(dx, dy);
-  let tin = await meshSurface(
-    { heights: result.heights, detail: result.detail, nx, ny, x0, y0, x1, y1, dx, dy },
-    { deviation: DEVIATION_CELLS * cell, threshold: THRESHOLD_CELLS2 * cell * cell, minGap: MIN_GAP_CELLS * cell },
-    { runTile: input.runTile, concurrency: input.concurrency, progress: (fraction) => progress.checkpoint(fraction) },
-  );
+  const field: HeightGrid = { heights: result.heights, detail, nx, ny, x0, y0, x1, y1, dx, dy };
+  const limits = { deviation: DEVIATION_CELLS * cell, threshold: THRESHOLD_CELLS2 * cell * cell, minGap: MIN_GAP_CELLS * cell };
+  let tin: Tin = await meshSurface(field, limits, { runTile: input.runTile, concurrency: input.concurrency, progress: (fraction) => progress.checkpoint(fraction) });
+  // Twice, since the first pass joins up roof edges the second can straighten further.
+  for (let pass = 0; pass < 2; pass++) {
+    await progress.checkpoint();
+    tin = straightenWalls(tin, field, limits, cell);
+  }
   stats.lidar_model_surface_triangles = tin.triangles.length / 3;
   if (result.counts.cut_water_cells) {
     const region = landRegion(crop, maskOutline(result.cut, nx, ny, x0, y0, dx, dy));

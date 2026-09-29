@@ -4,7 +4,7 @@
 
 ### Added
 
-- `Tidy road network`, on by default, cleans up roads before they're widened. Lines doubling a more important one are left out, like the second carriageway of a divided street or a footway mapped beside a street, paths that stopped at a dropped sidewalk are joined to the street, and stubs and specks that lead nowhere are removed. Each step has its own switch, and `Minimum gap` sets how close two roads can run side by side. It's a rewrite of the add-on's Tidy Road Network, with spurs and specks judged on a graph of the lines as they'll print. On the `Chicago - The Loop (small)` preset, loose specks of road filament went from 229 to 11.
+- `Tidy road network`, on by default, cleans up roads before they're widened. Lines doubling a more important one are left out, like the second carriageway of a divided street (the one kept moves onto the middle of the street) or a footway mapped beside a street, paths that stopped at a dropped sidewalk are joined to the street, stubs and specks that lead nowhere are removed, and ground too thin to print between two roads side by side is filled in. Each step has its own switch, and `Minimum gap` sets how close two roads can run side by side. It's a rewrite of the add-on's Tidy Road Network, with spurs and specks judged on a graph of the lines as they'll print. On the `Chicago - The Loop (small)` preset, loose specks of road filament went from 229 to 11.
 - SVG maps, merged in from SVGmap. Pick `SVG map` at the top of the settings to make a flat map of the area for a laser engraver, a pen plotter or print instead of a model: plaque, paper and coaster sizes, filled, outlined or hatched layers, a title in a box or a band, and line cleanup that merges lines too close together to burn apart. The box on the map becomes the piece's map window, with the margin, border and title drawn around it. See `docs/SVG_MAPS.md`.
 - SVG maps take the same shapes as models, hexagons included.
 - A copied share link for an SVG map carries its settings, and links from the old SVGmap site open here.
@@ -23,6 +23,8 @@
 
 ### Changed
 
+- LiDAR only walls come out flat instead of ribbed. Tall facades were a row of narrow vertical stripes, from facade relief too narrow to print and from each wall's crooked foot. Relief under 0.3 mm is now straightened like it is on measured roofs, walls get a little more room to straighten, and each wall's foot is moved in line with its roof edge. On Micropolitan's Chicago, Philadelphia and San Francisco areas the stripes went down 39 to 50%, with 21 to 29% fewer triangles.
+- The outline of cut water in LiDAR only models follows the shore to a cell and a half instead of three quarters, so a bank wall is a few long panels instead of many narrow ones.
 - Indoor corridors and skyways are left out like tunnels. They only printed where they poked out of a building.
 - Area sizes are kept to the centimetre instead of the metre, so an SVG map's scale stays at what was typed.
 - Cutting a measured roof or a LiDAR only surface to a section or the area's shape only runs the triangles near the cut through the constrained triangulation. A section of a city-sized LiDAR surface took 5 s and takes about half a second.
@@ -58,6 +60,7 @@
 - The place name, and so the file name, was lost on reload.
 - Keyboard focus now goes into the Presets menu and the colour picker, and back to `Settings` when the phone drawer closes.
 - Saved settings outside the allowed ranges are clamped when loaded instead of breaking generation.
+- A roof cap or LiDAR only surface whose flat underside couldn't be triangulated from its outline got a copy of its whole top surface underneath. A constrained triangulation of the outline is tried first now, so a surface cut along a river no longer doubles in size.
 
 ## 1.0.0
 

@@ -12,6 +12,7 @@ import {
   offsetPolygons,
   rectangle,
   SCALE,
+  separateTouching,
   tiled,
   toPaths,
   union,
@@ -121,5 +122,17 @@ describe('tiled', () => {
     });
     expect(calls).toBe(1);
     expect(multiArea(out)).toBeCloseTo(25, 6);
+  });
+});
+
+describe('separateTouching', () => {
+  it('pulls apart polygons meeting at a corner, and leaves the rest alone', () => {
+    const touching = [...rectangle(0, 0, 1, 1), ...rectangle(1, 1, 2, 2)];
+    const apart = separateTouching(touching);
+    const corners = new Set(apart.flatMap((p) => p[0].map(([x, y]) => `${Math.round(x * SCALE)},${Math.round(y * SCALE)}`)));
+    expect(corners.size).toBe(8);
+    expect(multiArea(apart)).toBeCloseTo(2, 2);
+    const separate = [...rectangle(0, 0, 1, 1), ...rectangle(2, 2, 3, 3)];
+    expect(separateTouching(separate)).toBe(separate);
   });
 });

@@ -7,14 +7,16 @@
 // with hairlines of ground between them, paths stopping just short of the
 // street, and specks of road filament floating in plazas.
 //
-// The tidy drops lines doubling a more important one (cull.ts), pulls loose
-// ends onto the road they nearly meet (join.ts), and removes spurs and
-// fragments that lead nowhere (prune.ts). Pieces keep their own attributes
+// The tidy drops lines doubling a more important one (cull.ts), moves a kept
+// carriageway onto the middle of its street (center.ts), pulls loose ends
+// onto the road they nearly meet (join.ts), and removes spurs and fragments
+// that lead nowhere (prune.ts). Pieces keep their own attributes
 // and are only cut, extended or dropped. Thresholds are printed millimetres.
 
 import type { Vec2 } from '../../types';
 import { polylineLength } from '../linework';
 import type { RoadPiece } from '../roads';
+import { centerOnTwins } from './center';
 import { cull } from './cull';
 import { joinEnds } from './join';
 import { prune } from './prune';
@@ -51,6 +53,7 @@ export interface NetworkStats {
   network_culled_mm: number;
   network_culled_routes: number;
   network_hidden_parts: number;
+  network_centered_parts: number;
   network_joined_ends: number;
   network_pruned_stubs: number;
   network_pruned_nubs: number;
@@ -66,8 +69,9 @@ export function tidyNetwork(input: NetworkInput): { pieces: RoadPiece[]; stats: 
 
   const culled = input.removeDoubled
     ? cull(candidates, weld(candidates, NODE_MM), origins, { gap, stub: STUB_MM })
-    : { parts: candidates.map((c, i): Part => ({ source: i, points: [...c.points], ends: origins[i] })), droppedRoutes: 0, hiddenParts: 0 };
+    : { parts: candidates.map((c, i): Part => ({ source: i, points: [...c.points], ends: origins[i] })), droppedRoutes: 0, hiddenParts: 0, twins: [] };
   const afterCull = length(culled.parts);
+  const centered = centerOnTwins(culled.parts, candidates, culled.twins, gap);
   const joined = input.joinEnds ? joinEnds(culled.parts, candidates, gap, NODE_MM) : 0;
   const afterJoin = length(culled.parts);
   const pruned = input.removeFragments
@@ -82,6 +86,7 @@ export function tidyNetwork(input: NetworkInput): { pieces: RoadPiece[]; stats: 
       network_culled_mm: round(length(candidates) - afterCull),
       network_culled_routes: culled.droppedRoutes,
       network_hidden_parts: culled.hiddenParts,
+      network_centered_parts: centered,
       network_joined_ends: joined,
       network_pruned_stubs: pruned.stubs,
       network_pruned_nubs: pruned.nubs,

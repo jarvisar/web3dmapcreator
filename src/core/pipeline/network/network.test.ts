@@ -5,9 +5,10 @@ import { HeightField } from '../../terrain/heightfield';
 import type { Ring, Vec2 } from '../../types';
 import { Progress, type Context } from '../context';
 import { MINOR_ROAD_CLASSES, polylineLength } from '../linework';
-import { collectRoadPieces, type RoadPiece } from '../roads';
+import { bufferRoads, collectRoadPieces, type RoadPiece } from '../roads';
 import type { SourceFeature } from '../source';
 import { tidyNetwork, type NetworkInput } from '.';
+import { gapStrips } from './gaps';
 
 let serial = 0;
 
@@ -53,12 +54,15 @@ describe('tidyNetwork', () => {
     const south = blocks.map((x) => piece('secondary', [[x, 0], [x + 5, 0]]));
     const cross = [0, 5, 10, 15, 20].map((x) => piece('residential', [[x, -5], [x, 0], [x, 1], [x, 6]]));
     const out = tidy([...south, ...north, ...cross]);
-    const northKept = north.map((p) => length(kept(out, p)));
-    const southKept = south.map((p) => length(kept(out, p)));
+    const northKept = north.map((p) => kept(out, p).length);
+    const southKept = south.map((p) => kept(out, p).length);
     // One side whole, the other gone: never hopping between them.
-    expect([northKept, southKept]).toContainEqual([5, 5, 5, 5].map((v) => expect.closeTo(v, 6)));
+    expect([northKept, southKept]).toContainEqual([1, 1, 1, 1]);
     expect([northKept, southKept]).toContainEqual([0, 0, 0, 0]);
-    for (const street of cross) expect(length(kept(out, street))).toBeCloseTo(11, 6);
+    // The kept one runs down the middle of the street, bending in at its ends.
+    const middle = [...north, ...south].flatMap((p) => kept(out, p)).flatMap((p) => p.points).filter(([x]) => x > 4 && x < 16);
+    for (const [, y] of middle) expect(y).toBeCloseTo(0.5, 6);
+    for (const street of cross) expect(length(kept(out, street))).toBeGreaterThan(10.9);
   });
 
   it('drops a footway beside a street and joins the part that turns into the park', () => {
@@ -140,10 +144,55 @@ describe('tidyNetwork', () => {
     expect(kept(out, steps)).toHaveLength(0);
   });
 
+  it('moves the kept carriageway of a divided stretch onto the middle of the street', () => {
+    const before = piece('primary', [[0, 0], [0, 10]]);
+    const west = piece('primary', [[0, 10], [-0.5, 11], [-0.5, 19], [0, 20]]);
+    const east = piece('primary', [[0, 10], [0.5, 11], [0.5, 19], [0, 20]]);
+    const after = piece('primary', [[0, 20], [0, 30]]);
+    const out = tidy([before, west, east, after]);
+    const kept = [...out.filter((p) => p.sourceId === west.sourceId || p.sourceId === east.sourceId)];
+    expect(kept).toHaveLength(1);
+    const points = kept[0].points;
+    for (const [x, y] of points) if (y > 13 && y < 17) expect(Math.abs(x)).toBeLessThan(0.02);
+    // Bends in no steeper than the taper.
+    for (let k = 1; k < points.length; k++) {
+      expect(Math.abs(points[k][0] - points[k - 1][0])).toBeLessThanOrEqual(Math.abs(points[k][1] - points[k - 1][1]) / 3 + 0.26);
+    }
+  });
+
+  it("doesn't pull a service road towards a parking aisle beside it", () => {
+    const road = piece('service', [[0, 0], [20, 0]], { width: 0.45 });
+    const aisle = { ...piece('service', [[0, 0.7], [20, 0.7]], { width: 0.45 }), subclass: 'parking_aisle' };
+    const out = tidy([road, aisle]);
+    for (const [, y] of kept(out, road).flatMap((p) => p.points)) expect(y).toBe(0);
+  });
+
   it('changes nothing with every step off', () => {
     const pieces = [piece('residential', [[0, 0], [20, 0]]), piece('residential', [[0, 1], [20, 1]]), piece('steps', [[30, 0], [30.5, 0]])];
     const out = tidy(pieces, { removeDoubled: false, joinEnds: false, removeFragments: false });
     expect(out.map((p) => p.points)).toEqual(pieces.map((p) => p.points));
+  });
+});
+
+describe('gapStrips', () => {
+  it('fills ground too thin to print between two roads side by side', () => {
+    // 1 mm apart, 0.7 mm wide: 0.3 mm of ground between them.
+    const strips = gapStrips([piece('residential', [[0, 0], [10, 0]]), piece('residential', [[0, 1], [10, 1]])], 0.4);
+    expect(strips.road).toHaveLength(1);
+    const ys = strips.road[0][0].map(([, y]) => y);
+    expect(Math.min(...ys)).toBeCloseTo(0, 6);
+    expect(Math.max(...ys)).toBeCloseTo(1, 6);
+  });
+
+  it('leaves printable gaps and crossing streets alone', () => {
+    expect(gapStrips([piece('residential', [[0, 0], [10, 0]]), piece('residential', [[0, 1.2], [10, 1.2]])], 0.4).road).toHaveLength(0);
+    expect(gapStrips([piece('residential', [[0, 0], [10, 0]]), piece('residential', [[5, -5], [5, 5]])], 0.4).road).toHaveLength(0);
+  });
+
+  it('gives a gap between a street and a path to the street', () => {
+    const strips = gapStrips([piece('footway', [[0, 0.9], [10, 0.9]]), piece('residential', [[0, 0], [10, 0]])], 0.4);
+    expect(strips.road).toHaveLength(1);
+    expect(strips.path).toHaveLength(0);
   });
 });
 
@@ -194,5 +243,13 @@ describe('collectRoadPieces', () => {
     const ctx = context((s) => (s.roads.tidy = false));
     const { pieces } = await collectRoadPieces(features(ctx), ctx);
     expect(pieces.map((p) => p.sourceId)).toEqual(['street', 'steps']);
+  });
+
+  it('prints two roads with a hairline between them as one', async () => {
+    const pieces = [piece('residential', [[-10, 0], [10, 0]]), piece('residential', [[-10, 1], [10, 1]])];
+    const filled = await bufferRoads(pieces, context());
+    const apart = await bufferRoads(pieces, context((s) => (s.roads.fillGaps = false)));
+    expect(filled.road).toHaveLength(1);
+    expect(apart.road).toHaveLength(2);
   });
 });

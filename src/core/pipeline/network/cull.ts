@@ -18,10 +18,19 @@ export interface CullOptions {
   stub: number;
 }
 
+/** A doubled stretch of a street dropped for running beside one at least as important. */
+export interface Twin {
+  points: Vec2[];
+  roadClass: string;
+  subclass: string;
+  halfWidth: number;
+}
+
 export interface CullResult {
   parts: Part[];
   droppedRoutes: number;
   hiddenParts: number;
+  twins: Twin[];
 }
 
 const PARALLEL_DEG = 28;
@@ -226,10 +235,20 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
   // A losing street keeps the stretches nothing at least as important
   // doubles (a ramp curving away, carriageways parting round an island),
   // when they're long enough to read as a line of their own.
+  const twins: Twin[] = [];
   for (const id of losing) {
     const route = order[id];
     const { step, samples, halfWidths } = sample(route);
     const flags = samples.map((p, k) => alongside(p.x, p.y, p.ux, p.uy, halfWidths[k], false, route.rank));
+    const first = candidates[route.members[0].source];
+    for (const [k0, k1] of runs(flags, true)) {
+      twins.push({
+        points: slice(route.points, route.cum, k0 * step, k1 * step),
+        roadClass: first.piece.roadClass,
+        subclass: first.piece.subclass,
+        halfWidth: first.halfWidth,
+      });
+    }
     let any = false;
     for (const [k0, k1] of runs(flags, false)) {
       const a = k0 * step;
@@ -270,5 +289,5 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
     alive[i] = false;
     hiddenParts++;
   }
-  return { parts: parts.filter((_p, i) => alive[i]), droppedRoutes, hiddenParts };
+  return { parts: parts.filter((_p, i) => alive[i]), droppedRoutes, hiddenParts, twins };
 }

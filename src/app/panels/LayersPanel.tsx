@@ -349,7 +349,7 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
           checked={roads.removeDoubled}
           disabled={!roads.tidy}
           onChange={(removeDoubled) => patchSettings('roads', { removeDoubled })}
-          help="A road or path running alongside a more important one, closer than the minimum gap, is left out. Both carriageways of a divided street print as one road, and footways mapped beside streets go."
+          help="A road or path running alongside a more important one, closer than the minimum gap, is left out. Both carriageways of a divided street print as one road down the middle of the street, and footways mapped beside streets go."
         />
         <CheckField
           label="Join loose ends"
@@ -364,6 +364,13 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
           disabled={!roads.tidy}
           onChange={(removeFragments) => patchSettings('roads', { removeFragments })}
           help="Short spurs that lead nowhere and small pieces touching nothing are left out, like the flight of steps between two sidewalks."
+        />
+        <CheckField
+          label="Fill gaps too thin to print"
+          checked={roads.fillGaps}
+          disabled={!roads.tidy}
+          onChange={(fillGaps) => patchSettings('roads', { fillGaps })}
+          help="Ground narrower than the minimum gap between two roads running side by side is filled in, so they print as one wider road instead of two with a hairline between them."
         />
         <NumberField
           label="Minimum gap"

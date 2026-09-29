@@ -518,6 +518,125 @@ export function windowMin(z: Float32Array, nx: number, ny: number, radius: numbe
   return slide(z, nx, ny, radius, -1, out);
 }
 
+// Directions a face is followed along by fairFaces: across, up, and both diagonals.
+const ALONG: [number, number][] = [
+  [1, 0],
+  [0, 1],
+  [1, 1],
+  [1, -1],
+];
+
+/**
+ * Straighten relief along steep faces narrower than half `window`, where no
+ * height level moves further than `reach` in plan. It's the building caps'
+ * fair() in lidar/envelope.ts, row-major and for a whole LiDAR only grid:
+ * along a face the heights rise monotonically across it, so the median of a
+ * line of cells along the face is the face's own position at every height.
+ * Each steep cell takes the line of four directions whose heights vary
+ * least, only where the face is straight along it and goes on past both ends.
+ * A fin or a notch in a facade narrower than that meshes as a row of ribs
+ * and doesn't print. Cells in `keep` don't change. Units are the grid's own.
+ * Returns how many cells moved.
+ */
+export function fairFaces(z: Float32Array, nx: number, ny: number, pitch: number, window: number, reach: number, keep: Uint8Array): number {
+  const n = nx * ny;
+  const half = Math.max(1, Math.round(window / pitch / 2));
+  const at = (i: number, j: number) => z[(j < 0 ? 0 : j >= ny ? ny - 1 : j) * nx + (i < 0 ? 0 : i >= nx ? nx - 1 : i)];
+  // Over four cells, so noise on a gentle roof never reads as a face.
+  const slope = new Float32Array(n);
+  const steep = new Uint8Array(n);
+  let any = false;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const c = j * nx + i;
+      slope[c] = Math.hypot(at(i + 2, j) - at(i - 2, j), at(i, j + 2) - at(i, j - 2)) / (4 * pitch);
+      if (slope[c] >= 1) {
+        steep[c] = 1;
+        any = true;
+      }
+    }
+  }
+  if (!any) return 0;
+  // Steep within half the reach: at a pier's toe the face has not started to rise yet.
+  const steepNear = dilate(steep, nx, ny, Math.max(1, Math.round(reach / pitch / 2)));
+  const candidate = new Uint8Array(n);
+  for (let c = 0; c < n; c++) candidate[c] = steep[c] && !keep[c] ? 1 : 0;
+  const disc: [number, number][] = [];
+  const r = Math.max(0, Math.round(reach / pitch));
+  for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) if (di * di + dj * dj <= r * r + 1e-9) disc.push([di, dj]);
+  // The line median is needed wherever a candidate's reach test looks.
+  const needed = dilate(candidate, nx, ny, r);
+  const straight = new Float32Array(n);
+  const level = new Uint8Array(n);
+  const line = new Float64Array(2 * half + 1);
+  const sorted = new Float64Array(2 * half + 1);
+  const steepAt = (i: number, j: number) => i >= 0 && j >= 0 && i < nx && j < ny && steepNear[j * nx + i] === 1;
+  const diagonal = Math.max(1, Math.round(half / Math.SQRT2));
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const c = j * nx + i;
+      if (!needed[c]) continue;
+      // The first direction whose line varies least, and only its median.
+      let least = Infinity;
+      let best = 0;
+      for (let d = 0; d < 4; d++) {
+        const [di, dj] = ALONG[d];
+        const steps = di && dj ? diagonal : half;
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (let k = -steps; k <= steps; k++) {
+          const v = at(i + k * di, j + k * dj);
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+        if (hi - lo < least) {
+          least = hi - lo;
+          best = d;
+        }
+      }
+      const [di, dj] = ALONG[best];
+      const steps = di && dj ? diagonal : half;
+      const m = 2 * steps + 1;
+      for (let k = -steps; k <= steps; k++) line[k + steps] = sorted[k + steps] = at(i + k * di, j + k * dj);
+      const middle = sorted.subarray(0, m).sort()[steps];
+      straight[c] = middle;
+      if (!candidate[c]) continue;
+      const tolerance = (slope[c] * pitch) / 2;
+      let near = 0;
+      for (let k = 0; k < m; k++) if (Math.abs(line[k] - middle) <= tolerance) near++;
+      level[c] = 2 * near > m && steepAt(i + steps * di, j + steps * dj) && steepAt(i - steps * di, j - steps * dj) ? 1 : 0;
+    }
+  }
+  // Few cells move, so they're applied after the scan rather than copying the grid.
+  const moves: number[] = [];
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const c = j * nx + i;
+      if (!candidate[c] || !level[c]) continue;
+      const h = z[c];
+      const s = straight[c];
+      if (s === h) continue;
+      // Only where every height level moves at most `reach` in plan.
+      let movedMin = Infinity;
+      let movedMax = -Infinity;
+      let heightMin = Infinity;
+      let heightMax = -Infinity;
+      for (const [di, dj] of disc) {
+        const a = i + di < 0 ? 0 : i + di >= nx ? nx - 1 : i + di;
+        const b = j + dj < 0 ? 0 : j + dj >= ny ? ny - 1 : j + dj;
+        const k = b * nx + a;
+        movedMin = Math.min(movedMin, straight[k]);
+        movedMax = Math.max(movedMax, straight[k]);
+        heightMin = Math.min(heightMin, z[k]);
+        heightMax = Math.max(heightMax, z[k]);
+      }
+      if (movedMin <= h && movedMax >= h && heightMin <= s && heightMax >= s) moves.push(c, s);
+    }
+  }
+  for (let k = 0; k < moves.length; k += 2) z[moves[k]] = moves[k + 1];
+  return moves.length / 2;
+}
+
 /**
  * Replace a cell standing more than `threshold` above (or sunk below) all
  * eight neighbours by their median. Unlike a median filter this leaves every

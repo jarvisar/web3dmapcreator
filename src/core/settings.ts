@@ -84,6 +84,8 @@ export interface ModelSettings {
     joinEnds: boolean;
     /** Leave out short spurs leading nowhere and small pieces touching nothing. */
     removeFragments: boolean;
+    /** Fill ground narrower than the gap between two ribbons, so it prints as road. */
+    fillGaps: boolean;
     /** Narrowest strip of ground left between two ribbons running alongside each other. */
     gapMm: number;
   };
@@ -196,6 +198,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     removeDoubled: true,
     joinEnds: true,
     removeFragments: true,
+    fillGaps: true,
     gapMm: 0.4,
   },
   bridges: {

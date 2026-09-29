@@ -35,7 +35,7 @@ export interface MeshLimits {
 /** A height grid in model mm: point (i, j) at (x0 + i dx, y0 + j dy), index j * nx + i. */
 export interface HeightGrid {
   heights: Float32Array;
-  /** Per point factor on the deviation, 1 or less. */
+  /** Per point factor on the deviation: under 1 holds a tree to finer facets, over 1 lets a wall straighten. */
   detail: Float32Array;
   nx: number;
   ny: number;
@@ -1010,6 +1010,297 @@ export async function meshSurface(grid: HeightGrid, limits: MeshLimits, options:
   const collapser = new Collapser({ positions, triangles, side, pinned: new Uint8Array(count), detail, keys }, limits, bound, live);
   while (!collapser.run(20000)) await options.progress?.(0.9);
   await options.progress?.(1);
+  const out = collapser.result();
+  return { vertices: out.positions, triangles: out.triangles };
+}
+
+// ------------------------------------------------------------------ walls
+
+/**
+ * Walls straightened after simplifying. A wall is a band of steep triangles
+ * between its roof edge and its foot, and a tall one standing on a crooked
+ * foot is a fan of long triangles each facing its own way: a row of ribs
+ * from roof to street. The foot is crooked because of what stands along it
+ * (planters, canopies, a lower wing) and because the grid draws a diagonal
+ * in one-cell stairs.
+ *
+ * So each roof edge (a crease between a flat face and a steep one hanging
+ * below it) is simplified to straight lines within `delta`, and the wall's
+ * foot below each line is moved onto a line parallel to it, at the wall's
+ * median width. Only plan positions move, never a rim vertex or a tree's,
+ * and never so a triangle turns over. Then whatever is left in line
+ * collapses, within the usual limits.
+ */
+export function straightenWalls(tin: Tin, grid: HeightGrid, limits: MeshLimits, delta: number): Tin {
+  const pos = Float64Array.from(tin.vertices);
+  const tri = tin.triangles;
+  const nv = pos.length / 3;
+  const nt = tri.length / 3;
+  const start = new Int32Array(nv + 1);
+  for (let k = 0; k < tri.length; k++) start[tri[k] + 1]++;
+  for (let v = 0; v < nv; v++) start[v + 1] += start[v];
+  const faceOf = new Int32Array(tri.length);
+  const fill = start.slice(0, nv);
+  for (let t = 0; t < nt; t++) for (let k = 0; k < 3; k++) faceOf[fill[tri[3 * t + k]]++] = t;
+  const facesOf = (v: number) => faceOf.subarray(start[v], start[v + 1]);
+
+  const cellOf = (v: number) => {
+    const i = Math.min(grid.nx - 1, Math.max(0, Math.round((pos[3 * v] - grid.x0) / grid.dx)));
+    const j = Math.min(grid.ny - 1, Math.max(0, Math.round((pos[3 * v + 1] - grid.y0) / grid.dy)));
+    return j * grid.nx + i;
+  };
+  // 1 on the rim, which never moves, 2 on a tree, which may only be a wall's foot.
+  const fixed = new Uint8Array(nv);
+  for (let v = 0; v < nv; v++) {
+    const x = pos[3 * v];
+    const y = pos[3 * v + 1];
+    if (x <= grid.x0 || x >= grid.x1 || y <= grid.y0 || y >= grid.y1) fixed[v] = 1;
+    else if (grid.detail[cellOf(v)] < 1) fixed[v] = 2;
+  }
+  // Steep: more than 60 degrees.
+  const steep = new Uint8Array(nt);
+  for (let t = 0; t < nt; t++) {
+    const a = 3 * tri[3 * t];
+    const b = 3 * tri[3 * t + 1];
+    const c = 3 * tri[3 * t + 2];
+    const ux = pos[b] - pos[a];
+    const uy = pos[b + 1] - pos[a + 1];
+    const uz = pos[b + 2] - pos[a + 2];
+    const vx = pos[c] - pos[a];
+    const vy = pos[c + 1] - pos[a + 1];
+    const vz = pos[c + 2] - pos[a + 2];
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    steep[t] = Math.abs(nz) < 0.5 * Math.hypot(nx, ny, nz) ? 1 : 0;
+  }
+  // Roof edges: an edge between a flat face and a steep one whose third corner is below it.
+  const edgeKey = (a: number, b: number) => (a < b ? a * nv + b : b * nv + a);
+  const top = new Map<number, number[]>();
+  const onTop = new Uint8Array(nv);
+  for (let t = 0; t < nt; t++) {
+    for (let k = 0; k < 3; k++) {
+      const a = tri[3 * t + k];
+      const b = tri[3 * t + ((k + 1) % 3)];
+      // The face across the edge runs it b to a.
+      let s = -1;
+      for (const u of facesOf(b)) {
+        if (tri[3 * u] === a || tri[3 * u + 1] === a || tri[3 * u + 2] === a) {
+          if (u !== t) s = u;
+        }
+      }
+      if (s < t || steep[s] === steep[t]) continue;
+      const wall = steep[s] ? s : t;
+      let third = tri[3 * wall];
+      if (third === a || third === b) third = tri[3 * wall + 1];
+      if (third === a || third === b) third = tri[3 * wall + 2];
+      if (!(pos[3 * third + 2] < Math.min(pos[3 * a + 2], pos[3 * b + 2]))) continue;
+      for (const [p, q] of [
+        [a, b],
+        [b, a],
+      ]) {
+        const list = top.get(p);
+        if (list) list.push(q);
+        else top.set(p, [q]);
+      }
+      onTop[a] = onTop[b] = 1;
+    }
+  }
+  // Chains of roof edge through vertices with two such edges.
+  const used = new Set<number>();
+  const chains: number[][] = [];
+  const walk = (from: number, to: number) => {
+    const chain = [from, to];
+    let prev = from;
+    let cur = to;
+    while (cur !== from && top.get(cur)!.length === 2) {
+      const [p, q] = top.get(cur)!;
+      const next = p === prev ? q : p;
+      const key = edgeKey(cur, next);
+      if (used.has(key)) break;
+      used.add(key);
+      chain.push(next);
+      prev = cur;
+      cur = next;
+    }
+    return chain;
+  };
+  // Ends and junctions first, then loops.
+  for (const loops of [false, true]) {
+    for (const [v, list] of top) {
+      if ((list.length === 2) !== loops) continue;
+      for (const w of list) {
+        const key = edgeKey(v, w);
+        if (used.has(key)) continue;
+        used.add(key);
+        chains.push(walk(v, w));
+      }
+    }
+  }
+  // A loop's ends are kept, so it starts at its sharpest corner rather than
+  // somewhere along a straight wall.
+  for (let c = 0; c < chains.length; c++) {
+    const chain = chains[c];
+    const n = chain.length - 1;
+    if (n < 3 || chain[0] !== chain[n]) continue;
+    let sharpest = 0;
+    let lowest = Infinity;
+    for (let k = 0; k < n; k++) {
+      const p = chain[(k + n - 1) % n];
+      const q = chain[k];
+      const r = chain[k + 1];
+      const ux = pos[3 * q] - pos[3 * p];
+      const uy = pos[3 * q + 1] - pos[3 * p + 1];
+      const vx = pos[3 * r] - pos[3 * q];
+      const vy = pos[3 * r + 1] - pos[3 * q + 1];
+      const cos = (ux * vx + uy * vy) / (Math.hypot(ux, uy) * Math.hypot(vx, vy) || 1);
+      if (cos < lowest) {
+        lowest = cos;
+        sharpest = k;
+      }
+    }
+    chains[c] = [...chain.slice(sharpest, n), ...chain.slice(0, sharpest + 1)];
+  }
+
+  const target = new Map<number, [number, number, number]>();
+  const aim = (v: number, x: number, y: number, foot: boolean) => {
+    if (fixed[v] === 1 || (fixed[v] === 2 && !foot)) return;
+    const d = Math.hypot(x - pos[3 * v], y - pos[3 * v + 1]);
+    const prev = target.get(v);
+    if (!prev || d < prev[2]) target.set(v, [x, y, d]);
+  };
+  // A foot further out than this isn't this wall's.
+  const reach = 6 * Math.min(grid.dx, grid.dy);
+  for (const chain of chains) {
+    const n = chain.length;
+    if (n < 3) continue;
+    const keep = new Uint8Array(n);
+    keep[0] = keep[n - 1] = 1;
+    for (let k = 0; k < n; k++) if (fixed[chain[k]]) keep[k] = 1;
+    const simplify = (i0: number, i1: number) => {
+      if (i1 - i0 < 2) return;
+      const ax = pos[3 * chain[i0]];
+      const ay = pos[3 * chain[i0] + 1];
+      const dx = pos[3 * chain[i1]] - ax;
+      const dy = pos[3 * chain[i1] + 1] - ay;
+      const length = Math.hypot(dx, dy);
+      let worst = -1;
+      let at = -1;
+      for (let k = i0 + 1; k < i1; k++) {
+        const px = pos[3 * chain[k]] - ax;
+        const py = pos[3 * chain[k] + 1] - ay;
+        const d = length > 0 ? Math.abs(px * dy - py * dx) / length : Math.hypot(px, py);
+        if (d > worst) {
+          worst = d;
+          at = k;
+        }
+      }
+      if (worst <= delta) return;
+      keep[at] = 1;
+      simplify(i0, at);
+      simplify(at, i1);
+    };
+    let last = 0;
+    for (let k = 1; k < n; k++) {
+      if (!keep[k]) continue;
+      simplify(last, k);
+      last = k;
+    }
+    last = 0;
+    for (let k = 1; k < n; k++) {
+      if (!keep[k]) continue;
+      const a = chain[last];
+      const b = chain[k];
+      const ax = pos[3 * a];
+      const ay = pos[3 * a + 1];
+      const length = Math.hypot(pos[3 * b] - ax, pos[3 * b + 1] - ay);
+      if (length > 0) {
+        const ux = (pos[3 * b] - ax) / length;
+        const uy = (pos[3 * b + 1] - ay) / length;
+        for (let m = last + 1; m < k; m++) {
+          const v = chain[m];
+          const s = (pos[3 * v] - ax) * ux + (pos[3 * v + 1] - ay) * uy;
+          aim(v, ax + s * ux, ay + s * uy, false);
+        }
+        // The foot: lower corners of the steep faces hanging from this stretch.
+        const feet: number[] = [];
+        const along: number[] = [];
+        const across: number[] = [];
+        for (let m = last; m <= k; m++) {
+          const v = chain[m];
+          for (const t of facesOf(v)) {
+            if (!steep[t]) continue;
+            for (let q = 0; q < 3; q++) {
+              const f = tri[3 * t + q];
+              if (onTop[f] || !(pos[3 * f + 2] < pos[3 * v + 2])) continue;
+              const px = pos[3 * f] - ax;
+              const py = pos[3 * f + 1] - ay;
+              const s = px * ux + py * uy;
+              if (s < -0.5 * length || s > 1.5 * length) continue;
+              feet.push(f);
+              along.push(s);
+              across.push(py * ux - px * uy);
+            }
+          }
+        }
+        const sorted = across.slice().sort((p, q) => p - q);
+        const side = Math.sign(sorted[sorted.length >> 1] ?? 0);
+        const widths = sorted.map((t) => t * side).filter((t) => t > 0);
+        if (side && widths.length) {
+          const width = widths[widths.length >> 1];
+          for (let m = 0; m < feet.length; m++) {
+            if (across[m] * side <= 0 || Math.abs(across[m]) > reach) continue;
+            aim(feet[m], ax + along[m] * ux - side * width * uy, ay + along[m] * uy + side * width * ux, true);
+          }
+        }
+      }
+      last = k;
+    }
+  }
+
+  // Move what can move without turning a triangle over or thinner than the mesher allows.
+  const moved = new Uint8Array(nv);
+  for (const [v, [x, y]] of target) {
+    const ox = pos[3 * v];
+    const oy = pos[3 * v + 1];
+    pos[3 * v] = x;
+    pos[3 * v + 1] = y;
+    let upright = true;
+    for (const t of facesOf(v)) {
+      const a = 3 * tri[3 * t];
+      const b = 3 * tri[3 * t + 1];
+      const c = 3 * tri[3 * t + 2];
+      const cross = (pos[b] - pos[a]) * (pos[c + 1] - pos[a + 1]) - (pos[b + 1] - pos[a + 1]) * (pos[c] - pos[a]);
+      const longest = Math.max(Math.hypot(pos[b] - pos[a], pos[b + 1] - pos[a + 1]), Math.hypot(pos[c] - pos[b], pos[c + 1] - pos[b + 1]), Math.hypot(pos[a] - pos[c], pos[a + 1] - pos[c + 1]));
+      if (!(cross > limits.minGap * longest)) {
+        upright = false;
+        break;
+      }
+    }
+    if (upright) moved[v] = 1;
+    else {
+      pos[3 * v] = ox;
+      pos[3 * v + 1] = oy;
+    }
+  }
+
+  // Collapse around what moved.
+  const side = new Uint8Array(nv);
+  const detail = new Float32Array(nv);
+  const live = new Uint8Array(nv);
+  for (let v = 0; v < nv; v++) {
+    const x = pos[3 * v];
+    const y = pos[3 * v + 1];
+    side[v] = (x === grid.x0 ? WEST : 0) | (x === grid.x1 ? EAST : 0) | (y === grid.y0 ? SOUTH : 0) | (y === grid.y1 ? NORTH : 0);
+    detail[v] = grid.detail[cellOf(v)];
+    if (!moved[v]) continue;
+    for (const t of facesOf(v)) for (let k = 0; k < 3; k++) live[tri[3 * t + k]] = 1;
+  }
+  const tolerance = new Float32Array(grid.heights.length);
+  for (let k = 0; k < tolerance.length; k++) tolerance[k] = limits.deviation * grid.detail[k];
+  const bound: GridBound = { heights: grid.heights, tolerance, nx: grid.nx, ny: grid.ny, x0: grid.x0, y0: grid.y0, dx: grid.dx, dy: grid.dy };
+  const collapser = new Collapser({ positions: pos, triangles: Uint32Array.from(tri), side, pinned: new Uint8Array(nv), detail, keys: new Int32Array(nv).fill(-1) }, limits, bound, live);
+  collapser.run();
   const out = collapser.result();
   return { vertices: out.positions, triangles: out.triangles };
 }
