@@ -180,10 +180,10 @@ function LandOptions({ land }: { land: ModelSettings['land'] }) {
         value={land.embedMm}
         onChange={(embedMm) => patchSettings('land', { embedMm })}
         {...modelFieldRange('land', 'embedMm')}
-        step={0.05}
+        step={0.01}
         decimals={2}
         unit="mm"
-        help="How far land surfaces, roads, buildings and piers reach below the terrain surface, so the parts overlap and join in the slicer."
+        help="How far land surfaces, roads, buildings, piers and trees reach below the terrain surface, so the parts overlap and join in the slicer. Exported projects list the terrain after them, so slicers print the overlap as terrain."
       />
       <CheckField
         label="Slope beaches into water"
@@ -490,6 +490,12 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
         checked={buildings.restoreMainBodies}
         onChange={(restoreMainBodies) => patchSettings('buildings', { restoreMainBodies })}
         help="Add a building's main body when its mapped parts cover less than half of it. The mapped parts are kept."
+      />
+      <CheckField
+        label="Bring raised parts down to the ground"
+        checked={buildings.groundRaisedParts}
+        onChange={(groundRaisedParts) => patchSettings('buildings', { groundRaisedParts })}
+        help="Parts mapped to start above the ground, like arcades, overhangs and skybridges, are built down to meet the terrain, so nothing hangs in the air. Off keeps them raised as mapped, which needs supports in the slicer. Gaps too thin to print are closed either way."
       />
       <NumberField
         label="Minimum width"

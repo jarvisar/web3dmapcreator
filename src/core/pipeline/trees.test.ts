@@ -11,7 +11,7 @@ import { buildTrees } from './trees';
 const HALF = 35;
 const CROP: Ring = [[-HALF, -HALF], [HALF, -HALF], [HALF, HALF], [-HALF, HALF]];
 
-function context(patch?: (settings: ModelSettings) => void): Context {
+function context(patch?: (settings: ModelSettings) => void, terrain?: (x: number, y: number) => number): Context {
   const settings = cloneSettings();
   settings.trees.enabled = true;
   patch?.(settings);
@@ -22,7 +22,9 @@ function context(patch?: (settings: ModelSettings) => void): Context {
     cropSet: [[CROP]],
     cropBox: [-HALF, -HALF, HALF, HALF],
     bounds: { west: 0, south: 44.99, east: 0.02, north: 45.01 },
-    heightfield: HeightField.flat([-HALF - 2, -HALF - 2, HALF + 2, HALF + 2], 64, 0),
+    heightfield: terrain
+      ? HeightField.build([-HALF - 2, -HALF - 2, HALF + 2, HALF + 2], 64, terrain)
+      : HeightField.flat([-HALF - 2, -HALF - 2, HALF + 2, HALF + 2], 64, 0),
     stats: {},
     warnings: [],
     progress: new Progress(),
@@ -54,6 +56,22 @@ describe('buildTrees', () => {
     const trees = await plant(ctx, 'land_use', [forest(ctx, -30, -30, 0, 30)]);
     expect(trees.length).toBeGreaterThan(50);
     expect(trees.every((t) => t.anchor[0] < 0)).toBe(true);
+  });
+
+  it('sinks the base of a tree on a slope into the ground all round', async () => {
+    const ctx = context(undefined, (x, y) => 0.3 * x + 0.1 * y);
+    const trees = await plant(ctx, 'land_use', [forest(ctx, -20, -20, 20, 20)]);
+    expect(trees.length).toBeGreaterThan(10);
+    const hf = ctx.heightfield;
+    for (const tree of trees) {
+      // The base is the lowest ring of vertices, flat.
+      let low = Infinity;
+      for (let i = 2; i < tree.positions.length; i += 3) low = Math.min(low, tree.positions[i]);
+      for (let i = 0; i < tree.positions.length; i += 3) {
+        if (tree.positions[i + 2] > low + 1e-6) continue;
+        expect(low).toBeLessThanOrEqual(hf.heightAt(tree.positions[i], tree.positions[i + 1]) - ctx.settings.land.embedMm + 1e-6);
+      }
+    }
   });
 
   it('plants a forest mapped in land and land use once', async () => {

@@ -52,7 +52,7 @@ With `Keep ground under structures over water` on, the terrain is kept under roa
 
 Parks, forest, sand, rock and paving come from `land`, `land_use` and `land_cover` (vegetation only), through allowlists of classes (`src/core/pipeline/classify.ts`). An unrecognised class produces nothing rather than a guess. Polygons more than 8 times the size of the selection are regional features and are skipped.
 
-Categories never overlap: the priority order (paved, sand, rock, green, forest by default) decides who owns shared ground. Water, roads and building footprints are cut out of every slab. Strips narrower than about 0.2 mm are removed, since they can't print as a colour of their own. Slabs rise 0.4 mm above the terrain and reach 0.15 mm into it, following the ground across their whole area. Sand beside cut water slopes down to the waterline over 1.5 mm.
+Categories never overlap: the priority order (paved, sand, rock, green, forest by default) decides who owns shared ground. Water, roads and building footprints are cut out of every slab. Strips narrower than about 0.2 mm are removed, since they can't print as a colour of their own. Slabs rise 0.4 mm above the terrain and reach 0.04 mm into it, following the ground across their whole area. Sand beside cut water slopes down to the waterline over 1.5 mm.
 
 ## Roads
 
@@ -83,7 +83,8 @@ Buildings and building parts follow the add-on's rules (`src/core/pipeline/build
 - `height` is the top of a mass above the ground, not a thickness above `min_height`.
 - A parent is replaced by its parts when the parts carry heights. It's kept (or restored) when the parts only cover part of it.
 - A plain footprint published again over another building's parts is dropped.
-- Every mass of one building sits on the lowest ground under the whole building, so parts of equal height end level. Undersides follow the terrain 0.15 mm below its surface.
+- Every mass of one building sits on the lowest ground under the whole building, so parts of equal height end level. Undersides follow the terrain 0.04 mm below its surface.
+- Parts mapped to start above the ground (`min_height`), like arcades, overhangs, skybridges and the tiers of a dome, are built down to the terrain too, the way I used to shrinkwrap building undersides onto the terrain by hand. One standing on another part runs down through it, which looks the same and costs about 1% more building triangles in Rome. `Bring raised parts down to the ground` off keeps them raised, as the add-on does, except where the gap under one would be thinner than a 0.2 mm layer, over the ground or over the part below. A gap that thin prints as a layer of air or none, and the slicer flags it.
 - Heights are scaled by 1.1 so buildings read clearly over the roads, and footprints of at least 0.6 x 0.6 mm are raised to at least 0.8 mm tall.
 - Gabled, hipped, skillion, pyramidal and dome roofs are built from `roof_shape`. Each planar part of a roof is its own prism.
 
@@ -147,7 +148,9 @@ Almost everything is a 2.5D prism: a polygon with a top and bottom height at eve
 
 Because solids stay 2D until the end, cropping to a circle or hexagon and splitting into plates are plain polygon clips. Every section's parts are closed shells, like the whole model.
 
-Parts are separate solids that overlap slightly (roads and slabs reach 0.15 mm into the terrain). Slicers union them. The model is not one fused manifold.
+Parts are separate solids that overlap slightly (roads and slabs reach 0.04 mm into the terrain). Slicers union them. The model is not one fused manifold.
+
+PrusaSlicer, Bambu Studio and OrcaSlicer give an overlap to the part listed later in the object, so 3MF exports list the terrain after everything that reaches into it, and water after the terrain, since small water sheets are sunk into it (`OVERLAP_RANK`). The overlap used to be 0.15 mm with the terrain listed first, and PrusaSlicer printed a park's lowest layer below the ground wherever a slice fell in the overlap, which shows at the model's edges and shores. Filaments keep the model's order, so the terrain is still filament 1. The 3D view settles the walls these parts share the same way.
 
 ## Export
 

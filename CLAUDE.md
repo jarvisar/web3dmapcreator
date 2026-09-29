@@ -76,6 +76,16 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   median level. The grid is flattened under it and the shore raised.
 - Ground is kept under roads, buildings and mapped piers over cut water
   (`settings.supports`) by leaving it out of the cut, not with extra solids.
+- Parts overlap where they reach into the terrain (`land.embedMm`, 0.04 mm)
+  and where water sheets sink into it. Slicers give an overlap to the part
+  listed later, so 3MF writers list parts by `OVERLAP_RANK` (`writeOrder`):
+  terrain after everything embedded in it, water last. Filaments keep the
+  model's order (`modelFilaments`). The viewer settles coplanar walls the
+  same way, offsetting walls only: a whole part offset would let a water
+  surface show through the bank in front of it. Nothing that reaches into
+  the terrain may lift off it on a slope, whatever the overlap: draped parts
+  are cut from the lattice, piers drape like buildings, and a tree's flat
+  base goes down to the lowest ground under it.
 - Land categories never overlap (priority order). Water, roads and building
   footprints are cut out of slabs, and slivers under ~0.2 mm are opened away.
   Above 250 mm this runs in 50 mm tiles with a 1 mm margin (`tiled`), so
@@ -92,7 +102,10 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   paths. Split segments at every `between` boundary before reading rules.
   Tunnels and indoor corridors are skipped.
 - Buildings follow the add-on's selection/height/roof rules. See comments in
-  `src/core/pipeline/buildings/`.
+  `src/core/pipeline/buildings/`. The exception is raised parts
+  (`min_height`): by default they're built down to the terrain
+  (`groundRaisedParts`), and either way a gap under one thinner than a layer
+  is closed (`MINIMUM_CLEARANCE_MM`, `settleOnMassesBelow`).
 - `pipeline/dataPlan.ts` selects data types and filters rows from small
   columns before geometry is read. Its requirements also key the worker's
   cached download. Keep the filter in step with the classifiers.

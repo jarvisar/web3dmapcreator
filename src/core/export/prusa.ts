@@ -19,14 +19,15 @@ import {
   CONFIG_CONTENT_TYPE,
   CORE_NAMESPACE,
   DESCRIPTION,
-  FilamentTable,
   MIME_3MF,
   MODEL_PATH,
   ModelStream,
   XML_HEADER,
   contentTypes,
+  modelFilaments,
   modelRelationship,
   triangleCount,
+  writeOrder,
   type PreparedModel,
 } from './common';
 import { escapeText, fixed6, quoteattr } from './format';
@@ -50,15 +51,16 @@ function prusaPlacement(bounds: [number, number, number, number][], bedWidth: nu
 
 export function writePrusaProject(model: PreparedModel, printer: Printer, title = 'City Model'): Blob {
   const bottom = model.extents.minZ;
-  const extruders = new FilamentTable();
+  const extruders = modelFilaments(model);
   const layout = model.plates.map((plate, index) => {
+    const parts = writeOrder(plate.parts);
     let firstTriangle = 0;
-    const volumes = plate.parts.map((p) => {
+    const volumes = parts.map((p) => {
       const first = firstTriangle;
       firstTriangle += triangleCount(p.part);
       return { name: p.name, first, last: firstTriangle - 1, extruder: extruders.slot(p.colour) };
     });
-    return { plate, volumes, id: index + 1 };
+    return { plate, parts, volumes, id: index + 1, extruder: extruders.slot(plate.parts[0].colour) };
   });
   const placement = prusaPlacement(
     model.plates.map((p) => p.bounds),
@@ -83,8 +85,8 @@ export function writePrusaProject(model: PreparedModel, printer: Printer, title 
   );
   // PrusaSlicer takes a volume's vertices as the index range its triangles
   // use, and every part has its own vertices, so parts stay apart.
-  for (const { plate, id } of layout) {
-    out.meshObject(id, plate.name, plate.parts.map((p) => p.part));
+  for (const { plate, parts, id } of layout) {
+    out.meshObject(id, plate.name, parts.map((p) => p.part));
   }
   out.text(' </resources>\n <build>\n');
   layout.forEach(({ id }, i) => {
@@ -95,11 +97,11 @@ export function writePrusaProject(model: PreparedModel, printer: Printer, title 
   out.close();
 
   const config = [XML_HEADER, '<config>\n'];
-  for (const { plate, volumes, id } of layout) {
+  for (const { plate, volumes, id, extruder } of layout) {
     config.push(
       ` <object id="${id}" instances_count="1">\n` +
         `  <metadata type="object" key="name" value=${quoteattr(plate.name)}/>\n` +
-        `  <metadata type="object" key="extruder" value="${volumes[0].extruder}"/>\n`,
+        `  <metadata type="object" key="extruder" value="${extruder}"/>\n`,
     );
     for (const volume of volumes) {
       config.push(

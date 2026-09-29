@@ -4,6 +4,7 @@
 
 ### Added
 
+- `Layers > Buildings > Bring raised parts down to the ground`, on by default. Parts mapped to start above the ground, like arcades, overhangs, skybridges and the tiers of a dome, are built down to meet the terrain like the rest of the building, so nothing hangs in the air. Off keeps them raised, but a part hovering less than a 0.2 mm layer over the ground or the part below it still comes down to it, since a gap that thin can't print.
 - `Layers > Water > Large water` picks how rivers, lakes and the sea print. `Thin layer`, the new default, makes them a 1 mm layer of water on a floor of terrain, so the water colour only comes in for the top few layers. Before, a lake up in the hills took a colour change on every layer from the bed to its surface. On the Chicago, Clearwater, Rome, Cincinnati, Vancouver and San Francisco presets the water uses 45 to 57% less filament and prints in 3 to 6 fewer layers. The base runs under the floor too, so a model can come out a little taller, at most 0.5 mm on those presets. `Cut through the base` keeps the old behaviour, for printing the water as its own pieces or leaving openings. `Water thickness` sets the layer, and `scripts/generate.ts --cut-water` now cuts through map models too.
 - `Tidy road network`, on by default, cleans up roads before they're widened. Lines doubling a more important one are left out, like the second carriageway of a divided street (the one kept moves onto the middle of the street) or a footway mapped beside a street, paths that stopped at a dropped sidewalk are joined to the street, stubs and specks that lead nowhere are removed, and ground too thin to print between two roads side by side is filled in. Each step has its own switch, and `Minimum gap` sets how close two roads can run side by side. It's a rewrite of the add-on's Tidy Road Network, with spurs and specks judged on a graph of the lines as they'll print. On the `Chicago - The Loop (small)` preset, loose specks of road filament went from 229 to 11.
 - SVG maps, merged in from SVGmap. Pick `SVG map` at the top of the settings to make a flat map of the area for a laser engraver, a pen plotter or print instead of a model: plaque, paper and coaster sizes, filled, outlined or hatched layers, a title in a box or a band, and line cleanup that merges lines too close together to burn apart. The box on the map becomes the piece's map window, with the margin, border and title drawn around it. See `docs/SVG_MAPS.md`.
@@ -24,7 +25,9 @@
 
 ### Changed
 
+- Parks, roads, buildings, piers and trees reach 0.04 mm into the terrain instead of 0.15 mm, and 3MF exports list the terrain after them and water after the terrain. PrusaSlicer, Bambu Studio and OrcaSlicer give an overlap to the part listed later, so a park or road could print a layer below the ground at the model's edges and shores. The terrain wins it now. Filament numbers stay the same, with the terrain first.
 - Ponds, fountains and basins are always sunk, 0.25 mm below their lowest bank at the water thickness, with either water setting. `Recess ponds and fountains`, `Recess depth` and `Pond water thickness` are gone. With the recess off, large ponds were cut through the base and small ones sat on the terrain.
+- Trees rest on the lowest ground under their base and bridge piers follow the ground under them, so neither lifts off a slope. With the old 0.15 mm overlap, trees on steep ground already floated a little on their downhill side.
 - Small water sheets are as thick as `Water thickness` (1 mm, was 1.2 mm) and always reach into the terrain at least as far as `Embed into terrain`.
 - LiDAR only walls come out flat instead of ribbed. Tall facades were a row of narrow vertical stripes, from facade relief too narrow to print and from each wall's crooked foot. Relief under 0.3 mm is now straightened like it is on measured roofs, walls get a little more room to straighten, and each wall's foot is moved in line with its roof edge. On Micropolitan's Chicago, Philadelphia and San Francisco areas the stripes went down 39 to 50%, with 21 to 29% fewer triangles.
 - The outline of cut water in LiDAR only models follows the shore to a cell and a half instead of three quarters, so a bank wall is a few long panels instead of many narrow ones.
@@ -44,6 +47,7 @@
 
 ### Fixed
 
+- Flickering in the 3D view where parks, roads and buildings meet the terrain at the model's edges and shores. The terrain shows there, the way it prints.
 - The plate count on screen could differ from the export. A 3 km area at the default scale showed 1 plate and exported 4.
 - The 36-plate limit applied to every format. It's only for Bambu Studio projects now, and it's checked before anything is meshed.
 - The sea or a bay running off the edge of the model sat up to 1.3 mm too low.

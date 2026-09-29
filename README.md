@@ -59,7 +59,7 @@ Two lines closer together than the laser beam burn as one dark band, so `Line cl
 - The defaults are made for a 0.4 mm nozzle and 0.2 mm layers. Roads stand 0.6 mm tall and parks 0.4 mm, whole numbers of layers.
 - Every colour is one filament. One AMS holds four, and the `4-Colour AMS` preset stays within that.
 - Water prints as a 1 mm layer on a floor of terrain, so its colour only comes in near the top. `Layers > Water > Large water` can cut it through the base instead, from the bed up.
-- Most of the model prints without supports. Bridges and the odd building with an overhanging upper part are the exceptions, so let the slicer add supports only where it finds them.
+- Most of the model prints without supports. Bridges are the exception, so let the slicer add supports only where it finds them. Building parts mapped to start above the ground are built down to it unless you turn that off.
 - A model bigger than your bed can be split with `Multi-plate export`. The sections fit back together with no gaps or connectors.
 - For an SVG map, test your laser settings on scrap first. The wood preview is only a rough idea of how the fills burn.
 

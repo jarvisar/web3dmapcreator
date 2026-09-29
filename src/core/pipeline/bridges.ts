@@ -9,6 +9,7 @@
 // unless it crosses open water.
 
 import { EdgeIndex } from '../geometry/edgeindex';
+import { inOneTriangle } from '../geometry/lattice';
 import { bufferLines, clipLines, densifyLine, dropSmall, intersection, segmentDistance, union } from '../geometry/polygon';
 import { RasterMask } from '../geometry/raster';
 import type { PrismSolid } from '../geometry/solid';
@@ -308,13 +309,16 @@ export async function buildBridges(
         crop.distance(n.x, n.y, half) < half ? dropSmall(intersection([[corners]], ctx.cropSet), 0.01) : [[corners]];
       if (!footprints.length) continue;
       for (const footprint of footprints) {
+        // Draped like a building, or a pier across a bend in the ground stands on air.
+        const drape = !hf.flat && !inOneTriangle(hf.lattice, footprint);
         solids.push({
           kind: 'prism',
           role: 'pier',
           polygon: footprint,
           top: deckBottom + PIER_OVERLAP_MM,
           bottom: (x, y) => hf.heightAt(x, y) - embed,
-          drape: 0,
+          drape: drape ? hf.step : 0,
+          lattice: drape ? hf.lattice : undefined,
         });
         if (n.wet) pierFootprints.push(footprint);
       }

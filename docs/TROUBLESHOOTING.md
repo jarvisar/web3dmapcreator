@@ -68,7 +68,7 @@
 
 **The colours in the slicer don't match my filaments.** The project starts from Bambu's PLA Basic and Matte presets in the colours you picked. Set each filament to what's loaded in your AMS before slicing, and recalculate the flushing volumes.
 
-**The slicer warns about floating regions.** Some buildings have parts that start above the ground, like an overhanging upper floor, and bridge decks span open water. Turn on supports in the slicer. They're only needed under those spots.
+**The slicer warns about floating regions.** Bridge decks span open water, and with `Layers > Buildings > Bring raised parts down to the ground` off, parts mapped to start above the ground, like an overhanging upper floor, stay raised. Turn on supports in the slicer. They're only needed under those spots.
 
 **The model is bigger than the bed.** Turn on `Multi-plate export` under `Export`, or lower the scale. Each section goes on its own plate and the sections fit back together.
 

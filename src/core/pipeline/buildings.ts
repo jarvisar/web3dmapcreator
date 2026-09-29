@@ -19,6 +19,7 @@ import {
   difference,
   dropSmall,
   intersection,
+  multiArea,
   normalize,
   pointInMulti,
   polygonArea,
@@ -65,6 +66,12 @@ const MINIMUM_ROOF_MM = 0.15;
 // top. It is hidden in the terrain either way. This only keeps the solid
 // from turning inside out.
 const MINIMUM_BURIED_THICKNESS_MM = 0.05;
+// With `groundRaisedParts` off, a mass mapped to start above the ground (an
+// arcade's upper floors, a skybridge) still stands on the ground when it
+// clears it by less than a 0.2 mm layer. A thinner gap can't print: the
+// slicer leaves a layer of air under the mass there or none, and flags it
+// as loose.
+const MINIMUM_CLEARANCE_MM = 0.2;
 // Smaller source footprints are float noise, as the add-on's ring cleaning had it.
 const MINIMUM_FOOTPRINT_MM2 = 1e-4;
 // Slivers the model outline or clipped water leave of a footprint.
@@ -87,6 +94,8 @@ const STAT_KEYS = [
   'buildings_raised_to_minimum',
   'building_parts_raised_to_minimum',
   'parts_founded_on_parent_base',
+  'elevated_masses_grounded',
+  'elevated_masses_settled',
   'building_parts_kept_by_adjacency',
   'roofs_shaped',
   'roofs_fallback_flat',
@@ -252,6 +261,14 @@ export async function buildBuildings(
   // mass stands on. The highest is what the minimum height is measured from,
   // so sibling parts are stretched by the same amount and stay level.
   const grounds = new Map<string, [number, number] | null>();
+  const highestUnder = (pieces: MultiPolygon): number => {
+    let high = -Infinity;
+    for (const piece of pieces) {
+      for (const ring of piece) for (const [x, y] of densifyRing(ring, hf.step)) high = Math.max(high, hf.heightAt(x, y));
+      for (const node of hf.nodesInside(piece)) high = Math.max(high, hf.values[node]);
+    }
+    return high;
+  };
   const groundOf = (familyId: string): [number, number] | null => {
     const cached = grounds.get(familyId);
     if (cached !== undefined) return cached;
@@ -559,6 +576,7 @@ export async function buildBuildings(
 
       let top = terrain + vertical(profile.topM);
       const bottom = terrain + vertical(profile.bottomM);
+      const founded = grounded || settings.groundRaisedParts || bottom - highestUnder(mass.pieces) < MINIMUM_CLEARANCE_MM;
       const roof = resolveRoof(props, profile, isPart, parentTopM, projection.metres(widthMm));
       if (roof.implausible) implausibleRoof = true;
       // The ceiling is the lowest point of the finished top, which a draped
@@ -594,7 +612,7 @@ export async function buildBuildings(
       }
       top += lift;
       const underside = ceiling + lift - MINIMUM_BURIED_THICKNESS_MM;
-      const floor: HeightFn | number = grounded ? (x, y) => Math.min(hf.heightAt(x, y) - embed, underside) : bottom;
+      const floor: HeightFn | number = founded ? (x, y) => Math.min(hf.heightAt(x, y) - embed, underside) : bottom;
       const surfaces: RoofRegion[] = regions
         ? lift > 0
           ? regions.map((region) => raised(region, lift))
@@ -604,11 +622,11 @@ export async function buildBuildings(
       // bridges along the ridge. Normalizing splits them.
       const tidy = !!regions && (roof.kind === 'gabled' || roof.kind === 'hipped') && !isConvex(outer);
       const first = solids.length;
-      if (!emit(surfaces, mass, floor, grounded, tidy)) continue;
+      if (!emit(surfaces, mass, floor, founded, tidy)) continue;
       if (heightOnly.has(id)) {
         const minimum = minimumHeight > 0 && footprintAdmitsMinimumHeight(outer, minimumFootprint) ? minimumHeight : 0;
         const list = segments.get(id) ?? [];
-        list.push({ solids: solids.slice(first), base: terrain, lift, peak: peak - terrain, terrainTop, minimum, grounded });
+        list.push({ solids: solids.slice(first), base: terrain, lift, peak: peak - terrain, terrainTop, minimum, grounded: founded });
         segments.set(id, list);
       }
 
@@ -619,7 +637,8 @@ export async function buildBuildings(
         stat(`roofs_built_${roof.kind}`);
       }
       if (keptByAdjacency) stat('building_parts_kept_by_adjacency');
-      if (grounded) groundPieces.push(...mass.pieces);
+      if (founded && !grounded) stat('elevated_masses_grounded');
+      if (founded) groundPieces.push(...mass.pieces);
     }
 
     if (implausibleRoof) stat('roof_heights_implausible');
@@ -666,6 +685,37 @@ export async function buildBuildings(
     stat('lidar_buildings');
   }
 
+  stat('elevated_masses_settled', settleOnMassesBelow(solids));
   await ctx.progress.checkpoint(0.95);
   return { solids, measured, rock, footprint: groundPieces.length ? union(groundPieces) : [] };
+}
+
+/**
+ * An elevated mass that clears the flat top of a mass under it by less than a
+ * layer rests on it instead, like one on the ground. The tiers of a dome
+ * mapped a few centimetres apart printed with a sliver of air between them.
+ * Runs after the LiDAR height correction, which moves elevated undersides.
+ */
+function settleOnMassesBelow(solids: PrismSolid[]): number {
+  const flat = solids.filter((s) => typeof s.top === 'number');
+  const boxes = new Map(flat.map((s) => [s, ringBounds(s.polygon[0])]));
+  let settled = 0;
+  for (const solid of solids) {
+    if (typeof solid.bottom !== 'number') continue;
+    const bottom = solid.bottom;
+    const box = ringBounds(solid.polygon[0]);
+    let rest = -Infinity;
+    for (const other of flat) {
+      const top = other.top as number;
+      if (other === solid || top >= bottom || bottom - top >= MINIMUM_CLEARANCE_MM || top <= rest) continue;
+      if (!boxesOverlap(box, boxes.get(other)!)) continue;
+      if (multiArea(intersection([solid.polygon], [other.polygon])) < MINIMUM_FRAGMENT_MM2) continue;
+      rest = top;
+    }
+    if (rest > -Infinity) {
+      solid.bottom = rest;
+      settled++;
+    }
+  }
+  return settled;
 }

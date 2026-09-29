@@ -92,9 +92,10 @@ describe('buildBuildings', () => {
     const [solid] = solids;
     expect(solid.role).toBe('building');
     expect(solid.top).toBeCloseTo(20 * V, 9);
-    expect(at(solid.bottom, 0, 0)).toBeCloseTo(-0.15, 9);
+    const embed = ctx.settings.land.embedMm;
+    expect(at(solid.bottom, 0, 0)).toBeCloseTo(-embed, 9);
     const m = expectClosed(solids);
-    expect(m.volume).toBeCloseTo(1.4 * 1.4 * (20 * V + 0.15), 3);
+    expect(m.volume).toBeCloseTo(1.4 * 1.4 * (20 * V + embed), 3);
     expect(multiArea(footprint)).toBeCloseTo(1.96, 6);
     expect(ctx.stats.buildings).toBe(1);
     expect(ctx.stats.building_height_scale).toBe(1.1);
@@ -126,7 +127,7 @@ describe('buildBuildings', () => {
     for (const solid of solids) {
       expect(solid.top).toBeCloseTo(base + 30 * V, 9);
       // The underside follows the slope just below the surface.
-      expect(at(solid.bottom, 1, 0.5)).toBeCloseTo(0.05 - 0.15, 9);
+      expect(at(solid.bottom, 1, 0.5)).toBeCloseTo(0.05 - ctx.settings.land.embedMm, 9);
       expect(solid.drape).toBeGreaterThan(0);
     }
     expect(ctx.stats.suppressed_parents).toBe(1);
@@ -145,13 +146,48 @@ describe('buildBuildings', () => {
     expect(solids[0].top).toBeCloseTo((0.03 + 0.02) * -30 * 0.07 + 100 * V, 9);
   });
 
-  it('keeps an elevated part\'s underside flat and leaves it out of the ground footprint', async () => {
-    const { solids, footprint } = await build([], [feature('bridge', -10, -5, 10, 5, { building_id: 'elsewhere', min_height: 10, height: 20 })]);
+  it('brings a raised part down to the ground', async () => {
+    const { solids, footprint, ctx } = await build([], [feature('bridge', -10, -5, 10, 5, { building_id: 'elsewhere', min_height: 10, height: 20 })]);
+    expect(solids).toHaveLength(1);
+    expect(at(solids[0].bottom, 0, 0)).toBeCloseTo(-ctx.settings.land.embedMm, 9);
+    expect(solids[0].top).toBeCloseTo(20 * V, 9);
+    expect(multiArea(footprint)).toBeGreaterThan(0);
+    expect(ctx.stats.elevated_masses_grounded).toBe(1);
+    expectClosed(solids);
+  });
+
+  it('keeps a raised part\'s underside flat and out of the ground footprint when asked', async () => {
+    const { solids, footprint } = await build([], [feature('bridge', -10, -5, 10, 5, { building_id: 'elsewhere', min_height: 10, height: 20 })], {
+      patch: (s) => (s.buildings.groundRaisedParts = false),
+    });
     expect(solids).toHaveLength(1);
     expect(solids[0].bottom).toBeCloseTo(10 * V, 9);
     expect(solids[0].top).toBeCloseTo(20 * V, 9);
     expect(solids[0].drape).toBe(0);
     expect(footprint).toEqual([]);
+    expectClosed(solids);
+  });
+
+  it('stands a raised part hovering less than a layer over the ground on it either way', async () => {
+    // 2 m up is 0.15 mm printed, too thin a gap to print.
+    const { solids, footprint, ctx } = await build([], [feature('canopy', -10, -5, 10, 5, { building_id: 'elsewhere', min_height: 2, height: 6 })], {
+      patch: (s) => (s.buildings.groundRaisedParts = false),
+    });
+    expect(solids).toHaveLength(1);
+    expect(at(solids[0].bottom, 0, 0)).toBeCloseTo(-ctx.settings.land.embedMm, 9);
+    expect(multiArea(footprint)).toBeGreaterThan(0);
+    expect(ctx.stats.elevated_masses_grounded).toBe(1);
+    expectClosed(solids);
+  });
+
+  it('rests a part hovering less than a layer over the part under it on it', async () => {
+    // A drum mapped to start 1 m above the top of the base it stands on.
+    const base = feature('base', -10, -10, 10, 10, { building_id: 'church', height: 20 });
+    const drum = feature('drum', -5, -5, 5, 5, { building_id: 'church', min_height: 21, height: 30 });
+    const { solids, ctx } = await build([], [base, drum], { patch: (s) => (s.buildings.groundRaisedParts = false) });
+    const upper = solids.find((s) => typeof s.bottom === 'number')!;
+    expect(upper.bottom).toBeCloseTo(20 * V, 9);
+    expect(ctx.stats.elevated_masses_settled).toBe(1);
     expectClosed(solids);
   });
 
@@ -256,7 +292,7 @@ describe('buildBuildings', () => {
     const parent = feature('tower', -15, -15, 15, 15, { has_parts: true, height: 202.7 });
     const shaft = feature('shaft', -15, -15, 15, 15, { building_id: 'tower', height: 140 });
     const crown = feature('crown', -10, -10, 10, 10, { building_id: 'tower', min_height: 140, height: 162.7, roof_shape: 'dome', roof_height: 40 });
-    const { solids, ctx } = await build([parent], [shaft, crown]);
+    const { solids, ctx } = await build([parent], [shaft, crown], { patch: (s) => (s.buildings.groundRaisedParts = false) });
     expect(ctx.stats.buildings).toBe(0);
     expect(ctx.stats.building_parts).toBe(2);
     expect(solids[0].top).toBeCloseTo(140 * V, 9);

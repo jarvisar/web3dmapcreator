@@ -28,7 +28,7 @@ import {
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { Palette, Printer } from '../../core/settings';
-import { ROLE_GROUP } from '../../core/types';
+import { OVERLAP_RANK, ROLE_GROUP } from '../../core/types';
 import type { ColourGroup, MeshPart } from '../../core/types';
 
 type Bounds = [number, number, number, number, number, number];
@@ -73,6 +73,32 @@ interface Tween {
   duration: number;
 }
 
+/**
+ * A part's triangles with its walls last, and how many come before them.
+ * Where two parts are cut by the same line (the model edge, a shore) and one
+ * reaches into the other, their walls lie in one plane and z-fight. Only the
+ * walls get a depth offset: offsetting a whole part would let a water surface
+ * show through the bank in front of it.
+ */
+function wallsLast(positions: Float32Array, indices: Uint32Array): { indices: Uint32Array; caps: number } {
+  const caps: number[] = [];
+  const walls: number[] = [];
+  for (let t = 0; t < indices.length; t += 3) {
+    const a = indices[t] * 3;
+    const b = indices[t + 1] * 3;
+    const c = indices[t + 2] * 3;
+    // Prism walls share x and y top and bottom, so their normal has no z at all.
+    const nz =
+      (positions[b] - positions[a]) * (positions[c + 1] - positions[a + 1]) -
+      (positions[b + 1] - positions[a + 1]) * (positions[c] - positions[a]);
+    (Math.abs(nz) < 1e-9 ? walls : caps).push(indices[t], indices[t + 1], indices[t + 2]);
+  }
+  const sorted = new Uint32Array(indices.length);
+  sorted.set(caps);
+  sorted.set(walls, caps.length);
+  return { indices: sorted, caps: caps.length };
+}
+
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 
 function spherical(offset: Vector3) {
@@ -89,7 +115,7 @@ export class ViewerEngine {
   private readonly bed = new Group();
   private readonly hemi: HemisphereLight;
   private readonly sun: DirectionalLight;
-  private readonly materials = new Map<ColourGroup, MeshStandardMaterial>();
+  private readonly materials = new Map<string, MeshStandardMaterial>();
   private readonly meshes = new Map<string, Mesh>();
   private readonly resizeObserver: ResizeObserver;
   private palette: Palette | null = null;
@@ -161,11 +187,22 @@ export class ViewerEngine {
       if (!part.positions.length || !part.indices.length) continue;
       const geometry = new BufferGeometry();
       geometry.setAttribute('position', new BufferAttribute(part.positions, 3));
-      geometry.setIndex(new BufferAttribute(part.indices, 1));
+      const group = ROLE_GROUP[part.role];
+      const rank = OVERLAP_RANK[part.role] ?? 0;
+      let material: MeshStandardMaterial | MeshStandardMaterial[] = this.material(group);
+      if (rank) {
+        const { indices, caps } = wallsLast(part.positions, part.indices);
+        geometry.setIndex(new BufferAttribute(indices, 1));
+        geometry.addGroup(0, caps, 0);
+        geometry.addGroup(caps, indices.length - caps, 1);
+        material = [material, this.material(group, rank)];
+      } else {
+        geometry.setIndex(new BufferAttribute(part.indices, 1));
+      }
       geometry.computeBoundingSphere();
       // flatShading takes face normals from screen-space derivatives, so no
       // normal attribute is needed: less memory and sharp edges on every box.
-      const mesh = new Mesh(geometry, this.material(ROLE_GROUP[part.role]));
+      const mesh = new Mesh(geometry, material);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.visible = !this.hidden.has(part.id);
@@ -190,7 +227,7 @@ export class ViewerEngine {
 
   setPalette(palette: Palette): void {
     this.palette = palette;
-    for (const [group, material] of this.materials) material.color.set(palette[group].hex);
+    for (const material of this.materials.values()) material.color.set(palette[material.userData.group as ColourGroup].hex);
     this.requestRender();
   }
 
@@ -309,16 +346,22 @@ export class ViewerEngine {
     if (again) this.requestRender();
   };
 
-  private material(group: ColourGroup): MeshStandardMaterial {
-    let material = this.materials.get(group);
+  /** A colour's material, and with a rank its walls, pulled towards the camera to win ties (OVERLAP_RANK). */
+  private material(group: ColourGroup, rank = 0): MeshStandardMaterial {
+    const key = `${group} ${rank}`;
+    let material = this.materials.get(key);
     if (!material) {
       material = new MeshStandardMaterial({
         color: new Color(this.palette?.[group].hex ?? '#cccccc'),
         roughness: 0.8,
         metalness: 0,
         flatShading: true,
+        polygonOffset: rank > 0,
+        polygonOffsetFactor: -rank,
+        polygonOffsetUnits: -rank,
       });
-      this.materials.set(group, material);
+      material.userData.group = group;
+      this.materials.set(key, material);
     }
     return material;
   }

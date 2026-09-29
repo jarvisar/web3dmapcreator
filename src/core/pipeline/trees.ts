@@ -3,7 +3,7 @@
 // selection always grows the same trees.
 
 import { EdgeIndex } from '../geometry/edgeindex';
-import { boxesOverlap, clipToBox, intersection, ringBounds, type Box } from '../geometry/polygon';
+import { boxesOverlap, clipToBox, densifyRing, intersection, ringBounds, type Box } from '../geometry/polygon';
 import type { MeshSolid } from '../geometry/solid';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
 import { classifySurface, isTreePoint } from './classify';
@@ -208,6 +208,13 @@ export async function buildTrees(data: SourceData, ctx: Context, options: TreeOp
       positions[i + 1] = y + (vx * sin + vy * cos) * factor;
       positions[i + 2] = base + shape.positions[i + 2] * factor;
     }
+    // The base is flat, so on a slope its downhill side would lift off the
+    // ground. It goes down to the lowest ground under it instead.
+    const ring: Vec2[] = [];
+    for (let i = 0; i < SIDES; i++) ring.push([positions[i * 3], positions[i * 3 + 1]]);
+    let low = hf.minOver(densifyRing(ring, hf.step / 2));
+    for (const node of hf.nodesInside([ring])) low = Math.min(low, hf.values[node]);
+    for (let i = 0; i < SIDES; i++) positions[i * 3 + 2] = Math.min(positions[i * 3 + 2], low - embed);
     return { kind: 'mesh', role: 'tree', positions, indices: shape.indices, anchor: [x, y] as Vec2 };
   });
   count(ctx, 'trees', solids.length);

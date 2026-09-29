@@ -8,18 +8,20 @@
 // on the bed.
 
 import type { Printer } from '../settings';
+import type { MeshPart } from '../types';
 import {
   CONFIG_CONTENT_TYPE,
   CORE_NAMESPACE,
   DESCRIPTION,
   FILAMENT_IDS,
-  FilamentTable,
   MIME_3MF,
   MODEL_PATH,
   ModelStream,
   XML_HEADER,
   contentTypes,
+  modelFilaments,
   modelRelationship,
+  writeOrder,
   type PreparedModel,
 } from './common';
 import { escapeText, fixed6, formatG, quoteattr } from './format';
@@ -42,6 +44,7 @@ interface PlacedPart {
   id: number;
   name: string;
   extruder: number;
+  mesh: MeshPart;
 }
 
 export function writeBambuProject(model: PreparedModel, printer: Printer): Blob {
@@ -51,11 +54,11 @@ export function writeBambuProject(model: PreparedModel, printer: Printer): Blob 
   const bottom = model.extents.minZ;
 
   // Parts are written before the assembly that references them, as 3MF requires.
-  const filaments = new FilamentTable();
+  const filaments = modelFilaments(model);
   let nextId = 1;
   const layout = model.plates.map((plate) => {
-    const parts: PlacedPart[] = plate.parts.map((p) => ({ id: nextId++, name: p.name, extruder: filaments.slot(p.colour) }));
-    return { plate, parts, assembly: nextId++ };
+    const parts: PlacedPart[] = writeOrder(plate.parts).map((p) => ({ id: nextId++, name: p.name, extruder: filaments.slot(p.colour), mesh: p.part }));
+    return { plate, parts, assembly: nextId++, extruder: filaments.slot(plate.parts[0].colour) };
   });
 
   const zip = new ZipWriter();
@@ -70,7 +73,7 @@ export function writeBambuProject(model: PreparedModel, printer: Printer): Blob 
       ' <resources>\n',
   );
   for (const { plate, parts, assembly } of layout) {
-    plate.parts.forEach((prepared, i) => out.meshObject(parts[i].id, parts[i].name, [prepared.part]));
+    for (const part of parts) out.meshObject(part.id, part.name, [part.mesh]);
     out.assembly(assembly, plate.name, parts.map((part) => part.id));
   }
   out.text(' </resources>\n <build>\n');
@@ -90,10 +93,10 @@ export function writeBambuProject(model: PreparedModel, printer: Printer): Blob 
   // Bambu's _generate_volumes_new matches part ids to component object ids
   // and shows these names in the Objects tree.
   const config = [XML_HEADER, '<config>\n'];
-  for (const { plate, parts, assembly } of layout) {
+  for (const { plate, parts, assembly, extruder } of layout) {
     config.push(
       ` <object id="${assembly}">\n  <metadata key="name" value=${quoteattr(plate.name)}/>\n` +
-        `  <metadata key="extruder" value="${parts[0].extruder}"/>\n`,
+        `  <metadata key="extruder" value="${extruder}"/>\n`,
     );
     for (const part of parts) {
       config.push(

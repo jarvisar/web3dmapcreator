@@ -2,7 +2,7 @@
 // numbering, part names, package files and streamed mesh objects.
 
 import { COLOUR_GROUPS, type FilamentLine, type Palette, type PaletteEntry } from '../settings';
-import { ROLE_GROUP, type ColourGroup, type MeshPart, type Plate } from '../types';
+import { OVERLAP_RANK, ROLE_GROUP, type ColourGroup, type MeshPart, type Plate } from '../types';
 import { AsciiBuffer, asciiBytes, quoteattr } from './format';
 import type { ZipEntry } from './zip';
 
@@ -137,6 +137,19 @@ export class FilamentTable {
     }
     return slot;
   }
+}
+
+/** Filaments numbered in the model's part order, so the terrain stays filament 1 however the parts are listed. */
+export function modelFilaments(model: PreparedModel): FilamentTable {
+  const table = new FilamentTable();
+  for (const plate of model.plates) for (const p of plate.parts) table.slot(p.colour);
+  return table;
+}
+
+/** A plate's parts in the order a 3MF lists them, which decides who wins an overlap in the slicer (OVERLAP_RANK). */
+export function writeOrder(parts: PreparedPart[]): PreparedPart[] {
+  const rank = (p: PreparedPart) => OVERLAP_RANK[p.part.role] ?? 0;
+  return [...parts].sort((a, b) => rank(a) - rank(b));
 }
 
 /** Repeated names are numbered in order: "Roads 1", "Roads 2". Unique names stay as they are. */

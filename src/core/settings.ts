@@ -110,6 +110,8 @@ export interface ModelSettings {
     floorHeightM: number;
     roofShapes: boolean;
     restoreMainBodies: boolean;
+    /** Build parts mapped to start above the ground down to the terrain, so nothing hangs in the air. */
+    groundRaisedParts: boolean;
     /** Drop masses narrower than this. 0 keeps everything. */
     minWidthMm: number;
     /** Drop masses taller than this multiple of their width. 0 disables. */
@@ -181,7 +183,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
   land: {
     enabled: true,
     riseMm: 0.4,
-    embedMm: 0.15,
+    embedMm: 0.04,
     priority: ['paved', 'sand', 'rock', 'green', 'forest'],
     taperBeaches: true,
     beachWidthMm: 1.5,
@@ -220,6 +222,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     floorHeightM: 3,
     roofShapes: true,
     restoreMainBodies: true,
+    groundRaisedParts: true,
     minWidthMm: 0,
     maxSlenderness: 0,
     slendernessExemptMm: 0.45,

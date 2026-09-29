@@ -11,13 +11,14 @@ import {
   APP_NAME,
   CORE_NAMESPACE,
   DESCRIPTION,
-  FilamentTable,
   MIME_3MF,
   MODEL_PATH,
   ModelStream,
   XML_HEADER,
   contentTypes,
+  modelFilaments,
   modelRelationship,
+  writeOrder,
   type PreparedModel,
 } from './common';
 import { escapeText, fixed6, quoteattr } from './format';
@@ -26,10 +27,10 @@ import { ZipWriter } from './zip';
 
 export function writeGeneric3mf(model: PreparedModel, printer: Printer, title = 'City Model'): Blob {
   const bottom = model.extents.minZ;
-  const materials = new FilamentTable();
+  const materials = modelFilaments(model);
   let nextId = 2;
   const layout = model.plates.map((plate) => {
-    const parts = plate.parts.map((p) => ({ id: nextId++, name: p.name, index: materials.slot(p.colour) - 1 }));
+    const parts = writeOrder(plate.parts).map((p) => ({ id: nextId++, name: p.name, index: materials.slot(p.colour) - 1, mesh: p.part }));
     return { plate, parts, assembly: nextId++ };
   });
   const placement = sideBySide(
@@ -55,10 +56,7 @@ export function writeGeneric3mf(model: PreparedModel, printer: Printer, title = 
   }
   out.text('  </basematerials>\n');
   for (const { plate, parts, assembly } of layout) {
-    plate.parts.forEach((prepared, i) => {
-      const part = parts[i];
-      out.meshObject(part.id, part.name, [prepared.part], ` pid="1" pindex="${part.index}"`);
-    });
+    for (const part of parts) out.meshObject(part.id, part.name, [part.mesh], ` pid="1" pindex="${part.index}"`);
     out.assembly(assembly, plate.name, parts.map((part) => part.id));
   }
   out.text(' </resources>\n <build>\n');

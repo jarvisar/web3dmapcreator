@@ -33,8 +33,8 @@ describe('writePrusaProject', () => {
     expect(vertices).toHaveLength(8 + 8 + 16 + 8);
     expect(triangles).toHaveLength(12 + 12 + 24 + 12);
     // Each part's indices point at its own vertices.
-    const roadsFirst = triangles[12].attrs;
-    expect([roadsFirst.v1, roadsFirst.v2, roadsFirst.v3]).toEqual(['8', '10', '9']);
+    const secondFirst = triangles[12].attrs;
+    expect([secondFirst.v1, secondFirst.v2, secondFirst.v3]).toEqual(['8', '10', '9']);
     expect(triangles.at(-1)!.attrs.v3).toBe(String(8 + 8 + 16 + 7));
 
     const meta = Object.fromEntries(findAll(model, 'metadata').map((m) => [m.attrs.name, m.text]));
@@ -51,12 +51,13 @@ describe('writePrusaProject', () => {
     const volumes = findAll(object, 'volume').map((v) => [
       v.attrs.firstid, v.attrs.lastid, volumeMeta(v, 'name'), volumeMeta(v, 'volume_type'), volumeMeta(v, 'extruder'),
     ]);
-    // Roads and paving share one colour here, so one extruder.
+    // Roads and paving share one colour here, so one extruder. The terrain
+    // comes last so it wins the overlap, and keeps extruder 1.
     expect(volumes).toEqual([
-      ['0', '11', 'Terrain', 'ModelPart', '1'],
-      ['12', '23', 'Roads', 'ModelPart', '2'],
-      ['24', '47', 'Buildings', 'ModelPart', '3'],
-      ['48', '59', 'Paved', 'ModelPart', '2'],
+      ['0', '11', 'Roads', 'ModelPart', '2'],
+      ['12', '35', 'Buildings', 'ModelPart', '3'],
+      ['36', '47', 'Paved', 'ModelPart', '2'],
+      ['48', '59', 'Terrain', 'ModelPart', '1'],
     ]);
     expect(findAll(object, 'volume').every((v) => v.children.every((m) => m.attrs.type === 'volume'))).toBe(true);
     // No print config: it would replace the user's presets.

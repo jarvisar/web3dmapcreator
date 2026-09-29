@@ -32,12 +32,13 @@ describe('writeGeneric3mf', () => {
     ]);
     expect(findAll(model, 'basematerials').map((m) => m.attrs.id)).toEqual(['1']);
     const objects = findAll(model, 'object');
+    // The terrain is listed last so it wins the overlap, and keeps the first material.
     expect(objects.map((o) => [o.attrs.id, o.attrs.name, o.attrs.pid, o.attrs.pindex])).toEqual([
-      ['2', 'Terrain', '1', '0'], ['3', 'Roads', '1', '1'], ['4', 'Paved', '1', '1'], ['5', 'Buildings', '1', '2'],
+      ['2', 'Roads', '1', '1'], ['3', 'Paved', '1', '1'], ['4', 'Buildings', '1', '2'], ['5', 'Terrain', '1', '0'],
       ['6', 'Map', undefined, undefined],
     ]);
     expect(findAll(objects[4], 'component').map((c) => c.attrs.objectid)).toEqual(['2', '3', '4', '5']);
-    expect(findAll(objects[3], 'triangle')).toHaveLength(24);
+    expect(findAll(objects[2], 'triangle')).toHaveLength(24);
     const meta = Object.fromEntries(findAll(model, 'metadata').map((m) => [m.attrs.name, m.text]));
     expect(meta).toEqual({
       Title: 'Chicago Loop',

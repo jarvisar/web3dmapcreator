@@ -69,6 +69,16 @@ export const ROLE_GROUP: Record<MaterialRole, ColourGroup> = {
   rim: 'rim',
 };
 
+/**
+ * Which part prints where two overlap, higher first. PrusaSlicer, Bambu
+ * Studio and OrcaSlicer give an overlap to the part listed later, so 3MF
+ * exports list parts in this order, and the viewer settles coplanar walls the
+ * same way. Land, roads, buildings and trees reach a little into the terrain,
+ * and the terrain should show there. Water sheets are sunk into the terrain
+ * and have to win, or they print as a sliver.
+ */
+export const OVERLAP_RANK: Partial<Record<MaterialRole, number>> = { terrain: 1, water: 2 };
+
 /** One printable part: a triangle soup of closed shells, all one material. */
 export interface MeshPart {
   /** Stable key, unique within a model, e.g. "terrain" or "roads". */
