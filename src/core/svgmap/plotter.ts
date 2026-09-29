@@ -10,11 +10,15 @@ export interface HatchSettings {
   cross: boolean;
 }
 
+const MIN_HATCH_SPACING = 0.02;
+
 // Scanline hatching of non-overlapping rings. Lines sit on one grid so hatching
 // in neighbouring areas lines up, and every other line is reversed so the pen
 // zig-zags instead of flying back.
 export function hatch(paths: Paths64, spacing: number, angleDeg: number): Path[] {
-  if (paths.length === 0 || spacing <= 0) return [];
+  if (paths.length === 0 || !(spacing > 0)) return [];
+  // Finer than any pen, and a line per micron over a whole map never finishes.
+  spacing = Math.max(spacing, MIN_HATCH_SPACING);
   const a = (angleDeg * Math.PI) / 180;
   const cos = Math.cos(a);
   const sin = Math.sin(a);

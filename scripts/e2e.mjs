@@ -6,7 +6,8 @@
 // With --lidar-only, give a small area in the URL's share-link hash
 // (#a=lon,lat,width,height,rotation,shape): a fresh browser downloads its
 // LiDAR in full. With --svg it makes an SVG map of the default area instead,
-// and --all-formats downloads it for the plotter and print as well.
+// and --all-formats downloads it for the plotter and print as well. Exits
+// with 1 when a step fails, a download is empty or the page logs an error.
 import { chromium } from 'playwright-core';
 import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -28,19 +29,37 @@ const errors = [];
 page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 page.on('pageerror', (e) => errors.push(String(e)));
 
+const failures = [];
+const fail = (message) => {
+  failures.push(message);
+  console.log(`FAILED: ${message}`);
+};
+
+// Saved under the label too: several formats are .3mf with the same name.
 async function download(label, name = /^download/i) {
   const [file] = await Promise.all([
     page.waitForEvent('download', { timeout: 300000 }),
     page.getByRole('button', { name }).first().click(),
   ]);
-  const target = join(folder, file.suggestedFilename());
+  const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const target = join(folder, `${slug}-${file.suggestedFilename()}`);
   await file.saveAs(target);
-  console.log(`${label}: ${file.suggestedFilename()} (${(statSync(target).size / 1e6).toFixed(1)} MB)`);
+  const size = statSync(target).size;
+  console.log(`${label}: ${file.suggestedFilename()} (${(size / 1e6).toFixed(1)} MB)`);
+  if (size === 0) fail(`${label} downloaded an empty file`);
 }
 
-function finish() {
+// An error the app shows, which a finished progress bar says nothing about.
+async function checkNoAlert(step) {
+  const alert = page.locator('.alert[role="alert"]');
+  if (await alert.count()) fail(`${step}: ${(await alert.first().innerText()).replace(/\s+/g, ' ')}`);
+}
+
+async function finish() {
   console.log(errors.length ? `console errors:\n${errors.join('\n')}` : 'no console errors');
-  return browser.close();
+  if (errors.length) failures.push('console errors');
+  await browser.close();
+  process.exit(failures.length ? 1 : 0);
 }
 
 const started = Date.now();
@@ -56,6 +75,7 @@ if (svg) {
   // The preview opens when the SVG is done.
   await page.waitForSelector('.svg-preview', { timeout: 300000 });
   await page.waitForTimeout(2000);
+  await checkNoAlert('SVG');
   console.log(`generated in ${((Date.now() - started) / 1000).toFixed(1)} s`);
   await page.screenshot({ path: join(folder, '2-svg-preview.png') });
   await page.getByRole('button', { name: 'SVG details' }).click();
@@ -69,11 +89,11 @@ if (svg) {
       await page.waitForTimeout(1000);
       await page.waitForFunction(() => !document.querySelector('.svg-preview .spinner'), null, { timeout: 300000, polling: 500 });
       await page.screenshot({ path: join(folder, `4-svg-${mode.toLowerCase()}.png`) });
+      await checkNoAlert(mode);
       await download(mode.toLowerCase(), /download \.svg/i);
     }
   }
   await finish();
-  process.exit(0);
 }
 
 if (lidarOnly) {
@@ -91,6 +111,11 @@ await page.waitForFunction(() => !document.querySelector('[role="progressbar"]')
 await page.waitForTimeout(3000);
 console.log(`generated in ${((Date.now() - started) / 1000).toFixed(1)} s`);
 await page.screenshot({ path: join(folder, '2-model.png') });
+await checkNoAlert('Generate');
+if (!(await page.getByRole('button', { name: 'Model details' }).isVisible())) {
+  fail('no model after generating');
+  await finish();
+}
 
 await page.getByRole('button', { name: 'Model details' }).click();
 await page.waitForTimeout(500);

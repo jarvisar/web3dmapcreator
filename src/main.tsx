@@ -14,14 +14,14 @@ import { InstallPrompt } from './app/components/InstallPrompt';
 import { UpdateNotice } from './app/components/UpdateNotice';
 import { startSync } from './app/state/sync';
 import { loadStoredFont } from './app/svgmap/customFont';
-import { setCustomFontName, setLabel, useApp } from './app/state/store';
-import { CUSTOM_FONT_ID } from './core/svgmap/text/fonts';
+import { setCustomFont, setLabel, useApp } from './app/state/store';
+import { CUSTOM_FONT_ID, fontFingerprint } from './core/svgmap/text/fonts';
 import { DEFAULT_LABEL } from './core/svgmap/text/label';
 
 startSync();
 
 void loadStoredFont().then((font) => {
-  setCustomFontName(font?.name ?? null);
+  setCustomFont(font?.name ?? null, font ? fontFingerprint(font.data) : null);
   if (font) return;
   // No stored font (cleared storage or someone else's share link), so fall back.
   const label = useApp.getState().svg.label;

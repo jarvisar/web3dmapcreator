@@ -28,6 +28,7 @@ import {
   union,
   type Box,
 } from '../geometry/polygon';
+import { inOneTriangle } from '../geometry/lattice';
 import type { HeightFn, PrismSolid, Solid } from '../geometry/solid';
 import type { PublishedRecord } from '../lidar/publish';
 import type { MultiPolygon, Polygon } from '../types';
@@ -200,7 +201,8 @@ export async function buildBuildings(
   const minimumWidth = settings.minWidthMm;
   const maximumSlenderness = settings.maxSlenderness;
   const { floorHeightM, defaultHeightM } = settings;
-  const lattice = { x0: hf.minX, y0: hf.minY, step: hf.step };
+  const lattice = hf.lattice;
+  const flat = hf.flat;
   const stat = (key: string, by = 1) => count(ctx, key, by);
 
   const buildingFeatures = usable(buildings);
@@ -463,9 +465,10 @@ export async function buildBuildings(
       for (const shape of shapes) {
         const polygon = healthy(shape);
         if (!polygon) continue;
-        const [x0, y0, x1, y1] = ringBounds(polygon[0]);
-        // A piece within one terrain cell drapes well enough from its outline.
-        if (grounded && Math.max(x1 - x0, y1 - y0) > hf.step) {
+        // A piece inside one terrain triangle stands on a plane, so its outline
+        // is enough. One smaller than a cell can still cross a triangle's edge,
+        // where the ground bends: 0.18 mm of air under a small house.
+        if (grounded && !flat && !inOneTriangle(lattice, polygon)) {
           solids.push({ kind: 'prism', role: 'building', polygon, top: surface.top, bottom, drape: hf.step, lattice });
         } else {
           solids.push({ kind: 'prism', role: 'building', polygon, top: surface.top, bottom, drape: 0 });

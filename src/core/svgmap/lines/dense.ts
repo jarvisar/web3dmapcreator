@@ -66,6 +66,8 @@ function alongside(point: Point, a: Point, b: Point, thresholdSq: number): boole
 // protectRank keeps streets safe: a street with a cycle track along it looks
 // doubled end to end. Ground already under a fill gets a lower limit instead of
 // counting as dense outright, so a footway crossing a building still stays.
+const MIN_WINDOW = 0.1;
+
 export function relieveDenseClusters<K>(
   items: readonly LineItem<K>[],
   densityLimit: number,
@@ -88,7 +90,8 @@ export function relieveDenseClusters<K>(
   const coveredLimitScale = options.coveredLimitScale ?? 1;
   const targetFn = options.targetFn;
 
-  const cell = window / 3;
+  // Every line is sampled every half cell, so a tiny window never finishes.
+  const cell = Math.max(window, MIN_WINDOW) / 3;
   const step = cell * 0.5;
   const load = new Map<number, number>();
   // Packed keys can't be unpacked, so keep each cell's coordinates.

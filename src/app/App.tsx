@@ -21,14 +21,19 @@ export function App() {
   const needsViewer = useApp((state) => state.generation.result !== null || state.generation.status === 'running');
   const drawer = narrow && drawerOpen;
 
-  // The drawer closes itself after a search or preset. Focus was inside it,
-  // and it is inert now, so hand focus to the button that opens it.
+  // The open drawer covers the map, which goes inert under it, so focus
+  // moves into the drawer. The drawer closes itself after a search or
+  // preset. Focus was inside it, and it is inert now, so hand focus to the
+  // button that opens it.
   const wasOpen = useRef(drawer);
   useEffect(() => {
+    const opened = !wasOpen.current && drawer;
     const closed = wasOpen.current && !drawer;
     wasOpen.current = drawer;
+    const sidebar = document.getElementById('sidebar');
     const active = document.activeElement;
-    if (closed && (active === document.body || document.getElementById('sidebar')?.contains(active))) {
+    if (opened && !sidebar?.contains(active)) sidebar?.focus();
+    if (closed && (active === document.body || sidebar?.contains(active))) {
       document.querySelector<HTMLElement>('.drawer-toggle')?.focus();
     }
   }, [drawer]);
@@ -49,11 +54,11 @@ export function App() {
     <LucideProvider size={14} strokeWidth={2}>
       <div className={`app${narrow ? ' is-narrow' : ''}${drawer ? ' drawer-open' : ''}`}>
         <TopBar narrow={narrow} />
-        <aside id="sidebar" className="sidebar" aria-label="Settings" inert={narrow && !drawerOpen}>
+        <aside id="sidebar" className="sidebar" aria-label="Settings" tabIndex={-1} inert={narrow && !drawerOpen}>
           <Sidebar />
         </aside>
         {narrow && <div className="scrim" aria-hidden="true" onClick={() => setDrawerOpen(false)} />}
-        <main className="main" aria-label={view === 'map' ? 'Map' : output === 'model' ? '3D model' : 'SVG preview'}>
+        <main className="main" aria-label={view === 'map' ? 'Map' : output === 'model' ? '3D model' : 'SVG preview'} inert={drawer}>
           <MapView active={view === 'map'} />
           {needsViewer && (
             <Suspense fallback={null}>

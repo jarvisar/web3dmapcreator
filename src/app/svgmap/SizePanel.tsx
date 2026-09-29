@@ -1,3 +1,4 @@
+import { fieldRange } from '../../core/svgmap/limits';
 import { CircleAlert } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { BorderStyle } from '../../core/svgmap/layout/layout';
@@ -56,14 +57,13 @@ export function SizePanel() {
       </SelectField>
 
       {shape === 'circle' ? (
-        <NumberField label="Diameter" value={size.width} onChange={(width) => setPieceSize({ width, height: width })} min={20} max={2000} step={1} decimals={1} unit="mm" />
+        <NumberField label="Diameter" value={size.width} onChange={(width) => setPieceSize({ width, height: width })} {...fieldRange('product.width')} step={1} decimals={1} unit="mm" />
       ) : shape === 'hexagon' ? (
         <NumberField
           label="Width"
           value={size.width}
           onChange={(width) => setPieceSize({ width })}
-          min={20}
-          max={2000}
+          {...fieldRange('product.width')}
           step={1}
           decimals={1}
           unit="mm"
@@ -72,16 +72,21 @@ export function SizePanel() {
       ) : (
         <>
           <div className="size-grid">
-            <StackedNumber label="Width" value={size.width} onChange={(width) => setPieceSize({ width })} min={20} max={2000} step={1} decimals={1} unit="mm" />
-            <StackedNumber label="Height" value={size.height} onChange={(height) => setPieceSize({ height })} min={20} max={2000} step={1} decimals={1} unit="mm" />
+            <StackedNumber label="Width" value={size.width} onChange={(width) => setPieceSize({ width })} {...fieldRange('product.width')} step={1} decimals={1} unit="mm" />
+            <StackedNumber label="Height" value={size.height} onChange={(height) => setPieceSize({ height })} {...fieldRange('product.height')} step={1} decimals={1} unit="mm" />
           </div>
           <Segmented
             label="Orientation"
             size="sm"
             value={landscape ? 'landscape' : 'portrait'}
             onChange={(orientation) => {
-              if ((orientation === 'landscape') === landscape) return;
-              setPieceSize({ width: size.height, height: size.width, margins: { top: m.left, right: m.top, bottom: m.right, left: m.bottom } });
+              if ((orientation === 'landscape') === landscape || size.width === size.height) return;
+              // The margins turn with the sheet: a quarter turn clockwise to
+              // portrait and back the other way, so switching twice changes nothing.
+              const margins = landscape
+                ? { top: m.left, right: m.top, bottom: m.right, left: m.bottom }
+                : { top: m.right, right: m.bottom, bottom: m.left, left: m.top };
+              setPieceSize({ width: size.height, height: size.width, margins });
             }}
             options={[
               { value: 'landscape', label: 'Landscape' },
@@ -92,7 +97,7 @@ export function SizePanel() {
       )}
 
       {shape === 'rounded' && (
-        <NumberField label="Corner radius" value={size.cornerRadius} onChange={(cornerRadius) => setPieceSize({ cornerRadius })} min={0} max={200} step={0.5} decimals={2} unit="mm" />
+        <NumberField label="Corner radius" value={size.cornerRadius} onChange={(cornerRadius) => setPieceSize({ cornerRadius })} {...fieldRange('product.cornerRadius')} step={0.5} decimals={2} unit="mm" />
       )}
 
       {!perSide || even ? (
@@ -100,8 +105,7 @@ export function SizePanel() {
           label="Margin"
           value={m.top}
           onChange={(v) => setPieceSize({ margins: { top: v, right: v, bottom: v, left: v } })}
-          min={0}
-          max={200}
+          {...fieldRange('product.margins.*')}
           step={0.05}
           decimals={2}
           unit="mm"
@@ -115,8 +119,7 @@ export function SizePanel() {
               label={`${side[0].toUpperCase()}${side.slice(1)} margin`}
               value={m[side]}
               onChange={(v) => setPieceSize({ margins: { ...m, [side]: v } })}
-              min={0}
-              max={200}
+              {...fieldRange('product.margins.*')}
               step={0.05}
               decimals={2}
               unit="mm"
@@ -151,15 +154,15 @@ export function SizePanel() {
       </div>
       {border.style !== 'none' && (
         <Disclosure label="Border measurements">
-          <NumberField label="Outer gap" value={border.outerGap} onChange={(outerGap) => setBorder({ outerGap })} min={0} max={50} step={0.05} decimals={2} unit="mm" help="From the edge of the artwork to the border." />
+          <NumberField label="Outer gap" value={border.outerGap} onChange={(outerGap) => setBorder({ outerGap })} {...fieldRange('border.outerGap')} step={0.05} decimals={2} unit="mm" help="From the edge of the artwork to the border." />
           {border.style === 'double' && (
             <>
-              <NumberField label="Thick band" value={border.thick} onChange={(thick) => setBorder({ thick })} min={0.05} max={20} step={0.05} decimals={2} unit="mm" />
-              <NumberField label="Band to line" value={border.gap} onChange={(gap) => setBorder({ gap })} min={0} max={50} step={0.05} decimals={2} unit="mm" />
+              <NumberField label="Thick band" value={border.thick} onChange={(thick) => setBorder({ thick })} {...fieldRange('border.thick')} step={0.05} decimals={2} unit="mm" />
+              <NumberField label="Band to line" value={border.gap} onChange={(gap) => setBorder({ gap })} {...fieldRange('border.gap')} step={0.05} decimals={2} unit="mm" />
             </>
           )}
-          <NumberField label="Thin line" value={border.thin} onChange={(thin) => setBorder({ thin })} min={0.01} max={5} step={0.05} decimals={2} unit="mm" />
-          <NumberField label="Line to map" value={border.innerGap} onChange={(innerGap) => setBorder({ innerGap })} min={0} max={50} step={0.05} decimals={2} unit="mm" />
+          <NumberField label="Thin line" value={border.thin} onChange={(thin) => setBorder({ thin })} {...fieldRange('border.thin')} step={0.05} decimals={2} unit="mm" />
+          <NumberField label="Line to map" value={border.innerGap} onChange={(innerGap) => setBorder({ innerGap })} {...fieldRange('border.innerGap')} step={0.05} decimals={2} unit="mm" />
         </Disclosure>
       )}
 

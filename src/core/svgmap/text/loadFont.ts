@@ -1,7 +1,7 @@
 // The only module that imports opentype.js at runtime, so the main thread can
 // load it on demand.
 import { parse } from 'opentype.js';
-import { CUSTOM_FONT_ID, fontInfo } from './fonts';
+import { CUSTOM_FONT_ID, fontFingerprint, fontInfo } from './fonts';
 import { type HersheyFile, parseHershey } from './hershey';
 import type { LoadedFont } from './outline';
 
@@ -25,7 +25,7 @@ export class FontLoader {
   load(id: string, custom: CustomFont | null | undefined): Promise<LoadedFont> {
     if (id === CUSTOM_FONT_ID) {
       if (!custom) return Promise.reject(new Error('Load a font file to use a custom font.'));
-      return this.cached(`custom:${custom.name}:${custom.data.byteLength}`, async () => parseOutlineFont(custom.data.slice(0)));
+      return this.cached(`custom:${fontFingerprint(custom.data)}`, async () => parseOutlineFont(custom.data.slice(0)));
     }
     const info = fontInfo(id) ?? fontInfo('montserrat')!;
     return this.cached(info.id, async () => {

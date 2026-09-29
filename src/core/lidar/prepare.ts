@@ -21,7 +21,7 @@ import { rockDomains, shortHash } from './rock';
 import { chooseMeasurement, projectYear, type Observation } from './selection';
 import { area, bounds, boxShape, buffer, centroid, intersects, keepStart } from './shapes';
 import { discover, type Candidate, type Failure } from './sources';
-import type { SourcePart } from './source';
+import { measuredProps, type SourcePart } from './source';
 
 export interface PrepareSettings {
   roofMode: 'envelope' | 'heights';
@@ -233,21 +233,6 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
     return true;
   });
 
-  // Every footprint stays a neighbour: a skipped house still keeps its roof
-  // returns out of an adjacent building's ground fit.
-  const boxes = new Map([...geometries].map(([id, g]) => [id, bounds(g)]));
-  const neighboursById = new Map<string, MultiPolygon[]>();
-  for (const f of eligible) {
-    const zone = buffer(f.geometry, 30);
-    const [x0, y0, x1, y1] = bounds(zone);
-    const near: MultiPolygon[] = [];
-    for (const [id, box] of boxes) {
-      if (id === f.id || box[0] > x1 || box[2] < x0 || box[1] > y1 || box[3] < y0) continue;
-      const geometry = geometries.get(id)!;
-      if (intersects(geometry, zone)) near.push(geometry);
-    }
-    neighboursById.set(f.id, near);
-  }
   const partsByParent = new Map<string, MultiPolygon[]>();
   const sourcePartsByParent = new Map<string, SourcePart[]>();
   for (const part of input.parts) {
@@ -276,8 +261,8 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
     preferLidar: settings.preferLidar,
     minFootprintM2: Math.round(minFootprintM2 * 1e6) / 1e6,
     rock: settings.rockSurfaces && !heightOnly,
-    footprints: digest(features.map((f) => [f.id, f.geometry])),
-    parts: digest([...sourcePartsByParent].map(([k, v]) => [k, v.map((p) => [p.id, p.props.height, p.props.roof_shape, p.geometry])])),
+    footprints: digest(features.map((f) => [f.id, f.geometry, measuredProps(f.props)])),
+    parts: digest([...sourcePartsByParent].map(([k, v]) => [k, v.map((p) => [p.id, measuredProps(p.props), p.geometry])])),
   };
   const requestKey = `prepared:${digest(request)}`;
   const previous = await loadJson<PreparedLidar & { saved: number }>(requestKey);
@@ -294,6 +279,46 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
   } catch (error) {
     result.failures.push({ source: 'every survey', reason: (error as Error).message });
     return result;
+  }
+
+  // Every footprint stays a neighbour: a skipped house still keeps its roof
+  // returns out of an adjacent building's ground fit. Found after the cache
+  // check and through a grid of footprint boxes: every pair took 8 s on a
+  // city of 24,000 buildings, even with the answer cached.
+  const reach = 30;
+  const cell = 2 * reach;
+  const order = new Map([...geometries.keys()].map((id, i) => [id, i]));
+  const boxes = new Map([...geometries].map(([id, g]) => [id, bounds(g)]));
+  const grid = new Map<number, string[]>();
+  const gridKey = (cx: number, cy: number) => cx * 1_000_000 + cy;
+  for (const [id, box] of boxes) {
+    for (let cx = Math.floor(box[0] / cell); cx <= Math.floor(box[2] / cell); cx++) {
+      for (let cy = Math.floor(box[1] / cell); cy <= Math.floor(box[3] / cell); cy++) {
+        const list = grid.get(gridKey(cx, cy));
+        if (list) list.push(id);
+        else grid.set(gridKey(cx, cy), [id]);
+      }
+    }
+  }
+  const neighboursById = new Map<string, MultiPolygon[]>();
+  for (let i = 0; i < eligible.length; i++) {
+    if (i % 512 === 0) await progress('Finding LiDAR surveys', 0.01);
+    const f = eligible[i];
+    const zone = buffer(f.geometry, reach);
+    const [x0, y0, x1, y1] = bounds(zone);
+    const near = new Set<string>();
+    for (let cx = Math.floor(x0 / cell); cx <= Math.floor(x1 / cell); cx++) {
+      for (let cy = Math.floor(y0 / cell); cy <= Math.floor(y1 / cell); cy++) {
+        for (const id of grid.get(gridKey(cx, cy)) ?? []) {
+          if (id === f.id || near.has(id)) continue;
+          const box = boxes.get(id)!;
+          if (box[0] > x1 || box[2] < x0 || box[1] > y1 || box[3] < y0) continue;
+          if (intersects(geometries.get(id)!, zone)) near.add(id);
+        }
+      }
+    }
+    // In footprint order, as before, so checkpoint keys don't depend on the grid.
+    neighboursById.set(f.id, [...near].sort((a, b) => order.get(a)! - order.get(b)!).map((id) => geometries.get(id)!));
   }
 
   // ------------------------------------------------------------ discovery
@@ -502,9 +527,9 @@ async function measureBatch(batch: MetricFeature[], survey: Candidate, ctx: Batc
     ALGORITHM_VERSION,
     survey.url,
     survey.format,
-    batch.map((f) => [f.id, f.geometry, f.props.height, f.props.num_floors, f.props.has_parts, f.props.is_underground, f.props.min_height, f.props.min_floor]),
+    batch.map((f) => [f.id, f.geometry, measuredProps(f.props)]),
     batch.map((f) => ctx.neighboursById.get(f.id)),
-    batch.map((f) => (ctx.sourcePartsByParent.get(f.id) ?? []).map((p) => [p.id, p.props.height, p.props.roof_shape, p.props.min_height, p.geometry])),
+    batch.map((f) => (ctx.sourcePartsByParent.get(f.id) ?? []).map((p) => [p.id, measuredProps(p.props), p.geometry])),
     [query.west, query.south, query.east, query.north],
     [settings.xyScale, settings.zScale, settings.roofMode, settings.preferLidar],
   ])}`;

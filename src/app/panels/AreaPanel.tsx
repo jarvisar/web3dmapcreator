@@ -1,3 +1,4 @@
+import { fieldRange } from '../../core/svgmap/limits';
 import { ClipboardPaste, Copy, Link, Lock, LockOpen, RotateCcw, Scan, TriangleAlert, CircleAlert } from 'lucide-react';
 import { useId } from 'react';
 import { areaGeoBounds, areaKm2, effectiveScale, parseBoundsText, validateArea, MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
@@ -103,7 +104,7 @@ function SvgSize({ unit, onWidth }: { unit: SizeUnit; onWidth: (metres: number) 
             <span className="scale-prefix" aria-hidden="true">
               1:
             </span>
-            <NumberInput id={scaleId} value={scale} onChange={setSvgScale} min={100} max={2000000} step={500} decimals={0} ariaLabel="Scale, 1 to" />
+            <NumberInput id={scaleId} value={scale} onChange={setSvgScale} {...fieldRange('scale')} step={500} decimals={0} ariaLabel="Scale, 1 to" />
             <button
               type="button"
               className={`btn btn-sm lock-btn${locked ? ' is-locked' : ''}`}

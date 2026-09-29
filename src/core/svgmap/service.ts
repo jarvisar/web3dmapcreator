@@ -4,6 +4,7 @@
 import type { Paths64 } from 'clipper2-ts';
 import { compose } from './compose';
 import { type Layout, computeLayout } from './layout/layout';
+import { clampRenderSettings } from './limits';
 import { type Prepared, type TileData, type TilePlan, planTiles, prepareArea, tileKey } from './prepare';
 import type { RenderResult } from './result';
 import type { RenderSettings } from './settings';
@@ -66,7 +67,7 @@ export class RenderService {
     onProgress: (progress: RenderProgress) => void = () => {},
     isCancelled: () => boolean = () => false,
   ): Promise<RenderResult> {
-    const settings = request.settings;
+    const settings = clampRenderSettings(request.settings);
     const layout = computeLayout(settings.product, settings.border);
     const plan = planTiles(settings.area, layout, settings.source);
     const key = JSON.stringify([settings.area, layout.window, plan.zoom, settings.source.tiles]);

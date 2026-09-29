@@ -160,9 +160,11 @@ export function SvgPreview() {
   }, []);
 
   const fit = useCallback(() => {
-    if (!result || size.w === 0) return;
-    // Leave room for the chips and toolbar above and the hint below.
-    const scale = Math.min(size.w / (result.width * 1.12), (size.h - 100) / (result.height * 1.08));
+    if (!result || size.w === 0 || size.h === 0) return;
+    // Leave room for the chips and toolbar above and the hint below. A short
+    // stage (an error panel open on a small screen) still keeps half its
+    // height, or the scale and the view box went negative.
+    const scale = Math.min(size.w / (result.width * 1.12), Math.max(size.h - 100, size.h / 2) / (result.height * 1.08));
     const w = size.w / scale;
     const h = size.h / scale;
     setBox({ x: result.width / 2 - w / 2, y: result.height / 2 - h / 2, w });

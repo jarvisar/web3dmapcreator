@@ -8,6 +8,7 @@
 
 import { capBoundary } from '../geometry/cap';
 import { densifyRing, intersection, multiArea, normalize, ringPerimeter } from '../geometry/polygon';
+import { inOneTriangle } from '../geometry/lattice';
 import type { CapSolid, HeightFn, PrismSolid, Solid } from '../geometry/solid';
 import { clipTin, tinArea, type Tin } from '../geometry/tinclip';
 import type { PublishedRecord } from '../lidar/publish';
@@ -128,15 +129,15 @@ export function measuredSolids(record: PublishedRecord, options: MeasuredOptions
   const overlap = Math.min(0.02, vertical(base) * 0.1);
   const embed = ctx.settings.land.embedMm;
   const floor: HeightFn = (x, y) => Math.min(hf.heightAt(x, y) - embed, top - 0.05);
-  const lattice = { x0: hf.minX, y0: hf.minY, step: hf.step };
+  const lattice = hf.lattice;
   const solids: Solid[] = [];
   for (const polygon of outlines) {
     const width = ringWidth(polygon[0]);
     if (width < options.minimumWidth) return null;
     if (options.maximumSlenderness > 0 && width < options.exemptWidth && vertical(total) > width * options.maximumSlenderness) return null;
-    const box = polygon[0].reduce((b, [x, y]) => [Math.min(b[0], x), Math.min(b[1], y), Math.max(b[2], x), Math.max(b[3], y)], [Infinity, Infinity, -Infinity, -Infinity]);
-    const big = Math.max(box[2] - box[0], box[3] - box[1]) > hf.step;
-    solids.push({ kind: 'prism', role, polygon, top, bottom: floor, drape: big ? hf.step : 0, lattice: big ? lattice : undefined } satisfies PrismSolid);
+    // Draped unless it stands on one terrain triangle (see buildings.ts).
+    const drape = !inOneTriangle(lattice, polygon);
+    solids.push({ kind: 'prism', role, polygon, top, bottom: floor, drape: drape ? hf.step : 0, lattice: drape ? lattice : undefined } satisfies PrismSolid);
   }
   for (const tier of record.tiers) {
     const shape = intersection(projectShape(tier.geometry, ctx), outlines);

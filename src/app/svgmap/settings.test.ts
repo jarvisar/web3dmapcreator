@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { AreaSpec } from '../../core/settings';
 import { defaultRenderSettings } from '../../core/svgmap/defaults';
 import { computeLayout } from '../../core/svgmap/layout/layout';
+import { clampRenderSettings, limitFor } from '../../core/svgmap/limits';
+import { PRODUCT_PRESETS } from '../../core/svgmap/presets';
+import { MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
+import { applyPiecePreset, setArea, setCleanupPreset, setOutput, setPieceSize, setPlotter, setSvgMode, useApp } from '../state/store';
 import { formatAreaHash, parseHash } from '../state/shareLink';
 import { fitAreaToPiece, pieceProduct } from './piece';
 import { defaultSvgSettings, mergeSettings, toRenderSettings } from './settings';
@@ -29,6 +33,82 @@ describe('SVG settings', () => {
     expect(toRenderSettings(engineArea, { ...svg, label: { ...svg.label, text: 'ROME' } }, 'Rome').title).toBe('ROME');
     // The download is named from this, so an old result keeps its place's name.
     expect(toRenderSettings(engineArea, { ...svg, label: { ...svg.label, text: ' ' } }, 'Chicago Loop').title).toBe('Chicago Loop');
+  });
+
+  it('has a range for every number, holding its default', () => {
+    const walk = (value: unknown, path: string[]) => {
+      if (typeof value === 'number') {
+        const limit = limitFor(path);
+        expect(limit, path.join('.')).toBeDefined();
+        if (limit && 'min' in limit) {
+          expect(value, path.join('.')).toBeGreaterThanOrEqual(limit.min);
+          expect(value, path.join('.')).toBeLessThanOrEqual(limit.max);
+        } else if (limit) expect(limit.choices).toContain(value);
+      } else if (value && typeof value === 'object') for (const [key, child] of Object.entries(value)) walk(child, [...path, key]);
+    };
+    walk(defaultSvgSettings(), []);
+  });
+
+  it('has room in every range for what the app works out itself', () => {
+    const outside: string[] = [];
+    const check = (value: unknown, path: string[], label: string) => {
+      if (typeof value === 'number') {
+        const limit = limitFor(path);
+        const fits = !limit || ('choices' in limit ? limit.choices.includes(value) : value >= limit.min && value <= limit.max);
+        if (!fits) outside.push(`${path.join('.')} = ${value} (${label})`);
+      } else if (value && typeof value === 'object') for (const [key, child] of Object.entries(value)) check(child, [...path, key], label);
+    };
+    const audit = (label: string) => {
+      const state = useApp.getState();
+      check(state.svg, [], label);
+      const render = toRenderSettings(state.area, state.svg, state.placeName);
+      const { area: _area, ...rest } = render;
+      check(rest, [], label);
+      // The engine clamps again, and must find nothing to change.
+      if (JSON.stringify(clampRenderSettings(render)) !== JSON.stringify(render)) outside.push(`render clamped (${label})`);
+    };
+    setOutput('svg');
+    for (const preset of PRODUCT_PRESETS) {
+      applyPiecePreset(preset.id);
+      for (const shape of ['rectangle', 'rounded', 'circle', 'hexagon'] as const) {
+        setArea((area) => ({ ...area, shape }));
+        for (const mode of ['laser', 'plotter', 'print'] as const) {
+          setSvgMode(mode);
+          for (const penWidth of [0.05, 1, 3]) {
+            setPlotter({ penWidth });
+            for (const cleanup of ['off', 'light', 'standard', 'strong'] as const) {
+              setCleanupPreset(cleanup);
+              audit(`${preset.id} ${shape} ${mode} ${penWidth} mm pen ${cleanup}`);
+            }
+          }
+        }
+      }
+    }
+    // The smallest and largest pieces over the smallest and largest areas.
+    for (const shape of ['rectangle', 'hexagon', 'circle'] as const) {
+      setArea((area) => ({ ...area, shape }));
+      for (const width of [20, 2000]) {
+        for (const height of [20, 2000]) {
+          setPieceSize({ width, height });
+          for (const side of [MIN_SIDE_M, MAX_SIDE_M]) {
+            setArea((area) => ({ ...area, widthM: side, heightM: side }));
+            audit(`${shape} ${width} x ${height} mm over ${side} m`);
+          }
+        }
+      }
+    }
+    expect(outside.slice(0, 5)).toEqual([]);
+  });
+
+  it('keeps only numbers from saved settings and links that the panels would allow', () => {
+    // A dense window this small made the line cleanup sample forever.
+    const merged = mergeSettings(defaultSvgSettings(), { cleanup: { denseWindow: 1e-320, snapGap: 0.4 }, label: { rotation: 90, size: 1e6 } });
+    const defaults = defaultSvgSettings();
+    expect(merged.cleanup.denseWindow).toBe(defaults.cleanup.denseWindow);
+    expect(merged.cleanup.snapGap).toBe(0.4);
+    expect(merged.label.size).toBe(defaults.label.size);
+    expect(merged.label.rotation).toBe(90);
+    expect(mergeSettings(defaults, { label: { rotation: 45 } }).label.rotation).toBe(defaults.label.rotation);
   });
 
   it('fills in fields that older saved settings are missing', () => {

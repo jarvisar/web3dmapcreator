@@ -1,3 +1,4 @@
+import { fieldRange } from '../../core/svgmap/limits';
 import { DEFAULT_SOURCE } from '../../core/svgmap/settings';
 import { TextField } from '../components/Fields';
 import { NumberField } from '../components/NumberField';
@@ -25,8 +26,7 @@ export function DataPanel() {
         label="Most tiles per map"
         value={source.maxTiles}
         onChange={(maxTiles) => patchSvg({ source: { ...source, maxTiles: Math.round(maxTiles) } })}
-        min={4}
-        max={2000}
+        {...fieldRange('source.maxTiles')}
         step={10}
         decimals={0}
         help="Bigger areas switch to less detailed tiles to stay under this. A city centre at 1:20,000 needs 4 to 12."

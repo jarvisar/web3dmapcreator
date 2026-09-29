@@ -18,7 +18,7 @@ describe('tile downloads', () => {
       init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
     }));
     const tile = new TileSource(TEMPLATE).get({ z: 14, x: 4201, y: 6089 });
-    const failed = expect(tile).rejects.toThrow(/stalled/);
+    const failed = expect(tile).rejects.toThrow(/No data from/);
     await vi.advanceTimersByTimeAsync(30_000);
     await failed;
   });

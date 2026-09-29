@@ -3,17 +3,12 @@ import { useEffect, useId, useState } from 'react';
 import { COLOUR_GROUPS, FILAMENTS, filamentName } from '../../core/settings';
 import type { FilamentLine, PaletteEntry } from '../../core/settings';
 import type { ColourGroup } from '../../core/types';
+import { HexInput } from '../components/Fields';
 import { Popover } from '../components/Popover';
 import { Segmented } from '../components/Segmented';
 import { setPaletteEntry, useApp } from '../state/store';
 
 const LINES: FilamentLine[] = ['PLA Basic', 'PLA Matte'];
-
-function normaliseHex(text: string): string | null {
-  let value = text.trim().replace(/^#/, '');
-  if (/^[0-9a-f]{3}$/i.test(value)) value = value.replace(/./g, (c) => c + c);
-  return /^[0-9a-f]{6}$/i.test(value) ? `#${value.toUpperCase()}` : null;
-}
 
 interface ColourPopoverProps {
   group: ColourGroup | null;
@@ -24,13 +19,8 @@ interface ColourPopoverProps {
 export function ColourPopover({ group, anchor, onClose }: ColourPopoverProps) {
   const entry = useApp((state) => (group ? state.palette[group] : null));
   const [filter, setFilter] = useState('');
-  const [hexText, setHexText] = useState('');
   const hexId = useId();
   const info = COLOUR_GROUPS.find((item) => item.key === group);
-
-  useEffect(() => {
-    if (entry) setHexText(entry.hex);
-  }, [entry?.hex]);
 
   useEffect(() => {
     if (group) setFilter('');
@@ -42,11 +32,6 @@ export function ColourPopover({ group, anchor, onClose }: ColourPopoverProps) {
 
   function choose(next: PaletteEntry) {
     setPaletteEntry(group!, next);
-  }
-
-  function applyHex(text: string) {
-    const hex = normaliseHex(text);
-    if (hex) choose({ hex, line: current.line });
   }
 
   const name = filamentName(current);
@@ -115,19 +100,7 @@ export function ColourPopover({ group, anchor, onClose }: ColourPopoverProps) {
           <label htmlFor={hexId} className="sr-only">
             Hex colour
           </label>
-          <input
-            id={hexId}
-            className="text-input hex-input"
-            value={hexText}
-            spellCheck={false}
-            autoComplete="off"
-            onChange={(event) => {
-              setHexText(event.target.value);
-              applyHex(event.target.value);
-            }}
-            onBlur={() => setHexText(current.hex)}
-            onKeyDown={(event) => event.key === 'Enter' && applyHex(hexText)}
-          />
+          <HexInput id={hexId} value={current.hex} onChange={(hex) => choose({ hex, line: current.line })} />
           <Segmented
             label="PLA line"
             size="sm"

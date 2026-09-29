@@ -4,6 +4,7 @@
 import type { AreaSpec } from '../../core/settings';
 import { DEFAULT_SCALE, defaultRenderSettings, defaultStyle } from '../../core/svgmap/defaults';
 import type { ProductSettings } from '../../core/svgmap/layout/layout';
+import { fitNumber } from '../../core/svgmap/limits';
 import { DEFAULT_CLEANUP, type CleanupSettings } from '../../core/svgmap/lines/cleanup';
 import { DEFAULT_PRODUCT } from '../../core/svgmap/presets';
 import {
@@ -117,24 +118,11 @@ function validString(path: string[], value: string): boolean {
   return true;
 }
 
-// The UI keeps numbers in range. These are the ones a hand-edited link could
-// set to something that breaks the map or the render.
-function validNumber(path: string[], value: number): boolean {
-  if (!Number.isFinite(value)) return false;
-  switch (path.join('.')) {
-    case 'scale':
-    case 'plotter.penWidth':
-    case 'label.size':
-      return value > 0;
-    default:
-      return true;
-  }
-}
-
 // Takes each value from patch only where base has a value of the same type.
 // Saved settings and share links can come from an older build or be edited by
 // hand, so anything that doesn't fit is dropped instead of breaking the app or
-// ending up in the SVG. Colours have to be #RRGGBB.
+// ending up in the SVG. Colours have to be #RRGGBB, and numbers have to be in
+// the range the panels offer (core/svgmap/limits.ts).
 export function mergeSettings<T>(base: T, patch: unknown, path: string[] = []): T {
   if (patch === undefined) return base;
   if (isObject(base)) {
@@ -151,6 +139,6 @@ export function mergeSettings<T>(base: T, patch: unknown, path: string[] = []): 
     const fits = typeof base === 'string' || (base === null && nullable);
     return (fits && validString(path, patch) ? patch : base) as T;
   }
-  if (typeof patch === 'number') return (typeof base === 'number' && validNumber(path, patch) ? patch : base) as T;
+  if (typeof patch === 'number') return (typeof base === 'number' && fitNumber(path, patch) === patch ? patch : base) as T;
   return (typeof patch === 'boolean' && typeof base === 'boolean' ? patch : base) as T;
 }

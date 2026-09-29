@@ -1,5 +1,6 @@
 // Phone-size and dark-mode checks with real generations, in the installed Edge:
 // a 3D model on a phone and a desktop in dark mode, then an SVG map on a phone.
+// Exits with 1 when one doesn't finish, shows an error or the page logs one.
 //   node scripts/e2e-mobile.mjs <url> <out-folder>
 import { chromium } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
@@ -13,6 +14,12 @@ const browser = await chromium.launch({
   args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
 });
 const errors = [];
+const failures = [];
+
+async function checkNoAlert(page, name) {
+  const alert = page.locator('.alert[role="alert"]');
+  if (await alert.count()) failures.push(`${name}: ${(await alert.first().innerText()).replace(/\s+/g, ' ')}`);
+}
 
 async function run(name, viewport, dark) {
   const context = await browser.newContext({ viewport, hasTouch: viewport.width < 600, isMobile: viewport.width < 600 });
@@ -29,6 +36,9 @@ async function run(name, viewport, dark) {
   await page.waitForFunction(() => !document.querySelector('[role="progressbar"]'), null, { timeout: 300000, polling: 1000 });
   await page.waitForTimeout(3000);
   await page.screenshot({ path: join(folder, `${name}-3-model.png`) });
+  // The progress bar also goes when generating fails.
+  await checkNoAlert(page, name);
+  if (!(await page.getByRole('button', { name: 'Model details' }).isVisible())) failures.push(`${name}: no model after generating`);
   await context.close();
 }
 
@@ -52,6 +62,7 @@ async function runSvg(name, viewport) {
   await page.waitForSelector('.svg-preview', { timeout: 300000 });
   await page.waitForTimeout(2000);
   await page.screenshot({ path: join(folder, `${name}-3-preview.png`) });
+  await checkNoAlert(page, name);
   await context.close();
 }
 
@@ -59,4 +70,6 @@ await run('phone', { width: 390, height: 844 }, false);
 await run('desktop-dark', { width: 1440, height: 900 }, true);
 await runSvg('phone-svg', { width: 390, height: 844 });
 console.log(errors.length ? `console errors:\n${errors.join('\n')}` : 'no console errors');
+for (const failure of failures) console.log(`FAILED: ${failure}`);
 await browser.close();
+process.exit(errors.length || failures.length ? 1 : 0);

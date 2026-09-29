@@ -29,6 +29,25 @@ export const FONTS: FontInfo[] = [
 // A font the user loaded. Its bytes are sent along with each render request.
 export const CUSTOM_FONT_ID = 'custom';
 
+const fingerprints = new WeakMap<ArrayBuffer, string>();
+
+/**
+ * A loaded font file told apart by its contents (FNV-1a and length). Name
+ * and size weren't enough: a new version of a font with the same name and
+ * size kept rendering with the old one.
+ */
+export function fontFingerprint(data: ArrayBuffer): string {
+  let fingerprint = fingerprints.get(data);
+  if (!fingerprint) {
+    const bytes = new Uint8Array(data);
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < bytes.length; i++) hash = Math.imul(hash ^ bytes[i], 0x01000193);
+    fingerprint = `${bytes.length}:${(hash >>> 0).toString(16)}`;
+    fingerprints.set(data, fingerprint);
+  }
+  return fingerprint;
+}
+
 export function fontInfo(id: string): FontInfo | undefined {
   return FONTS.find((f) => f.id === id);
 }

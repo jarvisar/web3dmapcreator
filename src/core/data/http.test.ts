@@ -155,6 +155,24 @@ describe('remoteFile', () => {
     expect(calls).toBe(2);
   });
 
+  it('stops a request cancelled while it waited for a slot', async () => {
+    // Like a real fetch: an aborted signal fails at once.
+    const seen: boolean[] = [];
+    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+      seen.push(init?.signal?.aborted ?? false);
+      if (init?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      const [start, end] = /bytes=(\d+)-(\d+)/.exec(new Headers(init?.headers).get('range') ?? '')!.slice(1).map(Number);
+      return new Response(data.slice(start, end + 1), { status: 206 });
+    });
+    for (const start of [(signal: AbortSignal) => remoteFile(URL_A, data.length, { signal }).slice(0, 10), (signal: AbortSignal) => fetchByteLength(URL_A, signal)]) {
+      const controller = new AbortController();
+      const pending = start(controller.signal);
+      controller.abort();
+      await expect(pending).rejects.toThrow();
+    }
+    expect(seen.every((aborted) => aborted)).toBe(true);
+  });
+
   it('retries a HEAD that never answers, then gives up', async () => {
     configureHttp({ idleTimeoutMs: 40, retries: 1 });
     let calls = 0;

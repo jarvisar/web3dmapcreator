@@ -22,7 +22,7 @@ export function svgProblem(area: AreaSpec, svg: SvgSettings): string | null {
 function current(): { settings: RenderSettings; key: string } {
   const state = useApp.getState();
   const settings = toRenderSettings(state.area, state.svg, state.placeName);
-  const font = state.customFontName ? getCustomFont() : null;
+  const font = state.customFontId ? getCustomFont() : null;
   return { settings, key: settingsKey(settings, font) };
 }
 
@@ -31,16 +31,16 @@ export function useSvgKey(): string {
   const area = useApp((state) => state.area);
   const svg = useApp((state) => state.svg);
   const placeName = useApp((state) => state.placeName);
-  const customFontName = useApp((state) => state.customFontName);
+  const customFontId = useApp((state) => state.customFontId);
   return useMemo(
-    () => settingsKey(toRenderSettings(area, svg, placeName), customFontName ? getCustomFont() : null),
-    [area, svg, placeName, customFontName],
+    () => settingsKey(toRenderSettings(area, svg, placeName), customFontId ? getCustomFont() : null),
+    [area, svg, placeName, customFontId],
   );
 }
 
 export function renderSvgNow(): void {
   const { settings } = current();
-  requestRender(settings, useApp.getState().customFontName ? getCustomFont() : null);
+  requestRender(settings, useApp.getState().customFontId ? getCustomFont() : null);
 }
 
 // Renders, then shows the preview when it's done, the way a 3D model opens
@@ -68,10 +68,11 @@ function showPreview() {
   if (window.matchMedia(NARROW_QUERY).matches) setDrawerOpen(false);
 }
 
-// Named after the title, like chicago-laser.svg, unless a file name was typed.
-// The title and mode come from the result, which can be older than the settings.
+// Named after the title, like chicago-laser.svg. The title and mode come
+// from the result, which can be older than the settings. The file name typed
+// under Export is the model's, and SVG mode has nowhere to see or change it.
 export function svgFileName(result: RenderResult): string {
-  return `${fileBase(result.meta.title, useApp.getState().fileName)}-${result.mode}.svg`;
+  return `${fileBase(result.meta.title, null)}-${result.mode}.svg`;
 }
 
 export function downloadSvg(): void {

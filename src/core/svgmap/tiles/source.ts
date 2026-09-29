@@ -3,59 +3,21 @@
 // Only the tiles for the selected area are fetched, six at a time, and they
 // are cached so changing settings doesn't download anything again.
 import { FetchSource, PMTiles, type RangeResponse, type Source } from 'pmtiles';
+import { download } from '../download';
 import type { TileId } from '../prepare';
 
 type Fetcher = (tile: TileId, signal?: AbortSignal) => Promise<ArrayBuffer | null>;
 
-// A download that stops without failing would otherwise hold its render, and
-// every later render that shares it, forever. XYZ tiles fail after IDLE_MS
-// with no bytes. PMTiles reads and TileJSON get READ_MS in all.
+// XYZ tiles fail after IDLE_MS with no bytes (see download.ts). PMTiles reads
+// and TileJSON get READ_MS in all.
 const IDLE_MS = 30_000;
 const READ_MS = 60_000;
 
 async function downloadTile(href: string, tile: TileId, signal?: AbortSignal): Promise<ArrayBuffer | null> {
-  const controller = new AbortController();
-  const forward = () => controller.abort(signal?.reason);
-  signal?.addEventListener('abort', forward, { once: true });
-  let stalled = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const arm = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      stalled = true;
-      controller.abort();
-    }, IDLE_MS);
-  };
-  try {
-    arm();
-    const response = await fetch(href, { signal: controller.signal });
-    if (response.status === 204 || response.status === 404) return null; // empty sea/desert tile
-    if (!response.ok) throw new Error(`Tile ${tile.z}/${tile.x}/${tile.y} failed with ${response.status}.`);
-    if (!response.body) return maybeGunzip(await response.arrayBuffer());
-    const reader = response.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let length = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      arm();
-      chunks.push(value);
-      length += value.byteLength;
-    }
-    const bytes = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return maybeGunzip(bytes.buffer);
-  } catch (error) {
-    if (stalled && !signal?.aborted) throw new Error(`Tile ${tile.z}/${tile.x}/${tile.y} stalled: no data for ${IDLE_MS / 1000} s.`);
-    throw error;
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', forward);
-  }
+  const { status, ok, bytes } = await download(href, IDLE_MS, signal);
+  if (status === 204 || status === 404) return null; // empty sea/desert tile
+  if (!ok || !bytes) throw new Error(`Tile ${tile.z}/${tile.x}/${tile.y} failed with ${status}.`);
+  return maybeGunzip(bytes);
 }
 
 // Every read of a PMTiles archive, the header included, is aborted after

@@ -15,7 +15,9 @@ import {
   multiBounds,
   clipToBox,
   offsetPolygons,
+  polygonArea,
   ringBounds,
+  ringPerimeter,
   union,
   type Box,
 } from '../geometry/polygon';
@@ -74,6 +76,23 @@ const LAND_NAMES: Record<SurfaceCategory, string> = {
   green: 'Parks',
   forest: 'Forest',
 };
+
+// A beach slopes within a few cells, so it gets a finer lattice. Split the
+// same way, each of its triangles still lies in one terrain triangle. The
+// split is kept to about this many cells a polygon: a wide sand area at the
+// narrowest beach setting was tens of millions.
+const BEACH_CELLS = 300_000;
+
+function beachSplit(polygon: Polygon, step: number, beachWidth: number): number {
+  const area = polygonArea(polygon);
+  const length = polygon.reduce((sum, ring) => sum + ringPerimeter(ring), 0);
+  for (let split = Math.max(1, Math.ceil((3 * step) / beachWidth)); split > 1; split--) {
+    const fine = step / split;
+    // Cells inside, and the ones along the outline latticeTin adds.
+    if (area / fine ** 2 + (3 * length) / fine <= BEACH_CELLS) return split;
+  }
+  return 1;
+}
 
 /** The data bounds generation needs for an area: the shape plus a small margin. */
 export function dataBoundsFor(area: AreaSpec) {
@@ -248,7 +267,10 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   if (!Number.isFinite(lowest)) lowest = 0;
   const baseZ = lowest - settings.terrain.baseThicknessMm;
 
-  const lattice = { x0: hf.minX, y0: hf.minY, step: hf.step };
+  // On flat ground a draped solid is its outline, so it isn't cut from the lattice.
+  const flat = hf.flat;
+  const lattice = flat ? undefined : hf.lattice;
+  const drapeStep = flat ? 0 : hf.step;
   const terrainTop = (x: number, y: number) => hf.heightAt(x, y);
   const layers: Layer[] = [];
   const terrainSolids: Solid[] = ground.map((polygon) => ({
@@ -257,7 +279,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     polygon,
     top: terrainTop,
     bottom: baseZ,
-    drape: hf.step,
+    drape: drapeStep,
     lattice,
   }));
   // Basin floors: the recess is the terrain built lower over the basin.
@@ -310,20 +332,16 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
       const polygons = land[category];
       if (!polygons.length) continue;
       const top = category === 'sand' && shore ? beachTop : flatTop;
-      const drape = category === 'sand' && shore ? Math.min(hf.step, beachWidth / 3) : hf.step;
+      const beach = category === 'sand' && shore;
       layers.push({
         id: `land-${category}`,
         name: LAND_NAMES[category],
         role: LAND_ROLES[category],
-        solids: polygons.map((polygon) => ({
-          kind: 'prism',
-          role: LAND_ROLES[category],
-          polygon,
-          top,
-          bottom,
-          drape,
-          lattice: drape === hf.step ? lattice : undefined,
-        })),
+        solids: polygons.map((polygon) => {
+          // A beach slopes even on flat ground.
+          const drape = flat && !beach ? 0 : hf.step / (beach ? beachSplit(polygon, hf.step, beachWidth) : 1);
+          return { kind: 'prism', role: LAND_ROLES[category], polygon, top, bottom, drape, lattice: drape > 0 ? { ...hf.lattice, step: drape } : undefined };
+        }),
       });
     }
   }
@@ -342,7 +360,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     ];
     for (const [id, name, role, polygons] of groups) {
       if (!polygons.length) continue;
-      layers.push({ id, name, role, solids: polygons.map((polygon) => ({ kind: 'prism', role, polygon, top, bottom, drape: hf.step, lattice })) });
+      layers.push({ id, name, role, solids: polygons.map((polygon) => ({ kind: 'prism', role, polygon, top, bottom, drape: drapeStep, lattice })) });
     }
   }
 

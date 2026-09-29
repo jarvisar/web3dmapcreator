@@ -46,6 +46,15 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 ## Pipeline rules worth preserving
 
 - Everything samples one `HeightField`. Never sample the DEM directly in a layer.
+- Between nodes the terrain is the grid split along each cell's low-to-high
+  diagonal (`geometry/lattice.ts`), `heightAt` included, and draped solids
+  (terrain, land, roads, grounded buildings) are cut from those triangles
+  (`latticeCap`). Separately triangulated caps parted from the ground by more
+  than the embed on steep ground with big cells: 0.4 mm at 3 mm cells.
+  `latticeTin` only builds the cells a polygon touches (its bounding box was
+  1.8 GB for a thin diagonal beach), and beach tapers split cells no finer
+  than `BEACH_CELLS` allows. A footprint is only left undraped when it lies
+  in one triangle (`inOneTriangle`), not when it's smaller than a cell.
 - Almost everything is a `PrismSolid` (polygon + top/bottom height + drape).
   Crop and multi-plate sections are 2D clips before meshing, so every shell
   stays closed. Trees are `MeshSolid`s, kept only where the whole crown is
@@ -174,6 +183,10 @@ LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
   Chicago's LiDAR about three times over.
 - Readers only use range reads that come back whole (exact header, VLR, page
   and node ranges). A server ignoring `Range` is an error.
+- Prepared results and batch checkpoints are keyed by the source properties
+  the measurement reads, listed in `measuredProps` (`source.ts`). A property
+  read anywhere new goes on that list. Catalog answers are only cached when
+  they parse, so a maintenance page served with a 200 isn't kept.
 - With `preferLidar` off, mapped assemblies with more levels or a shaped roof
   the measurement lacks are kept (`preferSourceDetail`).
 
@@ -245,7 +258,20 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
   where the area's axes land (`AreaEditor.layout`).
 - The live preview re-renders whenever the settings key differs from both
   the result's and the last tried key (`svgmap/render.ts`), so a failed or
-  cancelled render isn't retried until something changes.
+  cancelled render isn't retried until something changes. The action bar
+  offers the retry instead.
+- Every number in the SVG settings has its range in `core/svgmap/limits.ts`.
+  The panels offer it, share links, saved and imported settings are held to
+  it, and the engine clamps again: a hand-edited dense window hung the line
+  cleanup. Ranges have to hold what the app works out itself too (line
+  spacing from a 3 mm pen, a hexagon's height, the scale of a tiny or huge
+  piece), which `settings.test.ts` checks.
+- The SVG worker acknowledges each message by sequence number. One busy
+  with a render that doesn't answer a newer render or a cancel within 8 s is
+  stuck in a loop and is replaced (`svgmap/render.ts`). Only an ack for the
+  message the watchdog waits on, or a later one, clears it.
+- Plotter files put every layer of one pen together, so `compose` sorts the
+  drafts by pen before ordering paths and adding up travel.
 - Tiles and the window box are cut with `clipToRect`, not the `rectClip`
   SVGmap used, so renders are no longer byte-identical to SVGmap's. A
   polygon crossing a tile edge is unioned in `decode.ts` right after its

@@ -184,6 +184,11 @@
   z-index: 10;
 }
 
+/* Focused on its own only so a keyboard lands in the opened drawer. */
+.sidebar:focus {
+  outline: none;
+}
+
 /* Positioned, so absolutely placed helpers inside (screen reader text) stay
    in this scroll box instead of stretching the page. */
 .sidebar-scroll {

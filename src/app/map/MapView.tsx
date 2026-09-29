@@ -97,9 +97,9 @@ export function MapView({ active }: { active: boolean }) {
   const border = useApp((state) => state.svg.border);
   const label = useApp((state) => state.svg.label);
   const locked = useApp((state) => state.svg.scaleLocked);
-  const customFontName = useApp((state) => state.customFontName);
+  const customFontId = useApp((state) => state.customFontId);
   const layout = useMemo(() => (svg ? pieceLayout(piece, shape, border).layout : null), [svg, piece, shape, border]);
-  const { artwork, error: labelError } = useLabelArtwork(svg, layout, label, customFontName);
+  const { artwork, error: labelError } = useLabelArtwork(svg, layout, label, customFontId);
 
   useEffect(() => {
     const host = hostRef.current;

@@ -1,3 +1,4 @@
+import { fieldRange } from '../../core/svgmap/limits';
 import { useId } from 'react';
 import type { ReactNode } from 'react';
 import {
@@ -126,8 +127,8 @@ function FillStyle({ layer }: { layer: FillLayerId }) {
       </SelectField>
       {isHatched(current) && (
         <>
-          <NumberField label="Hatch spacing" value={h.spacing} onChange={(spacing) => update({ spacing })} min={0.1} max={10} step={0.05} decimals={2} unit="mm" />
-          <NumberField label="Hatch angle" value={h.angle} onChange={(angle) => update({ angle })} min={-180} max={180} step={5} decimals={0} unit="°" />
+          <NumberField label="Hatch spacing" value={h.spacing} onChange={(spacing) => update({ spacing })} {...fieldRange('style.hatch.*.spacing')} step={0.05} decimals={2} unit="mm" />
+          <NumberField label="Hatch angle" value={h.angle} onChange={(angle) => update({ angle })} {...fieldRange('style.hatch.*.angle')} step={5} decimals={0} unit="°" />
           <CheckField label="Cross-hatch" checked={h.cross} onChange={(cross) => update({ cross })} />
         </>
       )}
@@ -153,8 +154,7 @@ function LineWidth({ layer }: { layer: LineLayerId }) {
       label={layer === 'roads' ? 'Line width, minor roads' : 'Line width'}
       value={lineWidths[layer]}
       onChange={(w) => setSvgStyle({ lineWidths: { ...lineWidths, [layer]: w } })}
-      min={0.02}
-      max={5}
+      {...fieldRange('style.lineWidths.*')}
       step={0.02}
       decimals={2}
       unit="mm"
@@ -170,8 +170,7 @@ function WaterOptions() {
         label="Gap around buildings"
         value={water.halo}
         onChange={(halo) => patchSvg({ water: { ...water, halo } })}
-        min={0}
-        max={3}
+        {...fieldRange('water.halo')}
         step={0.025}
         decimals={3}
         unit="mm"
@@ -181,8 +180,7 @@ function WaterOptions() {
         label="Gap under bridges"
         value={water.bridgeGap}
         onChange={(bridgeGap) => patchSvg({ water: { ...water, bridgeGap } })}
-        min={0}
-        max={3}
+        {...fieldRange('water.bridgeGap')}
         step={0.05}
         decimals={2}
         unit="mm"

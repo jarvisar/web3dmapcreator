@@ -1,13 +1,14 @@
+import { fieldRange } from '../../core/svgmap/limits';
 import { CircleAlert, MapPin } from 'lucide-react';
 import { useRef, useState } from 'react';
 import type { FillMode } from '../../core/svgmap/settings';
-import { CUSTOM_FONT_ID, FONTS, fontInfo } from '../../core/svgmap/text/fonts';
+import { CUSTOM_FONT_ID, FONTS, fontFingerprint, fontInfo } from '../../core/svgmap/text/fonts';
 import type { LabelPosition, LabelSettings } from '../../core/svgmap/text/label';
 import { CheckField, Disclosure, SelectField, SliderField, TextField } from '../components/Fields';
 import { NumberField } from '../components/NumberField';
 import { Segmented } from '../components/Segmented';
 import { Section } from '../panels/Section';
-import { setCustomFontName, setLabel, setSvgStyle, useApp } from '../state/store';
+import { setCustomFont, setLabel, setSvgStyle, useApp } from '../state/store';
 import { checkFont, storeFont } from './customFont';
 
 const POSITIONS: { value: LabelPosition; label: string }[] = [
@@ -86,7 +87,7 @@ export function TitlePanel() {
     if (problem) return;
     const name = file.name.replace(/\.(ttf|otf|woff)$/i, '');
     await storeFont({ name, data });
-    setCustomFontName(name);
+    setCustomFont(name, fontFingerprint(data));
     set({ [pendingField.current]: CUSTOM_FONT_ID });
   };
 
@@ -170,7 +171,7 @@ export function TitlePanel() {
               event.target.value = '';
             }}
           />
-          <SliderField label="Size" value={label.size} onChange={(size) => set({ size })} min={40} max={250} step={5} format={percent} />
+          <SliderField label="Size" value={label.size} onChange={(size) => set({ size })} {...fieldRange('label.size')} step={5} format={percent} />
           <SelectField label="Lettering" value={lettering} onChange={(m) => setSvgStyle({ fillModes: { ...fillModes, text: m as FillMode } })}>
             {modes.map((m) => (
               <option key={m} value={m}>
@@ -182,7 +183,7 @@ export function TitlePanel() {
 
           {band ? (
             <>
-              <SliderField label="Band height" value={label.bandHeight} onChange={(bandHeight) => set({ bandHeight })} min={5} max={50} step={1} format={percent} />
+              <SliderField label="Band height" value={label.bandHeight} onChange={(bandHeight) => set({ bandHeight })} {...fieldRange('label.bandHeight')} step={1} format={percent} />
               <div className="field-group">
                 <div className="group-label">Alignment</div>
                 <Segmented<'left' | 'center' | 'right'>
@@ -201,8 +202,7 @@ export function TitlePanel() {
                 label="Letter spacing"
                 value={label.titleSpacing * 100}
                 onChange={(value) => set({ titleSpacing: value / 100 })}
-                min={80}
-                max={200}
+                {...fieldRange('label.titleSpacing', 100)}
                 step={5}
                 format={percent}
               />
@@ -232,14 +232,14 @@ export function TitlePanel() {
           <Disclosure label="Measurements">
             {band ? (
               <>
-                <NumberField label="Title height" value={label.titleHeight} onChange={(titleHeight) => set({ titleHeight })} min={0.5} max={100} step={0.1} decimals={2} unit="mm" />
-                <NumberField label="Max width" value={label.bandMaxWidth} onChange={(bandMaxWidth) => set({ bandMaxWidth })} min={1} max={100} step={1} decimals={0} unit="%" />
-                <NumberField label="Subtitle height" value={label.subtitleHeight} onChange={(subtitleHeight) => set({ subtitleHeight })} min={0.5} max={50} step={0.1} decimals={2} unit="mm" />
-                <NumberField label="Subtitle gap" value={label.subtitleGap} onChange={(subtitleGap) => set({ subtitleGap })} min={0} max={50} step={0.1} decimals={2} unit="mm" />
-                <NumberField label="Padding, sides" value={label.bandPaddingX} onChange={(bandPaddingX) => set({ bandPaddingX })} min={0} max={50} step={0.1} decimals={2} unit="mm" />
-                <NumberField label="Padding, top and bottom" value={label.bandPaddingY} onChange={(bandPaddingY) => set({ bandPaddingY })} min={0} max={50} step={0.1} decimals={2} unit="mm" />
-                <NumberField label="Subtitle spacing" value={label.subtitleSpacing} onChange={(subtitleSpacing) => set({ subtitleSpacing })} min={80} max={300} step={5} decimals={0} scale={100} unit="%" />
-                <NumberField label="Divider width" value={label.dividerWidth} onChange={(dividerWidth) => set({ dividerWidth })} min={0.01} max={3} step={0.05} decimals={2} unit="mm" />
+                <NumberField label="Title height" value={label.titleHeight} onChange={(titleHeight) => set({ titleHeight })} {...fieldRange('label.titleHeight')} step={0.1} decimals={2} unit="mm" />
+                <NumberField label="Max width" value={label.bandMaxWidth} onChange={(bandMaxWidth) => set({ bandMaxWidth })} {...fieldRange('label.bandMaxWidth')} step={1} decimals={0} unit="%" />
+                <NumberField label="Subtitle height" value={label.subtitleHeight} onChange={(subtitleHeight) => set({ subtitleHeight })} {...fieldRange('label.subtitleHeight')} step={0.1} decimals={2} unit="mm" />
+                <NumberField label="Subtitle gap" value={label.subtitleGap} onChange={(subtitleGap) => set({ subtitleGap })} {...fieldRange('label.subtitleGap')} step={0.1} decimals={2} unit="mm" />
+                <NumberField label="Padding, sides" value={label.bandPaddingX} onChange={(bandPaddingX) => set({ bandPaddingX })} {...fieldRange('label.bandPaddingX')} step={0.1} decimals={2} unit="mm" />
+                <NumberField label="Padding, top and bottom" value={label.bandPaddingY} onChange={(bandPaddingY) => set({ bandPaddingY })} {...fieldRange('label.bandPaddingY')} step={0.1} decimals={2} unit="mm" />
+                <NumberField label="Subtitle spacing" value={label.subtitleSpacing} onChange={(subtitleSpacing) => set({ subtitleSpacing })} {...fieldRange('label.subtitleSpacing', 100)} step={5} decimals={0} scale={100} unit="%" />
+                <NumberField label="Divider width" value={label.dividerWidth} onChange={(dividerWidth) => set({ dividerWidth })} {...fieldRange('label.dividerWidth')} step={0.05} decimals={2} unit="mm" />
                 <SelectField label="Subtitle font" value={label.subtitleFont || ''} onChange={(id) => chooseFont('subtitleFont', id)} stacked>
                   <option value="">Same as the title</option>
                   <FontOptions customName={customFontName} />
@@ -247,13 +247,13 @@ export function TitlePanel() {
               </>
             ) : (
               <>
-                <NumberField label="Text height" value={label.textHeight} onChange={(textHeight) => set({ textHeight })} min={0.5} max={100} step={0.1} decimals={2} unit="mm" />
-                <NumberField label="Max width" value={label.maxWidth} onChange={(maxWidth) => set({ maxWidth })} min={1} max={500} step={1} decimals={1} unit="mm" />
-                <NumberField label="Padding, sides" value={label.paddingX} onChange={(paddingX) => set({ paddingX })} min={0} max={30} step={0.1} decimals={2} unit="mm" />
-                <NumberField label="Padding, top and bottom" value={label.paddingY} onChange={(paddingY) => set({ paddingY })} min={0} max={30} step={0.1} decimals={2} unit="mm" />
-                <NumberField label="Outline width" value={label.borderWidth} onChange={(borderWidth) => set({ borderWidth })} min={0.01} max={5} step={0.05} decimals={2} unit="mm" />
-                <NumberField label="Gap from border" value={label.gap} onChange={(gap) => set({ gap })} min={0} max={50} step={0.1} decimals={2} unit="mm" />
-                <NumberField label="Text size in box" value={label.textScale} onChange={(textScale) => set({ textScale })} min={10} max={100} step={1} decimals={0} scale={100} unit="%" />
+                <NumberField label="Text height" value={label.textHeight} onChange={(textHeight) => set({ textHeight })} {...fieldRange('label.textHeight')} step={0.1} decimals={2} unit="mm" />
+                <NumberField label="Max width" value={label.maxWidth} onChange={(maxWidth) => set({ maxWidth })} {...fieldRange('label.maxWidth')} step={1} decimals={1} unit="mm" />
+                <NumberField label="Padding, sides" value={label.paddingX} onChange={(paddingX) => set({ paddingX })} {...fieldRange('label.paddingX')} step={0.1} decimals={2} unit="mm" />
+                <NumberField label="Padding, top and bottom" value={label.paddingY} onChange={(paddingY) => set({ paddingY })} {...fieldRange('label.paddingY')} step={0.1} decimals={2} unit="mm" />
+                <NumberField label="Outline width" value={label.borderWidth} onChange={(borderWidth) => set({ borderWidth })} {...fieldRange('label.borderWidth')} step={0.05} decimals={2} unit="mm" />
+                <NumberField label="Gap from border" value={label.gap} onChange={(gap) => set({ gap })} {...fieldRange('label.gap')} step={0.1} decimals={2} unit="mm" />
+                <NumberField label="Text size in box" value={label.textScale} onChange={(textScale) => set({ textScale })} {...fieldRange('label.textScale', 100)} step={1} decimals={0} scale={100} unit="%" />
               </>
             )}
           </Disclosure>

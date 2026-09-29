@@ -24,10 +24,11 @@
   --focus-glow: 0 0 0 1px #6aa4de, 0 0 6px rgb(82 168 236 / 0.6);
   --map-accent: #2a6fc9;
 
-  /* Main action buttons: Generate, Download */
-  --go-1: #74c052;
-  --go-2: #4f982c;
-  --go-border: #3f8323;
+  /* Main action buttons: Generate, Download. Dark enough for white 14px
+     text at 4.5:1 all the way down, hover included. */
+  --go-1: #457b2d;
+  --go-2: #34641d;
+  --go-border: #2b5a18;
   --go-text: #ffffff;
 
   /* Ordinary buttons */
@@ -109,9 +110,9 @@
     --focus-glow: 0 0 0 1px #4a8ed8, 0 0 6px rgb(82 168 236 / 0.55);
     --map-accent: #2a6fc9;
 
-    --go-1: #62ad40;
-    --go-2: #427f24;
-    --go-border: #1f3d10;
+    --go-1: #467b2e;
+    --go-2: #35671d;
+    --go-border: #244612;
 
     --btn-1: #4a4b50;
     --btn-2: #3a3b3f;

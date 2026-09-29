@@ -298,6 +298,8 @@ async function transferOnce(t: Transfer): Promise<ArrayBuffer> {
   };
   let received = 0;
   try {
+    // Waiting for a slot gave the signal time to abort before anything listened.
+    if (t.signal?.aborted) forward();
     arm();
     const init: RequestInit = { signal: controller.signal };
     // Only range reads send a header. Any other header makes the browser send
@@ -401,6 +403,7 @@ export function fetchByteLength(url: string, signal?: AbortSignal): Promise<numb
       controller.abort();
     }, config.idleTimeoutMs);
     try {
+      if (signal?.aborted) forward();
       const response = await fetch(url, { method: 'HEAD', signal: controller.signal });
       if (!response.ok) throw new HttpError(response.status, url, parseRetryAfter(response.headers.get('retry-after')));
       const length = Number(response.headers.get('content-length'));

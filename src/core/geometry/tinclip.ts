@@ -32,7 +32,8 @@ function defaultEpsilon(tin: Tin, region: MultiPolygon): number {
 class PointTable {
   xs: number[] = [];
   ys: number[] = [];
-  private readonly grid = new Map<string, number[]>();
+  // Cell column, then row. Cells are far too many to pack into one number.
+  private readonly grid = new Map<number, Map<number, number[]>>();
 
   constructor(private readonly eps: number) {}
 
@@ -43,20 +44,24 @@ class PointTable {
   add(x: number, y: number): number {
     const cx = this.cell(x);
     const cy = this.cell(y);
+    const eps = this.eps;
     for (let dx = -1; dx <= 1; dx++) {
+      const column = this.grid.get(cx + dx);
+      if (!column) continue;
       for (let dy = -1; dy <= 1; dy++) {
-        const list = this.grid.get(`${cx + dx},${cy + dy}`);
+        const list = column.get(cy + dy);
         if (!list) continue;
-        for (const id of list) if (Math.abs(this.xs[id] - x) <= this.eps && Math.abs(this.ys[id] - y) <= this.eps) return id;
+        for (const id of list) if (Math.abs(this.xs[id] - x) <= eps && Math.abs(this.ys[id] - y) <= eps) return id;
       }
     }
     const id = this.xs.length;
     this.xs.push(x);
     this.ys.push(y);
-    const key = `${cx},${cy}`;
-    const list = this.grid.get(key);
+    let column = this.grid.get(cx);
+    if (!column) this.grid.set(cx, (column = new Map()));
+    const list = column.get(cy);
     if (list) list.push(id);
-    else this.grid.set(key, [id]);
+    else column.set(cy, [id]);
     return id;
   }
 }
@@ -289,6 +294,61 @@ function clipBand(tin: Tin, region: MultiPolygon, eps: number): Tin | null | typ
 }
 
 /**
+ * Constrainautor's set of edges to flip, keeping a list of its members.
+ * Constrainautor goes through the whole set after every constraint that flips
+ * something, and its bit set reads every byte to do it. A clipped lattice
+ * flips about half the cells' diagonals (Delaunay takes either on a square),
+ * so that was quadratic in the cells, and most of the time a clip took.
+ */
+class ListedSet {
+  private readonly member: Uint8Array;
+  private list: number[] = [];
+
+  constructor(size: number) {
+    this.member = new Uint8Array(size);
+  }
+
+  has(i: number): boolean {
+    return this.member[i] === 1;
+  }
+
+  add(i: number): this {
+    if (this.member[i] !== 1) {
+      this.member[i] = 1;
+      this.list.push(i);
+    }
+    return this;
+  }
+
+  delete(i: number): this {
+    this.member[i] = 0;
+    return this;
+  }
+
+  set(i: number, value: boolean): boolean {
+    if (value) this.add(i);
+    else this.delete(i);
+    return value;
+  }
+
+  // As the bit set's: a member deleted before its turn is skipped, and one
+  // added during the pass may or may not be visited.
+  forEach(fn: (i: number) => void): this {
+    const list = this.list;
+    for (let k = 0; k < list.length; k++) if (this.member[list[k]] === 1) fn(list[k]);
+    const kept: number[] = [];
+    for (const i of list) {
+      if (this.member[i] !== 1) continue;
+      this.member[i] = 2;
+      kept.push(i);
+    }
+    for (const i of kept) this.member[i] = 1;
+    this.list = kept;
+    return this;
+  }
+}
+
+/**
  * Constrainautor can rescan forever on a quad made degenerate by a point all
  * but on a constraint. Its segment tests are counted, and a run far past
  * what a clean one needs gives up.
@@ -299,6 +359,7 @@ export class Bounded extends Constrainautor {
     private budget: number,
   ) {
     super(del);
+    (this as unknown as { flips: ListedSet }).flips = new ListedSet(del.triangles.length);
   }
 
   protected override intersectSegments(p1: number, p2: number, p3: number, p4: number): boolean {
@@ -387,21 +448,34 @@ function clipOnce(tin: Tin, region: MultiPolygon, eps: number): { tin: Tin; sour
 
   const onSegment = (id: number, s: Segment): boolean => {
     if (id === s.a || id === s.b) return false;
-    const [t, d] = project(xs[id], ys[id], xs[s.a], ys[s.a], xs[s.b], ys[s.b]);
-    if (d > eps || t <= 0 || t >= 1) return false;
-    if (!s.splits.some(([, other]) => other === id)) s.splits.push([t, id]);
+    const ax = xs[s.a];
+    const ay = ys[s.a];
+    const dx = xs[s.b] - ax;
+    const dy = ys[s.b] - ay;
+    const l2 = dx * dx + dy * dy;
+    const t = l2 > 0 ? ((xs[id] - ax) * dx + (ys[id] - ay) * dy) / l2 : 0;
+    if (t <= 0 || t >= 1 || Math.hypot(xs[id] - (ax + t * dx), ys[id] - (ay + t * dy)) > eps) return false;
+    for (const [, other] of s.splits) if (other === id) return true;
+    s.splits.push([t, id]);
     return true;
   };
 
-  for (const r of regionSegments) {
+  // Each TIN edge is tested once per region edge, however many cells they share.
+  const tested = new Int32Array(tinSegments.length).fill(-1);
+  for (let ri = 0; ri < regionSegments.length; ri++) {
+    const r = regionSegments[ri];
     const [x0, y0, x1, y1] = cellRange(r);
-    const candidates = new Set<number>();
-    for (let cx = x0; cx <= x1; cx++) for (let cy = y0; cy <= y1; cy++) for (const i of buckets.get(cellKey(cx, cy)) ?? []) candidates.add(i);
-    for (const i of candidates) {
+    for (let cx = x0; cx <= x1; cx++) for (let cy = y0; cy <= y1; cy++) for (const i of buckets.get(cellKey(cx, cy)) ?? []) {
+      if (tested[i] === ri) continue;
+      tested[i] = ri;
       const s = tinSegments[i];
       if ((s.a === r.a || s.a === r.b) && (s.b === r.a || s.b === r.b)) continue;
-      const touches = [onSegment(s.a, r), onSegment(s.b, r), onSegment(r.a, s), onSegment(r.b, s)];
-      if (touches.some(Boolean)) continue;
+      // All four, each records the split it finds.
+      const t1 = onSegment(s.a, r);
+      const t2 = onSegment(s.b, r);
+      const t3 = onSegment(r.a, s);
+      const t4 = onSegment(r.b, s);
+      if (t1 || t2 || t3 || t4) continue;
       if (s.a === r.a || s.a === r.b || s.b === r.a || s.b === r.b) continue;
       // Proper crossing.
       const [px, py, qx, qy] = [xs[r.a], ys[r.a], xs[r.b], ys[r.b]];
@@ -603,7 +677,10 @@ export function faceLocator(tin: Tin): Locator {
   const n = Math.max(1, Math.min(1024, Math.ceil(Math.sqrt(faces))));
   const sx = (maxX - minX) / n || 1;
   const sy = (maxY - minY) / n || 1;
-  const grid: number[][] = Array.from({ length: n * n }, () => []);
+  // Faces per bucket as one flat list, counted first: an array per bucket was
+  // most of the time a clip took.
+  const ranges = new Int32Array(faces * 4);
+  const start = new Int32Array(n * n + 1);
   for (let t = 0; t < faces; t++) {
     const a = 3 * f[3 * t];
     const b = 3 * f[3 * t + 1];
@@ -612,7 +689,15 @@ export function faceLocator(tin: Tin): Locator {
     const c1 = Math.min(n - 1, Math.floor((Math.max(v[a], v[b], v[c]) - minX) / sx));
     const r0 = Math.max(0, Math.floor((Math.min(v[a + 1], v[b + 1], v[c + 1]) - minY) / sy));
     const r1 = Math.min(n - 1, Math.floor((Math.max(v[a + 1], v[b + 1], v[c + 1]) - minY) / sy));
-    for (let r = r0; r <= r1; r++) for (let c2 = c0; c2 <= c1; c2++) grid[r * n + c2].push(t);
+    ranges.set([c0, c1, r0, r1], 4 * t);
+    for (let r = r0; r <= r1; r++) for (let c2 = c0; c2 <= c1; c2++) start[r * n + c2 + 1]++;
+  }
+  for (let i = 1; i <= n * n; i++) start[i] += start[i - 1];
+  const fill = start.slice(0, n * n);
+  const bucket = new Int32Array(start[n * n]);
+  for (let t = 0; t < faces; t++) {
+    const [c0, c1, r0, r1] = ranges.subarray(4 * t, 4 * t + 4);
+    for (let r = r0; r <= r1; r++) for (let c2 = c0; c2 <= c1; c2++) bucket[fill[r * n + c2]++] = t;
   }
   const weights = (t: number, x: number, y: number): [number, number, number] => {
     const a = 3 * f[3 * t];
@@ -630,7 +715,9 @@ export function faceLocator(tin: Tin): Locator {
     if (c < -1 || r < -1 || c > n || r > n) return -1;
     let best = -1;
     let bestMin = -1e-9;
-    for (const t of grid[Math.min(n - 1, Math.max(0, r)) * n + Math.min(n - 1, Math.max(0, c))]) {
+    const cell = Math.min(n - 1, Math.max(0, r)) * n + Math.min(n - 1, Math.max(0, c));
+    for (let k = start[cell]; k < start[cell + 1]; k++) {
+      const t = bucket[k];
       const [u, w, s] = weights(t, x, y);
       const least = Math.min(u, w, s);
       if (least > bestMin) {

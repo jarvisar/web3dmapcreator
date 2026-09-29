@@ -40,6 +40,7 @@ export function NumberInput({
   describedBy,
   width,
 }: NumberInputProps) {
+  const unitId = useId();
   const shown = value * scale;
   const [text, setText] = useState(() => formatNumber(shown, decimals));
   const focused = useRef(false);
@@ -102,7 +103,7 @@ export function NumberInput({
         value={text}
         disabled={disabled}
         aria-label={ariaLabel}
-        aria-describedby={describedBy}
+        aria-describedby={[describedBy, unit ? unitId : null].filter(Boolean).join(' ') || undefined}
         onFocus={(event) => {
           focused.current = true;
           before.current = value;
@@ -120,7 +121,8 @@ export function NumberInput({
         onKeyDown={onKeyDown}
       />
       {unit && (
-        <span className="number-unit" aria-hidden="true">
+        // Hidden so it isn't read twice, but the input is described by it.
+        <span id={unitId} className="number-unit" aria-hidden="true">
           {unit}
         </span>
       )}

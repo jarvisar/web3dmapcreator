@@ -4,15 +4,18 @@
 // height that may vary across it. The cap is triangulated once and used for
 // both the top and (reversed) the bottom, and vertical walls run along every
 // boundary edge, so each shell is closed and consistently wound by
-// construction. Where a surface follows the terrain the cap gets interior
-// sample points on a lattice, triangulated with a constrained Delaunay
-// triangulation so the outline is kept exactly.
+// construction. Where a surface follows the terrain the cap is cut from the
+// terrain's own triangles (geometry/lattice.ts), so everything draped on it
+// is flat over the same pieces as the ground. A cut that fails falls back to
+// sample points on the lattice in a constrained Delaunay triangulation.
 
 import Constrainautor from '@kninnug/constrainautor';
 import Delaunator from 'delaunator';
 import earcut from 'earcut';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
-import { capIsClosed, meshCap } from './cap';
+import { capBoundary, capIsClosed, meshCap } from './cap';
+import { latticeTin, type Lattice } from './lattice';
+import { clipTin } from './tinclip';
 import {
   boxesOverlap,
   cleanRing,
@@ -166,6 +169,53 @@ export function meshSolid(solid: Solid, out: MeshBuilder, clip?: MultiPolygon | 
 type Cap = { points: Vec2[]; boundaryCount: number; rings: number[][]; triangles: number[] };
 
 /**
+ * The cap cut from the lattice's triangles, so a top or bottom that follows
+ * the terrain is flat exactly where the terrain is. Null when the cut fails.
+ */
+function latticeCap(rings: Polygon, lattice: Lattice, expected: number): Cap | null {
+  const tin = clipTin(latticeTin(lattice, rings), [rings]);
+  if (!tin?.triangles.length) return null;
+  const v = tin.vertices;
+  const t = tin.triangles;
+  let area = 0;
+  for (let i = 0; i < t.length; i += 3) {
+    const [a, b, c] = [3 * t[i], 3 * t[i + 1], 3 * t[i + 2]];
+    area += ((v[b] - v[a]) * (v[c + 1] - v[a + 1]) - (v[c] - v[a]) * (v[b + 1] - v[a + 1])) / 2;
+  }
+  if (Math.abs(area - expected) > 1e-5 + expected * 1e-4) return null;
+  // Boundary edges have the cap on their left, as the rings have the solid.
+  const edges = capBoundary(tin);
+  if (!edges) return null;
+  const next = new Map(edges);
+  // Boundary points first, which a flat bottom's outline relies on.
+  const index = new Int32Array(v.length / 3).fill(-1);
+  const points: Vec2[] = [];
+  const loops: number[][] = [];
+  for (const [start] of edges) {
+    if (index[start] >= 0) continue;
+    const loop: number[] = [];
+    let p = start;
+    do {
+      if (index[p] >= 0) return null;
+      index[p] = points.length;
+      loop.push(points.length);
+      points.push([v[3 * p], v[3 * p + 1]]);
+      const q = next.get(p);
+      if (q === undefined) return null;
+      p = q;
+    } while (p !== start);
+    loops.push(loop);
+  }
+  const boundaryCount = points.length;
+  for (let p = 0; p < index.length; p++) {
+    if (index[p] >= 0) continue;
+    index[p] = points.length;
+    points.push([v[3 * p], v[3 * p + 1]]);
+  }
+  return { points, boundaryCount, rings: loops, triangles: Array.from(t, (p: number) => index[p]) };
+}
+
+/**
  * Mesh a single polygon as a prism. Returns 'ok', 'fallback' when the
  * constrained triangulation failed and ear clipping was used instead (with
  * `strict`, nothing is written then), 'pinched' (nothing written) when rings
@@ -187,7 +237,12 @@ export function meshPrism(
 
   let cap: Cap | null = null;
   let result: 'ok' | 'fallback' = 'ok';
-  if (solid.drape > 0) {
+  if (solid.drape > 0 && solid.lattice) {
+    // The lattice's edges supply the points along the outline, so it isn't densified.
+    const outline = prepareRings(polygon, 0);
+    if (outline) cap = latticeCap(outline, solid.lattice, polygonArea(outline));
+  }
+  if (!cap && solid.drape > 0) {
     cap = constrainedCap(rings, solid.drape, solid.lattice, expected);
     if (!cap && strict) return 'fallback';
     if (!cap) result = 'fallback';

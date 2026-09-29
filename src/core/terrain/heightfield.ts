@@ -1,9 +1,11 @@
 // The one terrain surface every layer is aligned to. The elevation source is
 // resampled once, in model millimetres, onto the grid the terrain mesh is
 // built from, and roads, water, parks, trees and foundations all interpolate
-// this grid. A road then cannot sink into a hill the terrain mesh renders
-// differently, because both read the same numbers.
+// this grid. Between nodes it's the grid's triangles (geometry/lattice.ts),
+// the same ones the terrain and everything draped on it are cut from, so a
+// road can't sink into or float over a hill between its vertices.
 
+import { cellHeight, type Lattice } from '../geometry/lattice';
 import type { Box } from '../geometry/polygon';
 import { rowCrossings } from '../geometry/scanline';
 import type { Polygon, Vec2 } from '../types';
@@ -72,7 +74,7 @@ export class HeightField {
     return m;
   }
 
-  /** Bilinear height, clamped to the grid edge outside it. */
+  /** Height on the grid's triangles, clamped to the grid edge outside it. */
   heightAt(x: number, y: number): number {
     let fx = (x - this.minX) / this.step;
     let fy = (y - this.minY) / this.step;
@@ -90,9 +92,16 @@ export class HeightField {
     const ty = fy - r;
     const v = this.values;
     const i = r * this.cols + c;
-    const lower = v[i] * (1 - tx) + v[i + 1] * tx;
-    const upper = v[i + this.cols] * (1 - tx) + v[i + this.cols + 1] * tx;
-    return lower * (1 - ty) + upper * ty;
+    return cellHeight(v[i], v[i + 1], v[i + this.cols], v[i + this.cols + 1], tx, ty);
+  }
+
+  get lattice(): Lattice {
+    return { x0: this.minX, y0: this.minY, step: this.step };
+  }
+
+  /** Every node at one height (elevation off), so nothing needs draping. Scans the grid. */
+  get flat(): boolean {
+    return this.min() === this.max();
   }
 
   /**

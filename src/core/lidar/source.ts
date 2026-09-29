@@ -18,6 +18,37 @@ function positive(value: unknown): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+// Every source property the measurement reads, here and in features.ts,
+// selection.ts and prepare.ts. Prepared results and batch checkpoints are
+// keyed by these, so one read anywhere new belongs here too, or a changed
+// value reuses an answer made without it: a parent going from 10 m to 100 m
+// kept the old decision.
+const MEASURED = [
+  'height',
+  'num_floors',
+  'building:levels',
+  'min_height',
+  'min_floor',
+  'is_underground',
+  'has_parts',
+  'roof_shape',
+  'building_id',
+  // Which heights are estimates (Microsoft ML, earlier LiDAR).
+  'sources',
+  'start_date',
+  'building:start_date',
+  'construction_date',
+  'year_built',
+  'lidar_surface_kind',
+  'source_land_ids',
+  'covered_buildings',
+] as const;
+
+/** The measurement's inputs from a feature's properties, for cache keys. */
+export function measuredProps(props: Props): unknown[] {
+  return MEASURED.map((key) => props[key] ?? null);
+}
+
 export function heightMetres(props: Props): number {
   const value = props.height;
   if (typeof value === 'string') {

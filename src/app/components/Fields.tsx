@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Checkbox } from './Checkbox';
 import { HelpTip } from './HelpTip';
@@ -139,7 +139,69 @@ export function TextField({ label, value, onChange, placeholder, help, commitOnB
   );
 }
 
-const HEX = /^#?([0-9a-f]{6})$/i;
+/** #RRGGBB from a typed hex code, with or without #, three-digit shorthand too. */
+export function normaliseHex(text: string): string | null {
+  let value = text.trim().replace(/^#/, '');
+  if (/^[0-9a-f]{3}$/i.test(value)) value = value.replace(/./g, (c) => c + c);
+  return /^[0-9a-f]{6}$/i.test(value) ? `#${value.toUpperCase()}` : null;
+}
+
+interface HexInputProps {
+  id?: string;
+  /** #RRGGBB */
+  value: string;
+  onChange: (hex: string) => void;
+}
+
+// A hex code to type. A full six digits shows as you type, but the text is
+// yours until you leave the field or press Enter: three digits are also a
+// colour (abc is #AABBCC), and applying them then swapped the rest of what
+// was being typed for the expanded code.
+export function HexInput({ id, value, onChange }: HexInputProps) {
+  const [text, setText] = useState(value);
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focused.current) setText(value);
+  }, [value]);
+  const settle = () => {
+    const hex = normaliseHex(text);
+    if (hex && hex !== value) onChange(hex);
+    setText(hex ?? value);
+  };
+  // A click outside closes the colour popover before the field loses focus,
+  // and a removed field never blurs, so what was typed is applied here.
+  const latest = useRef({ text, value, onChange });
+  useEffect(() => {
+    latest.current = { text, value, onChange };
+  });
+  useEffect(
+    () => () => {
+      if (!focused.current) return;
+      const hex = normaliseHex(latest.current.text);
+      if (hex && hex !== latest.current.value) latest.current.onChange(hex);
+    },
+    [],
+  );
+  return (
+    <input
+      id={id}
+      className="text-input hex-input"
+      value={text}
+      spellCheck={false}
+      autoComplete="off"
+      onFocus={() => (focused.current = true)}
+      onChange={(event) => {
+        setText(event.target.value);
+        if (/^#?[0-9a-f]{6}$/i.test(event.target.value.trim())) onChange(normaliseHex(event.target.value)!);
+      }}
+      onBlur={() => {
+        focused.current = false;
+        settle();
+      }}
+      onKeyDown={(event) => event.key === 'Enter' && settle()}
+    />
+  );
+}
 
 interface ColourFieldProps {
   label: string;
@@ -152,12 +214,6 @@ interface ColourFieldProps {
 // The browser's own colour picker, plus the hex code to type or copy.
 export function ColourField({ label, value, onChange, help }: ColourFieldProps) {
   const id = useId();
-  const [text, setText] = useState(value);
-  useEffect(() => setText(value), [value]);
-  const apply = (next: string) => {
-    const match = HEX.exec(next.trim());
-    if (match) onChange(`#${match[1].toUpperCase()}`);
-  };
   return (
     <div className="field">
       <div className="field-row">
@@ -173,19 +229,7 @@ export function ColourField({ label, value, onChange, help }: ColourFieldProps) 
             aria-label={`${label}, colour picker`}
             onChange={(event) => onChange(event.target.value.toUpperCase())}
           />
-          <input
-            id={id}
-            className="text-input hex-input"
-            value={text}
-            spellCheck={false}
-            autoComplete="off"
-            onChange={(event) => {
-              setText(event.target.value);
-              apply(event.target.value);
-            }}
-            onBlur={() => setText(value)}
-            onKeyDown={(event) => event.key === 'Enter' && apply(text)}
-          />
+          <HexInput id={id} value={value} onChange={onChange} />
         </span>
       </div>
     </div>

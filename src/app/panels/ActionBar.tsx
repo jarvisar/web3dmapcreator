@@ -198,6 +198,7 @@ function SvgActions() {
   const status = useSvgRender((state) => state.status);
   const result = useSvgRender((state) => state.result);
   const resultKey = useSvgRender((state) => state.resultKey);
+  const triedKey = useSvgRender((state) => state.triedKey);
   const error = useSvgRender((state) => state.error);
   const key = useSvgKey();
   const view = useApp((state) => state.ui.view);
@@ -206,6 +207,9 @@ function SvgActions() {
   const stale = result !== null && key !== resultKey;
   // Missing tiles are only tried again on a render, and the settings haven't changed to start one.
   const incomplete = result !== null && !stale && result.stats.missingTiles > 0;
+  // The open preview doesn't try the same settings twice on its own, so after
+  // a failed or cancelled update it needs a button.
+  const gaveUp = stale && !working && triedKey === key;
 
   // Renders started from the map show their progress. The open preview updates quietly.
   if (working && (!result || view === 'map')) return <SvgProgress />;
@@ -221,10 +225,15 @@ function SvgActions() {
     ].join(' · ');
   }
 
-  let first: { label: string; icon: 'eye' | 'refresh' | null; primary: boolean } | null = null;
-  if (!result) first = { label: 'Generate SVG', icon: null, primary: true };
-  else if (incomplete) first = { label: 'Retry map data', icon: 'refresh', primary: true };
-  else if (view === 'map') first = stale ? { label: 'Update SVG', icon: 'refresh', primary: true } : { label: 'Show preview', icon: 'eye', primary: false };
+  type First = { label: string; icon: 'eye' | 'refresh' | null; primary: boolean; onClick: () => void };
+  let first: First | null = null;
+  const update = (label: string): First => ({ label, icon: 'refresh', primary: true, onClick: generateSvg });
+  if (!result) first = { ...update('Generate SVG'), icon: null };
+  else if (working) first = { label: 'Cancel', icon: null, primary: false, onClick: cancelRender };
+  else if (status === 'error' && stale) first = update('Try again');
+  else if (incomplete) first = update('Retry map data');
+  else if (view === 'map') first = stale ? update('Update SVG') : { label: 'Show preview', icon: 'eye', primary: false, onClick: () => setView('result') };
+  else if (gaveUp) first = update('Update SVG');
 
   return (
     <>
@@ -246,9 +255,9 @@ function SvgActions() {
           <button
             type="button"
             className={`btn btn-lg${first.primary ? ' btn-primary' : ''}`}
-            disabled={problem !== null}
+            disabled={problem !== null && !working}
             title={problem ?? undefined}
-            onClick={() => (first.icon === 'eye' ? setView('result') : generateSvg())}
+            onClick={first.onClick}
           >
             {first.icon === 'eye' && <Eye size={15} aria-hidden="true" />}
             {first.icon === 'refresh' && <RefreshCw size={15} aria-hidden="true" />}

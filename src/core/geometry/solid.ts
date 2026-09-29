@@ -5,6 +5,7 @@
 // mesher closes every shell the same way.
 
 import type { MaterialRole, Polygon, Vec2 } from '../types';
+import type { Lattice } from './lattice';
 
 export type HeightFn = (x: number, y: number) => number;
 
@@ -22,8 +23,8 @@ export interface PrismSolid {
    * outline. 0 for planar caps.
    */
   drape: number;
-  /** Put interior sample points on this grid instead of one aligned to the polygon. */
-  lattice?: { x0: number; y0: number; step: number };
+  /** The terrain's grid, when the solid follows it (geometry/lattice.ts). */
+  lattice?: Lattice;
 }
 
 export interface MeshSolid {

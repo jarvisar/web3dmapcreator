@@ -1,3 +1,4 @@
+import { fieldRange } from '../../core/svgmap/limits';
 import { LASER_PALETTES, type OutputMode, PRINT_THEMES } from '../../core/svgmap/settings';
 import { CheckField, ColourField, SelectField } from '../components/Fields';
 import { NumberField } from '../components/NumberField';
@@ -58,8 +59,7 @@ export function OutputPanel() {
             label="Pen width"
             value={plotter.penWidth}
             onChange={(penWidth) => setPlotter({ penWidth })}
-            min={0.05}
-            max={3}
+            {...fieldRange('plotter.penWidth')}
             step={0.05}
             decimals={2}
             unit="mm"

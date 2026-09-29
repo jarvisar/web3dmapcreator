@@ -51,7 +51,7 @@
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: linear-gradient(color-mix(in srgb, var(--go-1) 90%, #fff), var(--go-2));
+  background: linear-gradient(color-mix(in srgb, var(--go-1) 95%, #fff), var(--go-2));
   color: var(--go-text);
 }
 

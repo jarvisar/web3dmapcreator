@@ -25,7 +25,7 @@ export function setLidarStore(value: ByteCache | null): void {
 export type LidarRequest =
   | { kind: 'bytes'; url: string }
   | { kind: 'range'; url: string; start: number; end: number }
-  | { kind: 'text'; url: string; maxAgeMs: number };
+  | { kind: 'text'; url: string; maxAgeMs: number; json?: boolean };
 
 /** Where a LiDAR worker's Fetchers send their requests: to one Fetcher serving all workers. */
 export type Transport = (request: LidarRequest) => Promise<ArrayBuffer | string>;
@@ -75,7 +75,12 @@ export class Fetcher {
     }
     let pending = this.inflight.get(key);
     if (!pending) {
-      const load = request.kind === 'bytes' ? this.bytes(request.url) : request.kind === 'range' ? this.range(request.url, request.start, request.end) : this.text(request.url, request.maxAgeMs);
+      const load =
+        request.kind === 'bytes'
+          ? this.bytes(request.url)
+          : request.kind === 'range'
+            ? this.range(request.url, request.start, request.end)
+            : this.text(request.url, request.maxAgeMs, request.json);
       pending = load
         .then((value) => {
           this.remember(key, value);
@@ -99,27 +104,49 @@ export class Fetcher {
     }
   }
 
-  /** A catalog document, reused for a day. */
-  async text(url: string, maxAgeMs = DAY_MS): Promise<string> {
-    if (transport) return transport({ kind: 'text', url, maxAgeMs }) as Promise<string>;
+  /**
+   * A catalog document, reused for a day. Only an answer that reads as one is
+   * kept: a server can send its maintenance page with a 200, and cached, that
+   * stood in for the catalog for a day after the server was back.
+   */
+  async text(url: string, maxAgeMs = DAY_MS, json = false): Promise<string> {
+    if (transport) return transport({ kind: 'text', url, maxAgeMs, json }) as Promise<string>;
+    const usable = (text: string) => catalogProblem(text, json) === null;
     const key = `catalog:${url}`;
     const cached = store ? await store.get(key).catch(() => undefined) : undefined;
     if (cached && cached.byteLength > 8) {
       const view = new DataView(cached);
       const saved = view.getFloat64(0, true);
-      if (Date.now() - saved < maxAgeMs) return new TextDecoder().decode(new Uint8Array(cached, 8));
+      const text = new TextDecoder().decode(new Uint8Array(cached, 8));
+      if (Date.now() - saved < maxAgeMs && usable(text)) return text;
     }
     const body = new Uint8Array(await fetchBytes(url, this.signal, { cache: false, onBytes: this.onBytes, idleTimeoutMs: CATALOG_IDLE_MS }));
+    const text = new TextDecoder().decode(body);
+    const problem = catalogProblem(text, json);
+    if (problem) throw new Error(`${url} ${problem}`);
     const stamped = new Uint8Array(body.byteLength + 8);
     new DataView(stamped.buffer).setFloat64(0, Date.now(), true);
     stamped.set(body, 8);
     if (store) store.put(key, stamped.buffer).catch(() => undefined);
-    return new TextDecoder().decode(body);
+    return text;
   }
 
   async json(url: string, maxAgeMs = DAY_MS): Promise<unknown> {
-    return JSON.parse(await this.text(url, maxAgeMs));
+    return JSON.parse(await this.text(url, maxAgeMs, true));
   }
+}
+
+/** Why a catalog answer isn't one, or null. */
+function catalogProblem(text: string, json: boolean): string | null {
+  if (json) {
+    try {
+      JSON.parse(text);
+      return null;
+    } catch {
+      return 'answered with something other than JSON.';
+    }
+  }
+  return /^\s*(<!doctype html|<html)/i.test(text) ? 'answered with a web page.' : null;
 }
 
 /** Run `task` on each item with at most `window` running ahead of the one being consumed. */

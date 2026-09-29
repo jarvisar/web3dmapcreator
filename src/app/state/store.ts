@@ -140,6 +140,8 @@ export interface AppState {
   svg: SvgSettings;
   /** Name of the title font the user loaded, set once the file is read back from IndexedDB. */
   customFontName: string | null;
+  /** The loaded font file's fingerprint: another file can have the same name. */
+  customFontId: string | null;
   /** Name of the searched place or preset, used for file names. */
   placeName: string;
   /** File name typed by the user, or null to follow the place name. */
@@ -189,6 +191,7 @@ function initialState(): AppState {
     exportSettings: saved.exportSettings ?? { ...DEFAULT_EXPORT },
     svg,
     customFontName: null,
+    customFontId: null,
     // A first visit starts on the default area, so name files after it.
     placeName: linked ? '' : (saved.placeName ?? (saved.area ? '' : 'Chicago Loop')),
     fileName: saved.fileName ?? null,
@@ -523,8 +526,8 @@ export function setSvgScale(scale: number): void {
   setArea((area) => ({ ...area, widthM: (scale * layout.window.w) / 1000 }));
 }
 
-export function setCustomFontName(customFontName: string | null): void {
-  set({ customFontName });
+export function setCustomFont(customFontName: string | null, customFontId: string | null): void {
+  set({ customFontName, customFontId });
 }
 
 // -------------------------------------------------------------------- ui

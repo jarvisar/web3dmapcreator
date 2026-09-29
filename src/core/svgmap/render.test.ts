@@ -82,6 +82,30 @@ describe('rendering a real tile', () => {
     expect(result.stats.plotter!.penUpMm).toBeLessThan(result.stats.plotter!.penUpUnorderedMm);
   });
 
+  it('reports the pen travel of the file as written', () => {
+    // Travel between subpaths in document order, from the origin.
+    const travelIn = (svg: string) => {
+      let here = [0, 0];
+      let travel = 0;
+      for (const [, d] of svg.matchAll(/ d="([^"]+)"/g)) {
+        for (const sub of d.split('M').slice(1)) {
+          const points = sub.split('L').map((p) => p.split(',').map(Number));
+          travel += Math.hypot(points[0][0] - here[0], points[0][1] - here[1]);
+          here = points[points.length - 1];
+        }
+      }
+      return travel;
+    };
+    const style = defaultRenderSettings('plotter').style;
+    // Pens that take turns in draw order.
+    const colors = { ...style.colors, water: '#0000FF', buildings: '#000000', roads: '#0000FF', paths: '#000000' };
+    for (const optimize of [true, false]) {
+      const { result } = render('plotter', { plotter: { penWidth: 0.3, optimize }, style: { ...style, colors } });
+      expect(result.stats.plotter!.pens).toBe(new Set(result.groups.map((g) => g.color)).size);
+      expect(travelIn(toSvg(result))).toBeCloseTo(result.stats.plotter!.penUpMm, 0);
+    }
+  });
+
   it('gives an outline title and a single-line subtitle their own groups', () => {
     const bytes = readFileSync('public/fonts/Montserrat-SemiBold.ttf');
     const montserrat = parseOutlineFont(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));

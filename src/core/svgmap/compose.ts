@@ -368,6 +368,12 @@ export function compose(
   // Plotter order
   let plotterStats: PlotterStats | null = null;
   if (plotter) {
+    // The file puts every layer of one pen together, so the pen travels in that order.
+    const first = new Map<string, number>();
+    drafts.forEach((d, i) => {
+      if (!first.has(style.colors[d.element])) first.set(style.colors[d.element], i);
+    });
+    drafts.sort((a, b) => first.get(style.colors[a.element])! - first.get(style.colors[b.element])!);
     let penDown = 0;
     let penUp = 0;
     let penUpUnordered = 0;
@@ -398,8 +404,7 @@ export function compose(
         if (last) here = last[last.length - 1];
       }
     }
-    const pens = new Set(drafts.map((d) => style.colors[d.element])).size;
-    plotterStats = { penDownMm: penDown, penUpMm: penUp, penUpUnorderedMm: penUpUnordered, pens };
+    plotterStats = { penDownMm: penDown, penUpMm: penUp, penUpUnorderedMm: penUpUnordered, pens: 0 };
   }
 
   // Path data
@@ -440,6 +445,8 @@ export function compose(
       areaMm2: area,
     });
   }
+  // Only pens with something to draw get a layer.
+  if (plotterStats) plotterStats.pens = new Set(groups.map((g) => g.color)).size;
   lap('output');
 
   const centre = { lon: s.area.lon, lat: s.area.lat };
