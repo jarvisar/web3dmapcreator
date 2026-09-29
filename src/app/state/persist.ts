@@ -7,11 +7,13 @@ import {
   DEFAULT_PALETTE,
   EXPORT_FORMATS,
   MIN_SECTION_MM,
+  PALETTE_PRESETS,
   PRINTERS,
   sanitizeSettings,
 } from '../../core/settings';
 import type { AreaSpec, ExportSettings, ModelSettings, Palette } from '../../core/settings';
 import { type SvgSettings, defaultSvgSettings, mergeSettings } from '../svgmap/settings';
+import { matchingPreset } from './derived';
 
 export const STORAGE_KEY = 'jarvizar-city-model:v1';
 const KEY = STORAGE_KEY;
@@ -58,7 +60,10 @@ function readSettings(saved: unknown): ModelSettings | undefined {
   return isObject(saved) ? sanitizeSettings(saved) : undefined;
 }
 
-function readPalette(saved: unknown): Palette | undefined {
+function readPalette(saved: unknown, presetKey: unknown): Palette | undefined {
+  // A palette saved from a preset follows that preset's colours if they change
+  const preset = PALETTE_PRESETS.find((item) => item.key === presetKey);
+  if (preset) return structuredClone(preset.palette);
   if (!isObject(saved)) return undefined;
   const palette = structuredClone(DEFAULT_PALETTE);
   for (const { key } of COLOUR_GROUPS) {
@@ -107,7 +112,7 @@ export function loadSaved(): SavedState {
     output: raw.output === 'svg' || raw.output === 'model' ? raw.output : undefined,
     area: readArea(raw.area),
     settings: readSettings(raw.settings),
-    palette: readPalette(raw.palette),
+    palette: readPalette(raw.palette, raw.palettePreset),
     exportSettings: readExport(raw.exportSettings),
     svg: isObject(raw.svg) ? mergeSettings(defaultSvgSettings(), raw.svg) : undefined,
     placeName: typeof raw.placeName === 'string' ? raw.placeName : undefined,
@@ -143,6 +148,7 @@ export function saveState(
     area: state.area,
     settings: state.settings,
     palette: state.palette,
+    palettePreset: matchingPreset(state.palette)?.key,
     exportSettings: state.exportSettings,
     svg: state.svg,
     placeName: state.placeName,
