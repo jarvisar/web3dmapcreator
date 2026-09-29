@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ByteCache } from './cache';
-import { configureHttp, fetchBytes, HttpError, NetworkError, parseRetryAfter, remoteFile, setByteCache } from './http';
+import { configureHttp, fetchByteLength, fetchBytes, HttpError, NetworkError, parseRetryAfter, remoteFile, setByteCache } from './http';
 import { mockServer } from './testdata/serve';
 
 const URL_A = 'https://example.com/a.bin';
@@ -152,6 +152,17 @@ describe('remoteFile', () => {
       return new Response(stream, { status: 206 });
     });
     await expect(remoteFile(URL_A, data.length).slice(0, 10)).rejects.toThrow(/No data received/);
+    expect(calls).toBe(2);
+  });
+
+  it('retries a HEAD that never answers, then gives up', async () => {
+    configureHttp({ idleTimeoutMs: 40, retries: 1 });
+    let calls = 0;
+    vi.stubGlobal('fetch', (_url: string, init?: RequestInit) => {
+      calls++;
+      return new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))));
+    });
+    await expect(fetchByteLength(URL_A)).rejects.toThrow(/No answer for/);
     expect(calls).toBe(2);
   });
 

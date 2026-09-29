@@ -24,6 +24,13 @@ describe('SVG settings', () => {
     expect(app).toEqual(rest);
   });
 
+  it('titles the render with the place when the map has no title', () => {
+    const svg = defaultSvgSettings();
+    expect(toRenderSettings(engineArea, { ...svg, label: { ...svg.label, text: 'ROME' } }, 'Rome').title).toBe('ROME');
+    // The download is named from this, so an old result keeps its place's name.
+    expect(toRenderSettings(engineArea, { ...svg, label: { ...svg.label, text: ' ' } }, 'Chicago Loop').title).toBe('Chicago Loop');
+  });
+
   it('fills in fields that older saved settings are missing', () => {
     const merged = mergeSettings(defaultSvgSettings(), { label: { text: 'ROME' } });
     expect(merged.label.text).toBe('ROME');

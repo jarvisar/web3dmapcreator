@@ -22,6 +22,26 @@ describe('tile downloads', () => {
     await vi.advanceTimersByTimeAsync(30_000);
     await failed;
   });
+
+  it('abort a PMTiles header that never comes, and ask for it again next time', async () => {
+    vi.useFakeTimers();
+    const requests: AbortSignal[] = [];
+    // Never answers, but lets go when aborted like a real fetch.
+    vi.stubGlobal('fetch', (_url: string, init?: RequestInit) => {
+      requests.push(init!.signal!);
+      return new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))));
+    });
+    const source = new TileSource('https://tiles.test/map.pmtiles');
+    const first = expect(source.get({ z: 14, x: 4201, y: 6089 })).rejects.toThrow(/No answer from/);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await first;
+    const second = expect(source.get({ z: 14, x: 4201, y: 6089 })).rejects.toThrow(/No answer from/);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await second;
+    // Two header reads, and neither is left holding a connection.
+    expect(requests).toHaveLength(2);
+    expect(requests.every((signal) => signal.aborted)).toBe(true);
+  });
 });
 
 describe('render service', () => {

@@ -81,7 +81,9 @@ export function cleanupForPreset(preset: CleanupPreset, mode: OutputMode, penWid
   }
 }
 
-export function toRenderSettings(area: AreaSpec, s: SvgSettings): RenderSettings {
+// Without a title on the map, the place name titles the file, so a result
+// downloaded after moving somewhere else keeps its own name.
+export function toRenderSettings(area: AreaSpec, s: SvgSettings, placeName = ''): RenderSettings {
   return {
     area: { lon: area.center[0], lat: area.center[1], bearing: area.rotationDeg, widthM: area.widthM },
     product: pieceProduct(s.product, area.shape),
@@ -96,7 +98,7 @@ export function toRenderSettings(area: AreaSpec, s: SvgSettings): RenderSettings
     label: s.label,
     source: s.source,
     plotter: s.plotter,
-    title: s.label.text.trim() || 'Map',
+    title: s.label.text.trim() || placeName.trim(),
   };
 }
 

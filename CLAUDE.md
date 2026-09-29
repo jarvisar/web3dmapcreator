@@ -52,7 +52,9 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   inside the crop, and left out of both sections when a crown crosses a seam.
 - The mesher only accepts caps whose edges close exactly (`capIsClosed`).
   Pinched polygons (rings touching at a vertex, or a hole corner on another
-  ring's edge) are shrunk by 1e-4 mm and retried. Never weld by coordinate.
+  ring's edge) are shrunk by 1e-4 mm and retried (`PINCH_MM`). Never weld by
+  coordinate. A cap cut to a print section gets the same retry, for a
+  section line through a concave corner of its outline.
 - Water: cut (>= 5,000 m2 of the whole feature, full-depth fill), basins
   (ponds/fountains by tags, recessed 1 mm), sheets (small, 0.18 mm above
   flattened ground). Basins and sheets are trimmed to what lies outside cut
@@ -154,7 +156,9 @@ LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
   outline vertices earcut skips put back, and checked with `capIsClosed`.
 - `clipTin` caps Constrainautor's work (`Bounded`) and retries a stuck cut
   with the region moved in slightly. Without the cap, a grazing outline can
-  loop forever.
+  loop forever. It returns an empty TIN when the region misses the surface
+  and null only when the triangulation failed, so a section that only the
+  cap's box reaches isn't counted as a failure.
 - `thinRim` (not in the add-on) removes rim vertices on straight walls after
   the envelope is clipped. It cut roof triangles about four times.
 - `src/core` has no LAZ or proj dependency. `src/worker/lidarCodecs.ts`

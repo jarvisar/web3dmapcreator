@@ -217,9 +217,10 @@ async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | 
     progress: (label, fraction, detail) => progress.checkpoint(fraction, detail, label),
     runner: pool ?? undefined,
   });
-  // A block with a failed read has a hole, so read it again next time. The
-  // other blocks come from their checkpoints.
-  if (!result.failedBlocks) surface = { key, prepared: result };
+  // A failed read leaves a hole, and a survey whose catalog failed can leave
+  // half the area without one, so try again next time. Blocks that were read
+  // come from their checkpoints.
+  if (!result.failures.length) surface = { key, prepared: result };
   return result;
 }
 

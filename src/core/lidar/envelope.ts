@@ -926,7 +926,7 @@ function surfaces(polygon: MultiPolygon, heights: Grid, upper: Grid, raster: Ras
   }
   snapToBoundary(vertices, polygon, SNAP_GAP);
   const clipped = clipTin({ vertices, triangles }, polygon);
-  if (!clipped) throw new UnsupportedFit('incomplete clipped upper surface');
+  if (!clipped?.triangles.length) throw new UnsupportedFit('incomplete clipped upper surface');
   // The clip leaves a rim vertex every cell along straight walls, which only cost triangles.
   const tin = thinRim(clipped, pitch / 2);
   let clippedArea = 0;

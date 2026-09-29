@@ -32,6 +32,8 @@ export interface PlotterStats {
 export interface RenderStats {
   zoom: number;
   tiles: number;
+  // Tiles that could not be downloaded, so the map has holes.
+  missingTiles: number;
   bytes: number;
   cleanup: CleanupStats | null;
   // Share of the road linework kept after cleanup, 0 to 1.

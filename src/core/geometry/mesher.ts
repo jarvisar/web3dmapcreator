@@ -20,6 +20,7 @@ import {
   intersection,
   multiBounds,
   offsetPolygons,
+  PINCH_MM,
   pointInMulti,
   polygonArea,
   ringArea,
@@ -281,9 +282,6 @@ function prepareRings(polygon: Polygon, drape: number): Polygon | null {
   }
   return out.length ? out : null;
 }
-
-// How far a pinched polygon shrinks: invisible, but enough to part the rings.
-const PINCH_MM = 1e-4;
 
 /**
  * Boolean results can touch themselves at a vertex: a hole meeting its outer

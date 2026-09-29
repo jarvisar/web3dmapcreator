@@ -2,7 +2,8 @@
 import { useMemo } from 'react';
 import { validateArea } from '../../core/geo/area';
 import type { AreaSpec } from '../../core/settings';
-import type { OutputMode, RenderSettings } from '../../core/svgmap/settings';
+import type { RenderResult } from '../../core/svgmap/result';
+import type { RenderSettings } from '../../core/svgmap/settings';
 import { toSvg } from '../../core/svgmap/svg/writer';
 import { NARROW_QUERY, downloadBlob } from '../lib/browser';
 import { formatBytes } from '../lib/format';
@@ -20,7 +21,7 @@ export function svgProblem(area: AreaSpec, svg: SvgSettings): string | null {
 
 function current(): { settings: RenderSettings; key: string } {
   const state = useApp.getState();
-  const settings = toRenderSettings(state.area, state.svg);
+  const settings = toRenderSettings(state.area, state.svg, state.placeName);
   const font = state.customFontName ? getCustomFont() : null;
   return { settings, key: settingsKey(settings, font) };
 }
@@ -29,10 +30,11 @@ function current(): { settings: RenderSettings; key: string } {
 export function useSvgKey(): string {
   const area = useApp((state) => state.area);
   const svg = useApp((state) => state.svg);
+  const placeName = useApp((state) => state.placeName);
   const customFontName = useApp((state) => state.customFontName);
   return useMemo(
-    () => settingsKey(toRenderSettings(area, svg), customFontName ? getCustomFont() : null),
-    [area, svg, customFontName],
+    () => settingsKey(toRenderSettings(area, svg, placeName), customFontName ? getCustomFont() : null),
+    [area, svg, placeName, customFontName],
   );
 }
 
@@ -48,7 +50,8 @@ export function generateSvg(): void {
   if (svgProblem(state.area, state.svg)) return;
   const { key } = current();
   const render = useSvgRender.getState();
-  if (render.resultKey === key) {
+  // A map with tiles missing is rendered again, which tries those tiles.
+  if (render.resultKey === key && !render.result?.stats.missingTiles) {
     showPreview();
     return;
   }
@@ -66,16 +69,15 @@ function showPreview() {
 }
 
 // Named after the title, like chicago-laser.svg, unless a file name was typed.
-// The mode comes from the result, which can be older than the settings.
-export function svgFileName(mode: OutputMode): string {
-  const state = useApp.getState();
-  return `${fileBase(state.svg.label.text.trim() || state.placeName, state.fileName)}-${mode}.svg`;
+// The title and mode come from the result, which can be older than the settings.
+export function svgFileName(result: RenderResult): string {
+  return `${fileBase(result.meta.title, useApp.getState().fileName)}-${result.mode}.svg`;
 }
 
 export function downloadSvg(): void {
   const result = useSvgRender.getState().result;
   if (!result) return;
-  const name = svgFileName(result.mode);
+  const name = svgFileName(result);
   const blob = new Blob([toSvg(result)], { type: 'image/svg+xml' });
   downloadBlob(blob, name);
   toast(`Downloaded ${name} (${formatBytes(blob.size)})`, 'success');

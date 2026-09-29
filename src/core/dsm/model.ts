@@ -133,7 +133,7 @@ function landRegion(crop: Ring, water: MultiPolygon): MultiPolygon {
 function cutSurface(tin: Tin, region: MultiPolygon): Tin {
   let clipped = clipTin(tin, region);
   if (clipped && !capBoundary(clipped)) clipped = clipTin(tin, offsetPolygons(region, -1e-3, 'miter'));
-  if (!clipped || !capBoundary(clipped)) throw new Error('The LiDAR surface could not be cut to the area shape. Try the rectangle shape.');
+  if (!clipped?.triangles.length || !capBoundary(clipped)) throw new Error('The LiDAR surface could not be cut to the area shape. Try the rectangle shape.');
   return clipped;
 }
 

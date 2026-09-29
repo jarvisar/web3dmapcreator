@@ -23,6 +23,11 @@ import { clipToRect, pathBounds } from './clipRect';
 export const SCALE = 10000;
 /** Model-space distance below which two points are the same, in mm. */
 export const EPSILON = 1e-4;
+
+// How far a pinched polygon or cap region shrinks: invisible, but enough to
+// part the rings.
+export const PINCH_MM = 1e-4;
+
 // Largest gap between a round cap or join and its chords: far below what a
 // printer resolves, and every vertex saved speeds up the booleans after it.
 const ARC_TOLERANCE = 0.005;

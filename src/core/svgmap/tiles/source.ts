@@ -2,7 +2,7 @@
 // file read with range requests. It has to use the OpenMapTiles schema.
 // Only the tiles for the selected area are fetched, six at a time, and they
 // are cached so changing settings doesn't download anything again.
-import { PMTiles } from 'pmtiles';
+import { FetchSource, PMTiles, type RangeResponse, type Source } from 'pmtiles';
 import type { TileId } from '../prepare';
 
 type Fetcher = (tile: TileId, signal?: AbortSignal) => Promise<ArrayBuffer | null>;
@@ -58,6 +58,46 @@ async function downloadTile(href: string, tile: TileId, signal?: AbortSignal): P
   }
 }
 
+// Every read of a PMTiles archive, the header included, is aborted after
+// READ_MS so it lets go of its connection. pmtiles reads the header with no
+// signal at all, and a browser only keeps a few connections open to one
+// server: stalled reads that were merely given up on kept a retry from
+// reaching the server once it came back.
+class TimedSource implements Source {
+  private readonly inner: FetchSource;
+
+  constructor(url: string) {
+    this.inner = new FetchSource(url);
+  }
+
+  getKey(): string {
+    return this.inner.getKey();
+  }
+
+  async getBytes(offset: number, length: number, signal?: AbortSignal, etag?: string): Promise<RangeResponse> {
+    const controller = new AbortController();
+    const forward = () => controller.abort(signal?.reason);
+    if (signal?.aborted) forward();
+    else signal?.addEventListener('abort', forward, { once: true });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, READ_MS);
+    try {
+      return await this.inner.getBytes(offset, length, controller.signal, etag);
+    } catch (error) {
+      if (timedOut) throw new Error(`No answer from ${this.inner.url} in ${READ_MS / 1000} s.`);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', forward);
+      // Also lets go of a response refused part way, like one without range support.
+      controller.abort();
+    }
+  }
+}
+
 async function maybeGunzip(buffer: ArrayBuffer): Promise<ArrayBuffer> {
   const bytes = new Uint8Array(buffer, 0, Math.min(2, buffer.byteLength));
   if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) return buffer;
@@ -84,11 +124,15 @@ export class TileSource {
     this.url = url.trim();
   }
 
+  private get pmtiles(): boolean {
+    return /\.pmtiles(\?|$)/i.test(this.url);
+  }
+
   private makeFetcher(): Promise<Fetcher> {
-    if (/\.pmtiles(\?|$)/i.test(this.url)) {
-      const archive = new PMTiles(this.url);
+    if (this.pmtiles) {
+      const archive = new PMTiles(new TimedSource(this.url));
       return Promise.resolve(async (tile, signal) => {
-        const response = await archive.getZxy(tile.z, tile.x, tile.y, signal ?? AbortSignal.timeout(READ_MS));
+        const response = await archive.getZxy(tile.z, tile.x, tile.y, signal);
         return response ? response.data : null;
       });
     }
@@ -106,7 +150,13 @@ export class TileSource {
         this.fetcher = null;
       });
     }
-    return this.fetcher.then((fetchTile) => fetchTile(tile, signal));
+    const fetcher = this.fetcher;
+    return fetcher.then((fetchTile) => fetchTile(tile, signal)).catch((error: unknown) => {
+      // The archive keeps its header read, failed or stalled, for good. A new
+      // one reads the header again.
+      if (this.pmtiles && this.fetcher === fetcher) this.fetcher = null;
+      throw error;
+    });
   }
 }
 

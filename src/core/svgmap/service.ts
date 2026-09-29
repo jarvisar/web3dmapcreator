@@ -37,8 +37,6 @@ interface PreparedEntry {
   key: string;
   value: Prepared;
   memo: Map<string, Paths64>;
-  /** Tiles that could not be downloaded. */
-  missing: number;
 }
 
 // Yield so a newer request can cancel this one.
@@ -74,7 +72,7 @@ export class RenderService {
     const key = JSON.stringify([settings.area, layout.window, plan.zoom, settings.source.tiles]);
 
     let entry = this.prepared?.key === key ? this.prepared : null;
-    if (!entry || entry.missing) entry = await this.prepare(key, plan, layout, settings.source.tiles, entry, onProgress, isCancelled);
+    if (!entry || entry.value.missing) entry = await this.prepare(key, plan, layout, settings.source.tiles, entry, onProgress, isCancelled);
 
     const label = settings.label;
     let title: LoadedFont | null = null;
@@ -121,11 +119,11 @@ export class RenderService {
     if (isCancelled()) throw new CancelledError();
     const missing = plan.tiles.filter((tile) => !data.has(tileKey(tile))).length;
     // Only rebuild when the retry got something the last geometry lacked.
-    if (previous && missing >= previous.missing) return previous;
+    if (previous && missing >= previous.value.missing) return previous;
     onProgress({ stage: 'geometry', message: 'Building geometry' });
     await tick();
     if (isCancelled()) throw new CancelledError();
-    const entry = { key, value: prepareArea(plan, layout, data), memo: new Map(), missing };
+    const entry = { key, value: prepareArea(plan, layout, data), memo: new Map() };
     this.prepared = entry;
     return entry;
   }

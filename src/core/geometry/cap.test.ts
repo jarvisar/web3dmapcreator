@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { capBoundary, constrainedUnderside, meshCap, undersideTriangles } from './cap';
 import { clipRegion, MeshBuilder } from './mesher';
+import { intersection } from './polygon';
 import type { CapSolid } from './solid';
 import { clipTin, type Tin } from './tinclip';
 import { edgeReport, signedVolume } from './validate';
@@ -83,6 +84,35 @@ describe('meshCap', () => {
     const out = new MeshBuilder();
     expect(meshCap(cap, out, clipRegion([[[[30, 30], [40, 30], [40, 40], [30, 40]]]]))).toBe('empty');
     expect(out.indexCount).toBe(0);
+  });
+
+  it("leaves out a section that only the cap's box reaches", () => {
+    // Inside the L's box but off the L, which used to count as a failed cut.
+    const out = new MeshBuilder();
+    expect(meshCap(cap, out, clipRegion([[[[6, 5], [9, 5], [9, 9], [6, 9]]]]))).toBe('empty');
+    expect(out.indexCount).toBe(0);
+  });
+
+  it('cuts through a concave corner of the outline', () => {
+    // A V cut into the top edge. The line through its point leaves the upper
+    // section two parts touching there, which the cap refuses as it is.
+    const outline: [number, number][] = [[1, 1], [9, 1], [9, 9], [5, 5], [1, 9]];
+    const notched = clipTin(gridTin(10, 1, (x, y) => 20 + 0.3 * x + 0.1 * y), [[outline]])!;
+    const solid: CapSolid = { kind: 'cap', role: 'building', vertices: notched.vertices, triangles: notched.triangles, bottom: 15 };
+    const whole = new MeshBuilder();
+    expect(meshCap(solid, whole)).toBe('ok');
+    const expected = closed(whole);
+    let volume = 0;
+    for (const [y0, y1] of [[0, 5], [5, 10]]) {
+      const out = new MeshBuilder();
+      const region = intersection([[[[0, y0], [10, y0], [10, y1], [0, y1]]]], [[outline]]);
+      expect(meshCap(solid, out, clipRegion(region))).toBe('ok');
+      const { positions, indices } = closed(out);
+      volume += signedVolume(positions, indices);
+    }
+    // Less the 0.1 micron the upper section's region was shrunk by.
+    const wholeVolume = signedVolume(expected.positions, expected.indices);
+    expect(Math.abs(volume - wholeVolume)).toBeLessThan(1e-3 * wholeVolume);
   });
 
   it('covers the underside by constrained triangulation too, every outline vertex used', () => {

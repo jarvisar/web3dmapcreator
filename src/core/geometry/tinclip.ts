@@ -83,21 +83,25 @@ function nextEdge(e: number): number {
 }
 
 /**
- * The part of `tin` inside `region`, or null when the triangulation fails.
- * Where the region reaches past the TIN there is simply no surface. Region rings may be in any
- * orientation, outer rings and holes are told apart by the NonZero rule the
- * polygon helpers use (outer counter-clockwise, holes clockwise).
+ * The part of `tin` inside `region`, with no triangles when none of it is,
+ * or null when the triangulation fails. A print section needs to tell those
+ * apart. Where the region reaches past the TIN there is simply no surface.
+ * Region rings may be in any orientation, outer rings and holes are told
+ * apart by the NonZero rule the polygon helpers use (outer counter-clockwise,
+ * holes clockwise).
  */
 export function clipTin(tin: Tin, region: MultiPolygon, epsilon?: number): Tin | null {
   const eps = epsilon ?? defaultEpsilon(tin, region);
   const out = clipBand(tin, region, eps);
-  if (out !== FAILED) return out;
+  if (out !== FAILED) return out ?? emptyTin();
   // An outline that grazes the TIN's vertices can leave the constrained
   // triangulation stuck. Moving it in by a millionth of the extent almost
   // always gets clear, and callers compare areas with more slack than that.
   const retried = clipBand(tin, offsetPolygons(region, -eps * 1e5), eps);
-  return retried === FAILED ? null : retried;
+  return retried === FAILED ? null : (retried ?? emptyTin());
 }
+
+const emptyTin = (): Tin => ({ vertices: new Float64Array(0), triangles: new Uint32Array(0) });
 
 const FAILED = Symbol('failed');
 

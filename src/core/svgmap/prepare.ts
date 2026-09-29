@@ -100,6 +100,8 @@ export interface Prepared {
   lines: PreparedLine[];
   polygons: PreparedPolygon[];
   tiles: number;
+  /** Tiles that could not be downloaded. */
+  missing: number;
   bytes: number;
   warnings: string[];
 }
@@ -205,6 +207,7 @@ export function prepareArea(plan: TilePlan, layout: Layout, data: TileData): Pre
     lines: prepared,
     polygons,
     tiles: plan.tiles.length,
+    missing,
     bytes,
     warnings,
   };

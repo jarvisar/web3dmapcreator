@@ -391,13 +391,27 @@ export function fetchByteLength(url: string, signal?: AbortSignal): Promise<numb
   const queue = queueFor(url);
   return withRetries(url, signal, async () => {
     await acquire(queue, signal);
+    // A HEAD that never answers would hold its place in the queue for good.
+    const controller = new AbortController();
+    const forward = () => controller.abort(signal?.reason);
+    signal?.addEventListener('abort', forward, { once: true });
+    let stalled = false;
+    const timer = setTimeout(() => {
+      stalled = true;
+      controller.abort();
+    }, config.idleTimeoutMs);
     try {
-      const response = await fetch(url, { method: 'HEAD', signal });
+      const response = await fetch(url, { method: 'HEAD', signal: controller.signal });
       if (!response.ok) throw new HttpError(response.status, url, parseRetryAfter(response.headers.get('retry-after')));
       const length = Number(response.headers.get('content-length'));
       if (!Number.isFinite(length) || length <= 0) throw new Error(`No file size for ${url}`);
       return length;
+    } catch (error) {
+      if (stalled && !signal?.aborted) throw new TransferError(`No answer for ${Math.round(config.idleTimeoutMs / 1000)} s`);
+      throw error;
     } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', forward);
       release(queue);
     }
   });

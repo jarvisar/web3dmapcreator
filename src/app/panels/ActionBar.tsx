@@ -204,6 +204,8 @@ function SvgActions() {
   const problem = useApp((state) => svgProblem(state.area, state.svg));
   const working = status === 'working';
   const stale = result !== null && key !== resultKey;
+  // Missing tiles are only tried again on a render, and the settings haven't changed to start one.
+  const incomplete = result !== null && !stale && result.stats.missingTiles > 0;
 
   // Renders started from the map show their progress. The open preview updates quietly.
   if (working && (!result || view === 'map')) return <SvgProgress />;
@@ -221,6 +223,7 @@ function SvgActions() {
 
   let first: { label: string; icon: 'eye' | 'refresh' | null; primary: boolean } | null = null;
   if (!result) first = { label: 'Generate SVG', icon: null, primary: true };
+  else if (incomplete) first = { label: 'Retry map data', icon: 'refresh', primary: true };
   else if (view === 'map') first = stale ? { label: 'Update SVG', icon: 'refresh', primary: true } : { label: 'Show preview', icon: 'eye', primary: false };
 
   return (

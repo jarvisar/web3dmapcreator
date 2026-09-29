@@ -453,6 +453,7 @@ export function compose(
     stats: {
       zoom: prepared.zoom,
       tiles: prepared.tiles,
+      missingTiles: prepared.missing,
       bytes: prepared.bytes,
       cleanup: s.cleanup.enabled ? cleaned.stats : null,
       coverage,

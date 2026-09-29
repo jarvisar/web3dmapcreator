@@ -116,7 +116,7 @@ describe('clipTin', () => {
       const around = clipTin(tin, [[[[-5, -5], [80, -5], [80, 80], [-5, 80]]]])!;
       expect(around.triangles.length).toBe(tin.triangles.length);
       expect(tinArea(around)).toBeCloseTo(70 * 70, 9);
-      expect(clipTin(tin, [[[[100, 100], [110, 100], [110, 110], [100, 110]]]])).toBeNull();
+      expect(clipTin(tin, [[[[100, 100], [110, 100], [110, 110], [100, 110]]]])!.triangles.length).toBe(0);
     });
   });
 });

@@ -11,7 +11,7 @@ const result = (color: string, mode: RenderResult['mode'] = 'laser'): RenderResu
   groups: [
     { id: 'roads', element: 'roads', label: 'Roads', kind: 'stroke', color, strokeWidth: 0.05, paths: [{ d: 'M0,0L10,10' }], subpaths: 1, lengthMm: 14, areaMm2: 0 },
   ],
-  stats: { zoom: 14, tiles: 1, bytes: 0, cleanup: null, coverage: null, plotter: null, timings: {} },
+  stats: { zoom: 14, tiles: 1, missingTiles: 0, bytes: 0, cleanup: null, coverage: null, plotter: null, timings: {} },
   warnings: [],
   meta: {
     title: 'Test <map>',

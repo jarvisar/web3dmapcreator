@@ -6,7 +6,7 @@
 import Delaunator from 'delaunator';
 import earcut from 'earcut';
 import { orient2d } from 'robust-predicates';
-import { boxesOverlap, ringArea, type Box } from './polygon';
+import { boxesOverlap, offsetPolygons, PINCH_MM, ringArea, type Box } from './polygon';
 import type { CapSolid } from './solid';
 import { Bounded, clipTin, type Tin } from './tinclip';
 import type { MultiPolygon } from '../types';
@@ -310,7 +310,9 @@ function inside(ring: [number, number][], x: number, y: number): boolean {
 
 /** Mesh a cap into `out`, cut to `region` when given. */
 export function meshCap(solid: CapSolid, out: Sink, region?: Region): 'ok' | 'empty' | 'failed' {
-  let tin: Tin = { vertices: solid.vertices, triangles: solid.triangles };
+  const whole: Tin = { vertices: solid.vertices, triangles: solid.triangles };
+  let tin = whole;
+  let clippedTo: MultiPolygon | null = null;
   if (!tin.triangles.length) return 'empty';
   if (region) {
     const box = tinBounds(tin);
@@ -321,9 +323,20 @@ export function meshCap(solid: CapSolid, out: Sink, region?: Region): 'ok' | 'em
       if (!clipped) return 'failed';
       if (!clipped.triangles.length) return 'empty';
       tin = clipped;
+      clippedTo = region.polygons;
     }
   }
-  const boundary = capBoundary(tin);
+  let boundary = capBoundary(tin);
+  // A section line through a concave corner of the outline leaves two parts
+  // touching at that corner, which capBoundary refuses. Shrinking the region
+  // parts them, as for a pinched prism.
+  if (!boundary && clippedTo) {
+    const retried = clipTin(whole, offsetPolygons(clippedTo, -PINCH_MM, 'miter'));
+    if (retried?.triangles.length) {
+      tin = retried;
+      boundary = capBoundary(tin);
+    }
+  }
   if (!boundary) return 'failed';
   const v = tin.vertices;
   const count = v.length / 3;
