@@ -331,12 +331,16 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     const flatTop = (x: number, y: number) => hf.heightAt(x, y) + rise;
     const bottom = (x: number, y: number) => hf.heightAt(x, y) - embed;
     // Beach sand thins from its full rise to 0.1 mm at the waterline, on
-    // ground that slopes down to the water too.
+    // ground that slopes down to the water too. A beach narrower than that
+    // reaches its full rise where the land cover behind it starts, or it
+    // meets the park or rock there with a step.
     const beachWidth = settings.land.beachWidthMm;
     const beachTop = (x: number, y: number) => {
       const d = beaches!.distance(x, y, beachWidth);
       const low = Math.min(0.1, rise);
-      return hf.heightAt(x, y) + low + (rise - low) * Math.min(1, d / beachWidth);
+      const reach = d < beachWidth ? Math.min(beachWidth, d + beaches!.toCover(x, y, beachWidth - d)) : beachWidth;
+      const t = reach > 1e-9 ? Math.min(1, d / reach) : 0;
+      return hf.heightAt(x, y) + low + (rise - low) * t;
     };
     // Outlines are sampled half a width apart, so look a little further than the width.
     const onBeach = (polygon: Polygon) =>

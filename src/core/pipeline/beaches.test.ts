@@ -15,7 +15,8 @@ function scene() {
   // Sand stopping 0.3 mm short of the water, and a road down to it.
   const sand: MultiPolygon = [box(-10, 0.4, 0, 5)];
   const road = box(2, 0.1, 4, 8);
-  const beaches = shapeBeaches(hf, { cut: [{ polygons: [water], top: 1 }], crop, ground, sand, blockers: [road], cover: [], width: 1.5 })!;
+  const park = box(-10, 5, 0, 10);
+  const beaches = shapeBeaches(hf, { cut: [{ polygons: [water], top: 1 }], crop, ground, sand, blockers: [road], cover: [park], width: 1.5 })!;
   return { hf, beaches };
 }
 
@@ -43,5 +44,7 @@ describe('shapeBeaches', () => {
     expect(hf.heightAt(12, 0.5)).toBe(2);
     expect(beaches.distance(-5, 0.1, 1.5)).toBeLessThan(1e-6);
     expect(beaches.distance(12, 0.1, 1.5)).toBe(1.5);
+    // Where a beach's sand taper has to finish.
+    expect(beaches.toCover(-5, 4.5, 1.5)).toBeCloseTo(0.5, 9);
   });
 });

@@ -39,6 +39,8 @@ export interface BeachInput {
 export interface Beaches {
   /** Distance to the nearest beach waterline, or `limit` when none is that close. */
   distance(x: number, y: number, limit: number): number;
+  /** Distance to the nearest edge of other land cover, or `limit`. */
+  toCover(x: number, y: number, limit: number): number;
   /** The sand, run on to the water across bare ground it stopped short of. */
   sand: MultiPolygon;
   /** Sand added, mm². */
@@ -58,6 +60,7 @@ export function shapeBeaches(hf: HeightField, input: BeachInput): Beaches | null
   if (!(width > 0) || !input.sand.length || !input.cut.length) return null;
   const sand = new EdgeIndex(input.sand, width);
   const blockers = new EdgeIndex(input.blockers, width);
+  const cover = new EdgeIndex(input.cover, width);
   const between = new EdgeIndex([...input.blockers, ...input.cover], width);
   const crop = new EdgeIndex(input.crop, width);
 
@@ -183,6 +186,7 @@ export function shapeBeaches(hf: HeightField, input: BeachInput): Beaches | null
 
   return {
     distance: (x, y, limit) => nearest(x, y, limit).d,
+    toCover: (x, y, limit) => cover.distance(x, y, limit),
     sand: extended,
     filled: multiArea(fill),
     lowered: lowered.length,
