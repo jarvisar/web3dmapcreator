@@ -1,13 +1,12 @@
-// Beaches: where sand runs down to cut water, the ground slopes to the
-// water's surface instead of ending in a bank, and the sand thins out on top
-// of it to a lip just above the water.
+// Beaches: where sand runs down to cut water, the ground under it slopes down
+// to the water's surface instead of ending in a bank. The sand keeps its
+// thickness on top, like every other surface.
 //
 // The slope is worked into the height grid, so everything draped on it
 // follows and nothing is left standing on the old ground. Grid points under
 // or next to roads, buildings, bridges and ponds keep their height. Land cover
-// behind a beach can slope with it, since it's draped too. The grid is
-// coarser than a beach at most scales, so the ground's slope is at least a
-// cell and a half wide. The sand's own taper is on a finer lattice.
+// behind a beach can slope with it, since it's draped too. The grid is coarser
+// than a beach at most scales, so the slope is at least a cell and a half wide.
 
 import { EdgeIndex } from '../geometry/edgeindex';
 import { boxesOverlap, bufferLines, clipToBox, difference, intersection, multiArea, multiBounds, offsetPolygons, polygonArea, ringBounds, union } from '../geometry/polygon';
@@ -37,10 +36,6 @@ export interface BeachInput {
 }
 
 export interface Beaches {
-  /** Distance to the nearest beach waterline, or `limit` when none is that close. */
-  distance(x: number, y: number, limit: number): number;
-  /** Distance to the nearest edge of other land cover, or `limit`. */
-  toCover(x: number, y: number, limit: number): number;
   /** The sand, run on to the water across bare ground it stopped short of. */
   sand: MultiPolygon;
   /** Sand added, mm². */
@@ -60,7 +55,6 @@ export function shapeBeaches(hf: HeightField, input: BeachInput): Beaches | null
   if (!(width > 0) || !input.sand.length || !input.cut.length) return null;
   const sand = new EdgeIndex(input.sand, width);
   const blockers = new EdgeIndex(input.blockers, width);
-  const cover = new EdgeIndex(input.cover, width);
   const between = new EdgeIndex([...input.blockers, ...input.cover], width);
   const crop = new EdgeIndex(input.crop, width);
 
@@ -115,7 +109,7 @@ export function shapeBeaches(hf: HeightField, input: BeachInput): Beaches | null
   }
   if (!waterlines.length) return null;
 
-  const nearest = (x: number, y: number, limit: number): { d: number; top: number } => {
+  const nearest = (x: number, y: number, limit: number) => {
     let best = { d: limit, top: 0 };
     for (const line of waterlines) {
       const [x0, y0, x1, y1] = line.box;
@@ -151,6 +145,7 @@ export function shapeBeaches(hf: HeightField, input: BeachInput): Beaches | null
   const extended = fill.length ? union(input.sand, fill) : input.sand;
 
   const ramp = Math.max(width, 1.5 * hf.step);
+  const shelf = Math.min(hf.step, ramp / 2);
   const { cols, rows, step } = hf;
   const seen = new Uint8Array(cols * rows);
   const lowered: [number, number][] = [];
@@ -172,12 +167,14 @@ export function shapeBeaches(hf: HeightField, input: BeachInput): Beaches | null
         const h = hf.values[n];
         // A cell and a half keeps every grid triangle under a blocker whole.
         if (h <= top || blockers.touches(x, y, 1.5 * step)) continue;
-        // Water nodes only shape the waterline here: at the surface, the
-        // ground meets the water flush.
+        // Water nodes only shape the waterline: at the surface, the ground
+        // meets the water flush.
         if (wet.contains(x, y)) {
           if (d < 1.5 * step) lowered.push([n, top]);
         } else {
-          lowered.push([n, top + (h - top) * (d / ramp)]);
+          // Level for the first cell, or the grid's next point inland holds
+          // the waterline up by most of the slope.
+          lowered.push([n, top + (h - top) * Math.max(0, (d - shelf) / (ramp - shelf))]);
         }
       }
     }
@@ -185,8 +182,6 @@ export function shapeBeaches(hf: HeightField, input: BeachInput): Beaches | null
   for (const [n, h] of lowered) hf.values[n] = h;
 
   return {
-    distance: (x, y, limit) => nearest(x, y, limit).d,
-    toCover: (x, y, limit) => cover.distance(x, y, limit),
     sand: extended,
     filled: multiArea(fill),
     lowered: lowered.length,

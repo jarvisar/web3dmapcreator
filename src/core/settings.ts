@@ -185,7 +185,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     riseMm: 0.4,
     embedMm: 0.04,
     priority: ['paved', 'sand', 'rock', 'green', 'forest'],
-    taperBeaches: true,
+    taperBeaches: false,
     beachWidthMm: 1.5,
   },
   roads: {

@@ -189,7 +189,7 @@ function LandOptions({ land }: { land: ModelSettings['land'] }) {
         label="Slope beaches into water"
         checked={land.taperBeaches}
         onChange={(taperBeaches) => patchSettings('land', { taperBeaches })}
-        help="Slope mapped sand and the ground under it down to the surface of water cut from the terrain, instead of ending at a bank. Sand that stops just short of the water is run on to it. Off ends it in a wall like other surfaces."
+        help="Slope the ground under mapped sand down to the surface of water cut from the terrain, instead of ending at a bank. The sand keeps its thickness on top. Sand that stops just short of the water is run on to it."
       />
       <NumberField
         label="Beach slope width"
@@ -200,7 +200,7 @@ function LandOptions({ land }: { land: ModelSettings['land'] }) {
         decimals={2}
         unit="mm"
         disabled={!land.taperBeaches}
-        help="Printed distance from the waterline over which a beach climbs to the ground behind it. 1.5 mm is about 21 m at the default scale."
+        help="Printed distance from the waterline over which the ground under a beach climbs back to its height. 1.5 mm is about 21 m at the default scale."
       />
       <div className="field">
         <div className="field-row">

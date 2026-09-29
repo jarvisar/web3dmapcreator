@@ -52,9 +52,8 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   (`latticeCap`). Separately triangulated caps parted from the ground by more
   than the embed on steep ground with big cells: 0.4 mm at 3 mm cells.
   `latticeTin` only builds the cells a polygon touches (its bounding box was
-  1.8 GB for a thin diagonal beach), and beach tapers split cells no finer
-  than `BEACH_CELLS` allows. A footprint is only left undraped when it lies
-  in one triangle (`inOneTriangle`), not when it's smaller than a cell.
+  1.8 GB for a thin diagonal beach). A footprint is only left undraped when
+  it lies in one triangle (`inOneTriangle`), not when it's smaller than a cell.
 - Almost everything is a `PrismSolid` (polygon + top/bottom height + drape).
   Crop and multi-plate sections are 2D clips before meshing, so every shell
   stays closed. Trees are `MeshSolid`s, kept only where the whole crown is
@@ -74,14 +73,17 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   raised to the low tenth of its shoreline (grid nodes inside the crop
   only). Cut bodies that overlap merge into one at their area-weighted
   median level. The grid is flattened under it and the shore raised.
-- Beaches (`beaches.ts`) lower the grid itself from the waterline to the
-  ground behind, after every layer is laid out and before the base is worked
-  out, so draped parts follow. Only nodes 1.5 cells clear of roads,
-  buildings, bridges, piers and ponds move, so every grid triangle under them
-  keeps its shape and its bank. Other land cover stops a beach but slopes
-  with it, or a park behind a narrow beach pins the whole bank. Sand short
-  of the water is joined to it by a closing of sand and water. A buffer of
-  the waterline ran sand past the beach ends.
+- Beaches (`beaches.ts`, `land.taperBeaches`, off by default) lower the grid
+  itself from the waterline to the ground behind, after every layer is laid
+  out and before the base is worked out, so draped parts follow. Only nodes
+  1.5 cells clear of roads, buildings, bridges, piers and ponds move, so every
+  grid triangle under them keeps its shape and its bank. Other land cover
+  stops a beach but slopes with it. Sand short of the water is joined to it
+  by a closing of sand and water (a buffer of the waterline ran sand past the
+  beach ends). Every land slab keeps `land.riseMm`, sand included: a sand
+  taper and ground lowered below the water so the sand met it were both
+  tried, and on coarse grids with roads behind a beach the second left
+  0.6 mm sand walls.
 - Ground is kept under roads, buildings and mapped piers over cut water
   (`settings.supports`) by leaving it out of the cut, not with extra solids.
 - Parts overlap where they reach into the terrain (`land.embedMm`, 0.04 mm)

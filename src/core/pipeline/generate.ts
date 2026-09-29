@@ -14,11 +14,8 @@ import {
   multiArea,
   multiBounds,
   clipToBox,
-  densifyRing,
   offsetPolygons,
-  polygonArea,
   ringBounds,
-  ringPerimeter,
   union,
   type Box,
 } from '../geometry/polygon';
@@ -77,23 +74,6 @@ const LAND_NAMES: Record<SurfaceCategory, string> = {
   green: 'Parks',
   forest: 'Forest',
 };
-
-// A beach slopes within a few cells, so it gets a finer lattice. Split the
-// same way, each of its triangles still lies in one terrain triangle. The
-// split is kept to about this many cells a polygon: a wide sand area at the
-// narrowest beach setting was tens of millions.
-const BEACH_CELLS = 300_000;
-
-function beachSplit(polygon: Polygon, step: number, beachWidth: number): number {
-  const area = polygonArea(polygon);
-  const length = polygon.reduce((sum, ring) => sum + ringPerimeter(ring), 0);
-  for (let split = Math.max(1, Math.ceil((3 * step) / beachWidth)); split > 1; split--) {
-    const fine = step / split;
-    // Cells inside, and the ones along the outline latticeTin adds.
-    if (area / fine ** 2 + (3 * length) / fine <= BEACH_CELLS) return split;
-  }
-  return 1;
-}
 
 /** The data bounds generation needs for an area: the shape plus a small margin. */
 export function dataBoundsFor(area: AreaSpec) {
@@ -328,23 +308,8 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   if (land) {
     const rise = settings.land.riseMm;
     const embed = settings.land.embedMm;
-    const flatTop = (x: number, y: number) => hf.heightAt(x, y) + rise;
+    const top = (x: number, y: number) => hf.heightAt(x, y) + rise;
     const bottom = (x: number, y: number) => hf.heightAt(x, y) - embed;
-    // Beach sand thins from its full rise to 0.1 mm at the waterline, on
-    // ground that slopes down to the water too. A beach narrower than that
-    // reaches its full rise where the land cover behind it starts, or it
-    // meets the park or rock there with a step.
-    const beachWidth = settings.land.beachWidthMm;
-    const beachTop = (x: number, y: number) => {
-      const d = beaches!.distance(x, y, beachWidth);
-      const low = Math.min(0.1, rise);
-      const reach = d < beachWidth ? Math.min(beachWidth, d + beaches!.toCover(x, y, beachWidth - d)) : beachWidth;
-      const t = reach > 1e-9 ? Math.min(1, d / reach) : 0;
-      return hf.heightAt(x, y) + low + (rise - low) * t;
-    };
-    // Outlines are sampled half a width apart, so look a little further than the width.
-    const onBeach = (polygon: Polygon) =>
-      !!beaches && polygon.some((ring) => densifyRing(ring, beachWidth / 2).some(([x, y]) => beaches.distance(x, y, 2 * beachWidth) < 1.5 * beachWidth));
     for (const category of settings.land.priority) {
       const polygons = land[category];
       if (!polygons.length) continue;
@@ -352,13 +317,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
         id: `land-${category}`,
         name: LAND_NAMES[category],
         role: LAND_ROLES[category],
-        solids: polygons.map((polygon) => {
-          const beach = category === 'sand' && onBeach(polygon);
-          // A beach slopes even on flat ground.
-          const drape = flat && !beach ? 0 : hf.step / (beach ? beachSplit(polygon, hf.step, beachWidth) : 1);
-          const top = beach ? beachTop : flatTop;
-          return { kind: 'prism', role: LAND_ROLES[category], polygon, top, bottom, drape, lattice: drape > 0 ? { ...hf.lattice, step: drape } : undefined };
-        }),
+        solids: polygons.map((polygon) => ({ kind: 'prism', role: LAND_ROLES[category], polygon, top, bottom, drape: drapeStep, lattice: drapeStep > 0 ? hf.lattice : undefined })),
       });
     }
   }
