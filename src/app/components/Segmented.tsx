@@ -42,6 +42,9 @@ export function Segmented<T extends string>({ value, options, onChange, label, s
     buttons?.[options.indexOf(option)]?.focus();
   }
 
+  // With nothing selected (custom cleanup settings, say) the first option takes Tab instead.
+  const tabbable = options.some((option) => option.value === value) ? value : options.find((option) => !option.disabled)?.value;
+
   return (
     <div
       ref={ref}
@@ -60,7 +63,7 @@ export function Segmented<T extends string>({ value, options, onChange, label, s
             aria-checked={selected}
             aria-label={option.ariaLabel}
             title={option.title}
-            tabIndex={selected ? 0 : -1}
+            tabIndex={option.value === tabbable ? 0 : -1}
             disabled={option.disabled}
             className="segment"
             onClick={() => onChange(option.value)}

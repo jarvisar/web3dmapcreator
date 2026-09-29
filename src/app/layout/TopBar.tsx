@@ -1,14 +1,18 @@
-import { Box, CircleQuestionMark, Map as MapIcon, SlidersHorizontal, X } from 'lucide-react';
+import { Box, CircleQuestionMark, Map as MapIcon, PenTool, SlidersHorizontal, X } from 'lucide-react';
 import { GithubMark, Logo } from '../components/Icons';
 import { Tooltip } from '../components/HelpTip';
 import { useState } from 'react';
 import { setDrawerOpen, setHelpOpen, setView, useApp } from '../state/store';
+import { useSvgRender } from '../svgmap/render';
 
 export const REPO_URL = 'https://github.com/jarvisar/web3dmapcreator';
 
 function ViewToggle() {
   const view = useApp((state) => state.ui.view);
+  const svg = useApp((state) => state.output === 'svg');
   const hasModel = useApp((state) => state.generation.result !== null);
+  const hasSvg = useSvgRender((state) => state.result !== null);
+  const ready = svg ? hasSvg : hasModel;
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   const [hover, setHover] = useState(false);
   return (
@@ -21,19 +25,19 @@ function ViewToggle() {
         ref={setAnchor}
         type="button"
         className="view-btn"
-        aria-pressed={view === 'model'}
-        aria-disabled={!hasModel}
-        onClick={() => hasModel && setView('model')}
+        aria-pressed={view === 'result'}
+        aria-disabled={!ready}
+        onClick={() => ready && setView('result')}
         onPointerEnter={() => setHover(true)}
         onPointerLeave={() => setHover(false)}
         onFocus={() => setHover(true)}
         onBlur={() => setHover(false)}
       >
-        <Box size={14} aria-hidden="true" />
-        3D model
+        {svg ? <PenTool size={14} aria-hidden="true" /> : <Box size={14} aria-hidden="true" />}
+        {svg ? 'Preview' : '3D model'}
       </button>
-      <Tooltip anchor={anchor} open={hover && !hasModel} placement="bottom">
-        Generate a model first
+      <Tooltip anchor={anchor} open={hover && !ready} placement="bottom">
+        {svg ? 'Generate the SVG first' : 'Generate a model first'}
       </Tooltip>
     </div>
   );

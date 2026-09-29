@@ -4,6 +4,12 @@
 
 ### Added
 
+- SVG maps, merged in from SVGmap. Pick `SVG map` at the top of the settings to make a flat map of the area for a laser engraver, a pen plotter or print instead of a model: plaque, paper and coaster sizes, filled, outlined or hatched layers, a title in a box or a band, and line cleanup that merges lines too close together to burn apart. The box on the map becomes the piece's map window, with the margin, border and title drawn around it. See `docs/SVG_MAPS.md`.
+- SVG maps take the same shapes as models, hexagons included.
+- A copied share link for an SVG map carries its settings, and links from the old SVGmap site open here.
+- The SVGmap example cities: Cincinnati, Vancouver, Midtown Manhattan, central Paris, London, Amsterdam, Venice and Sydney.
+- The site installs as an app and opens offline. A new version waits for `Reload`.
+
 - LiDAR only models, ported from the add-on's LiDAR Only mode. Pick `LiDAR only` at the top of `Layers` to build the whole model from a public LiDAR survey: the ground, buildings, trees and bridges as the survey saw them, in one closed solid in the terrain colour. The survey is read in 256 m blocks, up to eight at once, and each block is kept, so a cancelled read carries on where it stopped and other settings regenerate without reading again. Cars, cranes and clutter are removed, trees are rounded or removed, and the cells grow to what the survey's point density fills. Exports credit the survey instead of the map data. See `docs/LIDAR_MODEL.md`.
 - `Cut away water` for LiDAR only models cuts rivers, lakes and the sea out of the model instead of recessing them, with the add-on's rules: water above the same minimum area as map models, counted across bridges, at least 0.4 mm wide and not up on a roof. Bridges stay as solid walls, and boats and pilings go with the water.
 - `scripts/generate.ts --lidar-only`, with `--detail`, `--cut-water` and `--surface-out`.
@@ -16,6 +22,7 @@
 
 ### Changed
 
+- Area sizes are kept to the centimetre instead of the metre, so an SVG map's scale stays at what was typed.
 - Cutting a measured roof or a LiDAR only surface to a section or the area's shape only runs the triangles near the cut through the constrained triangulation. A section of a city-sized LiDAR surface took 5 s and takes about half a second.
 - Reading LiDAR for buildings works out each return's capture year from a table instead of a date object, about 9 times faster.
 - The site moved to https://citymodel.jarvisar.com/. The old web3dmapcreator.jarvisar.com address redirects there. Browsers keep saved settings and cached map data per address, so those start fresh on the new one.

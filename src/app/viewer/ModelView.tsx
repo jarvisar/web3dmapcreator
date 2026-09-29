@@ -10,10 +10,9 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
 import { printerByKey } from '../../core/settings';
 import { ROLE_GROUP } from '../../core/types';
-import { Tooltip } from '../components/HelpTip';
+import { ToolButton } from '../components/ToolButton';
 import { COARSE_QUERY, DARK_QUERY, downloadBlob, prefersDark, useMediaQuery } from '../lib/browser';
 import { formatCount, formatMm, formatRatio, formatSeconds, capitalise } from '../lib/format';
 import { generateModel } from '../state/actions';
@@ -21,35 +20,6 @@ import { fileBase, generationProblem } from '../state/derived';
 import { getModelParts } from '../state/model';
 import { setHiddenParts, setShowBed, toast, togglePartHidden, useApp } from '../state/store';
 import { ViewerEngine } from './ViewerEngine';
-
-function ToolButton({ label, onClick, pressed, children }: { label: string; onClick: () => void; pressed?: boolean; children: ReactNode }) {
-  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
-  const [hover, setHover] = useState(false);
-  return (
-    <>
-      <button
-        ref={setAnchor}
-        type="button"
-        className="tool-btn"
-        aria-label={label}
-        aria-pressed={pressed}
-        onClick={() => {
-          setHover(false);
-          onClick();
-        }}
-        onPointerEnter={(event) => event.pointerType === 'mouse' && setHover(true)}
-        onPointerLeave={() => setHover(false)}
-        onFocus={(event) => event.currentTarget.matches(':focus-visible') && setHover(true)}
-        onBlur={() => setHover(false)}
-      >
-        {children}
-      </button>
-      <Tooltip anchor={anchor} open={hover} placement="bottom">
-        {label}
-      </Tooltip>
-    </>
-  );
-}
 
 type Panel = 'parts' | 'info' | 'warnings' | null;
 

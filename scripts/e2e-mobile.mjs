@@ -1,4 +1,5 @@
-// Phone-size and dark-mode check with a real generation, in the installed Edge.
+// Phone-size and dark-mode checks with real generations, in the installed Edge:
+// a 3D model on a phone and a desktop in dark mode, then an SVG map on a phone.
 //   node scripts/e2e-mobile.mjs <url> <out-folder>
 import { chromium } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
@@ -31,7 +32,31 @@ async function run(name, viewport, dark) {
   await context.close();
 }
 
+// The settings drawer covers the map on a phone, so the output is picked in it.
+async function runSvg(name, viewport) {
+  const context = await browser.newContext({ viewport, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  page.on('console', (m) => m.type() === 'error' && errors.push(`${name}: ${m.text()}`));
+  page.on('pageerror', (e) => errors.push(`${name}: ${e}`));
+  await page.goto(url);
+  await page.waitForTimeout(3000);
+  const drawer = page.getByRole('button', { name: 'Settings', exact: true });
+  await drawer.click();
+  await page.getByRole('radio', { name: 'SVG map' }).click();
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: join(folder, `${name}-1-drawer.png`) });
+  await drawer.click();
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(folder, `${name}-2-map.png`) });
+  await page.getByRole('button', { name: 'Generate SVG' }).click();
+  await page.waitForSelector('.svg-preview', { timeout: 300000 });
+  await page.waitForTimeout(2000);
+  await page.screenshot({ path: join(folder, `${name}-3-preview.png`) });
+  await context.close();
+}
+
 await run('phone', { width: 390, height: 844 }, false);
 await run('desktop-dark', { width: 1440, height: 900 }, true);
+await runSvg('phone-svg', { width: 390, height: 844 });
 console.log(errors.length ? `console errors:\n${errors.join('\n')}` : 'no console errors');
 await browser.close();

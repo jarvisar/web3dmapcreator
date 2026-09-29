@@ -6,7 +6,7 @@ import type { GeoBounds, LonLat } from '../../core/types';
 import { areaForBounds } from '../lib/area';
 import { NARROW_QUERY } from '../lib/browser';
 import { formatNumber } from '../lib/format';
-import { setArea, setDrawerOpen } from '../state/store';
+import { setArea, setDrawerOpen, useApp } from '../state/store';
 
 type Suggestion =
   | { kind: 'place'; key: string; name: string; detail: string; center: LonLat }
@@ -123,12 +123,13 @@ export function PlaceSearch({ inputId }: { inputId?: string }) {
     if (item.kind === 'invalid') return;
     let label = text;
     if (item.kind === 'place') {
-      setArea((area) => ({ ...area, center: item.center }), { focus: 'always', placeName: item.name });
+      setArea((area) => ({ ...area, center: item.center }), { focus: 'always', placeName: item.name, title: item.name.toUpperCase() });
       label = item.name;
     } else if (item.kind === 'point') {
       setArea((area) => ({ ...area, center: item.center }), { focus: 'always', placeName: '' });
     } else {
-      setArea((area) => areaForBounds(item.bounds, area), { focus: 'always', placeName: '' });
+      const svg = useApp.getState().output === 'svg';
+      setArea((area) => areaForBounds(item.bounds, area, svg), { focus: 'always', placeName: '', fit: 'cover' });
     }
     skipSearch.current = label;
     setText(label);

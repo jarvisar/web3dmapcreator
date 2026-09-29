@@ -1,5 +1,6 @@
 // Area presets carried over from the add-on's data/bounds_presets.txt, with
-// the same names. Bounds are west, south, east, north.
+// the same names, plus the example cities of SVGmap. Bounds are west, south,
+// east, north.
 
 import { parseBoundsText } from '../../core/geo/area';
 import type { GeoBounds } from '../../core/types';
@@ -7,6 +8,8 @@ import type { GeoBounds } from '../../core/types';
 export interface AreaPreset {
   name: string;
   bounds: GeoBounds;
+  /** Title for an SVG map, like CHICAGO. */
+  title: string;
 }
 
 export interface PresetGroup {
@@ -15,6 +18,7 @@ export interface PresetGroup {
   presets: AreaPreset[];
 }
 
+// SVGmap's cities come last. Their bounds are its frames on a 5 x 7 in plaque.
 const CITIES = `
 Chicago - The Loop: -87.64575,41.87052,-87.60627,41.89397
 Chicago - The Loop (small): -87.64124,41.87626,-87.61552,41.89041
@@ -31,6 +35,14 @@ Boston - Downtown: -71.08785,42.34434,-71.03974,42.37512
 Miami - Downtown and Brickell: -80.21513,25.74555,-80.16191,25.79804
 Albuquerque - Downtown and Old Town: -106.68068,35.05846,-106.61716,35.10966
 Paris (large): 2.26078,48.83275,2.37013,48.88741
+Cincinnati - Downtown: -84.53100,39.08788,-84.49392,39.10758
+Vancouver - Downtown: -123.15573,49.26945,-123.09663,49.29583
+New York City - Midtown: -74.01848,40.73204,-73.94152,40.77196
+Paris - Centre: 2.31233,48.84127,2.38047,48.87193
+London - Centre: -0.14601,51.49267,-0.07399,51.52333
+Amsterdam - Centre: 4.86951,52.35947,4.92089,52.38093
+Venice: 12.31023,45.42636,12.35497,45.44784
+Sydney - Centre: 151.18769,-33.87330,151.23091,-33.84870
 `;
 
 const LANDMARKS = `
@@ -46,13 +58,18 @@ San Francisco - Golden Gate Bridge: -122.49452,37.80703,-122.46208,37.83277
 Dubai - Burj Khalifa: 55.26023,25.1843,55.28857,25.2101
 `;
 
+// SVGmap's titles where they aren't just the city.
+const TITLES: Record<string, string> = { 'New York City': 'NEW YORK', Venice: 'VENEZIA' };
+
 function parse(block: string): AreaPreset[] {
   return block
     .trim()
     .split('\n')
     .map((line) => {
       const split = line.lastIndexOf(':');
-      return { name: line.slice(0, split).trim(), bounds: parseBoundsText(line.slice(split + 1)) };
+      const name = line.slice(0, split).trim();
+      const city = name.split(' - ')[0].replace(/\s*\(.*\)$/, '');
+      return { name, bounds: parseBoundsText(line.slice(split + 1)), title: TITLES[city] ?? city.toUpperCase() };
     });
 }
 

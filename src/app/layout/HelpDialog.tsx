@@ -12,20 +12,20 @@ const STEPS = [
     text: 'Search for a place, pick a preset, or drag the box on the map. Drag a corner to resize it and the round handle to rotate it.',
   },
   {
-    title: 'Set the size and layers',
-    text: 'Check the printed size under Print size and pick your printer. Turn layers such as bridges or trees on or off, and choose colours. Or pick LiDAR only under Layers to build the whole model from a LiDAR survey, in one colour.',
+    title: 'Pick what to make',
+    text: 'At the top of the settings, pick 3D model or SVG map. For a model, check the printed size under Print size and pick your printer, then the layers and colours. For an SVG map, pick a size like a plaque, a sheet of paper or a coaster, then Laser, Plotter or Print under Output. The box on the map becomes the map inside the border, with the piece and its title drawn around it.',
   },
   {
-    title: 'Generate the model',
-    text: 'Map data and elevation are downloaded and the model is built in your browser. Small areas take under a minute. The 3D view opens when it is done.',
+    title: 'Generate',
+    text: 'Map data is downloaded and everything is built in your browser. A small model takes under a minute and an SVG map a few seconds. The 3D view or the preview opens when it is done. The preview keeps up with the settings while it is open.',
   },
   {
-    title: 'Download and slice',
-    text: 'Pick a format under Export and download. Open a Bambu Studio project with File > Open Project, then check the filaments and slice.',
+    title: 'Download',
+    text: 'Pick a format under Export and download the model. Open a Bambu Studio project with File > Open Project, then check the filaments and slice. An SVG is sized in millimetres, so check the imported size in your laser or plotter software.',
   },
 ];
 
-const TIPS = [
+const MODEL_TIPS = [
   'The defaults assume a 0.4 mm nozzle and 0.2 mm layers.',
   'The default scale, 0.07 mm per metre (1:14,286), keeps roads at least 0.45 mm wide, about the narrowest line a 0.4 mm nozzle prints well. A much smaller scale turns streets into lines too thin to print.',
   'Each colour is one filament. The Colours section shows how many the model needs.',
@@ -34,6 +34,15 @@ const TIPS = [
   'A model larger than the bed can be split into sections with Multi-plate export. Each section prints on its own plate and the pieces fit together. No connectors are added.',
   'The water and the terrain are separate parts, so water can be a different colour or left out.',
   'A LiDAR only model shows the city the year it was surveyed. Glass, dark roofs and water return few points, so those spots are filled in from around them.',
+];
+
+const SVG_TIPS = [
+  'Two lines closer together than the laser beam burn as one dark band. Set Line spacing under Line cleanup to about your beam width, or 1.5 to 2 times your pen width. The presets change it for each output.',
+  'For a laser, filled areas engrave, lines score and the edge cuts. Every layer has its own colour so it can have its own process. The LightBurn layer palette puts each layer on its own LightBurn layer.',
+  'For a plotter, each pen colour is a numbered layer (1 - pen #000000) that AxiDraw, vpype and saxi split on. The single-line Hershey fonts are made for pens.',
+  'The preview shows how much of the road network the cleanup kept. Below 97% a warning appears, since streets were removed and not just doubled lines.',
+  'Lock the scale to keep 1:n the same while you try other places or piece sizes.',
+  'The wood preview is only a rough idea of how the fills burn. Test your settings on scrap.',
 ];
 
 function StoredData() {
@@ -73,8 +82,9 @@ export function HelpDialog() {
   return (
     <Dialog open={open} onClose={() => setHelpOpen(false)} title="How it works" className="help-dialog">
       <p className="help-intro">
-        Jarvizar City Model turns an area of the map into a multicolour 3D printable model: terrain, water, parks, roads,
-        buildings and trees, each as its own part so every colour can be its own filament.
+        Jarvizar City Model turns an area of the map into a multicolour 3D printable model, with terrain, water, parks, roads,
+        buildings and trees as separate parts so every colour can be its own filament. It also makes flat SVG maps for
+        laser engraving, pen plotters and print.
       </p>
 
       <ol className="help-steps">
@@ -86,9 +96,16 @@ export function HelpDialog() {
         ))}
       </ol>
 
-      <h3 className="help-heading">Printing tips</h3>
+      <h3 className="help-heading">3D printing tips</h3>
       <ul className="help-list">
-        {TIPS.map((tip) => (
+        {MODEL_TIPS.map((tip) => (
+          <li key={tip}>{keepUnits(tip)}</li>
+        ))}
+      </ul>
+
+      <h3 className="help-heading">Laser, plotter and print tips</h3>
+      <ul className="help-list">
+        {SVG_TIPS.map((tip) => (
           <li key={tip}>{keepUnits(tip)}</li>
         ))}
       </ul>
@@ -122,7 +139,16 @@ export function HelpDialog() {
           <a href="https://openmaptiles.org" target="_blank" rel="noreferrer">
             OpenMapTiles
           </a>
-          , OpenStreetMap contributors. Satellite imagery © Esri and its partners.
+          , OpenStreetMap contributors. Satellite imagery © Esri and its partners. SVG maps are drawn from the same OpenFreeMap vector tiles.
+        </li>
+        <li>
+          Title fonts for SVG maps: Montserrat, Josefin Sans, Cinzel, Oswald, Bebas Neue and Bitter, under the SIL Open Font License. The Hershey Fonts were
+          originally created by Dr. A. V. Hershey while working at the U.S. National Bureau of Standards. The format of the font data was originally created
+          by James Hurt, Cognition, Inc. Glyph data from{' '}
+          <a href="https://github.com/techninja/hersheytextjs" target="_blank" rel="noreferrer">
+            hersheytext
+          </a>
+          .
         </li>
         <li>
           LiDAR from USGS 3DEP (public domain, through Hobu's EPT mirror), IGN LiDAR HD (Licence Ouverte 2.0), NRCan
@@ -144,14 +170,17 @@ export function HelpDialog() {
           </a>
           .
         </li>
-        <li>If you share or sell prints, credit OpenStreetMap contributors and Overture Maps Foundation for a model made from map data, and any LiDAR survey the model used.</li>
+        <li>
+          If you share or sell prints, credit OpenStreetMap contributors and Overture Maps Foundation for a model made from map data, and any LiDAR survey the
+          model used. Credit OpenStreetMap contributors on anything made from an SVG map.
+        </li>
       </ul>
 
       <h3 className="help-heading">Privacy</h3>
       <p className="help-text">
         Everything runs in your browser. There is no account and no server of ours: map data, elevation, LiDAR and map
         tiles are downloaded straight from their public sources. Place search sends what you type to Photon (photon.komoot.io). Your
-        settings are saved in this browser only.
+        settings, and any font you load for a title, are saved in this browser only.
       </p>
       {open && <StoredData />}
 

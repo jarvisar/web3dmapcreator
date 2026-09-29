@@ -2,9 +2,11 @@
 // it in 3D and download it in every format. Needs a running server
 // (npm run dev or npm run preview).
 //   node scripts/e2e.mjs <url> <out-folder> [--all-formats] [--lidar-only [--cut-water]]
+//   node scripts/e2e.mjs <url> <out-folder> --svg [--all-formats]
 // With --lidar-only, give a small area in the URL's share-link hash
 // (#a=lon,lat,width,height,rotation,shape): a fresh browser downloads its
-// LiDAR in full.
+// LiDAR in full. With --svg it makes an SVG map of the default area instead,
+// and --all-formats downloads it for the plotter and print as well.
 import { chromium } from 'playwright-core';
 import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,6 +14,7 @@ import { join } from 'node:path';
 const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const allFormats = process.argv.includes('--all-formats');
 const lidarOnly = process.argv.includes('--lidar-only');
+const svg = process.argv.includes('--svg');
 const [url = 'http://localhost:5173/', folder = 'out/e2e'] = args;
 mkdirSync(folder, { recursive: true });
 const browser = await chromium.launch({
@@ -25,10 +28,53 @@ const errors = [];
 page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 page.on('pageerror', (e) => errors.push(String(e)));
 
+async function download(label, name = /^download/i) {
+  const [file] = await Promise.all([
+    page.waitForEvent('download', { timeout: 300000 }),
+    page.getByRole('button', { name }).first().click(),
+  ]);
+  const target = join(folder, file.suggestedFilename());
+  await file.saveAs(target);
+  console.log(`${label}: ${file.suggestedFilename()} (${(statSync(target).size / 1e6).toFixed(1)} MB)`);
+}
+
+function finish() {
+  console.log(errors.length ? `console errors:\n${errors.join('\n')}` : 'no console errors');
+  return browser.close();
+}
+
 const started = Date.now();
 await page.goto(url);
 await page.waitForTimeout(3000);
 await page.screenshot({ path: join(folder, '1-map.png') });
+
+if (svg) {
+  await page.getByRole('radio', { name: 'SVG map' }).click();
+  await page.waitForTimeout(1000);
+  await page.screenshot({ path: join(folder, '1-svg-map.png') });
+  await page.getByRole('button', { name: 'Generate SVG' }).click();
+  // The preview opens when the SVG is done.
+  await page.waitForSelector('.svg-preview', { timeout: 300000 });
+  await page.waitForTimeout(2000);
+  console.log(`generated in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+  await page.screenshot({ path: join(folder, '2-svg-preview.png') });
+  await page.getByRole('button', { name: 'SVG details' }).click();
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: join(folder, '3-svg-details.png') });
+  await download('laser', /download \.svg/i);
+  if (allFormats) {
+    for (const mode of ['Plotter', 'Print']) {
+      await page.getByRole('radio', { name: mode, exact: true }).click();
+      // The open preview follows the settings, so wait for it to catch up.
+      await page.waitForTimeout(1000);
+      await page.waitForFunction(() => !document.querySelector('.svg-preview .spinner'), null, { timeout: 300000, polling: 500 });
+      await page.screenshot({ path: join(folder, `4-svg-${mode.toLowerCase()}.png`) });
+      await download(mode.toLowerCase(), /download \.svg/i);
+    }
+  }
+  await finish();
+  process.exit(0);
+}
 
 if (lidarOnly) {
   await page.locator('button[aria-controls="section-layers"]').click();
@@ -51,16 +97,6 @@ await page.waitForTimeout(500);
 await page.screenshot({ path: join(folder, '3-details.png') });
 await page.getByRole('button', { name: 'Model details' }).click();
 
-async function download(label) {
-  const [file] = await Promise.all([
-    page.waitForEvent('download', { timeout: 300000 }),
-    page.getByRole('button', { name: /^download/i }).first().click(),
-  ]);
-  const target = join(folder, file.suggestedFilename());
-  await file.saveAs(target);
-  console.log(`${label}: ${file.suggestedFilename()} (${(statSync(target).size / 1e6).toFixed(1)} MB)`);
-}
-
 await download('default');
 
 if (allFormats) {
@@ -80,5 +116,4 @@ if (allFormats) {
 }
 await page.screenshot({ path: join(folder, '5-after-export.png') });
 
-console.log(errors.length ? `console errors:\n${errors.join('\n')}` : 'no console errors');
-await browser.close();
+await finish();

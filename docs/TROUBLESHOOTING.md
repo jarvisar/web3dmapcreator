@@ -40,6 +40,20 @@
 
 **A LiDAR only model is slow the first time.** It reads the survey over the whole area, but only as finely as the cells need. That came to about 75 MB per km² for Philadelphia's 2015 survey, 125 for Paris and 450 for San Francisco's densest survey at 0.25 m cells. A 600 m circle in downtown Chicago read 101 MB and took 30 seconds on a desktop. What's read is kept in the browser (up to 1 GB), so changing anything but the area, the scale or `Detail` builds again in seconds.
 
+## SVG maps
+
+**"Could not download any map data."** SVG maps come from OpenFreeMap's tiles at `tiles.openfreemap.org`. Check your connection, or the tile source under `Map data` if you changed it.
+
+**The title doesn't fit.** A warning shows on the map when the title box or band has no room inside the border. Make the text smaller under `Title`, shorten it, or give the band more height.
+
+**"Cleanup kept 95% of the roads."** Below 97% the cleanup removed streets, not just doubled lines. Lower `Line spacing` or the stub pruning under `Line cleanup > All settings`.
+
+**The imported size is wrong.** The file is sized in millimetres. Check the size your laser software imports against the one shown in the preview.
+
+**The area can't be resized.** The scale is locked. Unlock it next to `Scale` under `Area`.
+
+**A loaded font doesn't work.** Fonts can be TTF, OTF or WOFF. WOFF2 files can't be read.
+
 ## The map and 3D view
 
 **The map or the 3D view stays blank.** Both need WebGL. Turn on hardware acceleration in your browser's settings, update your graphics driver, or try another browser.

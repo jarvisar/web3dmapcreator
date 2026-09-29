@@ -1,21 +1,29 @@
 // Share links carry the area in the URL hash:
 // #a=<lon>,<lat>,<widthM>,<heightM>,<rotationDeg>,<shape>
-// A rounded area adds its corner radius as a seventh value.
+// A rounded area adds its corner radius as a seventh value. An SVG map adds
+// o=svg, and a copied link s=<settings> (see svgmap/share.ts). Links from
+// the old SVGmap site only have s=.
 
 import type { AreaShape, AreaSpec } from '../../core/settings';
 import { SHAPES } from '../lib/area';
+import { type SharedSvg, decodeSvgSettings, encodeSvgSettings } from '../svgmap/share';
+import type { SvgSettings } from '../svgmap/settings';
 
-export function formatAreaHash(area: AreaSpec): string {
+export type Output = 'model' | 'svg';
+
+const size = (metres: number) => String(Math.round(metres * 100) / 100);
+
+export function formatAreaHash(area: AreaSpec, output: Output = 'model'): string {
   const values = [
     area.center[0].toFixed(6),
     area.center[1].toFixed(6),
-    String(Math.round(area.widthM)),
-    String(Math.round(area.heightM)),
+    size(area.widthM),
+    size(area.heightM),
     String(Math.round(area.rotationDeg * 10) / 10),
     area.shape,
   ];
   if (area.shape === 'rounded') values.push(String(Math.round(area.cornerRadius * 1000) / 1000));
-  return `#a=${values.join(',')}`;
+  return `#a=${values.join(',')}${output === 'svg' ? '&o=svg' : ''}`;
 }
 
 export function parseAreaHash(hash: string): AreaSpec | null {
@@ -39,13 +47,33 @@ export function parseAreaHash(hash: string): AreaSpec | null {
   };
 }
 
-export function readHashArea(): AreaSpec | null {
-  if (typeof location === 'undefined') return null;
-  return parseAreaHash(location.hash);
+export interface SharedLink {
+  area: AreaSpec | null;
+  output: Output | null;
+  svg: SharedSvg | null;
 }
 
-export function shareUrl(area: AreaSpec): string {
+export function parseHash(hash: string): SharedLink {
+  const params = new URLSearchParams(hash.replace(/^#/, ''));
+  const svg = params.get('s') ? decodeSvgSettings(params.get('s')!) : null;
+  const o = params.get('o');
+  return {
+    area: parseAreaHash(hash),
+    // An SVGmap link is always an SVG map.
+    output: o === 'svg' || o === 'model' ? o : svg ? 'svg' : null,
+    svg,
+  };
+}
+
+export function readHash(): SharedLink {
+  if (typeof location === 'undefined') return { area: null, output: null, svg: null };
+  return parseHash(location.hash);
+}
+
+export function shareUrl(area: AreaSpec, output: Output, svg: SvgSettings): string {
   const url = new URL(location.href);
-  url.hash = formatAreaHash(area).slice(1);
+  let hash = formatAreaHash(area, output).slice(1);
+  if (output === 'svg') hash += `&s=${encodeSvgSettings(svg)}`;
+  url.hash = hash;
   return url.toString();
 }

@@ -11,6 +11,11 @@ export const SHAPES: AreaShape[] = ['rectangle', 'rounded', 'circle', 'hexagon']
 
 export const AREA_HINT = 'Drag the box to move it. Drag a corner to resize it, or the round handle to rotate it.';
 
+/** With an SVG map's scale locked the corners can't resize the area. */
+export function areaHint(locked: boolean): string {
+  return locked ? 'Drag the box to move it, or the round handle to rotate it. Unlock the scale to resize it.' : AREA_HINT;
+}
+
 export const SHAPE_LABELS: Record<AreaShape, string> = {
   rectangle: 'Rectangle',
   rounded: 'Rounded',
@@ -18,7 +23,11 @@ export const SHAPE_LABELS: Record<AreaShape, string> = {
   hexagon: 'Hexagon',
 };
 
-const clampSide = (value: number) => Math.min(MAX_SIDE_M, Math.max(MIN_SIDE_M, Math.round(value)));
+// Centimetres, not metres: an SVG map's width sets its 1:n scale, and a whole
+// metre off moves a small piece's 1:5,000 to 1:4,996.
+const roundSide = (value: number) => Math.round(value * 100) / 100;
+const clampSide = (value: number) => Math.min(MAX_SIDE_M, Math.max(MIN_SIDE_M, roundSide(value)));
+const MIN_HEX_WIDTH = Math.ceil(MIN_SIDE_M / HEX_RATIO);
 
 /** Rotation in (-180, 180]. */
 export function normalizeRotation(degrees: number): number {
@@ -55,8 +64,8 @@ export function constrainSize(
     else if (keep === 'height') w = height / HEX_RATIO;
     else if (keep === 'larger') w = Math.max(width, height / HEX_RATIO);
     else w = Math.min(width, height / HEX_RATIO);
-    w = Math.min(MAX_SIDE_M, Math.max(Math.ceil(MIN_SIDE_M / HEX_RATIO), Math.round(w)));
-    return [w, Math.round(w * HEX_RATIO)];
+    w = Math.min(MAX_SIDE_M, Math.max(MIN_HEX_WIDTH, roundSide(w)));
+    return [w, roundSide(w * HEX_RATIO)];
   }
   return [clampSide(width), clampSide(height)];
 }
@@ -78,8 +87,8 @@ export function normalizeArea(area: AreaSpec): AreaSpec {
   } else if (shape === 'hexagon' && Math.abs(height - width * HEX_RATIO) > 1) {
     [width, height] = constrainSize(shape, width, height, 'smaller');
   } else if (shape === 'hexagon') {
-    width = Math.min(MAX_SIDE_M, Math.max(Math.ceil(MIN_SIDE_M / HEX_RATIO), Math.round(width)));
-    height = Math.round(Math.max(MIN_SIDE_M, height));
+    width = Math.min(MAX_SIDE_M, Math.max(MIN_HEX_WIDTH, roundSide(width)));
+    height = roundSide(Math.max(MIN_SIDE_M, height));
   } else {
     width = clampSide(width);
     height = clampSide(height);
@@ -145,9 +154,14 @@ export function areaInBox(ring: Ring, [west, south, east, north]: [number, numbe
   return twice / 2;
 }
 
-/** An area covering the bounds. Bounds are a box, so only a rounded area keeps its shape. */
-export function areaForBounds(bounds: GeoBounds, current: AreaSpec): AreaSpec {
-  return { ...areaFromBounds(bounds, current.shape === 'rounded' ? 'rounded' : 'rectangle'), cornerRadius: current.cornerRadius };
+/**
+ * An area covering the bounds. Bounds are a box, so only a rounded area keeps
+ * its shape, unless `keepShape`: an SVG map's piece keeps its shape and its
+ * map window is fitted around the bounds instead.
+ */
+export function areaForBounds(bounds: GeoBounds, current: AreaSpec, keepShape = false): AreaSpec {
+  const shape = keepShape || current.shape === 'rounded' ? current.shape : 'rectangle';
+  return { ...areaFromBounds(bounds, shape), cornerRadius: current.cornerRadius };
 }
 
 export function sameArea(a: AreaSpec, b: AreaSpec): boolean {

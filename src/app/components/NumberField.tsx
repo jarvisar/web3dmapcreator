@@ -154,3 +154,20 @@ export function NumberField({ label, help, hint, ...input }: NumberFieldProps) {
     </div>
   );
 }
+
+interface StackedNumberProps extends Omit<NumberInputProps, 'id' | 'ariaLabel'> {
+  label: string;
+}
+
+/** A number with its label above it, for pairs side by side in a .size-grid. */
+export function StackedNumber({ label, ...input }: StackedNumberProps) {
+  const id = useId();
+  return (
+    <div className="size-field">
+      <label htmlFor={id} className="size-label">
+        {label}
+      </label>
+      <NumberInput id={id} {...input} />
+    </div>
+  );
+}

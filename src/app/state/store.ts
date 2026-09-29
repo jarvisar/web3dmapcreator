@@ -1,4 +1,5 @@
-// App state. Heavy mesh arrays never go in here: see model.ts.
+// App state. Heavy mesh arrays never go in here: see model.ts. Neither does
+// a rendered SVG map: see svgmap/render.ts.
 
 import { create } from 'zustand';
 import type { LidarSummary, ProgressEvent, SurfaceSummary } from '../../core/engine/protocol';
@@ -20,17 +21,41 @@ import type {
   Palette,
   PaletteEntry,
 } from '../../core/settings';
+import type { BorderSettings } from '../../core/svgmap/layout/layout';
+import type { CleanupSettings } from '../../core/svgmap/lines/cleanup';
+import { PRODUCT_PRESETS } from '../../core/svgmap/presets';
+import { LASER_PALETTES, type ModeStyle, type OutputMode, PRINT_THEMES, type PlotterSettings, printStyle } from '../../core/svgmap/settings';
+import type { LabelSettings } from '../../core/svgmap/text/label';
+import type { FeatureFilters } from '../../core/svgmap/tiles/schema';
 import type { ColourGroup, MaterialRole, ModelStats } from '../../core/types';
 import { normalizeArea } from '../lib/area';
+import { type PieceFit, areaShapeOf, fitAreaToPiece, pieceLayout } from '../svgmap/piece';
+import { useSvgRender } from '../svgmap/render';
+import { type CleanupPreset, type LaserPalette, type PieceSize, type SvgSettings, cleanupForPreset, defaultSvgSettings } from '../svgmap/settings';
 import { loadSaved } from './persist';
-import { readHashArea } from './shareLink';
+import { type Output, readHash } from './shareLink';
 
-export type View = 'map' | 'model';
-export type SectionKey = 'area' | 'print' | 'layers' | 'colours' | 'export';
+export type { Output };
+/** The map, or what was made from it: the 3D model or the SVG preview. */
+export type View = 'map' | 'result';
+export type SectionKey =
+  | 'area'
+  | 'print'
+  | 'layers'
+  | 'colours'
+  | 'export'
+  | 'piece'
+  | 'output'
+  | 'svgLayers'
+  | 'title'
+  | 'cleanup'
+  | 'data';
 export type LayerKey = 'terrain' | 'water' | 'land' | 'roads' | 'bridges' | 'buildings' | 'lidar' | 'trees' | 'rim';
 export type BasemapKey = 'streets' | 'light' | 'satellite';
 /** 'mm' is the printed size. */
 export type SizeUnit = 'km' | 'm' | 'mm';
+/** How the SVG preview shows a laser file: burnt into wood, or in its layer colours. */
+export type PreviewLook = 'material' | 'colors';
 
 export interface PartInfo {
   id: string;
@@ -85,7 +110,8 @@ export interface MapFocus {
 export interface UiState {
   view: View;
   sections: Record<SectionKey, boolean>;
-  layers: Partial<Record<LayerKey, boolean>>;
+  /** Open layer rows. SVG map rows are keyed `svg:<layer>`. */
+  layers: Partial<Record<string, boolean>>;
   drawerOpen: boolean;
   helpOpen: boolean;
   basemap: BasemapKey;
@@ -94,6 +120,7 @@ export interface UiState {
   mapFocus: MapFocus;
   sizeUnit: SizeUnit;
   mapHintDismissed: boolean;
+  previewLook: PreviewLook;
 }
 
 export interface Toast {
@@ -103,10 +130,15 @@ export interface Toast {
 }
 
 export interface AppState {
+  /** What to make: a 3D model or an SVG map. */
+  output: Output;
   area: AreaSpec;
   settings: ModelSettings;
   palette: Palette;
   exportSettings: ExportSettings;
+  svg: SvgSettings;
+  /** Name of the title font the user loaded, set once the file is read back from IndexedDB. */
+  customFontName: string | null;
   /** Name of the searched place or preset, used for file names. */
   placeName: string;
   /** File name typed by the user, or null to follow the place name. */
@@ -123,19 +155,41 @@ export const DEFAULT_SECTIONS: Record<SectionKey, boolean> = {
   layers: false,
   colours: false,
   export: false,
+  piece: true,
+  output: true,
+  svgLayers: false,
+  title: false,
+  cleanup: false,
+  data: false,
 };
 
 function initialState(): AppState {
   const saved = loadSaved();
   // The app keeps its own area in the hash too. Only a different hash is a share link.
-  const hashArea = typeof location !== 'undefined' && location.hash !== saved.hash ? readHashArea() : null;
+  const shared = typeof location !== 'undefined' && location.hash !== saved.hash ? readHash() : null;
+  const output = shared?.output ?? saved.output ?? 'model';
+  let svg = shared?.svg?.svg ?? saved.svg ?? defaultSvgSettings();
+  let area = normalizeArea({
+    ...(shared?.area ?? saved.area ?? DEFAULT_AREA),
+    ...shared?.svg?.area,
+    ...(shared?.svg?.shape ? { shape: shared.svg.shape } : {}),
+  });
+  if (output === 'svg') {
+    const fitted = fitAreaToPiece(area, svg);
+    area = fitted.area;
+    svg = { ...svg, scale: fitted.scale };
+  }
+  const linked = Boolean(shared?.area || shared?.svg);
   return {
-    area: normalizeArea(hashArea ?? saved.area ?? DEFAULT_AREA),
+    output,
+    area,
     settings: saved.settings ?? cloneSettings(DEFAULT_SETTINGS),
     palette: saved.palette ?? structuredClone(DEFAULT_PALETTE),
     exportSettings: saved.exportSettings ?? { ...DEFAULT_EXPORT },
+    svg,
+    customFontName: null,
     // A first visit starts on the default area, so name files after it.
-    placeName: hashArea ? '' : (saved.placeName ?? (saved.area ? '' : 'Chicago Loop')),
+    placeName: linked ? '' : (saved.placeName ?? (saved.area ? '' : 'Chicago Loop')),
     fileName: saved.fileName ?? null,
     ui: {
       view: 'map',
@@ -149,6 +203,7 @@ function initialState(): AppState {
       mapFocus: { seq: 0, mode: 'always' },
       sizeUnit: saved.sizeUnit ?? 'km',
       mapHintDismissed: saved.mapHintDismissed ?? false,
+      previewLook: saved.previewLook ?? 'material',
     },
     generation: {
       status: 'idle',
@@ -179,6 +234,24 @@ function withStale(generation: GenerationState, area: AreaSpec, settings: ModelS
   return stale === generation.stale ? generation : { ...generation, stale };
 }
 
+/** Whether the current output has something to show in the result view. */
+export function hasResult(state: Pick<AppState, 'output' | 'generation'>): boolean {
+  return state.output === 'model' ? state.generation.result !== null : useSvgRender.getState().result !== null;
+}
+
+// A tidy area. In SVG mode it's the piece's map window, so it's fitted again
+// whenever the area or the piece changes.
+function fitForOutput(
+  output: Output,
+  area: AreaSpec,
+  svg: SvgSettings,
+  fit: PieceFit = 'width',
+): { area: AreaSpec; svg: SvgSettings } {
+  if (output !== 'svg') return { area: normalizeArea(area), svg };
+  const fitted = fitAreaToPiece(area, svg, fit);
+  return { area: fitted.area, svg: fitted.scale === svg.scale ? svg : { ...svg, scale: fitted.scale } };
+}
+
 // ------------------------------------------------------------------ area
 
 export interface SetAreaOptions {
@@ -186,17 +259,50 @@ export interface SetAreaOptions {
   focus?: MapFocus['mode'];
   /** Replace the place name. '' clears it. */
   placeName?: string;
+  /** Replace the SVG map's title. */
+  title?: string;
+  /** How an SVG map's window takes this area's size: see PieceFit. */
+  fit?: PieceFit;
 }
 
 export function setArea(next: AreaSpec | ((area: AreaSpec) => AreaSpec), options: SetAreaOptions = {}): void {
   set((state) => {
-    const area = normalizeArea(typeof next === 'function' ? next(state.area) : next);
-    const patch: Partial<AppState> = { area, generation: withStale(state.generation, area, state.settings) };
+    // Not normalised yet: a round SVG piece has to see the whole box to cover it.
+    const requested = typeof next === 'function' ? next(state.area) : next;
+    let svg = state.svg;
+    if (requested.shape !== state.area.shape) {
+      // The shape is shared, so a new one is a custom piece.
+      const preset = PRODUCT_PRESETS.find((item) => item.id === svg.productPreset);
+      const productPreset = preset && areaShapeOf(preset.product.shape) === requested.shape ? svg.productPreset : 'custom';
+      const cornerRadius = requested.shape === 'rounded' && svg.product.cornerRadius === 0 ? 6 : svg.product.cornerRadius;
+      svg = { ...svg, productPreset, product: { ...svg.product, cornerRadius } };
+    }
+    if (options.title !== undefined) svg = { ...svg, label: { ...svg.label, text: options.title } };
+    const fitted = fitForOutput(state.output, requested, svg, options.fit);
+    const area = fitted.area;
+    const patch: Partial<AppState> = { area, svg: fitted.svg, generation: withStale(state.generation, area, state.settings) };
     if (options.placeName !== undefined) patch.placeName = options.placeName;
     if (options.focus) {
       patch.ui = { ...state.ui, mapFocus: { seq: state.ui.mapFocus.seq + 1, mode: options.focus } };
     }
     return patch;
+  });
+}
+
+// ---------------------------------------------------------------- output
+
+export function setOutput(output: Output): void {
+  set((state) => {
+    if (state.output === output) return {};
+    const { area, svg } = fitForOutput(output, state.area, state.svg);
+    const view = state.ui.view === 'result' && !hasResult({ output, generation: state.generation }) ? 'map' : state.ui.view;
+    return {
+      output,
+      area,
+      svg,
+      generation: withStale(state.generation, area, state.settings),
+      ui: { ...state.ui, view },
+    };
   });
 }
 
@@ -232,16 +338,26 @@ export function resetSettingsSection(key: SettingsSection): void {
   });
 }
 
-/** Settings, colours and export options back to their defaults. The area is kept. */
+/** Settings, colours and export options of both outputs back to their defaults. The area, SVG title and scale lock are kept. */
 export function resetAllSettings(): void {
   set((state) => {
     const settings = cloneSettings(DEFAULT_SETTINGS);
+    const defaults = defaultSvgSettings();
+    const reset: SvgSettings = {
+      ...defaults,
+      label: { ...defaults.label, text: state.svg.label.text },
+      scale: state.svg.scale,
+      scaleLocked: state.svg.scaleLocked,
+    };
+    const { area, svg } = fitForOutput(state.output, state.area, reset);
     return {
+      area,
       settings,
+      svg,
       palette: structuredClone(DEFAULT_PALETTE),
       exportSettings: { ...DEFAULT_EXPORT },
       fileName: null,
-      generation: withStale(state.generation, state.area, settings),
+      generation: withStale(state.generation, area, settings),
     };
   });
 }
@@ -273,6 +389,120 @@ export function setFileName(fileName: string | null): void {
   set({ fileName });
 }
 
+// --------------------------------------------------------------- SVG map
+
+type SvgPatch = Partial<SvgSettings> | ((svg: SvgSettings) => Partial<SvgSettings>);
+
+// Changes that affect the piece fit the area again, so a locked scale holds
+// and an unlocked one follows the new map window.
+function updateSvg(patch: SvgPatch, extra: (state: AppState) => Partial<AppState> = () => ({})): void {
+  set((state) => {
+    const changed = { ...state.svg, ...(typeof patch === 'function' ? patch(state.svg) : patch) };
+    const more = extra(state);
+    const { area, svg } = fitForOutput(state.output, more.area ?? state.area, changed);
+    return { ...more, area, svg, generation: withStale(state.generation, area, state.settings) };
+  });
+}
+
+export function patchSvg(patch: SvgPatch): void {
+  updateSvg(patch);
+}
+
+export function setPieceSize(patch: Partial<PieceSize>): void {
+  updateSvg((svg) => ({ product: { ...svg.product, ...patch }, productPreset: 'custom' }));
+}
+
+export function setBorder(patch: Partial<BorderSettings>): void {
+  updateSvg((svg) => ({ border: { ...svg.border, ...patch } }));
+}
+
+export function applyPiecePreset(id: string): void {
+  const preset = PRODUCT_PRESETS.find((item) => item.id === id);
+  if (!preset) {
+    updateSvg({ productPreset: 'custom' });
+    return;
+  }
+  const { shape, ...size } = structuredClone(preset.product);
+  updateSvg(
+    (svg) => ({
+      productPreset: id,
+      product: size,
+      border: { ...svg.border, style: preset.border },
+      label: { ...svg.label, style: preset.labelStyle },
+    }),
+    (state) => ({ area: { ...state.area, shape: areaShapeOf(shape) } }),
+  );
+}
+
+export function setSvgMode(mode: OutputMode): void {
+  updateSvg((svg) => ({
+    mode,
+    cleanup:
+      svg.cleanupPreset === 'custom' || svg.cleanupPreset === 'off'
+        ? svg.cleanup
+        : cleanupForPreset(svg.cleanupPreset, mode, svg.plotter.penWidth, svg.cleanup),
+  }));
+}
+
+export function setSvgStyle(patch: Partial<ModeStyle>): void {
+  updateSvg((svg) => ({ styles: { ...svg.styles, [svg.mode]: { ...svg.styles[svg.mode], ...patch } } }));
+}
+
+export function setLaserPalette(laserPalette: LaserPalette): void {
+  updateSvg((svg) => ({
+    laserPalette,
+    styles: { ...svg.styles, laser: { ...svg.styles.laser, colors: { ...LASER_PALETTES[laserPalette].colors } } },
+  }));
+}
+
+export function setPrintTheme(printTheme: string): void {
+  updateSvg((svg) => {
+    const theme = printStyle(printTheme as keyof typeof PRINT_THEMES);
+    return { printTheme, styles: { ...svg.styles, print: { ...svg.styles.print, colors: theme.colors, background: theme.background } } };
+  });
+}
+
+export function setLabel(patch: Partial<LabelSettings>): void {
+  updateSvg((svg) => ({ label: { ...svg.label, ...patch } }));
+}
+
+export function setCleanupPreset(preset: CleanupPreset): void {
+  updateSvg((svg) => ({ cleanupPreset: preset, cleanup: cleanupForPreset(preset, svg.mode, svg.plotter.penWidth, svg.cleanup) }));
+}
+
+export function setCleanup(patch: Partial<CleanupSettings>): void {
+  updateSvg((svg) => ({ cleanup: { ...svg.cleanup, ...patch, enabled: true }, cleanupPreset: 'custom' }));
+}
+
+export function setFilters(update: (filters: FeatureFilters) => FeatureFilters): void {
+  updateSvg((svg) => ({ filters: update(svg.filters) }));
+}
+
+export function setPlotter(patch: Partial<PlotterSettings>): void {
+  updateSvg((svg) => {
+    const plotter = { ...svg.plotter, ...patch };
+    const followSpacing = svg.mode === 'plotter' && svg.cleanupPreset !== 'custom' && svg.cleanupPreset !== 'off';
+    return { plotter, cleanup: followSpacing ? cleanupForPreset(svg.cleanupPreset, 'plotter', plotter.penWidth, svg.cleanup) : svg.cleanup };
+  });
+}
+
+export function setScaleLocked(scaleLocked: boolean): void {
+  updateSvg({ scaleLocked });
+}
+
+/** 1:scale. Sets the map window's width, locked or not. */
+export function setSvgScale(scale: number): void {
+  const state = get();
+  const { layout } = pieceLayout(state.svg.product, state.area.shape, state.svg.border);
+  if (!layout || !(scale > 0)) return;
+  set({ svg: { ...state.svg, scale } });
+  setArea((area) => ({ ...area, widthM: (scale * layout.window.w) / 1000 }));
+}
+
+export function setCustomFontName(customFontName: string | null): void {
+  set({ customFontName });
+}
+
 // -------------------------------------------------------------------- ui
 
 function patchUi(patch: Partial<UiState>): void {
@@ -280,7 +510,7 @@ function patchUi(patch: Partial<UiState>): void {
 }
 
 export function setView(view: View): void {
-  if (view === 'model' && !get().generation.result) return;
+  if (view === 'result' && !hasResult(get())) return;
   patchUi({ view });
 }
 
@@ -289,7 +519,7 @@ export function toggleSection(key: SectionKey): void {
   patchUi({ sections: { ...sections, [key]: !sections[key] } });
 }
 
-export function toggleLayer(key: LayerKey): void {
+export function toggleLayer(key: string): void {
   const layers = get().ui.layers;
   patchUi({ layers: { ...layers, [key]: !layers[key] } });
 }
@@ -312,6 +542,10 @@ export function setShowBed(showBed: boolean): void {
 
 export function setSizeUnit(sizeUnit: SizeUnit): void {
   patchUi({ sizeUnit });
+}
+
+export function setPreviewLook(previewLook: PreviewLook): void {
+  patchUi({ previewLook });
 }
 
 export function dismissMapHint(): void {

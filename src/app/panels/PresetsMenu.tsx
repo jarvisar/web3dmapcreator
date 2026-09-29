@@ -6,7 +6,7 @@ import { PRESET_GROUPS } from '../data/presets';
 import type { AreaPreset } from '../data/presets';
 import { areaForBounds } from '../lib/area';
 import { NARROW_QUERY } from '../lib/browser';
-import { setArea, setDrawerOpen } from '../state/store';
+import { setArea, setDrawerOpen, useApp } from '../state/store';
 
 export function PresetsMenu() {
   const [open, setOpen] = useState(false);
@@ -14,7 +14,8 @@ export function PresetsMenu() {
   const listRef = useRef<HTMLDivElement>(null);
 
   function choose(preset: AreaPreset) {
-    setArea((area) => areaForBounds(preset.bounds, area), { focus: 'always', placeName: preset.name });
+    const svg = useApp.getState().output === 'svg';
+    setArea((area) => areaForBounds(preset.bounds, area, svg), { focus: 'always', placeName: preset.name, title: preset.title, fit: 'cover' });
     setOpen(false);
     anchor?.focus();
     if (window.matchMedia(NARROW_QUERY).matches) setDrawerOpen(false);

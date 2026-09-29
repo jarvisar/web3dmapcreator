@@ -105,8 +105,9 @@ export async function generateModel(): Promise<void> {
       },
       ui: {
         ...current.ui,
-        view: 'model',
-        drawerOpen: narrow ? false : current.ui.drawerOpen,
+        // Unless the SVG map was picked while the model generated.
+        view: current.output === 'model' ? 'result' : current.ui.view,
+        drawerOpen: narrow && current.output === 'model' ? false : current.ui.drawerOpen,
         hiddenParts: current.ui.hiddenParts.filter((part) => meta.parts.some((item) => item.id === part)),
       },
     }));

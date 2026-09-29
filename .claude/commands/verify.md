@@ -12,10 +12,12 @@ There is no fixed expected test count or mesh count.
    npm test
    ```
 
-2. For data layer changes, run the live tests too:
+2. For data layer changes, run the live tests too. For SVG map engine
+   changes, render from live tiles as well:
 
    ```powershell
    $env:NETWORK = '1'; npx vitest run src/core/data; Remove-Item Env:NETWORK
+   $env:NETWORK = '1'; $env:SVG_OUT = 'out/svg'; npx vitest run src/core/svgmap/e2e.test.ts; Remove-Item Env:NETWORK, Env:SVG_OUT
    ```
 
 3. Generate real areas end to end and check every part reports `open 0 repeated 0`:
@@ -41,6 +43,7 @@ There is no fixed expected test count or mesh count.
    npm run build
    npx vite preview --port 4173 --strictPort   # in the background
    node scripts/e2e.mjs http://localhost:4173/ out/e2e
+   node scripts/e2e.mjs http://localhost:4173/ out/e2e-svg --svg --all-formats
    ```
 
    Look at the screenshots in `out/e2e` and report console errors. Stop the

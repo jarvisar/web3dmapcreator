@@ -1,6 +1,6 @@
 # How It Works
 
-Technical notes on how a model is built. For everyday use see the [README](../README.md).
+Technical notes on how a model is built. For everyday use see the [README](../README.md), and for the flat maps see [SVG maps](SVG_MAPS.md).
 
 Everything runs in the browser. The page starts a Web Worker that downloads the data, runs the geometry pipeline and writes the export files, so the page stays responsive while a model is built. Nothing is sent to a server apart from the data requests themselves and the place search.
 

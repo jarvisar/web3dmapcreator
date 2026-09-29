@@ -2,15 +2,18 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { Map as MlMap, NavigationControl, ScaleControl, setWorkerUrl } from 'maplibre-gl';
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { IControl } from 'maplibre-gl';
-import { X } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { CircleAlert, X } from 'lucide-react';
+import { useEffect, useMemo, useRef } from 'react';
 import { areaGeoBounds, modelSizeMm, validateArea } from '../../core/geo/area';
-import type { AreaSpec, ModelSettings } from '../../core/settings';
+import type { AreaSpec } from '../../core/settings';
 import { Segmented } from '../components/Segmented';
-import { AREA_HINT } from '../lib/area';
-import { formatMmPair, formatSizePair } from '../lib/format';
+import { areaHint } from '../lib/area';
+import { formatInteger, formatMmPair, formatSizePair } from '../lib/format';
 import { dismissMapHint, setArea, setBasemap, useApp } from '../state/store';
-import type { BasemapKey } from '../state/store';
+import type { AppState, BasemapKey } from '../state/store';
+import { useLabelArtwork } from '../svgmap/labelArtwork';
+import { pieceOverlay } from '../svgmap/overlay';
+import { pieceLayout } from '../svgmap/piece';
 import { AreaEditor } from './AreaEditor';
 import { BASEMAPS, flattenBuildings } from './basemaps';
 import { registerMap } from './mapHandle';
@@ -19,8 +22,12 @@ import { registerMap } from './mapHandle';
 // bundles it. Point it at a worker chunk Vite builds instead.
 setWorkerUrl(maplibreWorkerUrl);
 
-function areaLabel(area: AreaSpec, settings: ModelSettings): string {
-  const size = modelSizeMm(area, settings.scale);
+function areaLabel(state: AppState): string {
+  const { area } = state;
+  if (state.output === 'svg') {
+    return `${formatSizePair(area.widthM, area.heightM)} · 1:${formatInteger(state.svg.scale)}${state.svg.scaleLocked ? ', locked' : ''}`;
+  }
+  const size = modelSizeMm(area, state.settings.scale);
   return `${formatSizePair(area.widthM, area.heightM)} · ${formatMmPair(size.width, size.depth)}`;
 }
 
@@ -81,8 +88,18 @@ const BASEMAP_OPTIONS = (Object.keys(BASEMAPS) as BasemapKey[]).map((key) => ({ 
 export function MapView({ active }: { active: boolean }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MlMap | null>(null);
+  const editorRef = useRef<AreaEditor | null>(null);
   const basemap = useApp((state) => state.ui.basemap);
   const hintDismissed = useApp((state) => state.ui.mapHintDismissed);
+  const svg = useApp((state) => state.output === 'svg');
+  const shape = useApp((state) => state.area.shape);
+  const piece = useApp((state) => state.svg.product);
+  const border = useApp((state) => state.svg.border);
+  const label = useApp((state) => state.svg.label);
+  const locked = useApp((state) => state.svg.scaleLocked);
+  const customFontName = useApp((state) => state.customFontName);
+  const layout = useMemo(() => (svg ? pieceLayout(piece, shape, border).layout : null), [svg, piece, shape, border]);
+  const { artwork, error: labelError } = useLabelArtwork(svg, layout, label, customFontName);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -120,7 +137,8 @@ export function MapView({ active }: { active: boolean }) {
         if (!useApp.getState().ui.mapHintDismissed) dismissMapHint();
       },
     });
-    editor.setLabel(areaLabel(initial.area, initial.settings));
+    editorRef.current = editor;
+    editor.setLabel(areaLabel(initial));
     editor.setInvalid(validateArea(initial.area) !== null);
 
     const unsubscribe = useApp.subscribe((state, previous) => {
@@ -128,8 +146,8 @@ export function MapView({ active }: { active: boolean }) {
         editor.setArea(state.area);
         editor.setInvalid(validateArea(state.area) !== null);
       }
-      if (state.area !== previous.area || state.settings.scale !== previous.settings.scale) {
-        editor.setLabel(areaLabel(state.area, state.settings));
+      if (state.area !== previous.area || state.settings.scale !== previous.settings.scale || state.output !== previous.output || state.svg !== previous.svg) {
+        editor.setLabel(areaLabel(state));
       }
       if (state.ui.mapFocus !== previous.ui.mapFocus) {
         if (state.ui.mapFocus.mode === 'always' || !areaInView(map, state.area)) fitMapToArea(map, state.area, true);
@@ -138,12 +156,22 @@ export function MapView({ active }: { active: boolean }) {
 
     return () => {
       unsubscribe();
+      editorRef.current = null;
       editor.destroy();
       map.remove();
       mapRef.current = null;
       registerMap(null);
     };
   }, []);
+
+  // An SVG map's window keeps the piece's proportions, and the piece is drawn around it.
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.setAspect(layout ? layout.window.h / layout.window.w : null);
+    editor.setResizable(!(svg && locked));
+    editor.setPiece(layout ? pieceOverlay(layout, artwork) : null);
+  }, [svg, layout, artwork, locked]);
 
   // The first style is set when the map is created. Later changes swap it.
   const firstStyle = useRef(true);
@@ -174,10 +202,16 @@ export function MapView({ active }: { active: boolean }) {
       </div>
       {!hintDismissed && (
         <div className="map-hint floating" role="note">
-          <span>{AREA_HINT}</span>
+          <span>{areaHint(svg && locked)}</span>
           <button type="button" className="icon-btn icon-btn-sm" aria-label="Dismiss tip" onClick={dismissMapHint}>
             <X size={14} aria-hidden="true" />
           </button>
+        </div>
+      )}
+      {svg && labelError && (
+        <div className="map-notice notice notice-warning floating" role="status">
+          <CircleAlert size={16} aria-hidden="true" />
+          <span>{labelError}</span>
         </div>
       )}
     </div>

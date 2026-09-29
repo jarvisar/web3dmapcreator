@@ -1,0 +1,255 @@
+/* What to make, above the sections */
+
+.output-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--bar-border);
+  background: var(--surface-2);
+}
+
+.output-switch .segment {
+  gap: 6px;
+  height: 32px;
+  font-weight: bold;
+}
+
+.output-note {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+/* Shared field bits the SVG sections use */
+
+.colour-field {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.colour-field .hex-input {
+  flex: none;
+  width: 84px;
+}
+
+.disclosure-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.disclosure-block > .nested {
+  align-self: stretch;
+  margin-top: 0;
+}
+
+.align-start {
+  align-self: flex-start;
+}
+
+/* Area: an SVG map's 1:n scale with its lock */
+
+.scale-input {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.scale-prefix {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.scale-input .number-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.scale-input .number-input input {
+  text-align: left;
+}
+
+.lock-btn {
+  flex: none;
+  width: 30px;
+  padding: 0;
+  justify-content: center;
+}
+
+.lock-btn.is-locked {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--link);
+}
+
+.stale-note.is-updating {
+  color: var(--text-3);
+  font-weight: normal;
+}
+
+/* The piece around an SVG map's window on the map, as SVGmap drew its frame */
+
+.area-piece {
+  pointer-events: none;
+}
+
+.piece-margin {
+  fill: rgb(255 255 255 / 0.82);
+}
+
+.piece-band {
+  fill: rgb(0 0 0 / 0.45);
+}
+
+.piece-line,
+.piece-edge,
+.piece-title-line {
+  fill: none;
+  stroke: rgb(0 0 0 / 0.55);
+  stroke-width: 1;
+}
+
+.piece-title-box {
+  fill: rgb(255 255 255 / 0.88);
+}
+
+.piece-title-fill {
+  fill: rgb(0 0 0 / 0.75);
+}
+
+.piece-title-stroke {
+  fill: none;
+  stroke: rgb(0 0 0 / 0.75);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.area-editor.is-fixed-size .area-handle-corner {
+  display: none;
+}
+
+.map-notice {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  bottom: 36px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  transform: translateX(-50%);
+}
+
+/* SVG preview */
+
+.svg-preview {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(var(--viewer-bg-1), var(--viewer-bg-2));
+}
+
+.svg-stage {
+  position: absolute;
+  inset: 0;
+  cursor: grab;
+  touch-action: none;
+}
+
+.svg-stage.is-dragging {
+  cursor: grabbing;
+}
+
+.svg-stage svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 2px 6px rgb(0 0 0 / 0.25));
+}
+
+.preview-look.floating {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.banner-error {
+  max-width: min(520px, calc(100vw - 40px));
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--danger);
+  white-space: normal;
+}
+
+@media (max-width: 700px) {
+  .map-notice {
+    bottom: 12px;
+  }
+}
+
+/* Install and update notices. Outside the app, so they still show after a crash. */
+
+.notice-toasts {
+  position: fixed;
+  z-index: 60;
+  left: 50%;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  pointer-events: none;
+}
+
+.notice-toast {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  font-size: 12px;
+  pointer-events: auto;
+  animation: fade-in 150ms ease-out;
+}
+
+.notice-toast span {
+  flex: 1 1 200px;
+}
+
+/* Crash screen */
+
+.crash {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 16px;
+}
+
+.crash-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 440px;
+  padding: 16px 18px;
+}
+
+.crash-card h1 {
+  font-size: 15px;
+}
+
+.crash-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.svg-stage:focus-visible {
+  border-radius: 0;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}

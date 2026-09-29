@@ -14,6 +14,7 @@ import { Projection } from '../../core/geo/projection';
 import type { AreaSpec } from '../../core/settings';
 import type { LonLat } from '../../core/types';
 import { LATITUDE_LIMIT, constrainSize, normalizeRotation, snapRotation, wrapLongitude } from '../lib/area';
+import type { PieceOverlay } from '../svgmap/overlay';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const ROTATE_OFFSET = 30;
@@ -62,12 +63,22 @@ export class AreaEditor {
   private readonly corners: Corner[];
   private readonly rotateHandle: HTMLButtonElement;
   private readonly label: HTMLDivElement;
+  private readonly pieceGroup: SVGGElement;
   private labelSize = { width: 0, height: 0 };
 
   private area: AreaSpec;
   private ring: LonLat[] = [];
   private cornerGeo: LonLat[] = [];
   private topGeo: LonLat = [0, 0];
+  // Half a width along the area's own x and y axes, to place the piece overlay.
+  private axisGeo: [LonLat, LonLat] = [
+    [0, 0],
+    [0, 0],
+  ];
+  /** Height over width that resizing keeps, for an SVG map's window. */
+  private aspect: number | null = null;
+  private resizable = true;
+  private piece: PieceOverlay | null = null;
   private screen: number[] = [];
   private drag: Drag | null = null;
   private lastDown: { id: number; type: string } | null = null;
@@ -91,7 +102,8 @@ export class AreaEditor {
     this.casing = svg('path', 'area-casing');
     this.outline = svg('path', 'area-outline');
     this.stem = svg('line', 'area-stem');
-    this.svg.append(this.fill, this.box, this.casing, this.outline, this.stem);
+    this.pieceGroup = svg('g', 'area-piece');
+    this.svg.append(this.fill, this.pieceGroup, this.box, this.casing, this.outline, this.stem);
     element.appendChild(this.svg);
 
     this.label = document.createElement('div');
@@ -137,7 +149,29 @@ export class AreaEditor {
     const h = area.heightM / 2;
     this.cornerGeo = this.corners.map(({ sx, sy }) => projection.localToGeo(sx * w, sy * h));
     this.topGeo = projection.localToGeo(0, h);
+    this.axisGeo = [projection.localToGeo(w, 0), projection.localToGeo(0, w)];
     this.element.dataset.shape = area.shape;
+    this.layout();
+  }
+
+  setAspect(aspect: number | null): void {
+    this.aspect = aspect && Number.isFinite(aspect) && aspect > 0 ? aspect : null;
+  }
+
+  /** Off hides the corner handles, for an SVG map with its scale locked. */
+  setResizable(resizable: boolean): void {
+    this.resizable = resizable;
+    this.element.classList.toggle('is-fixed-size', !resizable);
+  }
+
+  /** The piece around an SVG map's window, drawn over the map. null removes it. */
+  setPiece(piece: PieceOverlay | null): void {
+    if (piece?.markup === this.piece?.markup && piece?.window.join() === this.piece?.window.join()) {
+      this.piece = piece;
+      return;
+    }
+    this.piece = piece;
+    this.pieceGroup.innerHTML = piece ? piece.markup : '';
     this.layout();
   }
 
@@ -234,6 +268,40 @@ export class AreaEditor {
     this.stem.setAttribute('x2', hx.toFixed(1));
     this.stem.setAttribute('y2', hy.toFixed(1));
 
+    if (this.piece) {
+      // Piece millimetres (y down) to screen pixels, from where the area's own
+      // axes land half a width out. The map is seen from straight above, so
+      // over one area this is as good as projecting every point.
+      const [wx, wy, ww, wh] = this.piece.window;
+      const ax = map.project(this.axisGeo[0]);
+      const ay = map.project(this.axisGeo[1]);
+      const k = 2 / ww;
+      const a = (ax.x - center.x) * k;
+      const b = (ax.y - center.y) * k;
+      const c = -(ay.x - center.x) * k;
+      const d = -(ay.y - center.y) * k;
+      const cx = wx + ww / 2;
+      const cy = wy + wh / 2;
+      const e = center.x - a * cx - c * cy;
+      const f = center.y - b * cx - d * cy;
+      this.pieceGroup.setAttribute('transform', `matrix(${a} ${b} ${c} ${d} ${e} ${f})`);
+      // The margin and border reach past the window, so keep the label clear of them.
+      const [x0, y0, w0, h0] = this.piece.canvas;
+      for (const [u, v] of [
+        [x0, y0],
+        [x0 + w0, y0],
+        [x0, y0 + h0],
+        [x0 + w0, y0 + h0],
+      ]) {
+        const sx = a * u + c * v + e;
+        const sy = b * u + d * v + f;
+        minX = Math.min(minX, sx);
+        maxX = Math.max(maxX, sx);
+        minY = Math.min(minY, sy);
+        maxY = Math.max(maxY, sy);
+      }
+    }
+
     // Handles crowd each other on a tiny outline: hide them until zoomed in.
     const span = Math.max(maxX - minX, maxY - minY);
     this.element.classList.toggle('is-tiny', span < 36);
@@ -297,6 +365,7 @@ export class AreaEditor {
 
   private onHandleDown(event: PointerEvent, kind: 'resize' | 'rotate', corner?: Corner): void {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (kind === 'resize' && !this.resizable) return;
     event.preventDefault();
     event.stopPropagation();
     const handle = event.currentTarget as HTMLElement;
@@ -409,7 +478,11 @@ export class AreaEditor {
     const fx = fromCenter ? 0 : (-sx * start.widthM) / 2;
     const fy = fromCenter ? 0 : (-sy * start.heightM) / 2;
     const scale = fromCenter ? 2 : 1;
-    const [width, height] = constrainSize(start.shape, scale * sx * (px - fx), scale * sy * (py - fy), 'larger');
+    let [width, height] = constrainSize(start.shape, scale * sx * (px - fx), scale * sy * (py - fy), 'larger');
+    if (this.aspect) {
+      width = Math.max(width, height / this.aspect);
+      height = width * this.aspect;
+    }
     const cx = fromCenter ? 0 : fx + (sx * width) / 2;
     const cy = fromCenter ? 0 : fy + (sy * height) / 2;
     const center = drag.projection.localToGeo(cx, cy);
@@ -432,7 +505,7 @@ export class AreaEditor {
 
   private onCornerKey(event: KeyboardEvent): void {
     const grow = event.key === 'ArrowUp' || event.key === 'ArrowRight' ? 1 : event.key === 'ArrowDown' || event.key === 'ArrowLeft' ? -1 : 0;
-    if (!grow) return;
+    if (!grow || !this.resizable) return;
     event.preventDefault();
     const factor = 1 + grow * (event.shiftKey ? 0.1 : 0.02);
     const area = this.area;

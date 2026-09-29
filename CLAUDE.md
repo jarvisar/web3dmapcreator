@@ -15,6 +15,12 @@ out. `settings.modelSource = 'lidar'` (LiDAR only) builds the whole model from
 a survey alone instead, as one solid in the terrain colour (`src/core/dsm/`).
 There is no server: data is read from public, CORS-enabled sources.
 
+The same app makes flat SVG maps for laser engraving, pen plotters and print
+(`output: 'svg'`), from OpenFreeMap vector tiles. That engine came from the
+SVGmap app (separate repo `SVGmap`, not a dependency) and lives in
+`src/core/svgmap/`. The two outputs share the area, search, presets, share
+link and saved state, not their engines.
+
 One model unit is one printed millimetre. Default scale 0.07 mm per metre
 (1:14,286). Defaults live in `src/core/settings.ts` and follow the add-on.
 
@@ -32,7 +38,9 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
 | `src/core/engine/` | Worker protocol and main-thread client |
 | `src/worker/engine.worker.ts` | Downloads, generates, meshes and exports off the main thread |
-| `src/app/` | React UI: state (zustand), MapLibre area editor, panels, three.js viewer |
+| `src/worker/svg.worker.ts` | Renders SVG maps, separate so a preview updates while a model generates |
+| `src/core/svgmap/` | SVG maps: tile fetch/decode/stitch, piece layout (`layout/`), line cleanup (`lines/`), fills and hatching, titles (`text/`), SVG writer, `service.ts` (the render with its caches) |
+| `src/app/` | React UI: state (zustand), MapLibre area editor, panels, three.js viewer. `src/app/svgmap/` has the SVG sections, preview, render client, piece fitting and share encoding |
 | `scripts/` | `generate.ts` (CLI end to end), `fetch-area.ts`, `bench-synthetic.ts`, `check-bambu.ts`, `shot.mjs`, `e2e.mjs` and `e2e-mobile.mjs` (browser runs in the installed Edge) |
 
 ## Pipeline rules worth preserving
@@ -162,6 +170,31 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   `SPECK_M2` are also filled before the opening. Overture water was
   compared and rejected, see `docs/LIDAR_MODEL.md`.
 
+SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.md`):
+
+- The engine is SVGmap's, moved with its tests. At the merge, live renders of
+  the Chicago Loop were byte-identical to SVGmap's for laser, plotter and
+  print. Hexagons were added (`layout/shapes.ts`, `availableWidthAt` in
+  `text/label.ts`, the plotter band in `compose.ts`).
+- In SVG mode the area is the piece's map window: `fitAreaToPiece` gives it
+  the window's proportions and corner radius and sets `svg.scale` (1:n) from
+  its width, or its width from the scale when `scaleLocked`. Every area or
+  piece change goes through it in the store. The shape is shared with 3D.
+- Area sizes are rounded to the centimetre (`lib/area.ts`), not the metre,
+  so a typed 1:5,000 on a small piece stays 1:5,000.
+- The box on the map uses the ENU `Projection`, the engine Web Mercator at
+  the centre. The piece overlay on the map is one affine transform from
+  where the area's axes land (`AreaEditor.layout`).
+- The live preview re-renders whenever the settings key differs from both
+  the result's and the last tried key (`svgmap/render.ts`), so a failed or
+  cancelled render isn't retried until something changes.
+- The engine still uses Clipper2's `rectClip` for tiles and the window box,
+  as SVGmap did. If fills lose a corner at a tile edge, look there first.
+- Share links: `#a=...&o=svg`, and a copied link adds `s=` (settings that
+  differ from the defaults, base64url JSON). Old SVGmap links (`#s=` with
+  the area inside) still open. The `s=` part is dropped from the address
+  bar once read.
+
 ## Verification
 
 ```powershell
@@ -172,6 +205,8 @@ npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --out out/loop
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar   # point cache in out/lidar-cache
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar-only --out out/loop-surface.3mf   # --cut-water to cut the river
 npx tsx scripts/check-bambu.ts   # round trip through installed Bambu Studio (isolated data dir)
+$env:NETWORK=1; npx vitest run src/core/svgmap/e2e.test.ts   # SVG maps from live tiles ($env:SVG_OUT to keep them)
+node scripts/e2e.mjs http://localhost:4173/ out/e2e-svg --svg --all-formats   # SVG map in Edge
 npm run build                # site into build/ (not dist/, which holds old add-on archives)
 ```
 

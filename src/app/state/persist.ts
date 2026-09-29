@@ -11,14 +11,18 @@ import {
   sanitizeSettings,
 } from '../../core/settings';
 import type { AreaSpec, ExportSettings, ModelSettings, Palette } from '../../core/settings';
+import { type SvgSettings, defaultSvgSettings, mergeSettings } from '../svgmap/settings';
 
-const KEY = 'jarvizar-city-model:v1';
+export const STORAGE_KEY = 'jarvizar-city-model:v1';
+const KEY = STORAGE_KEY;
 
 export interface SavedState {
+  output?: 'model' | 'svg';
   area?: AreaSpec;
   settings?: ModelSettings;
   palette?: Palette;
   exportSettings?: ExportSettings;
+  svg?: SvgSettings;
   placeName?: string;
   fileName?: string | null;
   sections?: Partial<Record<string, boolean>>;
@@ -26,6 +30,7 @@ export interface SavedState {
   showBed?: boolean;
   sizeUnit?: 'km' | 'm' | 'mm';
   mapHintDismissed?: boolean;
+  previewLook?: 'material' | 'colors';
   /** The URL hash the app last wrote, to tell its own hash from a share link. */
   hash?: string;
 }
@@ -99,10 +104,12 @@ export function loadSaved(): SavedState {
   if (!isObject(raw)) return {};
   const ui = isObject(raw.ui) ? raw.ui : {};
   return {
+    output: raw.output === 'svg' || raw.output === 'model' ? raw.output : undefined,
     area: readArea(raw.area),
     settings: readSettings(raw.settings),
     palette: readPalette(raw.palette),
     exportSettings: readExport(raw.exportSettings),
+    svg: isObject(raw.svg) ? mergeSettings(defaultSvgSettings(), raw.svg) : undefined,
     placeName: typeof raw.placeName === 'string' ? raw.placeName : undefined,
     fileName: typeof raw.fileName === 'string' ? raw.fileName : null,
     sections: isObject(ui.sections) ? (ui.sections as Record<string, boolean>) : undefined,
@@ -110,32 +117,37 @@ export function loadSaved(): SavedState {
     showBed: typeof ui.showBed === 'boolean' ? ui.showBed : undefined,
     sizeUnit: ui.sizeUnit === 'km' || ui.sizeUnit === 'm' || ui.sizeUnit === 'mm' ? ui.sizeUnit : undefined,
     mapHintDismissed: typeof ui.mapHintDismissed === 'boolean' ? ui.mapHintDismissed : undefined,
+    previewLook: ui.previewLook === 'material' || ui.previewLook === 'colors' ? ui.previewLook : undefined,
     hash: typeof raw.hash === 'string' ? raw.hash : undefined,
   };
 }
 
 export function saveState(
   state: {
-  area: AreaSpec;
-  settings: ModelSettings;
-  palette: Palette;
-  exportSettings: ExportSettings;
-  placeName: string;
-  fileName: string | null;
-  ui: { sections: object; basemap: string; showBed: boolean; sizeUnit: string; mapHintDismissed: boolean };
+    output: 'model' | 'svg';
+    area: AreaSpec;
+    settings: ModelSettings;
+    palette: Palette;
+    exportSettings: ExportSettings;
+    svg: SvgSettings;
+    placeName: string;
+    fileName: string | null;
+    ui: { sections: object; basemap: string; showBed: boolean; sizeUnit: string; mapHintDismissed: boolean; previewLook: string };
   },
   hash: string,
 ): void {
-  const { sections, basemap, showBed, sizeUnit, mapHintDismissed } = state.ui;
+  const { sections, basemap, showBed, sizeUnit, mapHintDismissed, previewLook } = state.ui;
   const data = {
     hash,
+    output: state.output,
     area: state.area,
     settings: state.settings,
     palette: state.palette,
     exportSettings: state.exportSettings,
+    svg: state.svg,
     placeName: state.placeName,
     fileName: state.fileName,
-    ui: { sections, basemap, showBed, sizeUnit, mapHintDismissed },
+    ui: { sections, basemap, showBed, sizeUnit, mapHintDismissed, previewLook },
   };
   try {
     localStorage.setItem(KEY, JSON.stringify(data));

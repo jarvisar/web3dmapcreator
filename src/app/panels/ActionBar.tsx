@@ -1,11 +1,13 @@
-import { Download, LoaderCircle, RefreshCw, X } from 'lucide-react';
+import { Download, Eye, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { AREA_HINT } from '../lib/area';
+import { areaHint } from '../lib/area';
 import { PHONE_QUERY, useMediaQuery } from '../lib/browser';
-import { formatCount, formatElapsed, formatMm } from '../lib/format';
+import { formatCount, formatElapsed, formatInteger, formatMm, formatNumber } from '../lib/format';
 import { cancelGeneration, exportModel, generateModel } from '../state/actions';
 import { FORMAT_EXTENSIONS, filamentCount, generationProblem, resultGroups } from '../state/derived';
-import { dismissExportError, dismissGenerationError, dismissMapHint, useApp } from '../state/store';
+import { dismissExportError, dismissGenerationError, dismissMapHint, setView, useApp } from '../state/store';
+import { downloadSvg, generateSvg, svgProblem, useSvgKey } from '../svgmap/actions';
+import { cancelRender, renderFraction, useSvgRender } from '../svgmap/render';
 
 function Elapsed({ since }: { since: number }) {
   const [now, setNow] = useState(() => Date.now());
@@ -89,7 +91,7 @@ function Alert({ title, text, onDismiss }: { title: string; text: string; onDism
   );
 }
 
-export function ActionBar() {
+function ModelActions() {
   const status = useApp((state) => state.generation.status);
   const error = useApp((state) => state.generation.error);
   const result = useApp((state) => state.generation.result);
@@ -100,13 +102,8 @@ export function ActionBar() {
   const area = useApp((state) => state.area);
   const settings = useApp((state) => state.settings);
   const hidden = useApp((state) => state.ui.hiddenParts);
-  const hintDismissed = useApp((state) => state.ui.mapHintDismissed);
-  const view = useApp((state) => state.ui.view);
-  const drawerOpen = useApp((state) => state.ui.drawerOpen);
-  const phone = useMediaQuery(PHONE_QUERY);
   const problem = generationProblem(area, settings);
   const running = status === 'running';
-  const showHint = phone && !hintDismissed && !drawerOpen && view === 'map' && !result && !running;
 
   let summary = '';
   let note = '';
@@ -125,15 +122,7 @@ export function ActionBar() {
   }
 
   return (
-    <div className="action-bar">
-      {showHint && (
-        <div className="action-hint" role="note">
-          <span>{AREA_HINT}</span>
-          <button type="button" className="icon-btn icon-btn-sm" aria-label="Dismiss tip" onClick={dismissMapHint}>
-            <X size={14} aria-hidden="true" />
-          </button>
-        </div>
-      )}
+    <>
       {status === 'error' && error && <Alert title="Could not generate the model" text={error} onDismiss={dismissGenerationError} />}
       {exportError && <Alert title="Could not export the model" text={exportError} onDismiss={dismissExportError} />}
 
@@ -164,6 +153,138 @@ export function ActionBar() {
           {problem && status !== 'error' && <p className="action-problem">{problem}</p>}
         </>
       )}
+    </>
+  );
+}
+
+function SvgProgress() {
+  const progress = useSvgRender((state) => state.progress);
+  const startedAt = useSvgRender((state) => state.startedAt);
+  const percent = Math.round(renderFraction(progress) * 100);
+  const counted = progress?.total ? `${formatInteger(progress.done ?? 0)} of ${formatInteger(progress.total)} tiles` : '';
+  return (
+    <div className="progress">
+      <div className="progress-top">
+        <span className="progress-label" aria-live="polite">
+          {progress?.message ?? 'Starting'}
+        </span>
+        <span className="progress-percent">{percent}%</span>
+      </div>
+      <div
+        className="progress-track"
+        role="progressbar"
+        aria-label="SVG progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-valuetext={progress?.message}
+      >
+        <div className="progress-fill" style={{ width: `${percent}%` }} />
+      </div>
+      <div className="progress-bottom">
+        <span className="progress-detail">{counted}</span>
+        <Elapsed since={startedAt} />
+        <button type="button" className="btn btn-sm" onClick={cancelRender}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// An SVG draws in seconds and the preview follows the settings, so there's
+// no Regenerate: from the map, the first button renders or opens the preview.
+function SvgActions() {
+  const status = useSvgRender((state) => state.status);
+  const result = useSvgRender((state) => state.result);
+  const resultKey = useSvgRender((state) => state.resultKey);
+  const error = useSvgRender((state) => state.error);
+  const key = useSvgKey();
+  const view = useApp((state) => state.ui.view);
+  const problem = useApp((state) => svgProblem(state.area, state.svg));
+  const working = status === 'working';
+  const stale = result !== null && key !== resultKey;
+
+  // Renders started from the map show their progress. The open preview updates quietly.
+  if (working && (!result || view === 'map')) return <SvgProgress />;
+
+  let summary = '';
+  if (result) {
+    const paths = result.groups.reduce((n, group) => n + group.subpaths, 0);
+    summary = [
+      `${formatNumber(result.width, 1)} × ${formatNumber(result.height, 1)} mm`,
+      `1:${formatInteger(result.meta.scale)}`,
+      `${formatCount(paths)} paths`,
+      ...(result.stats.coverage !== null ? [`${formatNumber(result.stats.coverage * 100, 1)}% of roads kept`] : []),
+    ].join(' · ');
+  }
+
+  let first: { label: string; icon: 'eye' | 'refresh' | null; primary: boolean } | null = null;
+  if (!result) first = { label: 'Generate SVG', icon: null, primary: true };
+  else if (view === 'map') first = stale ? { label: 'Update SVG', icon: 'refresh', primary: true } : { label: 'Show preview', icon: 'eye', primary: false };
+
+  return (
+    <>
+      {status === 'error' && error && (
+        <Alert
+          title="Could not make the SVG"
+          text={error}
+          onDismiss={() => useSvgRender.setState((state) => ({ status: state.result ? 'done' : 'idle', error: null }))}
+        />
+      )}
+      {result && (
+        <div className="result-line">
+          <span>{summary}</span>
+          {working ? <span className="stale-note is-updating">Updating</span> : stale && <span className="stale-note">Settings changed</span>}
+        </div>
+      )}
+      <div className="action-buttons">
+        {first && (
+          <button
+            type="button"
+            className={`btn btn-lg${first.primary ? ' btn-primary' : ''}`}
+            disabled={problem !== null}
+            title={problem ?? undefined}
+            onClick={() => (first.icon === 'eye' ? setView('result') : generateSvg())}
+          >
+            {first.icon === 'eye' && <Eye size={15} aria-hidden="true" />}
+            {first.icon === 'refresh' && <RefreshCw size={15} aria-hidden="true" />}
+            {first.label}
+          </button>
+        )}
+        {result && (
+          <button type="button" className={`btn btn-lg${first?.primary ? '' : ' btn-primary'}`} disabled={working} onClick={downloadSvg}>
+            <Download size={16} aria-hidden="true" />
+            Download .svg
+          </button>
+        )}
+      </div>
+      {problem && status !== 'error' && <p className="action-problem">{problem}</p>}
+    </>
+  );
+}
+
+export function ActionBar() {
+  const output = useApp((state) => state.output);
+  const hintDismissed = useApp((state) => state.ui.mapHintDismissed);
+  const view = useApp((state) => state.ui.view);
+  const drawerOpen = useApp((state) => state.ui.drawerOpen);
+  const locked = useApp((state) => state.output === 'svg' && state.svg.scaleLocked);
+  const idle = useApp((state) => state.generation.result === null && state.generation.status !== 'running');
+  const svgIdle = useSvgRender((state) => state.result === null && state.status !== 'working');
+  const phone = useMediaQuery(PHONE_QUERY);
+  const showHint = phone && !hintDismissed && !drawerOpen && view === 'map' && (output === 'model' ? idle : svgIdle);
+  return (
+    <div className="action-bar">
+      {showHint && (
+        <div className="action-hint" role="note">
+          <span>{areaHint(locked)}</span>
+          <button type="button" className="icon-btn icon-btn-sm" aria-label="Dismiss tip" onClick={dismissMapHint}>
+            <X size={14} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+      {output === 'model' ? <ModelActions /> : <SvgActions />}
     </div>
   );
 }

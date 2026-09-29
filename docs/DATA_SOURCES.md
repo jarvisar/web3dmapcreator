@@ -1,6 +1,6 @@
 # Data Sources and Attribution
 
-The site downloads map data from these sources when you generate a model. It doesn't include or redistribute any map data. Check the current terms of each source for your use.
+The site downloads map data from these sources when you generate a model or an SVG map. It doesn't include or redistribute any map data. Check the current terms of each source for your use.
 
 ## Overture Maps
 
@@ -57,14 +57,22 @@ Only downloaded for LiDAR buildings (`LiDAR` on) and LiDAR only models. The surv
 
 Credit the survey's publisher, for example `LiDAR: IGN - LiDAR HD` or `LiDAR: USGS 3DEP`. For Open LiDAR Data, include the original agency and the dataset's license.
 
-## Map and place search
+## Map, SVG maps and place search
 
-The map on the site uses [OpenFreeMap](https://openfreemap.org) vector tiles (© OpenFreeMap, © OpenMapTiles, data © OpenStreetMap contributors). The satellite option uses Esri World Imagery. Place search uses [Photon](https://photon.komoot.io) by komoot, which searches OpenStreetMap data. Your search text is sent to Photon.
+The map on the site uses [OpenFreeMap](https://openfreemap.org) vector tiles (© OpenFreeMap, © OpenMapTiles, data © OpenStreetMap contributors). SVG maps are drawn from the same tiles, or from another source in the OpenMapTiles schema set under `Map data`. The satellite option uses Esri World Imagery. Place search uses [Photon](https://photon.komoot.io) by komoot, which searches OpenStreetMap data. Your search text is sent to Photon.
+
+## Fonts
+
+The SVG title fonts are Montserrat, Josefin Sans, Cinzel, Oswald, Bebas Neue and Bitter, under the SIL Open Font License. Their license files are next to them in `public/fonts`.
+
+The Hershey Fonts were originally created by Dr. A. V. Hershey while working at the U.S. National Bureau of Standards. The format of the font data was originally created by James Hurt, Cognition, Inc. Glyph data from [hersheytext](https://github.com/techninja/hersheytextjs).
 
 ## Printed models
 
 Exported 3MF files carry the map-data attribution in their metadata, and STL files carry it in their header. With LiDAR on, the 3MF metadata lists the surveys used as well. An STL header only has room for the map-data line.
 
 A LiDAR only model uses no map data or elevation tiles, so its 3MF metadata and STL header credit only the surveys.
+
+An SVG map carries the attribution in its description (`<desc>`), along with the centre, bearing and scale it was made at. Credit "© OpenStreetMap contributors" on anything made from one that you publish or sell.
 
 Under the ODbL a printed model made from this data is a Produced Work. If you sell or display one publicly, include the attribution with it, for example on the product listing, the packaging or a label on the base. This is not legal advice.
