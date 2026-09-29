@@ -59,8 +59,9 @@ export function parseHash(hash: string): SharedLink {
   const o = params.get('o');
   return {
     area: parseAreaHash(hash),
-    // An SVGmap link is always an SVG map.
-    output: o === 'svg' || o === 'model' ? o : svg ? 'svg' : null,
+    // An SVGmap link is always an SVG map. An area without o= was written in
+    // model mode, and the recipient's saved mode would change its size.
+    output: o === 'svg' || o === 'model' ? o : svg ? 'svg' : params.get('a') ? 'model' : null,
     svg,
   };
 }

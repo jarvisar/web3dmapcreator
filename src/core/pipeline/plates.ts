@@ -22,7 +22,13 @@ export interface PlateOptions {
   progress?: Progress;
 }
 
-export async function buildPlates(spec: ModelSpec, options: PlateOptions): Promise<Plate[]> {
+export interface PlatesResult {
+  plates: Plate[];
+  /** Solids that could not be meshed, whole or cut to a section. They are missing from the plates. */
+  failed: number;
+}
+
+export async function buildPlates(spec: ModelSpec, options: PlateOptions): Promise<PlatesResult> {
   const excluded = new Set(options.exclude ?? []);
   const layers = spec.layers.filter((layer) => !excluded.has(layer.id));
   // Sections follow what is printed, so a hidden rim doesn't widen the grid.
@@ -32,7 +38,7 @@ export async function buildPlates(spec: ModelSpec, options: PlateOptions): Promi
 
   if (!options.multiPlate) {
     const meshed = await meshLayers(layers, { zShift, progress: options.progress, span: [0, 0.8] });
-    return [{ name: 'Map', parts: meshed.parts, bounds: [west, south, east, north] }];
+    return { plates: [{ name: 'Map', parts: meshed.parts, bounds: [west, south, east, north] }], failed: meshed.failed };
   }
 
   const width = Math.min(options.sectionWidthMm, options.bedWidth);
@@ -48,13 +54,15 @@ export async function buildPlates(spec: ModelSpec, options: PlateOptions): Promi
     );
   }
   const plates: Plate[] = [];
+  let failed = 0;
   for (let i = 0; i < cells.length; i++) {
     const { cell, clip } = cells[i];
     const span: [number, number] = [(0.8 * i) / cells.length, (0.8 * (i + 1)) / cells.length];
     const meshed = await meshLayers(layers, { clip, zShift, progress: options.progress, span });
+    failed += meshed.failed;
     if (!meshed.parts.length) continue;
     plates.push({ name: cell.name, parts: meshed.parts, bounds: cell.bounds });
   }
   if (!plates.length) throw new Error('Nothing to export: every part is hidden or empty');
-  return plates;
+  return { plates, failed };
 }

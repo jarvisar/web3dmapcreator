@@ -156,7 +156,8 @@ describe('generateModel', () => {
 
   it('keeps the rim when the model is cut into sections', async () => {
     const { spec, meshed } = await build((s) => (s.rim.enabled = true));
-    const plates = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 40, sectionHeightMm: 40, bedWidth: 180, bedDepth: 180 });
+    const { plates, failed } = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 40, sectionHeightMm: 40, bedWidth: 180, bedDepth: 180 });
+    expect(failed).toBe(0);
     const rimVolume = (parts: typeof meshed.parts) =>
       parts.filter((p) => p.id === 'rim').reduce((v, p) => v + signedVolume(p.positions, p.indices), 0);
     const whole = rimVolume(meshed.parts);
@@ -166,7 +167,8 @@ describe('generateModel', () => {
 
   it('splits into closed sections that add up to the whole', async () => {
     const { spec, meshed } = await build();
-    const plates = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 40, sectionHeightMm: 40, bedWidth: 180, bedDepth: 180 });
+    const { plates, failed } = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 40, sectionHeightMm: 40, bedWidth: 180, bedDepth: 180 });
+    expect(failed).toBe(0);
     expect(plates.length).toBe(3 * 2);
     const total = (parts: typeof meshed.parts) =>
       parts.filter((p) => p.id !== 'trees').reduce((v, p) => v + signedVolume(p.positions, p.indices), 0);

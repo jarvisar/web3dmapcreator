@@ -126,10 +126,19 @@ export class Fetcher {
 export async function* ahead<T, R>(items: T[], window: number, task: (item: T) => Promise<R>): AsyncGenerator<R> {
   const running: Promise<R>[] = [];
   let next = 0;
-  while (next < items.length && running.length < window) running.push(task(items[next++]));
+  // Each task needs a handler as soon as it starts. One failing while an
+  // earlier one is still awaited is otherwise an unhandled rejection, which
+  // ends a Node process before the caller can catch it. It still throws here
+  // when its turn comes.
+  const start = () => {
+    const promise = task(items[next++]);
+    promise.catch(() => undefined);
+    running.push(promise);
+  };
+  while (next < items.length && running.length < window) start();
   while (running.length) {
     const result = await running.shift()!;
-    if (next < items.length) running.push(task(items[next++]));
+    if (next < items.length) start();
     yield result;
   }
 }

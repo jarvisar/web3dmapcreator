@@ -35,6 +35,12 @@ describe('svg writer', () => {
     }
   });
 
+  it('fills the background in the piece shape', () => {
+    const round = { ...result('#FFEEDD', 'print'), outline: 'M0,25A25,25 0 1 1 50,25A25,25 0 1 1 0,25Z' };
+    expect(toSvg(round)).toContain('<path id="background" d="M0,25A25,25 0 1 1 50,25A25,25 0 1 1 0,25Z" fill="#FFEEDD"/>');
+    expect(toSvg(result('#FFEEDD'))).not.toContain('id="background"');
+  });
+
   it('sizes the file in millimetres', () => {
     expect(toSvg(result('#FF0000'))).toContain('width="100mm" height="50mm" viewBox="0 0 100 50"');
   });

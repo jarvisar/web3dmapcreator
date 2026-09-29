@@ -103,6 +103,8 @@ export interface ExportResult {
   data: Blob;
   plates: number;
   warnings: string[];
+  /** Pieces that could not be meshed and are missing from the file. */
+  missing?: number;
 }
 
 export type ToWorker =

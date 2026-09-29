@@ -2,7 +2,7 @@
 import { useMemo } from 'react';
 import { validateArea } from '../../core/geo/area';
 import type { AreaSpec } from '../../core/settings';
-import type { RenderSettings } from '../../core/svgmap/settings';
+import type { OutputMode, RenderSettings } from '../../core/svgmap/settings';
 import { toSvg } from '../../core/svgmap/svg/writer';
 import { NARROW_QUERY, downloadBlob } from '../lib/browser';
 import { formatBytes } from '../lib/format';
@@ -66,15 +66,16 @@ function showPreview() {
 }
 
 // Named after the title, like chicago-laser.svg, unless a file name was typed.
-export function svgFileName(): string {
+// The mode comes from the result, which can be older than the settings.
+export function svgFileName(mode: OutputMode): string {
   const state = useApp.getState();
-  return `${fileBase(state.svg.label.text.trim() || state.placeName, state.fileName)}-${state.svg.mode}.svg`;
+  return `${fileBase(state.svg.label.text.trim() || state.placeName, state.fileName)}-${mode}.svg`;
 }
 
 export function downloadSvg(): void {
   const result = useSvgRender.getState().result;
   if (!result) return;
-  const name = svgFileName();
+  const name = svgFileName(result.mode);
   const blob = new Blob([toSvg(result)], { type: 'image/svg+xml' });
   downloadBlob(blob, name);
   toast(`Downloaded ${name} (${formatBytes(blob.size)})`, 'success');

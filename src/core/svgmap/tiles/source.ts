@@ -7,6 +7,57 @@ import type { TileId } from '../prepare';
 
 type Fetcher = (tile: TileId, signal?: AbortSignal) => Promise<ArrayBuffer | null>;
 
+// A download that stops without failing would otherwise hold its render, and
+// every later render that shares it, forever. XYZ tiles fail after IDLE_MS
+// with no bytes. PMTiles reads and TileJSON get READ_MS in all.
+const IDLE_MS = 30_000;
+const READ_MS = 60_000;
+
+async function downloadTile(href: string, tile: TileId, signal?: AbortSignal): Promise<ArrayBuffer | null> {
+  const controller = new AbortController();
+  const forward = () => controller.abort(signal?.reason);
+  signal?.addEventListener('abort', forward, { once: true });
+  let stalled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      stalled = true;
+      controller.abort();
+    }, IDLE_MS);
+  };
+  try {
+    arm();
+    const response = await fetch(href, { signal: controller.signal });
+    if (response.status === 204 || response.status === 404) return null; // empty sea/desert tile
+    if (!response.ok) throw new Error(`Tile ${tile.z}/${tile.x}/${tile.y} failed with ${response.status}.`);
+    if (!response.body) return maybeGunzip(await response.arrayBuffer());
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      arm();
+      chunks.push(value);
+      length += value.byteLength;
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return maybeGunzip(bytes.buffer);
+  } catch (error) {
+    if (stalled && !signal?.aborted) throw new Error(`Tile ${tile.z}/${tile.x}/${tile.y} stalled: no data for ${IDLE_MS / 1000} s.`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', forward);
+  }
+}
+
 async function maybeGunzip(buffer: ArrayBuffer): Promise<ArrayBuffer> {
   const bytes = new Uint8Array(buffer, 0, Math.min(2, buffer.byteLength));
   if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) return buffer;
@@ -17,7 +68,7 @@ async function maybeGunzip(buffer: ArrayBuffer): Promise<ArrayBuffer> {
 
 async function resolveTemplate(url: string): Promise<string> {
   if (url.includes('{z}')) return url;
-  const response = await fetch(url);
+  const response = await fetch(url, { signal: AbortSignal.timeout(READ_MS) });
   if (!response.ok) throw new Error(`The tile source answered ${response.status} (${url}).`);
   const json = (await response.json()) as { tiles?: string[] };
   const template = json.tiles?.[0];
@@ -37,16 +88,13 @@ export class TileSource {
     if (/\.pmtiles(\?|$)/i.test(this.url)) {
       const archive = new PMTiles(this.url);
       return Promise.resolve(async (tile, signal) => {
-        const response = await archive.getZxy(tile.z, tile.x, tile.y, signal);
+        const response = await archive.getZxy(tile.z, tile.x, tile.y, signal ?? AbortSignal.timeout(READ_MS));
         return response ? response.data : null;
       });
     }
     return resolveTemplate(this.url).then((template) => async (tile, signal) => {
       const href = template.replace('{z}', String(tile.z)).replace('{x}', String(tile.x)).replace('{y}', String(tile.y));
-      const response = await fetch(href, { signal });
-      if (response.status === 204 || response.status === 404) return null; // empty sea/desert tile
-      if (!response.ok) throw new Error(`Tile ${tile.z}/${tile.x}/${tile.y} failed with ${response.status}.`);
-      return maybeGunzip(await response.arrayBuffer());
+      return downloadTile(href, tile, signal);
     });
   }
 
@@ -89,6 +137,7 @@ export class TileCache {
     onProgress: (done: number, total: number) => void,
     isCancelled: () => boolean,
     concurrency = 6,
+    attempts = 3,
   ): Promise<Map<string, ArrayBuffer | null>> {
     const out = new Map<string, ArrayBuffer | null>();
     let done = 0;
@@ -107,7 +156,7 @@ export class TileCache {
         } else {
           let pending = this.inflight.get(key);
           if (!pending) {
-            pending = this.fetchWithRetry(source, tile);
+            pending = this.fetchWithRetry(source, tile, attempts);
             this.inflight.set(key, pending);
           }
           try {
@@ -131,14 +180,14 @@ export class TileCache {
     return out;
   }
 
-  private async fetchWithRetry(source: TileSource, tile: TileId): Promise<ArrayBuffer | null> {
+  private async fetchWithRetry(source: TileSource, tile: TileId, attempts: number): Promise<ArrayBuffer | null> {
     let lastError: unknown;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       try {
         return await source.get(tile);
       } catch (error) {
         lastError = error;
-        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+        if (attempt + 1 < attempts) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
       }
     }
     throw lastError;

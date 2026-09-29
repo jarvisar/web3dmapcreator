@@ -1,6 +1,7 @@
 // The piece an SVG map is made for (a plaque, a sheet of paper, a coaster),
 // and how the shared area follows it. In SVG mode the area on the map is the
 // piece's map window, so its proportions and corners come from the piece.
+import { MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
 import type { AreaShape, AreaSpec } from '../../core/settings';
 import { type BorderSettings, type Layout, LayoutError, type ProductSettings, computeLayout } from '../../core/svgmap/layout/layout';
 import type { ShapeKind } from '../../core/svgmap/layout/shapes';
@@ -47,11 +48,16 @@ export function fitAreaToPiece(area: AreaSpec, svg: SvgSettings, fit: PieceFit =
   if (!layout) return { area: normalizeArea(area), scale: svg.scale };
   const window = layout.window;
   const aspect = window.h / window.w;
-  let width = area.widthM;
-  if (svg.scaleLocked) width = (svg.scale * window.w) / 1000;
-  else if (fit === 'cover') width = Math.max(area.widthM, area.heightM / aspect);
-  else if (fit === 'inside') width = Math.min(area.widthM, area.heightM / aspect);
+  let wanted = area.widthM;
+  if (svg.scaleLocked) wanted = (svg.scale * window.w) / 1000;
+  else if (fit === 'cover') wanted = Math.max(area.widthM, area.heightM / aspect);
+  else if (fit === 'inside') wanted = Math.min(area.widthM, area.heightM / aspect);
+  // Keep both sides in the area limits here. Clamped one at a time, the area
+  // loses the window's proportions and the map drawn in it is another size.
+  const width = Math.min(Math.min(MAX_SIDE_M, MAX_SIDE_M / aspect), Math.max(MIN_SIDE_M, MIN_SIDE_M / aspect, wanted));
   const cornerRadius = window.kind === 'rounded' ? window.r / Math.min(window.w, window.h) : area.cornerRadius;
   const fitted = normalizeArea({ ...area, widthM: width, heightM: width * aspect, cornerRadius });
-  return { area: fitted, scale: svg.scaleLocked ? svg.scale : (fitted.widthM / window.w) * 1000 };
+  // A locked scale stays exactly as typed unless the area limits changed it.
+  const locked = svg.scaleLocked && width === wanted;
+  return { area: fitted, scale: locked ? svg.scale : (fitted.widthM / window.w) * 1000 };
 }

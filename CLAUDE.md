@@ -69,7 +69,9 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   each boolean only sees what's near it and seams match a single pass.
 - Don't bring back Clipper2's `rectClip`. It drops a corner when a ring
   leaves the rectangle through one side and comes back through the next (up
-  to 2 mm2 on random road networks). `clipToRect` is Sutherland-Hodgman.
+  to 2 mm2 on random road networks). `clipToRect` (`geometry/clipRect.ts`,
+  shared with SVG maps) is Sutherland-Hodgman, and needs a NonZero boolean
+  after it.
 - Boolean output is sorted into outers and holes by orientation, not tree
   depth. Where edges of two inputs nearly coincide, the engine can return a
   hole at the top level, and `placeStrays` puts it back into its owner.
@@ -240,10 +242,15 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
 - The live preview re-renders whenever the settings key differs from both
   the result's and the last tried key (`svgmap/render.ts`), so a failed or
   cancelled render isn't retried until something changes.
-- The engine still uses Clipper2's `rectClip` for tiles and the window box,
-  as SVGmap did. If fills lose a corner at a tile edge, look there first.
+- Tiles and the window box are cut with `clipToRect`, not the `rectClip`
+  SVGmap used, so renders are no longer byte-identical to SVGmap's. A
+  polygon crossing a tile edge is unioned in `decode.ts` right after its
+  clip. The clip's edges back and forth along the tile edge cancel at tile
+  resolution but not once a rotated map rounds them, and they left hairline
+  cracks along the seams.
 - Share links: `#a=...&o=svg`, and a copied link adds `s=` (settings that
-  differ from the defaults, base64url JSON). Old SVGmap links (`#s=` with
+  differ from the defaults, base64url JSON). An area without `o=` opens as
+  a model, whatever mode the recipient was in. Old SVGmap links (`#s=` with
   the area inside) still open. The `s=` part is dropped from the address
   bar once read.
 

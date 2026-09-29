@@ -1,7 +1,8 @@
 // Stage 1: download, decode, stitch, project and clip. This is the slow part and
 // it doesn't depend on styling, cleanup, titles or filters, so the result is
 // cached and reused while those change.
-import { type Paths64, rectClip } from 'clipper2-ts';
+import type { Paths64 } from 'clipper2-ts';
+import { clipToRect } from '../geometry/clipRect';
 import { bboxOf, clipPolylineInside } from './geo/clip';
 import { TILE_EXTENT } from './geo/mercator';
 import { type AreaSpec, type MapTransform, makeTransform } from './geo/transform';
@@ -169,7 +170,7 @@ export function prepareArea(plan: TilePlan, layout: Layout, data: TileData): Pre
           return { x: Math.round(x * SCALE), y: Math.round(y * SCALE) };
         }),
       );
-      const clipped = rectClip(clipRect, rings);
+      const clipped = clipToRect(clipRect, rings);
       if (clipped.length > 0) polygons.push({ ...c, rings: clipped });
     }
   }
@@ -192,7 +193,7 @@ export function prepareArea(plan: TilePlan, layout: Layout, data: TileData): Pre
   for (const { path, widthM } of aerowayLines) {
     const mm = path.map(([x, y]) => transform.toCanvas(x, y));
     const band = bufferLines([mm], widthM / metresPerMm / 2, false);
-    const clipped = rectClip(clipRect, band);
+    const clipped = clipToRect(clipRect, band);
     if (clipped.length > 0) polygons.push({ layer: 'aeroways', cls: 'runway', flags: 0, rings: clipped });
   }
 

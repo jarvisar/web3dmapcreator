@@ -144,6 +144,11 @@
   cursor: default;
 }
 
+.search-option.is-stale {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .search-option.is-invalid.is-active {
   background: var(--danger-soft);
   color: var(--danger);

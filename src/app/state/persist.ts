@@ -127,6 +127,19 @@ export function loadSaved(): SavedState {
   };
 }
 
+let saving = true;
+
+// Also stops saving for the rest of this page. Otherwise a save still waiting
+// in the sync, or the one on pagehide, puts the cleared settings straight back.
+export function clearSavedState(): void {
+  saving = false;
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    // Storage is off, so nothing was saved either.
+  }
+}
+
 export function saveState(
   state: {
     output: 'model' | 'svg';
@@ -141,6 +154,7 @@ export function saveState(
   },
   hash: string,
 ): void {
+  if (!saving) return;
   const { sections, basemap, showBed, sizeUnit, mapHintDismissed, previewLook } = state.ui;
   const data = {
     hash,

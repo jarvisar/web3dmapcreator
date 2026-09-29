@@ -2,7 +2,7 @@
 
 import { cellSize, gridProblem } from '../../core/dsm/grid';
 import { areaModelRing, effectiveScale } from '../../core/geo/area';
-import { sectionCount } from '../../core/export/sections';
+import { MAX_SECTIONS, sectionCount } from '../../core/export/sections';
 import { COLOUR_GROUPS, PALETTE_PRESETS, printerByKey } from '../../core/settings';
 import type {
   AreaSpec,
@@ -93,17 +93,22 @@ export function bedFit(area: AreaSpec, settings: ModelSettings, exportSettings: 
   const turned = width <= printer.depth && depth <= printer.width;
   const cols = sectionCount(width, Math.min(exportSettings.sectionWidthMm, printer.width));
   const rows = sectionCount(depth, Math.min(exportSettings.sectionHeightMm, printer.depth));
-  // Round shapes leave some corner cells empty, and those get no plate.
-  let plates = 0;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const box: [number, number, number, number] = [
-        west + (width * c) / cols,
-        south + (depth * r) / rows,
-        west + (width * (c + 1)) / cols,
-        south + (depth * (r + 1)) / rows,
-      ];
-      if (areaInBox(outline, box) > 1e-6) plates++;
+  // Round shapes leave some corner cells empty, and those get no plate. The
+  // export refuses a grid over MAX_SECTIONS cells, empty or not, so those
+  // aren't counted. A 30 km area in 20 mm sections is nine million cells.
+  let plates = cols * rows;
+  if (plates <= MAX_SECTIONS) {
+    plates = 0;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const box: [number, number, number, number] = [
+          west + (width * c) / cols,
+          south + (depth * r) / rows,
+          west + (width * (c + 1)) / cols,
+          south + (depth * (r + 1)) / rows,
+        ];
+        if (areaInBox(outline, box) > 1e-6) plates++;
+      }
     }
   }
   return { printer, width, depth, fits: straight || turned, rotated: !straight && turned, cols, rows, plates };

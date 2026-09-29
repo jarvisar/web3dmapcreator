@@ -102,6 +102,20 @@ describe('the area as a map window', () => {
     expect(scale).toBe(5000);
   });
 
+  it('keeps the window proportions when the area limits stop a locked scale', () => {
+    // 1:100 would make the window about 16 m wide, under the 50 m minimum.
+    const locked = { ...svg, scale: 100, scaleLocked: true };
+    const { area, scale } = fitAreaToPiece(engineArea, locked);
+    expect(Math.min(area.widthM, area.heightM)).toBeGreaterThanOrEqual(50);
+    expect(area.heightM / area.widthM).toBeCloseTo(window.h / window.w, 3);
+    // The scale says what the map really is.
+    expect(scale).toBeCloseTo((area.widthM / window.w) * 1000, 6);
+    expect(scale).toBeGreaterThan(100);
+    // Same for a small area without a locked scale.
+    const small = fitAreaToPiece({ ...engineArea, widthM: 50, heightM: 50 }, svg).area;
+    expect(small.heightM / small.widthM).toBeCloseTo(window.h / window.w, 3);
+  });
+
   it('keeps a typed scale exact on a small piece', () => {
     const coaster = { ...svg, product: { ...svg.product, width: 100, height: 100 }, border: { ...svg.border, style: 'single' as const } };
     const round = computeLayout(pieceProduct(coaster.product, 'circle'), coaster.border).window;
@@ -158,6 +172,8 @@ describe('share links', () => {
     const shared = parseHash(hash);
     expect(shared.output).toBe('svg');
     expect(shared.area!.widthM).toBe(3207.35);
-    expect(parseHash(formatAreaHash(area)).output).toBeNull();
+    // Model links have no o=, and must not open in the recipient's SVG mode.
+    expect(parseHash(formatAreaHash(area)).output).toBe('model');
+    expect(parseHash('').output).toBeNull();
   });
 });

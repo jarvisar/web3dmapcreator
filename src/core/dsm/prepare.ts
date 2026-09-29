@@ -100,6 +100,8 @@ export interface PreparedSurface {
   downloadedBytes: number;
   blocks: number;
   reusedBlocks: number;
+  /** Blocks with a failed read. They are left with a hole and not saved. */
+  failedBlocks: number;
 }
 
 export interface SurfaceInput {
@@ -340,6 +342,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
   };
   let points = 0;
   let reusedBlocks = 0;
+  let failedBlocks = 0;
   let done = 0;
   const resolutionM = Math.max(0.1, grid.cell / 2);
   const identity = [VERSION, area.center, area.rotationDeg, area.widthM, area.heightM, grid.cell];
@@ -409,6 +412,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
       }
       // A failed read is tried again next time rather than kept with a hole.
       if (!failed) save(key, encodeBlock(piece, blockPoints, sources));
+      else failedBlocks++;
     }
     points += blockPoints;
     const [r0, r1] = block.rows;
@@ -448,6 +452,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     downloadedBytes: fetcher.downloaded + (runner.downloaded?.() ?? 0),
     blocks: all.length,
     reusedBlocks,
+    failedBlocks,
   };
 }
 

@@ -1,5 +1,5 @@
 import { Component, type ReactNode } from 'react';
-import { STORAGE_KEY } from '../state/persist';
+import { clearSavedState } from '../state/persist';
 
 // Anything that throws while rendering ends up here instead of a blank page.
 // Saved settings are the most likely cause that survives a reload, so there's
@@ -28,11 +28,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
               type="button"
               className="btn btn-primary"
               onClick={() => {
-                try {
-                  localStorage.removeItem(STORAGE_KEY);
-                } catch {
-                  // Storage is off, so nothing was saved either.
-                }
+                clearSavedState();
                 location.replace(location.pathname + location.search);
               }}
             >

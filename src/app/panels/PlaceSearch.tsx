@@ -119,6 +119,9 @@ export function PlaceSearch({ inputId }: { inputId?: string }) {
     };
   }, [text]);
 
+  // Results for an older query stay up while the new one loads, but can't be picked.
+  const fresh = resultsFor === text.trim();
+
   function pick(item: Suggestion) {
     if (item.kind === 'invalid') return;
     let label = text;
@@ -133,6 +136,8 @@ export function PlaceSearch({ inputId }: { inputId?: string }) {
     }
     skipSearch.current = label;
     setText(label);
+    // The list still belongs to the box, so another result can be picked from it.
+    setResultsFor(label.trim());
     setOpen(false);
     if (window.matchMedia(NARROW_QUERY).matches) setDrawerOpen(false);
   }
@@ -146,7 +151,7 @@ export function PlaceSearch({ inputId }: { inputId?: string }) {
       setActive((index) => (index + step + results.length) % results.length);
     } else if (event.key === 'Enter') {
       const item = results[active] ?? results[0];
-      if (item && open && resultsFor === text.trim()) {
+      if (item && open && fresh) {
         event.preventDefault();
         pick(item);
       }
@@ -218,11 +223,13 @@ export function PlaceSearch({ inputId }: { inputId?: string }) {
               id={optionId(index)}
               role="option"
               aria-selected={index === active}
-              aria-disabled={item.kind === 'invalid'}
-              className={`search-option${index === active ? ' is-active' : ''}${item.kind === 'invalid' ? ' is-invalid' : ''}`}
+              aria-disabled={item.kind === 'invalid' || !fresh}
+              className={`search-option${index === active ? ' is-active' : ''}${item.kind === 'invalid' ? ' is-invalid' : ''}${fresh ? '' : ' is-stale'}`}
               onPointerDown={(event) => event.preventDefault()}
               onPointerEnter={() => setActive(index)}
-              onClick={() => pick(item)}
+              onClick={() => {
+                if (fresh) pick(item);
+              }}
             >
               <span className="search-option-icon" aria-hidden="true">
                 {item.kind === 'place' ? <MapPin size={15} /> : item.kind === 'point' ? <Crosshair size={15} /> : <SquareDashed size={15} />}

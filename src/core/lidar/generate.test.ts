@@ -105,7 +105,8 @@ describe('LiDAR buildings in a model', () => {
     expect(high - low).toBeGreaterThan(60 * 0.07 * 1.1 * 0.9);
 
     // Two sections split at x = 0 run through the middle of the building.
-    const plates = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 52.5, sectionHeightMm: 70, bedWidth: 180, bedDepth: 180 });
+    const { plates, failed } = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 52.5, sectionHeightMm: 70, bedWidth: 180, bedDepth: 180 });
+    expect(failed).toBe(0);
     let volume = 0;
     for (const plate of plates) {
       const piece = plate.parts.find((p) => p.id === 'buildings');

@@ -174,7 +174,9 @@ async function loadLidar(request: GenerateRequest, data: OvertureData, job: Runn
   } finally {
     pool?.close();
   }
-  prepared = { key, lidar };
+  // Like the saved copy, a result with a failed read is tried again next time.
+  // What did get read is checkpointed, so only the failures download again.
+  if (!lidar.failures.length) prepared = { key, lidar };
   return lidar;
 }
 
@@ -215,7 +217,9 @@ async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | 
     progress: (label, fraction, detail) => progress.checkpoint(fraction, detail, label),
     runner: pool ?? undefined,
   });
-  surface = { key, prepared: result };
+  // A block with a failed read has a hole, so read it again next time. The
+  // other blocks come from their checkpoints.
+  if (!result.failedBlocks) surface = { key, prepared: result };
   return result;
 }
 
@@ -379,7 +383,7 @@ async function exportModel(id: number, request: ExportRequest) {
     const printer = printerByKey(request.printer);
     const progress = new Progress((event) => post({ type: 'progress', id, progress: { ...event, stage: 'export' } }));
     progress.begin('export', 'Preparing parts', 0, 0.8);
-    const plates = await buildPlates(lastSpec, {
+    const { plates, failed } = await buildPlates(lastSpec, {
       multiPlate: request.multiPlate,
       sectionWidthMm: request.sectionWidthMm,
       sectionHeightMm: request.sectionHeightMm,
@@ -391,6 +395,16 @@ async function exportModel(id: number, request: ExportRequest) {
     });
     post({ type: 'progress', id, progress: { stage: 'export', label: 'Writing the file', fraction: 0.85 } });
     const result = exportPlates(plates, request, lastCredits, lastMapData);
+    if (failed) {
+      // A section cut can fail where the whole model meshed, and cutting elsewhere usually works.
+      const retry = request.multiPlate ? ' Try another section size.' : '';
+      result.warnings.unshift(
+        lastMapData
+          ? `${failed} ${failed === 1 ? 'piece' : 'pieces'} could not be meshed and ${failed === 1 ? 'is' : 'are'} missing from the file.${retry}`
+          : `Part of the LiDAR surface could not be closed into a solid and is missing from the file.${retry}`,
+      );
+      result.missing = failed;
+    }
     post({ type: 'exported', id, result });
   } catch (error) {
     post({ type: 'error', id, message: describe(error) });

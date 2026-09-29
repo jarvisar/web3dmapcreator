@@ -5,7 +5,8 @@
 // union closes the seam.
 import { VectorTile, type VectorTileFeature } from '@mapbox/vector-tile';
 import { PbfReader } from 'pbf';
-import { rectClip, type Path64 } from 'clipper2-ts';
+import { FillRule, type Path64, union } from 'clipper2-ts';
+import { clipToRect, pathBounds } from '../../geometry/clipRect';
 import type { Path, Point } from '../lines/geometry';
 import { TILE_EXTENT } from '../geo/mercator';
 
@@ -178,10 +179,16 @@ export function decodeTile(buffer: ArrayBuffer | Uint8Array, x: number, y: numbe
           rings.push(ring);
         }
         if (rings.length === 0) continue;
-        const clipped = rectClip(
-          { left: ox - 1, top: oy - 1, right: ox + TILE_EXTENT + 1, bottom: oy + TILE_EXTENT + 1 },
-          rings,
-        );
+        const rect = { left: ox - 1, top: oy - 1, right: ox + TILE_EXTENT + 1, bottom: oy + TILE_EXTENT + 1 };
+        let clipped = clipToRect(rect, rings);
+        // The clip joins the pieces of a ring with edges back and forth along
+        // the tile edge. Those cancel out now, but not once prepare rotates and
+        // rounds the points, where they left hairline cracks along the seams.
+        const crosses = rings.some((ring) => {
+          const [x0, y0, x1, y1] = pathBounds(ring);
+          return x0 < rect.left || y0 < rect.top || x1 > rect.right || y1 > rect.bottom;
+        });
+        if (crosses && clipped.length > 0) clipped = union(clipped, FillRule.NonZero);
         if (clipped.length > 0) polygons.push({ layer: layerName, props, rings: clipped });
       }
     }

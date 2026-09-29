@@ -172,7 +172,7 @@ async function main() {
     const format = (arg('format') as ExportFormat) ?? 'bambu';
     const printer = printerByKey(arg('printer') ?? 'P1S');
     const section = Number(arg('section') ?? 210);
-    const plates = await buildPlates(spec, {
+    const { plates, failed } = await buildPlates(spec, {
       multiPlate: flag('multi-plate'),
       sectionWidthMm: section,
       sectionHeightMm: section,
@@ -194,6 +194,7 @@ async function main() {
     writeFileSync(out, new Uint8Array(await result.data.arrayBuffer()));
     console.log(`wrote ${out} (${(result.data.size / 1e6).toFixed(1)} MB, ${result.plates} plate(s))`);
     for (const w of result.warnings) console.log(`warning: ${w}`);
+    if (failed) console.log(`warning: ${failed} solids could not be meshed and are missing from the file`);
   }
 }
 
@@ -247,7 +248,7 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
       const format = (arg('format') as ExportFormat) ?? 'bambu';
       const printer = printerByKey(arg('printer') ?? 'P1S');
       const section = Number(arg('section') ?? 210);
-      const plates = await buildPlates(spec, {
+      const { plates, failed } = await buildPlates(spec, {
         multiPlate: flag('multi-plate'),
         sectionWidthMm: section,
         sectionHeightMm: section,
@@ -261,6 +262,7 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
       writeFileSync(out, new Uint8Array(await result.data.arrayBuffer()));
       console.log(`wrote ${out} (${(result.data.size / 1e6).toFixed(1)} MB, ${result.plates} plate(s))`);
       for (const w of result.warnings) console.log(`warning: ${w}`);
+      if (failed) console.log(`warning: ${failed} solids could not be meshed and are missing from the file`);
     }
   } finally {
     pool?.close();

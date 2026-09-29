@@ -268,9 +268,11 @@ describe('prepareSurface', () => {
     };
     const first = await prepareSurface({ area, cellM: 1, runner: flaky });
     expect(first.failures).toEqual([{ source: 'survey', reason: 'Network down' }]);
+    expect(first.failedBlocks).toBe(1);
     const second = await prepareSurface({ area, cellM: 1, runner: fakeRunner(calls) });
     expect(second.failures).toEqual([]);
     expect(second.reusedBlocks).toBe(second.blocks - 1);
+    expect(second.failedBlocks).toBe(0);
   });
 
   it('says when no survey covers the area', async () => {

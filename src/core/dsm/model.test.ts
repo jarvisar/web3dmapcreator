@@ -37,7 +37,7 @@ function prepared(area: AreaSpec): PreparedSurface {
       else layers.ground[k] = z;
     }
   }
-  return { layers, grid, requestedCellM: 1, densityM2: 10, coverage: 1, points: 0, surveys: [], failures: [], downloadedBytes: 0, blocks: 1, reusedBlocks: 0 };
+  return { layers, grid, requestedCellM: 1, densityM2: 10, coverage: 1, points: 0, surveys: [], failures: [], downloadedBytes: 0, blocks: 1, reusedBlocks: 0, failedBlocks: 0 };
 }
 
 function lidarSettings(patch: (s: ModelSettings) => void = () => undefined): ModelSettings {
@@ -108,7 +108,8 @@ describe('surfaceModel', () => {
 
   it('splits into print sections that are each closed', async () => {
     const spec = await surfaceModel({ area: area('circle'), settings: lidarSettings(), surface: prepared(area('circle')) });
-    const plates = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 35, sectionHeightMm: 35, bedWidth: 256, bedDepth: 256 });
+    const { plates, failed } = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 35, sectionHeightMm: 35, bedWidth: 256, bedDepth: 256 });
+    expect(failed).toBe(0);
     expect(plates.length).toBeGreaterThan(2);
     for (const plate of plates) for (const part of plate.parts) closed(part);
   });
@@ -127,7 +128,8 @@ describe('surfaceModel', () => {
     expect(x1 - x0).toBe(80);
     expect(y1 - y0).toBeCloseTo(60 - 4.75, 4);
     expect(z0).toBe(0);
-    const plates = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 35, sectionHeightMm: 35, bedWidth: 256, bedDepth: 256 });
+    const { plates, failed } = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 35, sectionHeightMm: 35, bedWidth: 256, bedDepth: 256 });
+    expect(failed).toBe(0);
     for (const plate of plates) for (const part of plate.parts) closed(part);
     // Under the minimum it's recessed as before.
     settings.water.cutMinAreaM2 = 5000;

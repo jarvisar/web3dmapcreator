@@ -44,7 +44,8 @@ export function toSvg(result: RenderResult): string {
     `  <desc>${escapeXml(describe(result))}</desc>`,
   ];
   if (result.background) {
-    out.push(`  <rect id="background" width="${w}" height="${h}" fill="${escapeXml(result.background)}"/>`);
+    // The piece's own shape, as in the preview, so a round print isn't a square.
+    out.push(`  <path id="background" d="${result.outline}" fill="${escapeXml(result.background)}"/>`);
   }
 
   if (result.mode === 'plotter') {
