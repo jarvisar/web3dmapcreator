@@ -14,8 +14,8 @@
 // --lidar-records path.json (write the measured records, for comparing runs),
 // --lidar-threads n (batches read and measured at once, 1 to stay in this thread),
 // --lidar-only (the whole model from a LiDAR survey, no map data), --detail mm (its
-// printed cell size), --cut-water (cut its water away), --surface-out dir (write its
-// grid layers as raw binaries).
+// printed cell size), --cut-water (cut large water through the base, or away in a
+// LiDAR only model), --surface-out dir (write its grid layers as raw binaries).
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -99,7 +99,10 @@ async function main() {
   if (flag('lidar')) settings.lidar.enabled = true;
   if (flag('lidar-only')) settings.modelSource = 'lidar';
   if (arg('detail')) settings.lidarModel.detailMm = Number(arg('detail'));
-  if (flag('cut-water')) settings.lidarModel.cutWater = true;
+  if (flag('cut-water')) {
+    settings.water.mode = 'through';
+    settings.lidarModel.cutWater = true;
+  }
   settings = sanitizeSettings(settings);
   if (settings.modelSource === 'lidar') return lidarOnly(area, settings);
 

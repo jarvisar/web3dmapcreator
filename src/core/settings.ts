@@ -26,6 +26,8 @@ export type ScaleMode = 'fixed' | 'fit';
 export type SurfaceCategory = 'paved' | 'sand' | 'rock' | 'green' | 'forest';
 export type FilamentLine = 'PLA Basic' | 'PLA Matte';
 export type LidarRoofMode = 'envelope' | 'heights';
+/** 'layer' prints large water as a thin layer on a terrain floor, 'through' cuts it through the base. */
+export type WaterMode = 'layer' | 'through';
 /** 'map' builds a multicolour model from map data, 'lidar' the whole model from a LiDAR survey alone. */
 export type ModelSource = 'map' | 'lidar';
 
@@ -51,12 +53,12 @@ export interface ModelSettings {
   };
   water: {
     enabled: boolean;
-    /** Water at least this large is cut through the base; smaller water is a surface sheet. */
+    mode: WaterMode;
+    /** Thickness of the water part, except large water cut through the base, which runs down to the base. */
+    thicknessMm: number;
+    /** Water at least this large is levelled from its shores (and cut through with 'through'); smaller water is a surface sheet. */
     cutMinAreaM2: number;
-    recessPonds: boolean;
     skipPonds: boolean;
-    pondDepthMm: number;
-    pondWaterMm: number;
   };
   land: {
     enabled: boolean;
@@ -171,11 +173,10 @@ export const DEFAULT_SETTINGS: ModelSettings = {
   terrain: { elevation: true, exaggeration: 1, smoothing: 1, resolution: 192, baseThicknessMm: 1.3 },
   water: {
     enabled: true,
+    mode: 'layer',
+    thicknessMm: 1,
     cutMinAreaM2: 5000,
-    recessPonds: true,
     skipPonds: false,
-    pondDepthMm: 1.0,
-    pondWaterMm: 0.8,
   },
   land: {
     enabled: true,
@@ -474,7 +475,7 @@ type SettingsRanges = {
 const RANGES: SettingsRanges = {
   scale: { mmPerMetre: [0.001, 2], fitMm: [20, 2000] },
   terrain: { exaggeration: [0, 10], smoothing: [0, 4, true], resolution: [16, 1024, true], baseThicknessMm: [0.1, 20] },
-  water: { cutMinAreaM2: [0, 1e6, true], pondDepthMm: [0.1, 5], pondWaterMm: [0.1, 5] },
+  water: { thicknessMm: [0.1, 5], cutMinAreaM2: [0, 1e6, true] },
   land: { riseMm: [0.02, 3], embedMm: [0.02, 1], beachWidthMm: [0.1, 5] },
   roads: { thicknessMm: [0.05, 5], minWidthMm: [0.05, 5], maxWidthMm: [0.1, 5], gapMm: [0, 2] },
   bridges: {
@@ -546,6 +547,8 @@ export function sanitizeSettings(settings: unknown): ModelSettings {
   out.modelSource = source.modelSource === 'lidar' ? 'lidar' : 'map';
   const scale = isObject(source.scale) ? source.scale : {};
   if (scale.mode === 'fixed' || scale.mode === 'fit') out.scale.mode = scale.mode;
+  const water = isObject(source.water) ? source.water : {};
+  if (water.mode === 'layer' || water.mode === 'through') out.water.mode = water.mode;
   const lidar = isObject(source.lidar) ? source.lidar : {};
   if (lidar.roofMode === 'envelope' || lidar.roofMode === 'heights') out.lidar.roofMode = lidar.roofMode;
   // The priority must name every surface category once.

@@ -79,6 +79,17 @@ describe('sanitizeSettings', () => {
   });
 });
 
+describe('water settings', () => {
+  it('keep the mode and drop the old pond recess', () => {
+    const through = sanitizeSettings({ water: { mode: 'through', thicknessMm: 0.6 } });
+    expect(through.water).toEqual({ ...DEFAULT_SETTINGS.water, mode: 'through', thicknessMm: 0.6 });
+    // Saved before the thin layer: the pond settings go, and the new default takes over.
+    const old = sanitizeSettings({ water: { enabled: true, cutMinAreaM2: 8000, recessPonds: false, skipPonds: false, pondDepthMm: 2, pondWaterMm: 1.5 } });
+    expect(old.water).toEqual({ ...DEFAULT_SETTINGS.water, cutMinAreaM2: 8000 });
+    expect(sanitizeSettings({ water: { mode: 'hole', thicknessMm: 0 } }).water).toEqual({ ...DEFAULT_SETTINGS.water, thicknessMm: 0.1 });
+  });
+});
+
 describe('LiDAR only settings', () => {
   it('keep the model source and clamp its numbers', () => {
     const lidar = sanitizeSettings({ ...cloneSettings(), modelSource: 'lidar', lidarModel: { detailMm: 0, keepTrees: false, removeClutter: 'no', waterDepthMm: 9, heightScale: 2 } });

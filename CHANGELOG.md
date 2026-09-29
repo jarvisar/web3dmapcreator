@@ -4,6 +4,7 @@
 
 ### Added
 
+- `Layers > Water > Large water` picks how rivers, lakes and the sea print. `Thin layer`, the new default, makes them a 1 mm layer of water on a floor of terrain, so the water colour only comes in for the top few layers. Before, a lake up in the hills took a colour change on every layer from the bed to its surface. On the Chicago, Clearwater, Rome, Cincinnati, Vancouver and San Francisco presets the water uses 45 to 57% less filament and prints in 3 to 6 fewer layers. The base runs under the floor too, so a model can come out a little taller, at most 0.5 mm on those presets. `Cut through the base` keeps the old behaviour, for printing the water as its own pieces or leaving openings. `Water thickness` sets the layer, and `scripts/generate.ts --cut-water` now cuts through map models too.
 - `Tidy road network`, on by default, cleans up roads before they're widened. Lines doubling a more important one are left out, like the second carriageway of a divided street (the one kept moves onto the middle of the street) or a footway mapped beside a street, paths that stopped at a dropped sidewalk are joined to the street, stubs and specks that lead nowhere are removed, and ground too thin to print between two roads side by side is filled in. Each step has its own switch, and `Minimum gap` sets how close two roads can run side by side. It's a rewrite of the add-on's Tidy Road Network, with spurs and specks judged on a graph of the lines as they'll print. On the `Chicago - The Loop (small)` preset, loose specks of road filament went from 229 to 11.
 - SVG maps, merged in from SVGmap. Pick `SVG map` at the top of the settings to make a flat map of the area for a laser engraver, a pen plotter or print instead of a model: plaque, paper and coaster sizes, filled, outlined or hatched layers, a title in a box or a band, and line cleanup that merges lines too close together to burn apart. The box on the map becomes the piece's map window, with the margin, border and title drawn around it. See `docs/SVG_MAPS.md`.
 - SVG maps take the same shapes as models, hexagons included.
@@ -23,6 +24,8 @@
 
 ### Changed
 
+- Ponds, fountains and basins are always sunk, 0.25 mm below their lowest bank at the water thickness, with either water setting. `Recess ponds and fountains`, `Recess depth` and `Pond water thickness` are gone. With the recess off, large ponds were cut through the base and small ones sat on the terrain.
+- Small water sheets are as thick as `Water thickness` (1 mm, was 1.2 mm) and always reach into the terrain at least as far as `Embed into terrain`.
 - LiDAR only walls come out flat instead of ribbed. Tall facades were a row of narrow vertical stripes, from facade relief too narrow to print and from each wall's crooked foot. Relief under 0.3 mm is now straightened like it is on measured roofs, walls get a little more room to straighten, and each wall's foot is moved in line with its roof edge. On Micropolitan's Chicago, Philadelphia and San Francisco areas the stripes went down 39 to 50%, with 21 to 29% fewer triangles.
 - The outline of cut water in LiDAR only models follows the shore to a cell and a half instead of three quarters, so a bank wall is a few long panels instead of many narrow ones.
 - Indoor corridors and skyways are left out like tunnels. They only printed where they poked out of a building.

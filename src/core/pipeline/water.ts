@@ -1,5 +1,7 @@
-// Water: which bodies are cut through the base, which are recessed basins and
-// which are surface sheets, and the level each one sits at.
+// Water: which bodies are cut from the terrain, which are recessed basins and
+// which are surface sheets, and the level each one sits at. Cut water and
+// basins are a layer of water on a terrain floor, or with `water.mode`
+// 'through' cut water runs down to the base instead.
 //
 // A lake or river is level, and elevation data reports open water as a noisy
 // plateau at its surface, so the median of samples inside a body is its
@@ -22,16 +24,16 @@ import {
   union,
 } from '../geometry/polygon';
 import { interiorPoints, type HeightField } from '../terrain/heightfield';
+import type { ModelSettings } from '../settings';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
 import { isPrintableWater, isUntypedWater, recessedWaterKind } from './classify';
 import { count, type Context } from './context';
 import { projectPolygons, type SourceFeature } from './source';
 
-/** Cut water sits this far below the bank it is flattened to: one layer of bank shows. */
-export const CUT_WATER_DROP_MM = 0.25;
-/** Uncut water sits this far above its flattened bed, so it shows over the terrain. */
+/** Cut water and basins sit this far below their bank: one layer of bank shows. */
+export const WATER_DROP_MM = 0.25;
+/** Sheets sit this far above their flattened bed, so they show over the terrain. */
 export const SHEET_OFFSET_MM = 0.18;
-export const SHEET_THICKNESS_MM = 1.2;
 const SHORE_LEVEL_PERCENTILE = 0.1;
 const MINIMUM_AREA_MM2 = 0.25;
 const UNTYPED_BASIN_MAX_M2 = 5000;
@@ -45,7 +47,7 @@ export type WaterKind = 'cut' | 'sheet' | 'basin';
 export interface WaterBody {
   polygon: Polygon;
   kind: WaterKind;
-  /** Level the terrain under the body is flattened to (the floor, for a basin). */
+  /** Level the terrain under the body is flattened to (the lowest bank, for a basin). */
   bed: number;
   /** Water surface. */
   top: number;
@@ -97,7 +99,6 @@ export async function solveWater(features: SourceFeature[], ctx: Context): Promi
   const cutBodies: WaterBody[] = [];
   const sheetPolygons: Polygon[] = [];
   const basinPolygons: Polygon[] = [];
-  const classifyBasins = water.recessPonds || water.skipPonds;
   const areaScale = ctx.projection.mmPerMetre ** 2;
   const seenBasins = new Set<string>();
 
@@ -106,8 +107,8 @@ export async function solveWater(features: SourceFeature[], ctx: Context): Promi
     const feature = features[index];
     let projected: Polygon[] | null = null;
     const source = () => (projected ??= projectPolygons(feature.geometry, ctx.projection));
-    let basinKind = classifyBasins ? recessedWaterKind(feature) : null;
-    if (classifyBasins && !basinKind && isUntypedWater(feature) && sourceAreaM2(source(), ctx) < UNTYPED_BASIN_MAX_M2) {
+    let basinKind = recessedWaterKind(feature);
+    if (!basinKind && isUntypedWater(feature) && sourceAreaM2(source(), ctx) < UNTYPED_BASIN_MAX_M2) {
       basinKind = 'untyped_water';
     }
     if (basinKind && water.skipPonds) {
@@ -130,7 +131,7 @@ export async function solveWater(features: SourceFeature[], ctx: Context): Promi
         basinPolygons.push(polygon);
       } else if (cut) {
         const bed = medianLevel(hf, polygon);
-        cutBodies.push({ polygon, kind: 'cut', bed, top: bed - CUT_WATER_DROP_MM, areaM2: area / areaScale });
+        cutBodies.push({ polygon, kind: 'cut', bed, top: bed - WATER_DROP_MM, areaM2: area / areaScale });
       } else {
         sheetPolygons.push(polygon);
       }
@@ -152,12 +153,12 @@ export async function solveWater(features: SourceFeature[], ctx: Context): Promi
       bodies.push({ polygon: piece, kind: 'sheet', bed, top: bed + SHEET_OFFSET_MM, areaM2: polygonArea(piece) / areaScale });
     }
   }
+  // Ponds are too small for the elevation data to show, so they sit below
+  // their lowest bank rather than at the median inside.
   for (const polygon of basinPolygons) {
     for (const piece of outsideCut(polygon)) {
       const bank = hf.minOver(densifyRing(piece[0], 1.5));
-      const bed = bank - water.pondDepthMm;
-      const top = bed + Math.min(water.pondWaterMm, water.pondDepthMm);
-      bodies.push({ polygon: piece, kind: 'basin', bed, top, areaM2: polygonArea(piece) / areaScale });
+      bodies.push({ polygon: piece, kind: 'basin', bed: bank, top: bank - WATER_DROP_MM, areaM2: polygonArea(piece) / areaScale });
     }
   }
   await ctx.progress.checkpoint(0.9);
@@ -174,6 +175,18 @@ export async function solveWater(features: SourceFeature[], ctx: Context): Promi
   ctx.stats.water_basins = levelled.filter((b) => b.kind === 'basin').length;
   ctx.stats.water_cut_area_mm2 = Math.round(multiArea(cut));
   return { bodies: levelled, cut, basins, sheets, all: union(cut, basins, sheets) };
+}
+
+/**
+ * Underside of a body's water part, or null when it runs down to the base.
+ * Cut water and basins sit on a terrain floor at this height. A sheet lies
+ * on the terrain and reaches into it at least as far as roads and land do.
+ */
+export function waterBottom(body: WaterBody, settings: ModelSettings): number | null {
+  const { mode, thicknessMm } = settings.water;
+  if (body.kind === 'cut' && mode === 'through') return null;
+  if (body.kind === 'sheet') return Math.min(body.top - thicknessMm, body.bed - settings.land.embedMm);
+  return body.top - thicknessMm;
 }
 
 /**
@@ -236,7 +249,7 @@ function raiseCutWaterToShore(hf: HeightField, bodies: WaterBody[], crop: Polygo
     const level = heights[Math.floor(SHORE_LEVEL_PERCENTILE * (heights.length - 1))];
     if (level > body.bed) {
       body.bed = level;
-      body.top = level - CUT_WATER_DROP_MM;
+      body.top = level - WATER_DROP_MM;
     }
   });
 }
@@ -296,7 +309,7 @@ function mergeConnectedCut(bodies: WaterBody[], areaScale: number): WaterBody[] 
       }
     }
     for (const polygon of union(group.map((b) => b.polygon))) {
-      out.push({ polygon, kind: 'cut', bed: level, top: level - CUT_WATER_DROP_MM, areaM2: polygonArea(polygon) / areaScale });
+      out.push({ polygon, kind: 'cut', bed: level, top: level - WATER_DROP_MM, areaM2: polygonArea(polygon) / areaScale });
     }
   }
   return out;

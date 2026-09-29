@@ -64,14 +64,16 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   ring's edge) are shrunk by 1e-4 mm and retried (`PINCH_MM`). Never weld by
   coordinate. A cap cut to a print section gets the same retry, for a
   section line through a concave corner of its outline.
-- Water: cut (>= 5,000 m2 of the whole feature, full-depth fill), basins
-  (ponds/fountains by tags, recessed 1 mm), sheets (small, 0.18 mm above
-  flattened ground). Basins and sheets are trimmed to what lies outside cut
-  water. Cut water level is the interior median raised to the low tenth of
-  its shoreline (grid nodes inside the crop only). Cut bodies that overlap
-  merge into one at their area-weighted median level. The grid is
-  flattened under it and the shore raised, and the fill sits 0.25 mm below
-  the bank.
+- Water: cut (>= 5,000 m2 of the whole feature), basins (ponds/fountains
+  by tags, below their lowest bank), sheets (small, 0.18 mm above flattened
+  ground). Cut water and basins sit 0.25 mm below the bank as a
+  `water.thicknessMm` layer on a flat terrain floor, and the base thickness
+  counts from the floors. With `water.mode` 'through' cut water runs down
+  to the base instead (`waterBottom`). Basins and sheets are trimmed to
+  what lies outside cut water. Cut water level is the interior median
+  raised to the low tenth of its shoreline (grid nodes inside the crop
+  only). Cut bodies that overlap merge into one at their area-weighted
+  median level. The grid is flattened under it and the shore raised.
 - Ground is kept under roads, buildings and mapped piers over cut water
   (`settings.supports`) by leaving it out of the cut, not with extra solids.
 - Land categories never overlap (priority order). Water, roads and building

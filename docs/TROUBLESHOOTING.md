@@ -15,9 +15,11 @@
 **The terrain looks flat.** At 1:14,286 a 30 m hill is only 2 mm tall, so most cities print nearly flat. Raise `Terrain > Exaggeration` to make hills read, or pick a hillier area.
 
 **Water is missing or looks wrong.**
-- Rivers and lakes at least 5,000 m² are cut through the base. Smaller water is a thin surface on the terrain, and ponds and fountains are recessed.
-- Turning `Water` off leaves the openings empty.
+- Rivers and lakes at least 5,000 m² sit just below their banks as a 1 mm layer, or run through the base with `Large water` set to `Cut through the base`. Smaller water is a thin surface on the terrain, and ponds and fountains are sunk below their lowest bank.
+- Turning `Water` off leaves the recesses, or the openings, empty.
 - Water that isn't mapped as a polygon (only as a river line) doesn't show up.
+
+**The water colour runs from the bed up.** That's `Cut through the base`. Set `Layers > Water > Large water` to `Thin layer` and the water is only in the top millimetre, which saves colour changes.
 
 **Roads cross rivers as solid causeways.** With `Bridges` off, roads over water keep a strip of ground under them so they print. Turn `Bridges` on to raise them on piers instead.
 

@@ -133,9 +133,6 @@ function settingsProblem(settings: ModelSettings): string | null {
   if (settings.roads.enabled && settings.roads.minWidthMm > settings.roads.maxWidthMm) {
     return 'The minimum road width is larger than the maximum road width.';
   }
-  if (settings.water.recessPonds && !settings.water.skipPonds && settings.water.pondWaterMm > settings.water.pondDepthMm) {
-    return 'Pond water thickness must not be more than the recess depth.';
-  }
   return null;
 }
 

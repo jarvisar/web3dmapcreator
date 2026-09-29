@@ -189,7 +189,7 @@ export function PrintPanel() {
         step={0.1}
         decimals={2}
         unit="mm"
-        help="Solid base below the lowest point of the terrain."
+        help="Solid base below the lowest point of the terrain, including the floor under water."
       />
     </Section>
   );

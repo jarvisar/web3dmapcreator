@@ -65,7 +65,7 @@ node scripts/e2e.mjs http://localhost:5173/ out/e2e-svg --svg --all-formats
 node scripts/e2e-mobile.mjs http://localhost:5173/ out/e2e-mobile
 ```
 
-`generate.ts` takes `--shape`, `--rotation`, `--scale`, `--fit`, `--format`, `--printer`, `--multi-plate`, `--section`, `--bridges`, `--trees`, `--flat`, `--lidar` and `--settings file.json` (merged onto the defaults). The `out/` folder is ignored.
+`generate.ts` takes `--shape`, `--rotation`, `--scale`, `--fit`, `--format`, `--printer`, `--multi-plate`, `--section`, `--bridges`, `--trees`, `--flat`, `--cut-water` (large water through the base), `--lidar` and `--settings file.json` (merged onto the defaults). The `out/` folder is ignored.
 
 With `--lidar`, point data and batch results are kept in `out/lidar-cache` (or `--lidar-cache folder`), which is never evicted, so delete it to start over. Batches run in worker threads, one fewer than the cores up to four (`--lidar-threads n`, 1 to stay on the main thread). `--lidar-records file.json` writes the measured records for comparing runs.
 

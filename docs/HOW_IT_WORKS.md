@@ -36,15 +36,17 @@ Every layer samples this same grid (`src/core/terrain/heightfield.ts`). A road c
 
 Water polygons are clipped to the area and sorted into three kinds:
 
-- **Cut water.** Rivers, lakes and the sea above 5,000 m², measured on the whole feature, so a lake that only reaches into a corner of the area is still cut. These are cut through the base. The water fill is a separate solid from the underside of the model up to the water surface, so it prints as its own colour from the bed up.
-- **Ponds, fountains and basins.** Identified by their tags and classes, never by size or name, plus untyped water under 5,000 m². These are recessed 1 mm into the terrain with 0.8 mm of water in them.
+- **Cut water.** Rivers, lakes and the sea above 5,000 m², measured on the whole feature, so a lake that only reaches into a corner of the area is still cut. These are cut out of the terrain.
+- **Ponds, fountains and basins.** Identified by their tags and classes, never by size or name, plus untyped water under 5,000 m². The elevation data is too coarse to show them, so they sit below their lowest bank.
 - **Water sheets.** Other small water. A thin flat slab sits 0.18 mm above the terrain, which is flattened under it.
 
 Ponds and sheets that lie in cut water are trimmed to the part outside it, so the parts don't overlap.
 
-A body's level is the median of the terrain inside it, because elevation data reports open water as a noisy plateau at its surface. Some data carries bathymetry instead, so cut water is never set below the low tenth of its connected shoreline. Only shore inside the area counts, so the sea running off the edge isn't dragged down to the seabed. Cut water mapped as several overlapping polygons, like a harbour and the river flowing into it, becomes one body at one level. The grid under cut water is flattened to the level and the shore around it is raised to at least that level. Cut water then sits 0.25 mm under the bank, so one printed layer of bank always shows.
+By default cut water and ponds are a 1 mm layer of water on a floor of terrain (`Large water` set to `Thin layer`). Every printed layer with water in it needs a colour change, so keeping the water to the top millimetre saves a lot of them wherever water sits above the lowest point, like a lake up in the hills. The floor counts as terrain for the base, so the full base thickness runs under it and the bottom of the model is one colour. The model can come out a little taller for it, up to 1.25 mm where the bank is the lowest ground, though on the regression areas it was at most 0.5 mm. `Cut through the base` is the add-on's way: the water part runs from the print bed up to its surface, so it can be printed as pieces of its own, and with `Water` off the openings stay empty. Ponds are a layer either way.
 
-With `Keep ground under structures over water` on, the terrain is kept under roads, buildings and mapped piers that stand over cut water or a basin, so nothing hangs over an opening. Turning it off clips roads and buildings at the water's edge instead.
+A body's level is the median of the terrain inside it, because elevation data reports open water as a noisy plateau at its surface. Some data carries bathymetry instead, so cut water is never set below the low tenth of its connected shoreline. Only shore inside the area counts, so the sea running off the edge isn't dragged down to the seabed. Cut water mapped as several overlapping polygons, like a harbour and the river flowing into it, becomes one body at one level. The grid under cut water is flattened to the level and the shore around it is raised to at least that level. Cut water and ponds then sit 0.25 mm under the bank, so one printed layer of bank always shows.
+
+With `Keep ground under structures over water` on, the terrain is kept under roads, buildings and mapped piers that stand over cut water or a basin, so nothing hangs over the water. Turning it off clips roads and buildings at the water's edge instead.
 
 ## Surfaces
 

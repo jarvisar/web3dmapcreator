@@ -16,7 +16,7 @@ import type { MultiPolygon, Polygon, Vec2 } from '../types';
 import { count, type Context } from './context';
 import { dedupe, polylineLength } from './linework';
 import type { RoadPiece } from './roads';
-import { CUT_WATER_DROP_MM } from './water';
+import { WATER_DROP_MM } from './water';
 
 export const MINIMUM_BRIDGE_M = 12;
 const END_EXCLUSION_M = 12;
@@ -109,7 +109,7 @@ export async function buildBridges(
     const ground = hf.heightAt(x, y);
     const wet = cutMask.has(x, y);
     const onRoad = !wet && roadMask.has(x, y);
-    const below = wet ? ground - CUT_WATER_DROP_MM : ground + (onRoad ? thickness : 0);
+    const below = wet ? ground - WATER_DROP_MM : ground + (onRoad ? thickness : 0);
     nodes.push({
       x, y, ground, wet, onRoad,
       required: below + b.clearanceMm + b.deckThicknessMm,

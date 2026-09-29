@@ -2,7 +2,7 @@ import { ArrowDown, ArrowUp } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cellSize } from '../../core/dsm/grid';
 import { effectiveScale } from '../../core/geo/area';
-import { modelFieldRange, type AreaSpec, type LidarRoofMode, type ModelSettings, type SurfaceCategory } from '../../core/settings';
+import { modelFieldRange, type AreaSpec, type LidarRoofMode, type ModelSettings, type SurfaceCategory, type WaterMode } from '../../core/settings';
 import type { ColourGroup } from '../../core/types';
 import { LayerDisclosure } from '../components/LayerDisclosure';
 import { CheckField, SelectField } from '../components/Fields';
@@ -105,63 +105,51 @@ function TerrainOptions({ terrain }: { terrain: ModelSettings['terrain'] }) {
 }
 
 function WaterOptions({ water }: { water: ModelSettings['water'] }) {
-  const recessing = water.recessPonds && !water.skipPonds;
-  const gap = water.pondDepthMm - water.pondWaterMm;
+  const through = water.mode === 'through';
   return (
     <>
+      <SelectField
+        label="Large water"
+        value={water.mode}
+        onChange={(mode) => patchSettings('water', { mode: mode as WaterMode })}
+        help="Thin layer puts rivers, lakes and the sea on a floor of terrain, so the water colour is only in the top few layers. Cut through the base runs the water from the print bed up, for printing it as pieces of its own, or for openings through the base with Water off."
+      >
+        <option value="layer">Thin layer</option>
+        <option value="through">Cut through the base</option>
+      </SelectField>
       <NumberField
-        label="Cut through the base above"
+        label="Water thickness"
+        value={water.thicknessMm}
+        onChange={(thicknessMm) => patchSettings('water', { thicknessMm })}
+        {...modelFieldRange('water', 'thicknessMm')}
+        step={0.1}
+        decimals={2}
+        unit="mm"
+        help={
+          through
+            ? 'How thick ponds and small water print. Large water cut through the base runs down to the print bed.'
+            : 'How thick the water prints on the terrain floor under it. Its surface sits 0.25 mm below the bank. Each layer with water in it needs a colour change, and 1 mm is five 0.2 mm layers.'
+        }
+      />
+      <NumberField
+        label="Large water above"
         value={water.cutMinAreaM2}
         onChange={(cutMinAreaM2) => patchSettings('water', { cutMinAreaM2: Math.round(cutMinAreaM2) })}
         {...modelFieldRange('water', 'cutMinAreaM2')}
         step={500}
         decimals={0}
         unit="m²"
-        help="Rivers, lakes and the sea at least this large are cut right through the base. Smaller water stays as a thin sheet on the terrain."
+        help={
+          through
+            ? 'Rivers, lakes and the sea at least this large are cut right through the base. Smaller water is a thin sheet on the terrain.'
+            : 'Rivers, lakes and the sea at least this large are levelled from their shores and sunk just below them. Smaller water is a thin sheet on the terrain.'
+        }
       />
       <CheckField
         label="Skip ponds, fountains and basins"
         checked={water.skipPonds}
         onChange={(skipPonds) => patchSettings('water', { skipPonds })}
-        help="Leave out mapped ponds, fountains, basins and small unnamed water entirely. Overrides the recess below."
-      />
-      <CheckField
-        label="Recess ponds and fountains"
-        checked={water.recessPonds}
-        disabled={water.skipPonds}
-        onChange={(recessPonds) => patchSettings('water', { recessPonds })}
-        help="Sink ponds, fountains, basins and small unnamed water into the ground with a solid floor, instead of cutting through the base."
-      />
-      <NumberField
-        label="Recess depth"
-        value={water.pondDepthMm}
-        onChange={(pondDepthMm) => patchSettings('water', { pondDepthMm })}
-        {...modelFieldRange('water', 'pondDepthMm')}
-        step={0.1}
-        decimals={2}
-        unit="mm"
-        disabled={!recessing}
-        help="Depth of ponds, fountains and basins below the bank around them."
-      />
-      <NumberField
-        label="Pond water thickness"
-        value={water.pondWaterMm}
-        onChange={(pondWaterMm) => patchSettings('water', { pondWaterMm })}
-        {...modelFieldRange('water', 'pondWaterMm')}
-        step={0.1}
-        decimals={2}
-        unit="mm"
-        disabled={!recessing}
-        help="Water thickness from the floor of a recess. It must not be more than the recess depth."
-        hint={
-          recessing ? (
-            gap < -1e-6 ? (
-              <span className="text-error">Must not be more than the recess depth.</span>
-            ) : (
-              `Water surface ${formatNumber(gap, 2)} mm below the bank`
-            )
-          ) : undefined
-        }
+        help="Leave out mapped ponds, fountains, basins and small unnamed water entirely. Otherwise they sit just below their lowest bank, at the water thickness."
       />
     </>
   );
@@ -792,6 +780,13 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
   );
 }
 
+function waterSummary(water: ModelSettings['water']): string {
+  const through = water.mode === 'through';
+  if (!water.enabled) return through ? 'Off, cuts stay open' : 'Off, recesses stay empty';
+  const main = through ? `Cut through above ${formatInteger(water.cutMinAreaM2)} m²` : `${mm(water.thicknessMm)} layer`;
+  return `${main}${water.skipPonds ? ' · no ponds' : ''}`;
+}
+
 function layerSummary(settings: ModelSettings): string {
   const on = [
     settings.terrain.elevation ? 'terrain' : 'flat base',
@@ -874,8 +869,8 @@ export function LayersPanel() {
               group="water"
               on={water.enabled}
               onToggle={(enabled) => patchSettings('water', { enabled })}
-              summary={water.enabled ? `Cut above ${formatInteger(water.cutMinAreaM2)} m²${water.skipPonds ? ' · no ponds' : ''}` : 'Off, cuts stay open'}
-              help="Rivers, lakes and the sea as their own part. Large water is cut through the base, small ponds are sunk into the ground. Off leaves the water openings empty."
+              summary={waterSummary(water)}
+              help="Rivers, lakes, the sea and ponds as their own part, just below their banks. Off leaves the water out: empty recesses, or openings through the base when large water is cut through."
               resetKey="water"
             >
               <WaterOptions water={water} />

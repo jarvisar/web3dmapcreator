@@ -195,6 +195,55 @@ describe('generateModel', () => {
     expect(trees).toBeLessThanOrEqual(meshed.parts.find((p) => p.id === 'trees')!.indices.length);
   });
 
+  it('prints water as a thin layer on a terrain floor', async () => {
+    const { spec, meshed } = await build();
+    const fills = spec.layers.find((l) => l.id === 'water')!.solids as PrismSolid[];
+    for (const solid of fills) expect((solid.top as number) - (solid.bottom as number)).toBeCloseTo(1, 9);
+    // Floors: flat terrain prisms whose top is the underside of the water.
+    const floors = (spec.layers.find((l) => l.id === 'terrain')!.solids as PrismSolid[]).filter((s) => typeof s.top === 'number');
+    expect(floors.length).toBeGreaterThanOrEqual(2);
+    // The base runs under the water, so the plate is all terrain.
+    const water = meshed.parts.find((p) => p.id === 'water')!;
+    let low = Infinity;
+    for (let i = 2; i < water.positions.length; i += 3) low = Math.min(low, water.positions[i]);
+    expect(low).toBeGreaterThanOrEqual(1.3 - 1e-6);
+  });
+
+  it('cuts large water through the base when asked', async () => {
+    const layer = await build();
+    const through = await build((s) => (s.water.mode = 'through'));
+    const water = through.meshed.parts.find((p) => p.id === 'water')!;
+    for (const part of through.meshed.parts) {
+      const report = edgeReport(part.indices, part.positions.length / 3);
+      expect({ part: part.id, open: report.open, repeated: report.repeated }).toEqual({ part: part.id, open: 0, repeated: 0 });
+    }
+    let low = Infinity;
+    for (let i = 2; i < water.positions.length; i += 3) low = Math.min(low, water.positions[i]);
+    expect(low).toBeCloseTo(0, 5);
+    // The river sits above the lowest ground, so its column is taller than the layer.
+    const volume = (r: typeof layer, id: string) => {
+      const part = r.meshed.parts.find((p) => p.id === id)!;
+      return signedVolume(part.positions, part.indices);
+    };
+    expect(volume(through, 'water')).toBeGreaterThan(volume(layer, 'water'));
+    // The pond is sunk the same way in both.
+    expect(through.spec.stats.water_basins).toBe(1);
+  });
+
+  it('leaves recesses or openings with the water off', async () => {
+    const layer = await build((s) => (s.water.enabled = false));
+    const through = await build((s) => ((s.water.enabled = false), (s.water.mode = 'through')));
+    for (const r of [layer, through]) {
+      expect(r.meshed.parts.map((p) => p.id)).not.toContain('water');
+      for (const part of r.meshed.parts) expect(edgeReport(part.indices, part.positions.length / 3).open).toBe(0);
+    }
+    const terrain = (r: typeof layer) => {
+      const part = r.meshed.parts.find((p) => p.id === 'terrain')!;
+      return signedVolume(part.positions, part.indices);
+    };
+    expect(terrain(layer)).toBeGreaterThan(terrain(through));
+  });
+
   it('builds a flat base without elevation', async () => {
     const { meshed } = await build((s) => (s.terrain.elevation = false));
     const terrain = meshed.parts.find((p) => p.id === 'terrain')!;

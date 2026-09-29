@@ -6,7 +6,7 @@ import { HeightField } from '../terrain/heightfield';
 import type { Ring } from '../types';
 import { Progress, type Context } from './context';
 import type { SourceFeature } from './source';
-import { CUT_WATER_DROP_MM, solveWater } from './water';
+import { WATER_DROP_MM, solveWater, waterBottom } from './water';
 
 const CROP: Ring = [[-50, -35], [50, -35], [50, 35], [-50, 35]];
 
@@ -47,7 +47,7 @@ describe('solveWater', () => {
     const sea = result.bodies.filter((b) => b.kind === 'cut');
     expect(sea).toHaveLength(1);
     expect(sea[0].bed).toBeCloseTo(0.35, 9);
-    expect(sea[0].top).toBeCloseTo(0.35 - CUT_WATER_DROP_MM, 9);
+    expect(sea[0].top).toBeCloseTo(0.35 - WATER_DROP_MM, 9);
   });
 
   it('gives overlapping cut water one level and one body', async () => {
@@ -86,6 +86,36 @@ describe('solveWater', () => {
     expect(basins).toHaveLength(1);
     expect(polygonArea(basins[0].polygon)).toBeCloseTo(50, 3);
     expect(multiArea(intersection(result.cut, result.basins))).toBeLessThan(1e-6);
+  });
+
+  it('sinks a pond below its lowest bank', async () => {
+    const ctx = context((x) => 1 + x / 100);
+    const result = await solveWater([water(ctx, 'pond', -5, -5, 5, 5, { subtype: 'water', class: 'pond' })], ctx);
+    const [pond] = result.bodies;
+    expect(pond.kind).toBe('basin');
+    expect(pond.bed).toBeCloseTo(0.95, 2);
+    expect(pond.top).toBeCloseTo(pond.bed - WATER_DROP_MM, 9);
+    expect(waterBottom(pond, ctx.settings)).toBeCloseTo(pond.top - ctx.settings.water.thicknessMm, 9);
+  });
+
+  it('runs cut water down to the base only when cut through', async () => {
+    const ctx = context(() => 1);
+    const result = await solveWater([water(ctx, 'lake', -40, -20, 0, 20, LAKE)], ctx);
+    const [lake] = result.bodies;
+    ctx.settings.water.thicknessMm = 0.6;
+    expect(waterBottom(lake, ctx.settings)).toBeCloseTo(lake.top - 0.6, 9);
+    ctx.settings.water.mode = 'through';
+    expect(waterBottom(lake, ctx.settings)).toBeNull();
+  });
+
+  it('keeps a thin sheet reaching into the terrain', async () => {
+    // About 43 m square, under the size cut water starts at.
+    const ctx = context(() => 1);
+    const result = await solveWater([water(ctx, 'stream', -1.5, -1.5, 1.5, 1.5, { subtype: 'river', class: 'river' })], ctx);
+    const [sheet] = result.bodies;
+    expect(sheet.kind).toBe('sheet');
+    ctx.settings.water.thicknessMm = 0.1;
+    expect(waterBottom(sheet, ctx.settings)).toBeCloseTo(sheet.bed - ctx.settings.land.embedMm, 9);
   });
 
   it('cuts a large lake that only has a corner in the model', async () => {

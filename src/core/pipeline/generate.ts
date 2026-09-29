@@ -34,7 +34,7 @@ import { buildBridges, splitDecks } from './bridges';
 import { buildAirports, bufferRoads, collectRoadPieces, type RoadPiece, type RoadResult } from './roads';
 import { EdgeIndex } from '../geometry/edgeindex';
 import { projectPolygons, type Elevation, type SourceData, type SourceType } from './source';
-import { SHEET_THICKNESS_MM, solveWater } from './water';
+import { solveWater, waterBottom } from './water';
 import { buildTrees } from './trees';
 
 export interface ModelSpec {
@@ -238,8 +238,22 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     for (const n of hf.nodesInside(polygon)) lowest = Math.min(lowest, hf.values[n]);
     for (const ring of polygon) for (const [x, y] of ring) lowest = Math.min(lowest, hf.heightAt(x, y));
   }
-  const basinBodies = water.bodies.filter((b) => b.kind === 'basin');
-  for (const body of basinBodies) lowest = Math.min(lowest, body.bed);
+  // Cut water and basins less the ground kept under structures. The water's
+  // underside is the top of a terrain floor, which the base runs under like
+  // any other ground, or null for cut water running down to the base.
+  const settled: ({ polygons: Polygon[]; bottom: number | null } | null)[] = [];
+  for (let i = 0; i < water.bodies.length; i++) {
+    const body = water.bodies[i];
+    if (i % 32 === 0) await progress.checkpoint(0.5 * (i / water.bodies.length));
+    if (body.kind === 'sheet') {
+      settled.push(null);
+      continue;
+    }
+    const polygons = unsupported(body.polygon);
+    const bottom = waterBottom(body, settings);
+    if (bottom !== null && polygons.length) lowest = Math.min(lowest, bottom);
+    settled.push({ polygons, bottom });
+  }
   if (!Number.isFinite(lowest)) lowest = 0;
   const baseZ = lowest - settings.terrain.baseThicknessMm;
 
@@ -258,13 +272,13 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     drape: drapeStep,
     lattice,
   }));
-  // Basin floors: the recess is the terrain built lower over the basin.
-  for (let i = 0; i < basinBodies.length; i++) {
-    const body = basinBodies[i];
-    for (const polygon of unsupported(body.polygon)) {
-      terrainSolids.push({ kind: 'prism', role: 'terrain', polygon, top: body.bed, bottom: baseZ, drape: 0 });
+  // Floors under the water: the terrain built lower over it. With the water
+  // turned off they're left as empty recesses.
+  for (const entry of settled) {
+    if (entry?.bottom == null) continue;
+    for (const polygon of entry.polygons) {
+      terrainSolids.push({ kind: 'prism', role: 'terrain', polygon, top: entry.bottom, bottom: baseZ, drape: 0 });
     }
-    if (i % 32 === 0) await progress.checkpoint(0.5 * (i / basinBodies.length));
   }
   layers.push({ id: 'terrain', name: 'Terrain', role: 'terrain', solids: terrainSolids });
 
@@ -273,17 +287,14 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     const fills: Solid[] = [];
     for (let i = 0; i < water.bodies.length; i++) {
       const body = water.bodies[i];
+      const entry = settled[i];
       if (i % 32 === 0) await progress.checkpoint(0.5 + 0.5 * (i / water.bodies.length));
-      if (body.kind === 'cut') {
-        for (const polygon of unsupported(body.polygon)) {
-          fills.push({ kind: 'prism', role: 'water', polygon, top: body.top, bottom: baseZ, drape: 0 });
-        }
-      } else if (body.kind === 'basin') {
-        for (const polygon of unsupported(body.polygon)) {
-          fills.push({ kind: 'prism', role: 'water', polygon, top: body.top, bottom: body.bed, drape: 0 });
+      if (entry) {
+        for (const polygon of entry.polygons) {
+          fills.push({ kind: 'prism', role: 'water', polygon, top: body.top, bottom: entry.bottom ?? baseZ, drape: 0 });
         }
       } else {
-        const bottom = Math.max(body.top - SHEET_THICKNESS_MM, baseZ + 0.05);
+        const bottom = Math.max(waterBottom(body, settings)!, baseZ + 0.05);
         fills.push({ kind: 'prism', role: 'water', polygon: body.polygon, top: body.top, bottom, drape: 0 });
       }
     }
