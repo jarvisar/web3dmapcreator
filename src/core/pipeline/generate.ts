@@ -14,6 +14,7 @@ import {
   multiArea,
   multiBounds,
   clipToBox,
+  densifyRing,
   offsetPolygons,
   polygonArea,
   ringBounds,
@@ -32,9 +33,9 @@ import { Progress, type Context } from './context';
 import { buildLand } from './land';
 import { buildBridges, splitDecks } from './bridges';
 import { buildAirports, bufferRoads, collectRoadPieces, type RoadPiece, type RoadResult } from './roads';
-import { EdgeIndex } from '../geometry/edgeindex';
 import { projectPolygons, type Elevation, type SourceData, type SourceType } from './source';
 import { solveWater, waterBottom } from './water';
+import { shapeBeaches } from './beaches';
 import { buildTrees } from './trees';
 
 export interface ModelSpec {
@@ -231,13 +232,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
 
   // ----------------------------------------------------------- terrain solid
   progress.begin('terrain', 'Closing the terrain solid', 0.85, 0.03);
-  const ground = dropSmall(difference(ctx.cropSet, union(cutFinal, basinFinal)), 0.01);
   const hf = ctx.heightfield;
-  let lowest = Infinity;
-  for (const polygon of ground) {
-    for (const n of hf.nodesInside(polygon)) lowest = Math.min(lowest, hf.values[n]);
-    for (const ring of polygon) for (const [x, y] of ring) lowest = Math.min(lowest, hf.heightAt(x, y));
-  }
   // Cut water and basins less the ground kept under structures. The water's
   // underside is the top of a terrain floor, which the base runs under like
   // any other ground, or null for cut water running down to the base.
@@ -245,15 +240,43 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   for (let i = 0; i < water.bodies.length; i++) {
     const body = water.bodies[i];
     if (i % 32 === 0) await progress.checkpoint(0.5 * (i / water.bodies.length));
-    if (body.kind === 'sheet') {
-      settled.push(null);
-      continue;
-    }
-    const polygons = unsupported(body.polygon);
-    const bottom = waterBottom(body, settings);
-    if (bottom !== null && polygons.length) lowest = Math.min(lowest, bottom);
-    settled.push({ polygons, bottom });
+    settled.push(body.kind === 'sheet' ? null : { polygons: unsupported(body.polygon), bottom: waterBottom(body, settings) });
   }
+
+  const ground = dropSmall(difference(ctx.cropSet, union(cutFinal, basinFinal)), 0.01);
+  // Beaches slope the ground itself down to the water. Everything draped on
+  // the grid is laid out by now, so what isn't beach can keep its ground.
+  const beaches =
+    land && settings.land.taperBeaches
+      ? shapeBeaches(hf, {
+          cut: water.bodies.flatMap((body, i) => (body.kind === 'cut' && settled[i]!.polygons.length ? [{ polygons: settled[i]!.polygons, top: body.top }] : [])),
+          crop: ctx.cropSet,
+          ground,
+          sand: land.sand,
+          blockers: [
+            ...roads.footprint,
+            ...buildings.footprint,
+            ...bridgeSolids.map((solid) => solid.polygon),
+            ...pierGround,
+            ...basinFinal,
+            ...water.sheets,
+          ],
+          cover: settings.land.priority.filter((category) => category !== 'sand').flatMap((category) => land[category]),
+          width: settings.land.beachWidthMm,
+        })
+      : null;
+  if (beaches && land) {
+    land.sand = beaches.sand;
+    ctx.stats.beach_sand_added_mm2 = Math.round(beaches.filled * 10) / 10;
+    ctx.stats.beach_points_lowered = beaches.lowered;
+  }
+
+  let lowest = Infinity;
+  for (const polygon of ground) {
+    for (const n of hf.nodesInside(polygon)) lowest = Math.min(lowest, hf.values[n]);
+    for (const ring of polygon) for (const [x, y] of ring) lowest = Math.min(lowest, hf.heightAt(x, y));
+  }
+  for (const entry of settled) if (entry?.bottom != null && entry.polygons.length) lowest = Math.min(lowest, entry.bottom);
   if (!Number.isFinite(lowest)) lowest = 0;
   const baseZ = lowest - settings.terrain.baseThicknessMm;
 
@@ -307,26 +330,29 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     const embed = settings.land.embedMm;
     const flatTop = (x: number, y: number) => hf.heightAt(x, y) + rise;
     const bottom = (x: number, y: number) => hf.heightAt(x, y) - embed;
-    // Sand beside cut water is a beach: slope it down to 0.1 mm at the waterline.
+    // Beach sand thins from its full rise to 0.1 mm at the waterline, on
+    // ground that slopes down to the water too.
     const beachWidth = settings.land.beachWidthMm;
-    const shore = settings.land.taperBeaches && cutFinal.length && beachWidth > 0 ? new EdgeIndex(cutFinal, beachWidth) : null;
     const beachTop = (x: number, y: number) => {
-      const d = shore!.distance(x, y, beachWidth);
+      const d = beaches!.distance(x, y, beachWidth);
       const low = Math.min(0.1, rise);
       return hf.heightAt(x, y) + low + (rise - low) * Math.min(1, d / beachWidth);
     };
+    // Outlines are sampled half a width apart, so look a little further than the width.
+    const onBeach = (polygon: Polygon) =>
+      !!beaches && polygon.some((ring) => densifyRing(ring, beachWidth / 2).some(([x, y]) => beaches.distance(x, y, 2 * beachWidth) < 1.5 * beachWidth));
     for (const category of settings.land.priority) {
       const polygons = land[category];
       if (!polygons.length) continue;
-      const top = category === 'sand' && shore ? beachTop : flatTop;
-      const beach = category === 'sand' && shore;
       layers.push({
         id: `land-${category}`,
         name: LAND_NAMES[category],
         role: LAND_ROLES[category],
         solids: polygons.map((polygon) => {
+          const beach = category === 'sand' && onBeach(polygon);
           // A beach slopes even on flat ground.
           const drape = flat && !beach ? 0 : hf.step / (beach ? beachSplit(polygon, hf.step, beachWidth) : 1);
+          const top = beach ? beachTop : flatTop;
           return { kind: 'prism', role: LAND_ROLES[category], polygon, top, bottom, drape, lattice: drape > 0 ? { ...hf.lattice, step: drape } : undefined };
         }),
       });

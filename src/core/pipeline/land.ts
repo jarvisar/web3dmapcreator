@@ -28,7 +28,7 @@ const MINIMUM_AREA_MM2 = 0.25;
 const TILED_ABOVE_MM = 250;
 const TILE_MM = 50;
 const TILE_MARGIN_MM = 1;
-const SLIVER_MM = 0.1;
+export const SLIVER_MM = 0.1;
 
 export type LandSurfaces = Record<SurfaceCategory, MultiPolygon>;
 
