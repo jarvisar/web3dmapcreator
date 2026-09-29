@@ -16,7 +16,8 @@ export function defaultStyle(mode: OutputMode): ModeStyle {
   return structuredClone(style);
 }
 
-// 1:n of the starting map. The place's own width is ignored for the default.
+// 1:n of the starting map, 0.05 mm per metre. The place's own width is ignored
+// for the default.
 export const DEFAULT_SCALE = 20000;
 
 export function defaultRenderSettings(mode: OutputMode = 'laser'): RenderSettings {

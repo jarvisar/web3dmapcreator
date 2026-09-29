@@ -27,7 +27,7 @@ Open the 3MF in Bambu Studio with `File > Open Project`. Every part already has 
 
 ![The Chicago Loop as an SVG map on a 5 x 7 in plaque, in the laser preview](docs/images/svg-map.png)
 
-Pick the piece under `Size`: a plaque, a sheet of paper, a coaster or your own size. The box on the map becomes the map inside the piece's border, with the margin, border and title drawn around it, and resizing it changes the scale. Lock the scale to keep it while you try other places and sizes.
+Pick the piece under `Size`: a plaque, a sheet of paper, a coaster or your own size. The box on the map becomes the map inside the piece's border, with the margin, border and title drawn around it. By default the scale is fixed at 0.05 mm per metre (1:20,000), set under `Area`, and the box takes its size from the piece and the scale. Switch to `Fit the area` to resize the box yourself and let the scale follow.
 
 Click `Generate SVG` to open the preview, which keeps up with the settings while it's open, then `Download .svg`. `Output` switches between a laser (fills engrave, lines score and the edge cuts, one colour per layer), a pen plotter (everything is a stroke, one numbered layer per pen) and print (coloured themes). The file is sized in millimetres, so check the imported size in your laser software.
 

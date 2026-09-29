@@ -41,7 +41,7 @@ const SVG_TIPS = [
   'For a laser, filled areas engrave, lines score and the edge cuts. Every layer has its own colour so it can have its own process. The LightBurn layer palette puts each layer on its own LightBurn layer.',
   'For a plotter, each pen colour is a numbered layer (1 - pen #000000) that AxiDraw, vpype and saxi split on. The single-line Hershey fonts are made for pens.',
   'The preview shows how much of the road network the cleanup kept. Below 97% a warning appears, since streets were removed and not just doubled lines.',
-  'Lock the scale to keep 1:n the same while you try other places or piece sizes.',
+  'With Fixed scale, the default, the box on the map takes its size from the piece and the scale (0.05 mm per metre to start, 1:20,000), and keeps that scale while you try other places or piece sizes. Pick Fit the area to size the box yourself.',
   'The wood preview is only a rough idea of how the fills burn. Test your settings on scrap.',
 ];
 

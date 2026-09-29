@@ -28,7 +28,8 @@ export interface SvgSettings extends Omit<RenderSettings, 'area' | 'product' | '
   laserPalette: LaserPalette;
   printTheme: string;
   cleanupPreset: CleanupPreset;
-  // 1:scale. Follows the area unless locked, and then the area follows it.
+  // 1:scale. Follows the area unless locked (Fixed scale in the panel), and
+  // then the area follows it.
   scale: number;
   scaleLocked: boolean;
 }
@@ -47,7 +48,7 @@ export function defaultSvgSettings(): SvgSettings {
     printTheme: 'classic',
     cleanupPreset: 'standard',
     scale: DEFAULT_SCALE,
-    scaleLocked: false,
+    scaleLocked: true,
   };
 }
 

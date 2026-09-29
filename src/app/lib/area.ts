@@ -11,9 +11,9 @@ export const SHAPES: AreaShape[] = ['rectangle', 'rounded', 'circle', 'hexagon']
 
 export const AREA_HINT = 'Drag the box to move it. Drag a corner to resize it, or the round handle to rotate it.';
 
-/** With an SVG map's scale locked the corners can't resize the area. */
+/** With an SVG map's scale fixed the corners can't resize the area. */
 export function areaHint(locked: boolean): string {
-  return locked ? 'Drag the box to move it, or the round handle to rotate it. Unlock the scale to resize it.' : AREA_HINT;
+  return locked ? 'Drag the box to move it, or the round handle to rotate it. Pick Fit the area under Size to resize it.' : AREA_HINT;
 }
 
 export const SHAPE_LABELS: Record<AreaShape, string> = {

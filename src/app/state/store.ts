@@ -342,7 +342,7 @@ export function resetSettingsSection(key: SettingsSection): void {
   });
 }
 
-/** Settings, colours and export options of both outputs back to their defaults. The area, SVG title and scale lock are kept. */
+/** Settings, colours and export options of both outputs back to their defaults. The area, SVG title and scale (fixed or not) are kept. */
 export function resetAllSettings(): void {
   set((state) => {
     const settings = cloneSettings(DEFAULT_SETTINGS);

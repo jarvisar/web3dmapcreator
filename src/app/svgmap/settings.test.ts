@@ -5,7 +5,18 @@ import { computeLayout } from '../../core/svgmap/layout/layout';
 import { clampRenderSettings, limitFor } from '../../core/svgmap/limits';
 import { PRODUCT_PRESETS } from '../../core/svgmap/presets';
 import { MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
-import { applyPiecePreset, setArea, setCleanupPreset, setOutput, setPieceSize, setPlotter, setSvgMode, useApp } from '../state/store';
+import {
+  applyPiecePreset,
+  setArea,
+  setCleanupPreset,
+  setOutput,
+  setPieceSize,
+  setPlotter,
+  setScaleLocked,
+  setSvgMode,
+  setSvgScale,
+  useApp,
+} from '../state/store';
 import { formatAreaHash, parseHash } from '../state/shareLink';
 import { fitAreaToPiece, pieceProduct } from './piece';
 import { defaultSvgSettings, mergeSettings, toRenderSettings } from './settings';
@@ -84,15 +95,23 @@ describe('SVG settings', () => {
         }
       }
     }
-    // The smallest and largest pieces over the smallest and largest areas.
+    // The smallest and largest pieces over the smallest and largest areas,
+    // and at the smallest and largest fixed scales.
+    const scales = limitFor(['scale']) as { min: number; max: number };
     for (const shape of ['rectangle', 'hexagon', 'circle'] as const) {
       setArea((area) => ({ ...area, shape }));
       for (const width of [20, 2000]) {
         for (const height of [20, 2000]) {
           setPieceSize({ width, height });
+          setScaleLocked(false);
           for (const side of [MIN_SIDE_M, MAX_SIDE_M]) {
             setArea((area) => ({ ...area, widthM: side, heightM: side }));
             audit(`${shape} ${width} x ${height} mm over ${side} m`);
+          }
+          setScaleLocked(true);
+          for (const scale of [scales.min, scales.max]) {
+            setSvgScale(scale);
+            audit(`${shape} ${width} x ${height} mm at 1:${scale}`);
           }
         }
       }
@@ -164,8 +183,44 @@ describe('SVG settings', () => {
 });
 
 describe('the area as a map window', () => {
-  const svg = defaultSvgSettings();
+  const fixed = defaultSvgSettings();
+  // Fit the area, where the area sets the scale.
+  const svg = { ...fixed, scaleLocked: false };
   const window = computeLayout(pieceProduct(svg.product, 'rectangle'), svg.border).window;
+
+  it('starts at a fixed 0.05 mm per metre', () => {
+    expect(fixed.scaleLocked).toBe(true);
+    expect(1000 / fixed.scale).toBe(0.05);
+    const { area, scale } = fitAreaToPiece({ ...engineArea, widthM: 9000 }, fixed, 'cover');
+    expect(area.widthM).toBeCloseTo(window.w / 0.05, 2);
+    expect(scale).toBe(20000);
+  });
+
+  it('sizes the area from the piece and a scale typed in mm per metre', () => {
+    useApp.setState({ svg: defaultSvgSettings() });
+    setOutput('svg');
+    setArea((area) => ({ ...area, shape: 'rectangle' }));
+    setPieceSize({ width: 300, height: 200 });
+    const window = () => {
+      const { area, svg } = useApp.getState();
+      return computeLayout(pieceProduct(svg.product, area.shape), svg.border).window;
+    };
+    expect(useApp.getState().svg.scale).toBe(20000);
+    expect(useApp.getState().area.widthM).toBeCloseTo(window().w / 0.05, 1);
+    // What the Scale field sends for 0.07 mm/m.
+    setSvgScale(1000 / 0.07);
+    expect(useApp.getState().area.widthM).toBeCloseTo(window().w / 0.07, 1);
+    // A new piece keeps the scale and resizes the area instead.
+    setPieceSize({ width: 150, height: 150 });
+    expect(1000 / useApp.getState().svg.scale).toBeCloseTo(0.07, 9);
+    expect(useApp.getState().area.widthM).toBeCloseTo(window().w / 0.07, 1);
+    // Fit the area keeps the area and changes the scale.
+    setScaleLocked(false);
+    const before = useApp.getState().area.widthM;
+    setPieceSize({ width: 300, height: 300 });
+    expect(useApp.getState().area.widthM).toBe(before);
+    expect(useApp.getState().svg.scale).toBeCloseTo((before / window().w) * 1000, 6);
+  });
 
   it('keeps the width and takes the height from the piece', () => {
     const { area, scale } = fitAreaToPiece({ ...engineArea, widthM: 3208, heightM: 5000 }, svg);
@@ -227,7 +282,7 @@ describe('share links', () => {
     settings.mode = 'plotter';
     settings.label.text = 'SÃO PAULO';
     settings.styles.print.background = null;
-    settings.scaleLocked = true;
+    settings.scaleLocked = false;
     expect(decodeSvgSettings(encodeSvgSettings(settings))!.svg).toEqual(settings);
   });
 

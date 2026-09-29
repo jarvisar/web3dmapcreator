@@ -49,41 +49,6 @@
   align-self: flex-start;
 }
 
-/* Area: an SVG map's 1:n scale with its lock */
-
-.scale-input {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.scale-prefix {
-  color: var(--text-3);
-  font-variant-numeric: tabular-nums;
-}
-
-.scale-input .number-input {
-  flex: 1;
-  min-width: 0;
-}
-
-.scale-input .number-input input {
-  text-align: left;
-}
-
-.lock-btn {
-  flex: none;
-  width: 30px;
-  padding: 0;
-  justify-content: center;
-}
-
-.lock-btn.is-locked {
-  border-color: var(--accent-border);
-  background: var(--accent-soft);
-  color: var(--link);
-}
-
 .stale-note.is-updating {
   color: var(--text-3);
   font-weight: normal;

@@ -25,7 +25,7 @@ setWorkerUrl(maplibreWorkerUrl);
 function areaLabel(state: AppState): string {
   const { area } = state;
   if (state.output === 'svg') {
-    return `${formatSizePair(area.widthM, area.heightM)} · 1:${formatInteger(state.svg.scale)}${state.svg.scaleLocked ? ', locked' : ''}`;
+    return `${formatSizePair(area.widthM, area.heightM)} · 1:${formatInteger(state.svg.scale)}${state.svg.scaleLocked ? ', fixed' : ''}`;
   }
   const size = modelSizeMm(area, state.settings.scale);
   return `${formatSizePair(area.widthM, area.heightM)} · ${formatMmPair(size.width, size.depth)}`;

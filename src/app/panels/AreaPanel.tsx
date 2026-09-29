@@ -1,10 +1,10 @@
 import { fieldRange } from '../../core/svgmap/limits';
-import { ClipboardPaste, Copy, Link, Lock, LockOpen, RotateCcw, Scan, TriangleAlert, CircleAlert } from 'lucide-react';
+import { ClipboardPaste, Copy, Link, RotateCcw, Scan, TriangleAlert, CircleAlert } from 'lucide-react';
 import { useId } from 'react';
 import { areaGeoBounds, areaKm2, effectiveScale, parseBoundsText, validateArea, MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
 import type { AreaShape } from '../../core/settings';
 import { ShapeIcon } from '../components/Icons';
-import { NumberField, NumberInput } from '../components/NumberField';
+import { NumberField, NumberInput, StackedNumber } from '../components/NumberField';
 import { SliderField } from '../components/Fields';
 import { Segmented } from '../components/Segmented';
 import { SHAPES, SHAPE_LABELS, areaForBounds, constrainSize } from '../lib/area';
@@ -63,14 +63,16 @@ function SizeInput({ label, valueM, unit, mmPerMetre, rimMm, onChange, disabled 
   );
 }
 
-// An SVG map's size: the width of the map window on the ground, or the 1:n
-// scale that gives on the piece. Two ways of setting the same thing.
+// An SVG map's size: the width of the map window on the ground, or the scale
+// that gives on the piece. The scale is kept as 1:n but typed in mm per metre
+// like a model's. A fixed scale sizes the box on the map from the piece.
 function SvgSize({ unit, onWidth }: { unit: SizeUnit; onWidth: (metres: number) => void }) {
   const area = useApp((state) => state.area);
   const scale = useApp((state) => state.svg.scale);
   const locked = useApp((state) => state.svg.scaleLocked);
-  const scaleId = useId();
   const shown = unit === 'mm' ? 'km' : unit;
+  const ratio = fieldRange('scale');
+  const covers = `${formatRatio(1000 / scale)}, the map covers ${formatSizePair(area.widthM, area.heightM)}.`;
   return (
     <div className="field-group">
       <div className="group-label-row">
@@ -86,6 +88,16 @@ function SvgSize({ unit, onWidth }: { unit: SizeUnit; onWidth: (metres: number) 
           ]}
         />
       </div>
+      <Segmented
+        label="Scale mode"
+        value={locked ? 'fixed' : 'fit'}
+        stretch
+        onChange={(mode) => setScaleLocked(mode === 'fixed')}
+        options={[
+          { value: 'fixed', label: 'Fixed scale' },
+          { value: 'fit', label: 'Fit the area' },
+        ]}
+      />
       <div className="size-grid">
         <SizeInput
           label={area.shape === 'circle' ? 'Diameter' : 'Width'}
@@ -96,32 +108,21 @@ function SvgSize({ unit, onWidth }: { unit: SizeUnit; onWidth: (metres: number) 
           onChange={onWidth}
           disabled={locked}
         />
-        <div className="size-field">
-          <label htmlFor={scaleId} className="size-label">
-            Scale
-          </label>
-          <div className="scale-input">
-            <span className="scale-prefix" aria-hidden="true">
-              1:
-            </span>
-            <NumberInput id={scaleId} value={scale} onChange={setSvgScale} {...fieldRange('scale')} step={500} decimals={0} ariaLabel="Scale, 1 to" />
-            <button
-              type="button"
-              className={`btn btn-sm lock-btn${locked ? ' is-locked' : ''}`}
-              aria-pressed={locked}
-              aria-label="Lock the scale"
-              title={locked ? 'Unlock the scale' : 'Lock the scale'}
-              onClick={() => setScaleLocked(!locked)}
-            >
-              {locked ? <Lock size={14} aria-hidden="true" /> : <LockOpen size={14} aria-hidden="true" />}
-            </button>
-          </div>
-        </div>
+        <StackedNumber
+          label="Scale"
+          value={1000 / scale}
+          onChange={(mmPerMetre) => setSvgScale(1000 / mmPerMetre)}
+          min={1000 / ratio.max}
+          max={1000 / ratio.min}
+          step={0.005}
+          decimals={4}
+          unit="mm/m"
+        />
       </div>
       <p className="field-hint">
         {locked
-          ? `Locked at 1:${formatInteger(scale)}. The area can move and turn but not resize, and new places and piece sizes keep this scale.`
-          : `The map window covers ${formatSizePair(area.widthM, area.heightM)}. Resizing the area changes the scale.`}
+          ? `${covers} The box on the map takes its size from the piece and the scale, so it only moves and turns.`
+          : `${covers} Resizing the box on the map changes the scale.`}
       </p>
     </div>
   );
