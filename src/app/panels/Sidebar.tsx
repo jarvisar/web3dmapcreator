@@ -13,6 +13,7 @@ import { ColoursPanel } from './ColoursPanel';
 import { ExportPanel } from './ExportPanel';
 import { LayersPanel } from './LayersPanel';
 import { PrintPanel } from './PrintPanel';
+import { OptionsFiles } from './OptionsFiles';
 
 function OutputSwitch() {
   const output = useApp((state) => state.output);
@@ -102,6 +103,7 @@ export function Sidebar() {
         </>
       )}
       <footer className="sidebar-footer">
+        <OptionsFiles />
         <div className="sidebar-links">
           <ResetAll />
           <button type="button" className="link-btn" onClick={() => setHelpOpen(true)}>

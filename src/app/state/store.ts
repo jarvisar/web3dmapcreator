@@ -33,6 +33,7 @@ import { type PieceFit, areaShapeOf, fitAreaToPiece, pieceLayout } from '../svgm
 import { useSvgRender } from '../svgmap/render';
 import { type CleanupPreset, type LaserPalette, type PieceSize, type SvgSettings, cleanupForPreset, defaultSvgSettings } from '../svgmap/settings';
 import { loadSaved } from './persist';
+import type { Options } from './options';
 import { type Output, readHash } from './shareLink';
 
 export type { Output };
@@ -358,6 +359,29 @@ export function resetAllSettings(): void {
       exportSettings: { ...DEFAULT_EXPORT },
       fileName: null,
       generation: withStale(state.generation, area, settings),
+    };
+  });
+}
+
+export function applyOptions(options: Options, includeArea = true): void {
+  set((state) => {
+    const { map, ...imported } = structuredClone(options);
+    const savedMap = includeArea ? map : undefined;
+    const requestedArea = savedMap?.area ?? state.area;
+    // A piece preset also names a shape, which an options-only import keeps.
+    const preset = PRODUCT_PRESETS.find((item) => item.id === imported.svg.productPreset);
+    if (preset && areaShapeOf(preset.product.shape) !== requestedArea.shape) imported.svg.productPreset = 'custom';
+    const { error } = pieceLayout(imported.svg.product, requestedArea.shape, imported.svg.border);
+    if (error) throw new Error(`Invalid SVG options: ${error}`);
+    const { area, svg } = fitForOutput(imported.output, requestedArea, imported.svg);
+    const view = state.ui.view === 'result' && !hasResult({ output: imported.output, generation: state.generation }) ? 'map' : state.ui.view;
+    return {
+      ...imported,
+      area,
+      svg,
+      ...(savedMap ? { placeName: savedMap.placeName, fileName: savedMap.fileName } : {}),
+      generation: withStale(state.generation, area, imported.settings),
+      ui: { ...state.ui, view, ...(savedMap ? { mapFocus: { seq: state.ui.mapFocus.seq + 1, mode: 'always' as const } } : {}) },
     };
   });
 }

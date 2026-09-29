@@ -60,7 +60,7 @@ function readSettings(saved: unknown): ModelSettings | undefined {
   return isObject(saved) ? sanitizeSettings(saved) : undefined;
 }
 
-function readPalette(saved: unknown, presetKey: unknown): Palette | undefined {
+export function readPalette(saved: unknown, presetKey?: unknown): Palette | undefined {
   // A palette saved from a preset follows that preset's colours if they change
   const preset = PALETTE_PRESETS.find((item) => item.key === presetKey);
   if (preset) return structuredClone(preset.palette);
@@ -76,7 +76,7 @@ function readPalette(saved: unknown, presetKey: unknown): Palette | undefined {
   return palette;
 }
 
-function readExport(saved: unknown): ExportSettings | undefined {
+export function readExport(saved: unknown): ExportSettings | undefined {
   if (!isObject(saved)) return undefined;
   const settings = merge({ ...DEFAULT_EXPORT }, saved);
   if (!(EXPORT_FORMATS as readonly string[]).includes(settings.format)) settings.format = DEFAULT_EXPORT.format;

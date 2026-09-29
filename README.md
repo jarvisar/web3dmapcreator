@@ -21,6 +21,8 @@ Open the 3MF in Bambu Studio with `File > Open Project`. Every part already has 
 
 `Copy share link` copies a link that opens the same area. For an SVG map it carries the SVG settings too.
 
+`Export options` and `Import options` at the bottom of the settings save and restore a JSON file. Leave `Include map area` checked to restore the whole setup, or uncheck it to reuse the options at another location. Custom font files are separate.
+
 ### SVG Maps
 
 ![The Chicago Loop as an SVG map on a 5 x 7 in plaque, in the laser preview](docs/images/svg-map.png)

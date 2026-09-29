@@ -80,7 +80,7 @@ export function InstallPrompt() {
     };
     return (
       <div className="notice-toast floating" role="status">
-        <span>Install Jarvizar City Model as an app. It opens offline too.</span>
+        <span>Install Jarvizar City Model as an app</span>
         <button type="button" className="btn btn-sm btn-primary" onClick={() => void install()}>
           Install
         </button>

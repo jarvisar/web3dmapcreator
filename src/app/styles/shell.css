@@ -266,6 +266,29 @@
   font-size: 11px;
 }
 
+.options-files {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.options-file-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.options-file-buttons .btn {
+  flex: 1;
+}
+
+.options-file-help {
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .attribution {
   color: var(--text-4);
   font-size: 11px;
