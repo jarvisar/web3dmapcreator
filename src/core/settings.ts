@@ -238,11 +238,11 @@ export const DEFAULT_SETTINGS: ModelSettings = {
   rim: { enabled: false, heightMm: 1.5, widthMm: 2 },
 };
 
-// The small Chicago Loop preset of the add-on: about 2.1 x 1.6 km, 150 x 110 mm.
+// The Chicago Loop at 170.5 x 119.5 mm printed (the default 0.07 mm per metre).
 export const DEFAULT_AREA: AreaSpec = {
   center: [-87.62838, 41.883335],
-  widthM: 2130,
-  heightM: 1570,
+  widthM: 2435.71,
+  heightM: 1707.14,
   rotationDeg: 0,
   shape: 'rectangle',
   cornerRadius: 0.1,

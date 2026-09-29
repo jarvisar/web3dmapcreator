@@ -244,9 +244,9 @@ export function AreaPanel() {
               value={unit}
               onChange={setSizeUnit}
               options={[
+                { value: 'mm', label: 'mm', title: 'Printed size', ariaLabel: 'Printed size in mm' },
                 { value: 'km', label: 'km' },
                 { value: 'm', label: 'm' },
-                { value: 'mm', label: 'mm', title: 'Printed size', ariaLabel: 'Printed size in mm' },
               ]}
             />
           </div>

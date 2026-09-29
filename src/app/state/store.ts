@@ -201,7 +201,7 @@ function initialState(): AppState {
       showBed: saved.showBed ?? true,
       hiddenParts: [],
       mapFocus: { seq: 0, mode: 'always' },
-      sizeUnit: saved.sizeUnit ?? 'km',
+      sizeUnit: saved.sizeUnit ?? 'mm',
       mapHintDismissed: saved.mapHintDismissed ?? false,
       previewLook: saved.previewLook ?? 'material',
     },
