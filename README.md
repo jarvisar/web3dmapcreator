@@ -40,7 +40,7 @@ Two lines closer together than the laser beam burn as one dark band, so `Line cl
 - Terrain from public elevation data, with rivers, lakes and the sea cut through the base as separate water parts
 - Recessed ponds and fountains
 - Parks, forest, sand, rock and paving, each as its own colour
-- Roads, paths, railways and airport paving, widened where needed so they print with a 0.4 mm nozzle
+- Roads, paths, railways and airport paving, widened where needed so they print with a 0.4 mm nozzle, and tidied so doubled lines and stray scraps of path don't print
 - Buildings from mapped heights and building parts, with gabled, hipped, skillion, pyramid and dome roofs
 - Optional LiDAR buildings, rebuilt from their scanned roofs with setbacks, towers, domes and spires, from USGS 3DEP, IGN France, NRCan, swisstopo and Open LiDAR Data
 - LiDAR only models: the whole area from a survey as one single-colour solid, with water recessed or cut away

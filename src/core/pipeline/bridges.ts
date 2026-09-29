@@ -18,7 +18,7 @@ import { dedupe, polylineLength } from './linework';
 import type { RoadPiece } from './roads';
 import { CUT_WATER_DROP_MM } from './water';
 
-const MINIMUM_BRIDGE_M = 12;
+export const MINIMUM_BRIDGE_M = 12;
 const END_EXCLUSION_M = 12;
 const MINIMUM_PIER_HEIGHT_MM = 0.4;
 const JOINT_TOLERANCE_MM = 0.05;

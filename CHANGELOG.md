@@ -4,6 +4,7 @@
 
 ### Added
 
+- `Tidy road network`, on by default, cleans up roads before they're widened. Lines doubling a more important one are left out, like the second carriageway of a divided street or a footway mapped beside a street, paths that stopped at a dropped sidewalk are joined to the street, and stubs and specks that lead nowhere are removed. Each step has its own switch, and `Minimum gap` sets how close two roads can run side by side. It's a rewrite of the add-on's Tidy Road Network, with spurs and specks judged on a graph of the lines as they'll print. On the `Chicago - The Loop (small)` preset, loose specks of road filament went from 229 to 11.
 - SVG maps, merged in from SVGmap. Pick `SVG map` at the top of the settings to make a flat map of the area for a laser engraver, a pen plotter or print instead of a model: plaque, paper and coaster sizes, filled, outlined or hatched layers, a title in a box or a band, and line cleanup that merges lines too close together to burn apart. The box on the map becomes the piece's map window, with the margin, border and title drawn around it. See `docs/SVG_MAPS.md`.
 - SVG maps take the same shapes as models, hexagons included.
 - A copied share link for an SVG map carries its settings, and links from the old SVGmap site open here.
@@ -22,6 +23,7 @@
 
 ### Changed
 
+- Indoor corridors and skyways are left out like tunnels. They only printed where they poked out of a building.
 - Area sizes are kept to the centimetre instead of the metre, so an SVG map's scale stays at what was typed.
 - Cutting a measured roof or a LiDAR only surface to a section or the area's shape only runs the triangles near the cut through the constrained triangulation. A section of a city-sized LiDAR surface took 5 s and takes about half a second.
 - Reading LiDAR for buildings works out each return's capture year from a table instead of a date object, about 9 times faster.

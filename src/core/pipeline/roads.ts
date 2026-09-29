@@ -17,10 +17,16 @@ import {
   pointInPolygon,
   union,
 } from '../geometry/polygon';
+import { EdgeIndex } from '../geometry/edgeindex';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
+import { MINIMUM_BRIDGE_M } from './bridges';
 import { count, type Context } from './context';
-import { MINOR_ROAD_CLASSES, RAIL_CLASS, RAIL_WIDTH_M, SIDEPATH_SUBCLASSES, splitSegment, type SubSegment } from './linework';
+import { MINOR_ROAD_CLASSES, polylineLength, RAIL_CLASS, RAIL_WIDTH_M, SIDEPATH_SUBCLASSES, splitSegment, type SubSegment } from './linework';
+import { tidyNetwork } from './network';
 import { projectLines, projectPolygons, str, type SourceFeature } from './source';
+
+// Clipped ends land on the window's edge to Clipper's precision.
+const WINDOW_EDGE_MM = 0.05;
 
 export type RoadGroup = 'road' | 'path' | 'rail';
 
@@ -55,8 +61,10 @@ export async function collectRoadPieces(
   const mm = ctx.projection.mmPerMetre;
   // Only lines near the model matter, so clip generously before buffering.
   const window = offsetPolygons(ctx.cropSet, roads.maxWidthMm + 1);
-  const pieces: RoadPiece[] = [];
-  const bridgeLines: Vec2[][] = [];
+  let pieces: RoadPiece[] = [];
+  // Never built, but the tidy needs to know what an end met.
+  const leftOut: Vec2[][] = [];
+  const hidden: Vec2[][] = [];
 
   for (let index = 0; index < features.length; index++) {
     const feature = features[index];
@@ -74,28 +82,54 @@ export async function collectRoadPieces(
       for (const piece of split) {
         if (piece.flags.has('is_tunnel')) {
           count(ctx, 'skipped_tunnels');
+          hidden.push(piece.points);
+          continue;
+        }
+        // Corridors inside buildings, skyways included. Printed, they only
+        // showed where they poked out of a footprint.
+        if (piece.flags.has('is_indoor')) {
+          count(ctx, 'skipped_indoor');
+          hidden.push(piece.points);
           continue;
         }
         if (subtype === 'road' && !roads.includePaths && MINOR_ROAD_CLASSES.has(piece.roadClass)) {
           count(ctx, 'skipped_minor_roads');
+          leftOut.push(piece.points);
           continue;
         }
         if (subtype === 'road' && roads.skipSidewalks && SIDEPATH_SUBCLASSES.has(piece.subclass)) {
           count(ctx, 'skipped_sidepaths');
+          leftOut.push(piece.points);
           continue;
         }
         const widthMm = Math.min(Math.max(piece.widthM * mm, roads.minWidthMm), Math.max(roads.maxWidthMm, roads.minWidthMm));
         // Only pieces crossing the window's edge need an exact clip.
         const inside = piece.points.every(([x, y]) => pointInPolygon(x, y, window[0]));
         for (const clipped of inside ? [piece.points] : clipLines([piece.points], window)) {
-          const kept: RoadPiece = { ...piece, points: clipped, group: groupOf(piece), widthMm };
-          pieces.push(kept);
-          if (piece.flags.has('is_bridge')) bridgeLines.push(clipped);
+          pieces.push({ ...piece, points: clipped, group: groupOf(piece), widthMm });
         }
       }
     }
     if (index % 64 === 0) await ctx.progress.checkpoint((0.5 * index) / features.length);
   }
+  if (roads.tidy && (roads.removeDoubled || roads.joinEnds || roads.removeFragments)) {
+    const edges = new EdgeIndex(window, 2);
+    const minDeck = MINIMUM_BRIDGE_M * mm;
+    const tidied = tidyNetwork({
+      pieces,
+      leftOut,
+      hidden,
+      onEdge: ([x, y]) => edges.distance(x, y, WINDOW_EDGE_MM) < WINDOW_EDGE_MM,
+      isDeck: (piece) => settings.bridges.enabled && piece.flags.has('is_bridge') && polylineLength(piece.points) >= minDeck,
+      gapMm: roads.gapMm,
+      removeDoubled: roads.removeDoubled,
+      joinEnds: roads.joinEnds,
+      removeFragments: roads.removeFragments,
+    });
+    pieces = tidied.pieces;
+    Object.assign(ctx.stats, tidied.stats);
+  }
+  const bridgeLines = pieces.filter((p) => p.flags.has('is_bridge')).map((p) => p.points);
   ctx.stats.road_pieces = pieces.length;
   ctx.stats.bridge_pieces = bridgeLines.length;
   return { pieces, bridgeLines };

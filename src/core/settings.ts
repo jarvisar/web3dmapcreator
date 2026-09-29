@@ -76,6 +76,16 @@ export interface ModelSettings {
     skipSidewalks: boolean;
     includeRail: boolean;
     includeAirports: boolean;
+    /** Tidy the centerlines before they're widened. Off prints every mapped line as it comes. */
+    tidy: boolean;
+    /** Leave out a line running alongside a more important one closer than the gap. */
+    removeDoubled: boolean;
+    /** Join a loose end to the road it nearly meets. */
+    joinEnds: boolean;
+    /** Leave out short spurs leading nowhere and small pieces touching nothing. */
+    removeFragments: boolean;
+    /** Narrowest strip of ground left between two ribbons running alongside each other. */
+    gapMm: number;
   };
   bridges: {
     enabled: boolean;
@@ -182,6 +192,11 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     skipSidewalks: true,
     includeRail: true,
     includeAirports: true,
+    tidy: true,
+    removeDoubled: true,
+    joinEnds: true,
+    removeFragments: true,
+    gapMm: 0.4,
   },
   bridges: {
     enabled: false,
@@ -459,7 +474,7 @@ const RANGES: SettingsRanges = {
   terrain: { exaggeration: [0, 10], smoothing: [0, 4, true], resolution: [16, 1024, true], baseThicknessMm: [0.1, 20] },
   water: { cutMinAreaM2: [0, 1e6, true], pondDepthMm: [0.1, 5], pondWaterMm: [0.1, 5] },
   land: { riseMm: [0.02, 3], embedMm: [0.02, 1], beachWidthMm: [0.1, 5] },
-  roads: { thicknessMm: [0.05, 5], minWidthMm: [0.05, 5], maxWidthMm: [0.1, 5] },
+  roads: { thicknessMm: [0.05, 5], minWidthMm: [0.05, 5], maxWidthMm: [0.1, 5], gapMm: [0, 2] },
   bridges: {
     deckThicknessMm: [0.05, 10],
     clearanceMm: [0, 3],

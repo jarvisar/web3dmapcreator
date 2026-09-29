@@ -337,6 +337,47 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
         onChange={(includeAirports) => patchSettings('roads', { includeAirports })}
         help="Runways, taxiways and aprons, printed with the roads."
       />
+      <CheckField
+        label="Tidy road network"
+        checked={roads.tidy}
+        onChange={(tidy) => patchSettings('roads', { tidy })}
+        help="Clean up the lines before they're widened into roads. Off prints every mapped line as it comes."
+      />
+      <div className="nested">
+        <CheckField
+          label="Remove doubled lines"
+          checked={roads.removeDoubled}
+          disabled={!roads.tidy}
+          onChange={(removeDoubled) => patchSettings('roads', { removeDoubled })}
+          help="A road or path running alongside a more important one, closer than the minimum gap, is left out. Both carriageways of a divided street print as one road, and footways mapped beside streets go."
+        />
+        <CheckField
+          label="Join loose ends"
+          checked={roads.joinEnds}
+          disabled={!roads.tidy}
+          onChange={(joinEnds) => patchSettings('roads', { joinEnds })}
+          help="A path or street that stops just short of a road, because the sidewalk or crossing it met was left out, is joined to it."
+        />
+        <CheckField
+          label="Remove stubs and specks"
+          checked={roads.removeFragments}
+          disabled={!roads.tidy}
+          onChange={(removeFragments) => patchSettings('roads', { removeFragments })}
+          help="Short spurs that lead nowhere and small pieces touching nothing are left out, like the flight of steps between two sidewalks."
+        />
+        <NumberField
+          label="Minimum gap"
+          value={roads.gapMm}
+          onChange={(gapMm) => patchSettings('roads', { gapMm })}
+          disabled={!roads.tidy}
+          min={0}
+          max={2}
+          step={0.05}
+          decimals={2}
+          unit="mm"
+          help="Narrowest strip of ground left between two roads running side by side. About one nozzle width."
+        />
+      </div>
     </>
   );
 }

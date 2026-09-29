@@ -34,7 +34,7 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/terrain/` | `HeightField`: the one grid every layer samples |
 | `src/core/dsm/` | LiDAR only models: `prepare.ts` reads a survey into a grid (`raster.ts`, `grid.ts`), `compose.ts`/`filters.ts` the height rules, `mesh.ts` RTIN and edge collapse, `model.ts` the `ModelSpec` |
 | `src/core/lidar/` | LiDAR: `sources/` discovery (USGS EPT, IGN, NRCan, swisstopo, Flai COPC), `read/` EPT/COPC/LAS reading with an injected LAZ decoder and projector, measurement (`measure.ts`, `envelope.ts`, ground, planes, terraces, selection), roof surfaces (`regularize.ts`, `delatin.ts`, `coarsen.ts`, `rim.ts`), `prepare.ts` batching and checkpoints |
-| `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
+| `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges, `network/` tidy), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
 | `src/core/engine/` | Worker protocol and main-thread client |
 | `src/worker/engine.worker.ts` | Downloads, generates, meshes and exports off the main thread |
@@ -75,10 +75,40 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   hole at the top level, and `placeStrays` puts it back into its owner.
 - Road widths clamp to 0.45-0.7 mm and groups are unioned. Roads beat rail beat
   paths. Split segments at every `between` boundary before reading rules.
+  Tunnels and indoor corridors are skipped.
 - Buildings follow the add-on's selection/height/roof rules. See comments in
   `src/core/pipeline/buildings/`.
 - The row filter (`pipeline/filter.ts`) decides from small columns which rows
   need geometry. Keep it in step with the classifiers.
+
+Road network tidy (`pipeline/network/`, `roads.tidy`, run in `collectRoadPieces`
+before bridges are split off):
+
+- A rewrite of the add-on's `road_network.py`, not a port. The cull keeps its
+  rules (ranks, 28 degrees, streets dropped at 68% doubled, welding through a
+  junction only when the continuation is unambiguous from both sides, or a
+  divided street's kept carriageway hops sides). Pruning is the web app's own:
+  a graph of the lines as printed, a node wherever an end lands in another
+  ribbon or two centerlines cross, spurs judged from the loose end to the
+  first junction. That one rule replaced the add-on's terminal bends, loop
+  anchoring and "leaned on" checks.
+- `alongside` ignores a kept line past its ends, or the stem of a divided
+  street through an intersection reads as doubled by the carriageway it
+  continues.
+- End origins decide what may move. `met` ends (their partner was left out or
+  culled) join within twice the gap and go as stubs. `dead` ends only join
+  when the ground left wouldn't print and only go as nubs. `portal` ends
+  (tunnels, indoor corridors) never join far but can go as stubs. Skipped
+  sidewalks and crossings go in `leftOut`, or every path that met one reads
+  as a dead end.
+- A part lying wholly inside a ribbon at least as important is dropped. Such
+  scraps passed every other rule and printed as slivers.
+- Decks and ground never double each other, deck ends never move, and decks
+  only meet the ground where their lines meet.
+- Every step has its own switch and the tidy off gives the untidied network.
+  Check changes on the regression areas with before/after renders: specks,
+  loose ends that met something and doubled length should drop, and no
+  street should lose a stretch from its middle.
 
 LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
 
