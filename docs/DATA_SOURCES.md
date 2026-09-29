@@ -71,7 +71,7 @@ The Hershey Fonts were originally created by Dr. A. V. Hershey while working at 
 
 Exported 3MF files carry the map-data attribution in their metadata, and STL files carry it in their header. With LiDAR on, the 3MF metadata lists the surveys used as well. An STL header only has room for the map-data line.
 
-A LiDAR only model uses no map data or elevation tiles, so its 3MF metadata and STL header credit only the surveys.
+A LiDAR only model uses no elevation tiles, and no map data unless `Water outlines from map data` is on (the default), so without it the 3MF metadata and STL header credit only the surveys.
 
 An SVG map carries the attribution in its description (`<desc>`), along with the centre, bearing and scale it was made at. Credit "© OpenStreetMap contributors" on anything made from one that you publish or sell.
 

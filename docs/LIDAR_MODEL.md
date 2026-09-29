@@ -2,7 +2,7 @@
 
 Notes on how LiDAR only models are built, and the decisions that are easy to undo by accident. It's a port of the Blender add-on's LiDAR Only mode for streamed surveys. The add-on's own `docs/LIDAR_MODEL.md` has the survey-by-survey reasons behind most of the height rules.
 
-The model is a digital surface model of the whole area: one height per grid cell, meshed into one closed solid in the terrain colour. Nothing is traced per building, so towers, bridges, trees and the ground all come out of the same grid, and nothing depends on how well the city is mapped. The code is in `src/core/dsm/`.
+The model is a digital surface model of the whole area: one height per grid cell, meshed into one closed solid in the terrain colour, and the water as a part of its own if you pick `Thin layer`. Nothing is traced per building, so towers, bridges, trees and the ground all come out of the same grid, and nothing depends on how well the city is mapped. The only map data it can use is Overture's water (see Water). The code is in `src/core/dsm/`.
 
 ## The Grid
 
@@ -41,7 +41,11 @@ Changes from the add-on:
 
 ## Water
 
-By default water sits `Water depth` below its lowest bank. With `Cut away water` it's cut out of the model instead, leaving openings through the base. Which water goes is decided the add-on's way (`cutWater`):
+By default water sits `Water depth` below its lowest bank, in the one solid. `Water` has two other ways to print it.
+
+`Thin layer` prints it as a part of its own in the water colour, like map models do. The surface is cut along the water the way `Cut away` cuts it (below), and each opening gets a terrain floor with a slab of `Water thickness` on top, its surface where the recess would be. The base goes under the floors. Every body gets a layer whatever its size, as long as it's at least 0.4 mm wide printed and not up on a roof, and islands, boats and pilings stay since nothing can fall out. A piece of water holding two bodies takes the lower level, so the water never stands over a bank.
+
+`Cut away` cuts it out of the model instead, leaving openings through the base. Which water goes is decided the add-on's way (`cutWater`):
 
 - Bodies of at least `Cut through the base above`, 5,000 m² and shared with map models. Water within 40 m counts as one body. Bridges split a river into stretches, and before this a short stretch between two bridges in Chicago stayed recessed while the rest of the river was cut.
 - Only water at least 0.4 mm wide printed. An opening narrower than that doesn't print as one, so that water stays recessed.
@@ -51,17 +55,23 @@ Land the cut leaves on its own under 4 mm² printed (boats, pilings) goes with t
 
 One change: specks of land under 10 m² are also filled before the 0.4 mm opening, not only after. A scatter of them every few metres made the water around each one too narrow, and half of San Francisco's bay stayed recessed. Otherwise it matches the add-on cell for cell, on 38 of 40 random grids without specks. The other two differ by a few hundred cells where a speck sat beside narrow water.
 
-The water comes from the survey, not from Overture's water polygons. The add-on compared the two on Chicago and the Schuylkill, and I checked the Chicago lakefront, San Francisco's waterfront and the Seine in Paris as well. They agree on 80 to 96% of the water. Where they differ the survey is nearly always right for this model. Overture's polygons run under every bridge, pier and boardwalk (15 bridges along the Chicago River, 16 in Paris, and the Ferry Building and the Bay Bridge in San Francisco) and under trees hanging over the bank, and sit a median 1.2 to 2.3 m off the scanned bank. Cut along them, the bridges go, and Paris falls apart into its two banks and two islands.
+The add-on drops cut cells to the bottom before meshing. Here the surface is meshed whole and then clipped along the cut like any other outline, which `clipTin` already does for the area's shape. For three rings out from the shore the cut cells take their bank's height, so the clip crosses a level surface and the bank comes out as a vertical wall rather than a bevel. Carried further, a riverside tower's roof would spread across the river and only make work for the mesher. The outline is traced along the cells and their one-cell stairs straightened (Clipper's `simplifyPaths` at a cell and a half). Each stretch of it is a flat panel of bank wall, and at three quarters of a cell a gently curving shore came out as a row of narrow panels, ribbed like the walls (below). Past about two cells the outline cuts into the detail beside the bank instead of the level strip. Land narrower than 0.2 mm beside the water is opened away, as for map land slabs, and for a cut pieces under 4 mm² go here too, since the area's shape can cut off new ones.
 
-The survey does miss some water, and those are the cases where Overture would help:
+### Map Water
 
-- IGN files very few water returns in Paris, and the Petit Bras beside Notre-Dame is three holes with none. Since the survey files water elsewhere, holes don't count as water, so that arm prints as flat ground.
-- In a survey with no water class at all, water only shows up as large holes on the ground. Water that returns points isn't a hole, and a river stretch whose shore is mostly bridges fails the test.
+The water comes from the survey first. The add-on compared it with Overture's water polygons on Chicago and the Schuylkill, and I checked the Chicago lakefront, San Francisco's waterfront and the Seine in Paris as well. They agree on 80 to 96% of the water, and where they differ the survey is nearly always right for this model. Overture's polygons run under every bridge, pier and boardwalk (15 bridges along the Chicago River, 16 in Paris, and the Ferry Building and the Bay Bridge in San Francisco) and under trees hanging over the bank, and sit a median 1.2 to 2.3 m off the scanned bank. Cut along them, the bridges go, and Paris falls apart into its two banks and two islands.
+
+So `Water outlines from map data` (on by default) uses them for two things only, and keeps whatever the survey saw standing in the water:
+
+- Holes. IGN files very few water returns in Paris, and the Petit Bras beside Notre-Dame is three holes with none. Since the survey files water elsewhere, holes don't count as water, and the arm printed as flat ground. A hole mostly inside mapped water that would be filled as ground is now water, at the level of the survey's water in the same mapped water (`mappedHoles`), and bodies grow into mapped cells without returns. Only cells without returns change this way. Wiping the returns from a stretch of the Chicago River between two bridges gave flat ground 0.8 mm above the river without it, and water at the river's level with it. A hole read as a dark roof stays a roof, since a harbour's outline usually takes in its piers and pier sheds.
+- Shorelines. Thin layers and cuts follow Overture's smooth outline where it runs within 3 m of the survey's shore, even when that trims a metre or two of scanned bank, and the survey everywhere else (`followMap`). A bank comes out as one clean line instead of traced cells, and the bridges, piers, wharves and moored boats inside Overture's water keep the survey's edge. Mapped islands and ponds under about 6 m across are left to the survey too. Chicago's bridges have mapped pilings at their corners, and those came out as little columns at deck height. The bank's height reaches another 3 m into cut water, so the shore stays a vertical wall wherever the line lands.
+
+On USGS surveys of the Chicago River, San Francisco's and Boston's waterfronts and the Schuylkill, the survey files water well and the holes rule added 0 to 30 cells. The difference is in the shorelines. It costs 3 to 5 MB of Overture data per area and puts a map data credit on the model.
+
+What it doesn't fix:
+
+- In a survey with no water class at all, water only shows up as large holes on the ground. Water that returns points isn't a hole, and a river stretch whose shore is mostly bridges fails both tests. Taking returns at the water's level from the map would fix those, but it also takes floating docks, low boats and dry basins, so it's left out.
 - Cells outside the survey's outline have no returns. The east end of Navy Pier is outside Cook County's 2017 outline, so it joins the lake.
-
-Overture only adding cells with no returns, or at the survey's water level, would fix the first two and cut no bridges, for 3 to 5 MB more per area. It would also put a map data credit on a model that otherwise needs none, so for now it's left out.
-
-The add-on drops cut cells to the bottom before meshing. Here the surface is meshed whole and then clipped along the cut like any other outline, which `clipTin` already does for the area's shape. For three rings out from the shore the cut cells take their bank's height, so the clip crosses a level surface and the bank comes out as a vertical wall rather than a bevel. Carried further, a riverside tower's roof would spread across the river and only make work for the mesher. The outline is traced along the cells and their one-cell stairs straightened (Clipper's `simplifyPaths` at a cell and a half). Each stretch of it is a flat panel of bank wall, and at three quarters of a cell a gently curving shore came out as a row of narrow panels, ribbed like the walls (below). Past about two cells the outline cuts into the detail beside the bank instead of the level strip. Land narrower than 0.2 mm beside the water is opened away, as for map land slabs, and pieces under 4 mm² go here too, since the area's shape can cut off new ones.
 
 ## Mesh
 
@@ -89,14 +99,14 @@ The surface is a cap (`CapSolid`): the TIN on top, walls along its outline and a
 
 The border rim stands `Height` above the highest ground, not the tallest tower.
 
-No map data goes into the model, so exports credit only the surveys (`LiDAR: USGS 3DEP; EPT mirror by Hobu`), in the 3MF metadata and in the STL header.
+Without map water no map data goes into the model, so exports credit only the surveys (`LiDAR: USGS 3DEP; EPT mirror by Hobu`), in the 3MF metadata and in the STL header. With it they credit OpenStreetMap and Overture first, as map models do.
 
 ## Limits
 
 - The model shows the city the year it was surveyed.
 - Glass, dark roofs and water return few points. They're filled from around them, which can smear small details.
-- Water the survey barely files can print as ground, like the Petit Bras in Paris, and anything outside the survey's outline with water beside it can come out as water (see Water).
-- It's 2.5D. Nothing has air under it, so skybridges, canopies and the L come out solid to the ground, and bridges over cut water solid to the base. It prints without supports.
+- Water the survey barely files can print as ground where map water can't help, and anything outside the survey's outline with water beside it can come out as water (see Map Water).
+- It's 2.5D. Nothing has air under it, so skybridges, canopies and the L come out solid to the ground, and bridges over a water layer or cut water solid to the base. It prints without supports.
 - Parts of Chicago's L still come out as rows of rounded trees. The ties make the deck rough and a fifth of its returns are filed as vegetation.
 - A roof edge filed as vegetation slopes down to the street instead of standing as a wall.
 - Crane masts wider than three cells stay.

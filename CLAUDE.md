@@ -12,7 +12,9 @@ roofs from Overture Maps. It is a port of the Jarvizar City Model Blender
 add-on (separate repo `3dmapcreator`, not a dependency). Its LiDAR pipeline is
 ported for streamed surveys only (EPT and COPC). Staged LAZ downloads were left
 out. `settings.modelSource = 'lidar'` (LiDAR only) builds the whole model from
-a survey alone instead, as one solid in the terrain colour (`src/core/dsm/`).
+a survey instead, as one solid in the terrain colour, with the water as its
+own part if asked and Overture's water only for shorelines and holes
+(`src/core/dsm/`).
 There is no server: data is read from public, CORS-enabled sources.
 
 The same app makes flat SVG maps for laser engraving, pen plotters and print
@@ -255,17 +257,29 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   is the ribs. The cut water outline is simplified at 1.5 cells for the same
   reason.
 - The model is one `CapSolid`, cut to shapes, sections and cut water by
-  `clipTin`. `clipBand` only triangulates the triangles near the outline, and
+  `clipTin`. A water layer is the same cut plus a terrain floor and a water
+  prism per piece, at the lowest level of the water it holds. `clipBand` only triangulates the triangles near the outline, and
   a triangle counts as near when an outline edge crosses its box, so both
   triangles on any edge the outline touches are near. Keep it that way or
   the two parts won't meet.
-- `Cut away water` is the add-on's `cut_water` (`cutWater`): survey water
-  of at least `water.cutMinAreaM2` (shared with map models), water within
-  40 m counting as one body across bridges, opened to 0.4 mm printed, none
-  more than 3 m above the ground (roof pools), and land it leaves alone
-  under 4 mm² printed goes too. The one change is that specks under
-  `SPECK_M2` are also filled before the opening. Overture water was
-  compared and rejected, see `docs/LIDAR_MODEL.md`.
+- `lidarModel.waterMode` 'cut' is the add-on's `cut_water` (`cutWater`):
+  survey water of at least `water.cutMinAreaM2` (shared with map models),
+  water within 40 m counting as one body across bridges, opened to 0.4 mm
+  printed, none more than 3 m above the ground (roof pools), and land it
+  leaves alone under 4 mm² printed goes too. The one change is that specks
+  under `SPECK_M2` are also filled before the opening. 'layer' cuts the same
+  way at any size and keeps islands, boats and pilings, since nothing falls
+  out.
+- Overture water is never the source of LiDAR only water, since its
+  polygons run under every bridge and pier (`docs/LIDAR_MODEL.md`). With
+  `lidarModel.mapWater` it only fills cells without returns (`mappedHoles`,
+  and growth into empty mapped cells), never a hole read as a dark roof, and
+  moves cut and layer shorelines onto its outline where that's within
+  `MAP_EDGE_M` of the survey's (`followMap`). The survey decides wherever
+  they part by more. Keep it that conservative: taking returns at the
+  water's level took floating docks and boats, and mapped pilings under
+  6 m across became columns at bridge deck height until small map islands
+  were ignored.
 
 SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.md`):
 
@@ -320,7 +334,7 @@ npx tsc --noEmit
 $env:NETWORK=1; npx vitest run src/core/data   # live data tests
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --out out/loop.3mf
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar   # point cache in out/lidar-cache
-npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar-only --out out/loop-surface.3mf   # --cut-water to cut the river
+npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar-only --out out/loop-surface.3mf   # --water-layer or --cut-water, --no-map-water
 npx tsx scripts/check-bambu.ts   # round trip through installed Bambu Studio (isolated data dir)
 $env:NETWORK=1; npx vitest run src/core/svgmap/e2e.test.ts   # SVG maps from live tiles ($env:SVG_OUT to keep them)
 node scripts/e2e.mjs http://localhost:4173/ out/e2e-svg --svg --all-formats   # SVG map in Edge

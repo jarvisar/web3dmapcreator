@@ -277,6 +277,92 @@ describe('water', () => {
   });
 });
 
+// Not in the add-on.
+describe('mapped water', () => {
+  /** A river filed as water, a bridge, and past it a stretch with no returns at all, the Petit Bras's way. */
+  function river(): SurfaceLayers {
+    const nx = 120;
+    const layers = blank(80, nx);
+    for (const layer of [layers.count, layers.water]) fill(layer, nx, 0, 30, 0, 60, 2);
+    for (const layer of [layers.top, layers.solid, layers.waterZ]) fill(layer, nx, 0, 30, 0, 60, GROUND - 2);
+    fill(layers.ground, nx, 0, 30, 0, nx, NaN);
+    // A bridge deck 8 m up, then the stretch the survey missed.
+    fill(layers.top, nx, 0, 30, 60, 70, GROUND + 6);
+    fill(layers.solid, nx, 0, 30, 60, 70, GROUND + 6);
+    fill(layers.count, nx, 0, 30, 70, nx, 0);
+    for (const layer of [layers.top, layers.solid]) fill(layer, nx, 0, 30, 70, nx, NaN);
+    return layers;
+  }
+  // Mapped a metre into the bank, as outlines usually are, and under the bridge.
+  const mapped = shape(120, 80, (r) => r < 32);
+
+  it('fills a stretch the survey missed at the river level', () => {
+    const without = compose(river(), CELL, CELL, 1, 1);
+    expect(at(without.water, 120, 15, 90)).toBe(0);
+    const result = compose(river(), CELL, CELL, 1, 1, {}, undefined, mapped);
+    expect(at(result.water, 120, 15, 90)).toBe(1);
+    expect(at(result.heights, 120, 15, 90)).toBeCloseTo(at(result.heights, 120, 15, 30), 6);
+    expect(result.counts.water_map_cells).toBe(30 * 50);
+    expect(result.counts.water_bodies).toBe(2);
+  });
+
+  it('never takes a cell the survey saw something in', () => {
+    const layers = river();
+    // A boat at the water's level and a stone pier, both inside the outline.
+    fill(layers.top, 120, 10, 14, 20, 30, GROUND - 1.8);
+    fill(layers.solid, 120, 10, 14, 20, 30, GROUND - 1.8);
+    fill(layers.water, 120, 10, 14, 20, 30, 0);
+    fill(layers.top, 120, 0, 30, 100, 104, GROUND);
+    fill(layers.solid, 120, 0, 30, 100, 104, GROUND);
+    fill(layers.count, 120, 0, 30, 100, 104, 6);
+    const result = compose(layers, CELL, CELL, 1, 1, { removeClutter: false }, undefined, mapped);
+    for (const [r, c] of [[12, 25], [15, 65], [15, 102], [31, 50]]) expect(at(result.water, 120, r, c)).toBe(0);
+    expect(at(result.water, 120, 15, 90)).toBe(1);
+  });
+
+  it('leaves a dark roof over mapped water', () => {
+    // A pier shed 12 m up whose roof returned nothing over 150 m², inside a harbour's outline.
+    const nx = 100;
+    const layers = blank(100, nx);
+    for (const layer of [layers.top, layers.solid]) fill(layer, nx, 20, 80, 20, 80, GROUND + 12);
+    fill(layers.ground, nx, 20, 80, 20, 80, NaN);
+    // Out to the street at one end.
+    fill(layers.count, nx, 44, 56, 25, 80, 0);
+    for (const layer of [layers.top, layers.solid]) fill(layer, nx, 44, 56, 25, 80, NaN);
+    fill(layers.water, nx, 0, 3, 0, 3, 6);
+    const without = compose(layers, CELL, CELL, 1, 1);
+    const result = compose(layers, CELL, CELL, 1, 1, {}, undefined, new Uint8Array(nx * 100).fill(1));
+    expect(result.counts.water_bodies).toBe(0);
+    expect(at(result.heights, nx, 50, 50)).toBeCloseTo(at(result.heights, nx, 30, 30), 6);
+    expect(result.heights).toEqual(without.heights);
+  });
+});
+
+describe('water layer', () => {
+  it('cuts water of any size and puts the base under its floor', () => {
+    // The river is 160 m², under any cut size, with a 10 m² boat in it.
+    const { layers } = city();
+    fill(layers.top, 80, 2, 6, 30, 40, GROUND);
+    fill(layers.solid, 80, 2, 6, 30, 40, GROUND);
+    fill(layers.water, 80, 2, 6, 30, 40, 0);
+    fill(layers.count, 80, 2, 6, 30, 40, 6);
+    const options = { baseMm: 2, waterDepthMm: 1, cutMinAreaM2: 5000 };
+    const recessed = compose(city().layers, CELL, CELL, 1, 1, options);
+    const result = compose(layers, CELL, CELL, 1, 1, { ...options, water: 'layer', waterLayerMm: 0.5 });
+    expect(result.counts.cut_water_cells).toBeGreaterThan(500);
+    expect([at(result.cut, 80, 4, 10), at(result.cut, 80, 4, 70)]).toEqual([1, 1]);
+    // The boat stays, where a cut away through the base would take it.
+    expect(at(result.cut, 80, 4, 35)).toBe(0);
+    expect(at(compose(layers, CELL, CELL, 1, 1, { ...options, water: 'cut', cutMinAreaM2: 100 }, undefined).cut, 80, 4, 35)).toBe(0);
+    // The water surface sits where the recess did, over a floor 0.5 mm down on the base.
+    const top = at(recessed.heights, 80, 4, 10) + 0.5;
+    expect(at(result.waterTop!, 80, 4, 10)).toBeCloseTo(top, 5);
+    expect(at(result.waterTop!, 80, 50, 5)).toBeNaN();
+    expect(top - 0.5).toBeCloseTo(2, 5);
+    expect(compose(city().layers, CELL, CELL, 1, 1, options).waterTop).toBeNull();
+  });
+});
+
 describe('cut water', () => {
   // 0.035 mm printed cells: a cut has to be 13 cells wide, an island 3,265 cells.
   const SCALE = 0.07;
@@ -336,7 +422,7 @@ describe('cut water', () => {
   });
 
   it('cuts the river out and puts the base under the land', () => {
-    const options = { baseMm: 2, waterDepthMm: 1, cutWater: true };
+    const options = { baseMm: 2, waterDepthMm: 1, water: 'cut' as const };
     const recessed = compose(city().layers, CELL, CELL, 1, 1, { baseMm: 2, waterDepthMm: 1 });
     const result = compose(city().layers, CELL, CELL, 1, 1, { ...options, cutMinAreaM2: 100 });
     expect(rows(result.cut, 80, 0, 8).every(Boolean)).toBe(true);

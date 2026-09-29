@@ -35,7 +35,9 @@ Two lines closer together than the laser beam burn as one dark band, so `Line cl
 
 ### LiDAR Only
 
-`LiDAR only` builds the ground, buildings, trees and bridges from the survey as it saw them, in one closed solid in the `Terrain` colour. Towers, roof shapes, overpasses and park trees come out without depending on how well the city is mapped. `Detail` sets the printed size of one grid cell (0.05 mm, 0.71 m at the default scale), and the cells grow where the survey is too sparse to fill them. Trees are rounded or removed, cars and clutter are flattened, and water is recessed or cut away. It works best on small areas at a large scale, around 1 km printed 150 to 200 mm across.
+`LiDAR only` builds the ground, buildings, trees and bridges from the survey as it saw them, in one closed solid in the `Terrain` colour. Towers, roof shapes, overpasses and park trees come out without depending on how well the city is mapped. `Detail` sets the printed size of one grid cell (0.05 mm, 0.71 m at the default scale), and the cells grow where the survey is too sparse to fill them. Trees are rounded or removed, and cars and clutter are flattened. Water is recessed, printed as a thin layer in the `Water` colour, or cut away. It works best on small areas at a large scale, around 1 km printed 150 to 200 mm across.
+
+The water comes from the survey, with Overture's water outlines used for smooth shorelines where they agree with it and to fill in water the survey has no returns for. Bridges, piers and boats the survey saw stay. Turn off `Water outlines from map data` to use the survey alone and skip the map data credit.
 
 ## Features
 
@@ -44,7 +46,7 @@ Two lines closer together than the laser beam burn as one dark band, so `Line cl
 - Roads, paths, railways and airport paving, widened where needed so they print with a 0.4 mm nozzle, and tidied so doubled lines and stray scraps of path don't print
 - Buildings from mapped heights and building parts, with gabled, hipped, skillion, pyramid and dome roofs
 - Optional LiDAR buildings, rebuilt from their scanned roofs with setbacks, towers, domes and spires, from USGS 3DEP, IGN France, NRCan, swisstopo and Open LiDAR Data
-- LiDAR only models: the whole area from a survey as one single-colour solid, with water recessed or cut away
+- LiDAR only models: the whole area from a survey as one single-colour solid, with water recessed, as a thin layer in its own colour, or cut away
 - Optional bridges on piers, trees and a border rim
 - Crop to a rectangle, rounded rectangle, circle or hexagon, rotated to follow the street grid
 - Fixed print scale, or fit the model to a size
@@ -87,7 +89,7 @@ Pushing to `main` deploys the site with GitHub Actions. Set `Settings > Pages > 
 - Bridges are schematic: decks on evenly spaced piers, without towers, arches or trusses.
 - LiDAR is only read from surveys a browser can stream (EPT and COPC). Places only covered by tiled LAZ downloads, like England, most of Germany and Spain, keep their mapped buildings.
 - LiDAR downloads are big: 150 to 450 MB per km² depending on the survey. The `Chicago - The Loop (small)` preset reads about 790 MB and takes about 4 minutes the first time, the `Paris - Eiffel Tower` preset about 2.2 GB and 15 minutes. Point data is cached in the browser up to 1 GB, and measured buildings are reused for a day.
-- A LiDAR only model shows the city the year it was surveyed. Glass, dark roofs and water return few points, and those spots are filled in from around them. It's 2.5D, so skybridges and elevated tracks are solid down to the ground, and with the water cut away, bridges are solid walls down to the base.
+- A LiDAR only model shows the city the year it was surveyed. Glass, dark roofs and water return few points, and those spots are filled in from around them. It's 2.5D, so skybridges and elevated tracks are solid down to the ground, and with the water in a layer or cut away, bridges are solid walls down to the base.
 - The model is made of separate overlapping parts, one per colour. Slicers join them, but other tools may report them as intersecting.
 - The Bambu Studio project is tested in Bambu Studio 2.8. It hasn't been tested in OrcaSlicer.
 - SVG maps are drawn from OpenFreeMap's vector tiles, not the Overture data the models use, so the two can differ a little.

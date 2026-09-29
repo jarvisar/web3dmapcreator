@@ -2,7 +2,8 @@
 // and meshes the model, then exports plates on request. The last download is
 // kept for the session, so changing a setting regenerates without
 // downloading again, and the byte cache survives reloads. A LiDAR Only model
-// reads a survey into a grid instead, kept for the session the same way.
+// reads a survey into a grid instead, kept for the session the same way, and
+// only downloads map data for its water.
 
 import lazWasmUrl from '@voxelkloud/wasm-codecs/voxelkloud_wasm_codecs_bg.wasm?url';
 import { lidarCache } from '../core/data/cache';
@@ -22,6 +23,7 @@ import { dataPlan } from '../core/pipeline/dataPlan';
 import { dataBoundsFor, generateModel, type ModelSpec } from '../core/pipeline/generate';
 import { meshLayers, partsBounds } from '../core/pipeline/mesh';
 import { buildPlates } from '../core/pipeline/plates';
+import type { SourceFeature } from '../core/pipeline/source';
 import { printerByKey, sanitizeSettings } from '../core/settings';
 import type { GeoBounds, ModelStats } from '../core/types';
 import { installLidarCodecs } from './lidarCodecs';
@@ -41,7 +43,8 @@ interface Running {
 let running: Running | null = null;
 let lastSpec: ModelSpec | null = null;
 let lastCredits: string[] = [];
-// A LiDAR Only model uses no map data, so its exports credit only the surveys.
+// A LiDAR Only model uses no map data unless it used mapped water, so its
+// exports can credit only the surveys.
 let lastMapData = true;
 let overture: { key: string; data: OvertureData } | null = null;
 let elevation: { key: string; dem: DemMosaic } | null = null;
@@ -208,6 +211,27 @@ async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | 
   return result;
 }
 
+interface MapWater {
+  features: SourceFeature[];
+  release: string;
+  downloaded: number;
+}
+
+/**
+ * Mapped water for a LiDAR Only model: a map model's download of the same
+ * area if there is one, or the water alone.
+ */
+async function loadMapWater(request: GenerateRequest, job: Running): Promise<MapWater> {
+  const bounds = dataBoundsFor(request.area);
+  const prefix = `${boundsKey(bounds)}|`;
+  if (overture?.key.startsWith(prefix)) return { features: overture.data.features.water ?? [], release: overture.data.release, downloaded: 0 };
+  const data = await fetchOverture({ bounds, types: ['water'], keep: dataPlan(request.settings, bounds).keep, signal: job.abort.signal });
+  overture = { key: `${prefix}water`, data };
+  let downloaded = 0;
+  for (const stats of Object.values(data.stats)) downloaded += stats.bytes - stats.cachedBytes;
+  return { features: data.features.water ?? [], release: data.release, downloaded };
+}
+
 function surfaceSummary(prepared: PreparedSurface): SurfaceSummary {
   return {
     cellM: prepared.grid.cell,
@@ -225,10 +249,16 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
   const timings: Record<string, number> = {};
   // Browsers without nested workers read and mesh in this worker instead.
   const pool = typeof Worker === 'undefined' ? null : lidarPool(surfacePoolSize(), job.abort.signal);
+  // Downloaded while the survey is read. The model is still built without it.
+  const pending = request.settings.lidarModel.mapWater ? loadMapWater(request, job).catch((error: Error) => error) : null;
   try {
     const prepared = await loadSurface(request, job, pool);
     timings.lidar = (performance.now() - started) / 1000;
     const t1 = performance.now();
+    job.progress.begin('data', 'Downloading map water', 0.6, 0.02);
+    const water = await pending;
+    if (water instanceof Error && (water.name === 'AbortError' || job.abort.signal.aborted)) throw water;
+    const mapWater = water instanceof Error ? null : water;
     const spec = await surfaceModel({
       area: request.area,
       settings: request.settings,
@@ -236,6 +266,7 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
       progress: job.progress,
       runTile: pool ? (tile) => pool.tile(tile) : undefined,
       concurrency: pool?.concurrency ?? 1,
+      mapWater: mapWater?.features,
     });
     timings.generate = (performance.now() - t1) / 1000;
     const t2 = performance.now();
@@ -244,15 +275,16 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
     timings.mesh = (performance.now() - t2) / 1000;
     lastSpec = spec;
     lastCredits = [...new Set(prepared.surveys.map((s) => `LiDAR: ${s.attribution}`))];
-    lastMapData = false;
+    lastMapData = Boolean(mapWater?.features.length);
     const warnings = [...spec.warnings];
+    if (water instanceof Error) warnings.push(`Map water could not be downloaded, so the water is the survey's alone. ${describe(water)}`);
     if (meshed.failed) warnings.push('The LiDAR surface could not be closed into a solid. Try another area shape, or report this.');
     const result: GenerateResult = {
       parts: meshed.parts,
       bounds: partsBounds(meshed.parts),
       mmPerMetre: spec.mmPerMetre,
-      release: '',
-      stats: surfaceStats(spec.stats, prepared),
+      release: lastMapData ? mapWater!.release : '',
+      stats: surfaceStats(spec.stats, prepared, mapWater?.downloaded ?? 0),
       warnings,
       timings,
       surface: surfaceSummary(prepared),
@@ -419,7 +451,7 @@ function userStats(stats: ModelStats, downloaded: number): ModelStats {
   return out;
 }
 
-function surfaceStats(stats: ModelStats, prepared: PreparedSurface): ModelStats {
+function surfaceStats(stats: ModelStats, prepared: PreparedSurface, mapBytes: number): ModelStats {
   const n = (key: string) => (typeof stats[key] === 'number' ? (stats[key] as number) : 0);
   const out: ModelStats = {};
   const add = (label: string, value: number | string) => {
@@ -431,7 +463,8 @@ function surfaceStats(stats: ModelStats, prepared: PreparedSurface): ModelStats 
   add('Rivers, lakes and sea', n('lidar_model_water_bodies'));
   add('Tree canopy cells', n('lidar_model_tree_cells'));
   add('Surface triangles', n('lidar_model_surface_triangles'));
-  add('Data downloaded', prepared.downloadedBytes > 0 ? `${(prepared.downloadedBytes / 1e6).toFixed(1)} MB` : 'None, all cached');
+  const downloaded = prepared.downloadedBytes + mapBytes;
+  add('Data downloaded', downloaded > 0 ? `${(downloaded / 1e6).toFixed(1)} MB` : 'None, all cached');
   return out;
 }
 

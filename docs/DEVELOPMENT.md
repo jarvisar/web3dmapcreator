@@ -69,7 +69,7 @@ node scripts/e2e-mobile.mjs http://localhost:5173/ out/e2e-mobile
 
 With `--lidar`, point data and batch results are kept in `out/lidar-cache` (or `--lidar-cache folder`), which is never evicted, so delete it to start over. Batches run in worker threads, one fewer than the cores up to four (`--lidar-threads n`, 1 to stay on the main thread). `--lidar-records file.json` writes the measured records for comparing runs.
 
-`--lidar-only` builds a LiDAR only model instead, with its blocks checkpointed in the same folder and up to eight threads. `--detail mm` sets its cell size, `--cut-water` cuts its water away, and `--surface-out folder` writes the grid's layers as raw binaries with a `grid.json`, for looking at them in something else.
+`--lidar-only` builds a LiDAR only model instead, with its blocks checkpointed in the same folder and up to eight threads. `--detail mm` sets its cell size, `--water-layer` prints its water as a thin layer, `--cut-water` cuts it away, `--no-map-water` leaves out Overture's water outlines, and `--surface-out folder` writes the grid's layers as raw binaries with a `grid.json`, for looking at them in something else.
 
 `check-bambu.ts` gives Bambu Studio its own data folder, so your own settings, presets and recent files are never touched.
 

@@ -3,19 +3,23 @@
 // standing on a flat base. compose decides the heights and mesh.ts the
 // triangles. The solid is a cap (a TIN top with walls down to a flat
 // underside), so cutting it to the area's shape or into print sections is a
-// 2D clip like everything else.
+// 2D clip like everything else. A water layer is the cap cut along the water,
+// with a terrain floor and a slab of water in each opening.
 
 import { areaModelRing, effectiveScale } from '../geo/area';
+import { Projection } from '../geo/projection';
 import { capBoundary } from '../geometry/cap';
-import { difference, offsetPolygons, ringArea, simplifyPolygons, union } from '../geometry/polygon';
+import { clipToBox, difference, intersection, offsetPolygons, ringArea, ringBounds, simplifyPolygons, union } from '../geometry/polygon';
 import { rowCrossings } from '../geometry/scanline';
-import type { CapSolid, Layer } from '../geometry/solid';
+import type { CapSolid, Layer, PrismSolid } from '../geometry/solid';
 import { clipTin, type Tin } from '../geometry/tinclip';
+import { isPrintableWater } from '../pipeline/classify';
 import { Progress } from '../pipeline/context';
 import type { ModelSpec } from '../pipeline/generate';
+import { projectPolygons, type SourceFeature } from '../pipeline/source';
 import type { AreaSpec, ModelSettings } from '../settings';
 import type { ModelStats, MultiPolygon, Polygon, Ring } from '../types';
-import { compose, ISLAND_MIN_MM2 } from './compose';
+import { compose, ISLAND_MIN_MM2, MAP_EDGE_M } from './compose';
 import { fairFaces, windowMax, windowMin } from './filters';
 import { meshSurface, straightenWalls, type HeightGrid, type TileJob, type TileResult } from './mesh';
 import type { PreparedSurface } from './prepare';
@@ -49,6 +53,9 @@ const SLIVER_MM = 0.1;
 // the walls were. Past about two, the outline cuts into the detail beside
 // the bank instead of the level strip bankHeights leaves.
 const OUTLINE_CELLS = 1.5;
+// Thick parts grow by this before they're taken out of a shape, so float
+// rounding along their edges leaves no slivers behind.
+const SEAM_MM = 0.005;
 
 export interface SurfaceModelInput {
   area: AreaSpec;
@@ -58,6 +65,18 @@ export interface SurfaceModelInput {
   /** Simplifies mesh tiles, e.g. in the LiDAR workers. */
   runTile?: (job: TileJob) => Promise<TileResult>;
   concurrency?: number;
+  /** Mapped water (lidarModel.mapWater): its shorelines for cuts and layers, and water where the survey has no returns. */
+  mapWater?: SourceFeature[];
+}
+
+/** The grid in model mm: vertex (i, j) at (x0 + i dx, y0 + j dy). */
+interface CellGrid {
+  nx: number;
+  ny: number;
+  x0: number;
+  y0: number;
+  dx: number;
+  dy: number;
 }
 
 /** The mesher's detail, raised to WALL_DETAIL beside a step taller than `step` (trees keep theirs). */
@@ -69,19 +88,105 @@ function wallDetail(heights: Float32Array, detail: Float32Array, nx: number, ny:
   return out;
 }
 
-/** Grid cells whose centre is inside the ring, one byte each. */
-function cellsInRing(ring: Ring, nx: number, ny: number, x0: number, y0: number, dx: number, dy: number): Uint8Array {
-  const out = new Uint8Array(nx * ny);
-  const rows = rowCrossings([ring], y0, dy, 0, ny);
-  for (let j = 0; j < ny; j++) {
-    const xs = rows[j];
+/** Calls `visit` with the runs of cells whose centre is inside the polygon (holes left out), as [from, to) indices. */
+function cellRuns(polygon: Polygon, { nx, ny, x0, y0, dx, dy }: CellGrid, visit: (from: number, to: number) => void): void {
+  let low = Infinity;
+  let high = -Infinity;
+  for (const ring of polygon) {
+    for (const p of ring) {
+      low = Math.min(low, p[1]);
+      high = Math.max(high, p[1]);
+    }
+  }
+  const j0 = Math.max(0, Math.floor((low - y0) / dy));
+  const j1 = Math.min(ny, Math.ceil((high - y0) / dy) + 1);
+  if (j1 <= j0) return;
+  const rows = rowCrossings(polygon, y0, dy, j0, j1 - j0);
+  for (let r = 0; r < rows.length; r++) {
+    const xs = rows[r];
+    const row = (j0 + r) * nx;
     for (let k = 0; k + 1 < xs.length; k += 2) {
       const i0 = Math.max(0, Math.ceil((xs[k] - x0) / dx));
       const i1 = Math.min(nx, Math.ceil((xs[k + 1] - x0) / dx));
-      out.fill(1, j * nx + i0, j * nx + Math.max(i0, i1));
+      if (i1 > i0) visit(row + i0, row + i1);
     }
   }
+}
+
+/** Grid cells whose centre is inside any of the polygons, one byte each. */
+function cellsIn(polygons: Polygon[], grid: CellGrid): Uint8Array {
+  const out = new Uint8Array(grid.nx * grid.ny);
+  for (const polygon of polygons) cellRuns(polygon, grid, (from, to) => out.fill(1, from, to));
   return out;
+}
+
+/** Mapped water over the grid, in model mm. Pools and fountains aren't open water (as for map models). */
+function mappedWater(features: SourceFeature[], area: AreaSpec, mmPerMetre: number, grid: CellGrid): MultiPolygon {
+  const projection = new Projection(area.center, area.rotationDeg, mmPerMetre);
+  const polygons: Polygon[] = [];
+  for (const feature of features) if (isPrintableWater(feature)) polygons.push(...projectPolygons(feature.geometry, projection));
+  const { nx, ny, x0, y0, dx, dy } = grid;
+  return clipToBox(polygons, [x0, y0, x0 + (nx - 1) * dx, y0 + (ny - 1) * dy], 2 * Math.max(dx, dy));
+}
+
+/**
+ * Water cut along the map's smooth outline where it runs within `width` of
+ * the survey's shore, which is most of a river's banks (maps sit a metre or
+ * two off the scanned edge). Where the two part by more, the survey decides:
+ * a bridge, a pier or a moored boat inside the map's water stays, and so
+ * does water the map doesn't have. Only the shoreline moves: the map's
+ * islands and ponds under twice `width` across (mapped pilings, mostly) are
+ * left to the survey too.
+ */
+export function followMap(survey: MultiPolygon, water: MultiPolygon, width: number): MultiPolygon {
+  if (!survey.length || !water.length) return survey;
+  const small = (2 * width) ** 2;
+  const map: MultiPolygon = [];
+  for (const polygon of water) {
+    if (Math.abs(ringArea(polygon[0])) >= small) map.push(polygon.filter((ring, k) => !k || Math.abs(ringArea(ring)) >= small));
+  }
+  const thin = (mp: MultiPolygon) => difference(mp, offsetPolygons(offsetPolygons(mp, -width / 2, 'miter'), width / 2 + SEAM_MM, 'miter'));
+  const add = intersection(thin(difference(map, survey)), offsetPolygons(survey, width, 'miter'));
+  const drop = thin(difference(survey, map));
+  // The offsets leave edges a Clipper unit long where the pieces meet, and
+  // a print section cut beside one left prisms the mesher couldn't close.
+  return simplifyPolygons(difference(union(survey, add), drop), SEAM_MM);
+}
+
+/**
+ * A terrain floor and a slab of water in each piece of the region cut for
+ * water, at the lowest water surface the piece holds, so where two bodies
+ * meet the water never stands over a bank.
+ */
+function waterLayer(wet: MultiPolygon, waterTop: Float32Array, thickness: number, grid: CellGrid): { floors: PrismSolid[]; water: PrismSolid[] } {
+  const floors: PrismSolid[] = [];
+  const water: PrismSolid[] = [];
+  const lowest = (from: number, to: number, level: number) => {
+    for (let i = from; i < to; i++) if (waterTop[i] < level) level = waterTop[i];
+    return level;
+  };
+  for (const polygon of wet) {
+    let top = Infinity;
+    cellRuns(polygon, grid, (from, to) => (top = lowest(from, to, top)));
+    // A sliver narrower than a cell holds no cell centre: take the water beside it.
+    if (top === Infinity) top = nearbyLevel(polygon, waterTop, grid);
+    if (top === Infinity) continue;
+    const floor = top - thickness;
+    if (floor > 0) floors.push({ kind: 'prism', role: 'terrain', polygon, top: floor, bottom: 0, drape: 0 });
+    water.push({ kind: 'prism', role: 'water', polygon, top, bottom: Math.max(floor, 0), drape: 0 });
+  }
+  return { floors, water };
+}
+
+function nearbyLevel(polygon: Polygon, waterTop: Float32Array, { nx, ny, x0, y0, dx, dy }: CellGrid): number {
+  const [west, south, east, north] = ringBounds(polygon[0]);
+  const i0 = Math.max(0, Math.floor((west - x0) / dx) - 2);
+  const i1 = Math.min(nx - 1, Math.ceil((east - x0) / dx) + 2);
+  const j0 = Math.max(0, Math.floor((south - y0) / dy) - 2);
+  const j1 = Math.min(ny - 1, Math.ceil((north - y0) / dy) + 2);
+  let level = Infinity;
+  for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) if (waterTop[j * nx + i] < level) level = waterTop[j * nx + i];
+  return level;
 }
 
 /**
@@ -118,15 +223,16 @@ export function maskOutline(mask: Uint8Array, nx: number, ny: number, x0: number
 
 /**
  * The area's shape less the cut water, with land too thin to print opened
- * away. Land well clear of the water keeps the shape's own corners.
+ * away and pieces under `minIsland` mm² left out. Land well clear of the
+ * water keeps the shape's own corners.
  */
-function landRegion(crop: Ring, water: MultiPolygon): MultiPolygon {
+function landRegion(crop: Ring, water: MultiPolygon, minIsland: number): MultiPolygon {
   const shape: MultiPolygon = [[crop]];
   const land = difference(shape, water);
   const opened = offsetPolygons(offsetPolygons(land, -SLIVER_MM, 'round'), SLIVER_MM, 'round');
   const clear = difference(shape, offsetPolygons(water, 2 * SLIVER_MM, 'round'));
   // Holes are cut water and all stay.
-  return union(opened, clear).filter((polygon) => Math.abs(ringArea(polygon[0])) >= ISLAND_MIN_MM2);
+  return union(opened, clear).filter((polygon) => Math.abs(ringArea(polygon[0])) >= minIsland);
 }
 
 /** The surface cut to a region, pulled a micron apart where two outlines only meet at a point. */
@@ -154,10 +260,13 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
   const rectangle = area.shape === 'rectangle' || (area.shape === 'rounded' && area.cornerRadius <= 0);
   const stats: ModelStats = {};
   const warnings: string[] = [];
+  const cells: CellGrid = { nx, ny, x0, y0, dx, dy };
 
   progress.begin('terrain', 'Finding ground, water and trees', 0.62, 0.08);
   await progress.checkpoint();
-  const inside = rectangle ? undefined : cellsInRing(crop, nx, ny, x0, y0, dx, dy);
+  const inside = rectangle ? undefined : cellsIn([[crop]], cells);
+  const mapOutline = input.mapWater?.length ? mappedWater(input.mapWater, area, mmPerMetre, cells) : null;
+  const mapped = mapOutline ? cellsIn(mapOutline, cells) : undefined;
   const lidar = settings.lidarModel;
   const result = compose(
     layers,
@@ -173,10 +282,12 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
       heightScale: lidar.heightScale,
       terrainExaggeration: settings.terrain.exaggeration,
       baseMm: settings.terrain.baseThicknessMm,
-      cutWater: lidar.cutWater,
+      water: lidar.waterMode,
+      waterLayerMm: settings.water.thicknessMm,
       cutMinAreaM2: settings.water.cutMinAreaM2,
     },
     inside,
+    mapped,
   );
   for (const [key, value] of Object.entries(result.counts)) stats[`lidar_model_${key}`] = value;
   const cell = Math.min(dx, dy);
@@ -196,15 +307,22 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
     tin = straightenWalls(tin, field, limits, cell);
   }
   stats.lidar_model_surface_triangles = tin.triangles.length / 3;
+  let floors: PrismSolid[] = [];
+  let water: PrismSolid[] = [];
   if (result.counts.cut_water_cells) {
-    const region = landRegion(crop, maskOutline(result.cut, nx, ny, x0, y0, dx, dy));
-    if (!region.length) throw new Error('Nothing is left once the water is cut away. Turn off Cut away water, or move the area onto land.');
+    let cut = maskOutline(result.cut, nx, ny, x0, y0, dx, dy);
+    if (mapOutline) cut = followMap(cut, mapOutline, MAP_EDGE_M * mmPerMetre);
+    // A layer keeps every island the opening leaves, since nothing falls out.
+    const region = landRegion(crop, cut, result.waterTop ? 0 : ISLAND_MIN_MM2);
+    if (!region.length) throw new Error('Nothing but water is left in this area. Move it onto land, or recess the water.');
     tin = cutSurface(tin, region);
+    if (result.waterTop) ({ floors, water } = waterLayer(difference([[crop]], region), result.waterTop, settings.water.thicknessMm, cells));
   } else if (!rectangle) {
     tin = cutSurface(tin, [[crop]]);
   }
   const solid: CapSolid = { kind: 'cap', role: 'terrain', vertices: tin.vertices, triangles: tin.triangles, bottom: 0 };
-  const layersOut: Layer[] = [{ id: 'city', name: 'City', role: 'terrain', solids: [solid] }];
+  const layersOut: Layer[] = [{ id: 'city', name: 'City', role: 'terrain', solids: [solid, ...floors] }];
+  if (water.length) layersOut.push({ id: 'water', name: 'Water', role: 'water', solids: water });
 
   let outline: Polygon = [crop];
   if (settings.rim.enabled && settings.rim.widthMm > 0) {

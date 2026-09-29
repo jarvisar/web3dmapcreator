@@ -1,7 +1,7 @@
 // End-to-end check in the installed Edge: generate the default area, look at
 // it in 3D and download it in every format. Needs a running server
 // (npm run dev or npm run preview).
-//   node scripts/e2e.mjs <url> <out-folder> [--all-formats] [--lidar-only [--cut-water]]
+//   node scripts/e2e.mjs <url> <out-folder> [--all-formats] [--lidar-only [--cut-water | --water-layer]]
 //   node scripts/e2e.mjs <url> <out-folder> --svg [--all-formats]
 // With --lidar-only, give a small area in the URL's share-link hash
 // (#a=lon,lat,width,height,rotation,shape): a fresh browser downloads its
@@ -99,7 +99,8 @@ if (svg) {
 if (lidarOnly) {
   await page.locator('button[aria-controls="section-layers"]').click();
   await page.getByRole('radio', { name: 'LiDAR only' }).click();
-  if (process.argv.includes('--cut-water')) await page.getByRole('checkbox', { name: /cut away water/i }).click();
+  const water = process.argv.includes('--cut-water') ? 'Cut away' : process.argv.includes('--water-layer') ? 'Thin layer' : null;
+  if (water) await page.getByRole('combobox', { name: /^water$/i }).selectOption({ label: water });
   await page.waitForTimeout(300);
   await page.screenshot({ path: join(folder, '1-lidar-only.png') });
 }

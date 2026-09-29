@@ -36,9 +36,11 @@
 
 **Flat patches, smeared edges or bumpy roofs in a LiDAR only model.** Glass, dark roofs and water return few points, and a sparse survey leaves gaps between its scan lines. Those cells take their neighbours' heights. When `Model details` shows larger cells than `Detail` asks for, the survey is too sparse for it, and a smaller `Detail` won't add points the survey doesn't have.
 
-**A river or harbour prints as ground in a LiDAR only model.** Water comes from the survey alone, and some surveys file few or no water returns. IGN's survey of Paris leaves the Petit Bras beside Notre-Dame as holes, which take the height of the ground around them. For now `Map data` is the way to get that water, since it cuts Overture's water instead.
+**A river or harbour prints as ground in a LiDAR only model.** Some surveys file few or no water returns. With `Water outlines from map data` on, holes in the survey inside Overture's water are filled as water, like the Petit Bras beside Notre-Dame in IGN's survey of Paris. Water that returned points in a survey with no water class still prints as ground, and so does a stretch whose shore is mostly bridges. `Map data` cuts Overture's water directly for those.
 
-**Some water stays recessed with `Cut away water` on.** Water smaller than `Cut through the base above`, narrower than about 0.4 mm printed or up on a roof stays recessed. In a survey that doesn't mark water returns, only large holes on the ground count as water at all.
+**Some water stays recessed with `Water` set to `Thin layer` or `Cut away`.** Water narrower than about 0.4 mm printed or up on a roof stays recessed in the terrain colour, and for `Cut away` so does water smaller than `Cut through the base above`. In a survey that doesn't mark water returns, only large holes on the ground count as water at all.
+
+**A LiDAR only shoreline follows the scanned cells instead of a smooth line.** Overture's outline is only used where it runs within 3 m of the survey's shore. Past that the survey decides, which keeps the bridges, piers and boats Overture's water runs under. Check that `Water outlines from map data` is on, and see the warnings in case the map water couldn't be downloaded.
 
 **A LiDAR only model is slow the first time.** It reads the survey over the whole area, but only as finely as the cells need. That came to about 75 MB per km² for Philadelphia's 2015 survey, 125 for Paris and 450 for San Francisco's densest survey at 0.25 m cells. A 600 m circle in downtown Chicago read 101 MB and took 30 seconds on a desktop. What's read is kept in the browser (up to 1 GB), so changing anything but the area, the scale or `Detail` builds again in seconds.
 

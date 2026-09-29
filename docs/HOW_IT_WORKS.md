@@ -140,7 +140,7 @@ Buffers still come from Clipper rather than GEOS, so the 25 m ring the ground is
 
 ## LiDAR only models
 
-With `LiDAR only`, none of the above is used. The survey is read over the whole area into a grid of about 0.7 m cells, heights are decided per cell (holes filled, water flattened or cut away, trees rounded, clutter removed), and the grid is meshed into one closed solid in the terrain colour. It's a port of the add-on's LiDAR Only mode with a few changes. [LiDAR only models](LIDAR_MODEL.md) has the details.
+With `LiDAR only`, none of the above is used. The survey is read over the whole area into a grid of about 0.7 m cells, heights are decided per cell (holes filled, water flattened, trees rounded, clutter removed), and the grid is meshed into one closed solid in the terrain colour. Water is recessed in it, cut out for a thin layer of its own, or cut away, and Overture's water outlines smooth the shorelines where they agree with the survey. It's a port of the add-on's LiDAR Only mode with a few changes. [LiDAR only models](LIDAR_MODEL.md) has the details.
 
 ## Meshes
 

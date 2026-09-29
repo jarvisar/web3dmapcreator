@@ -7,6 +7,7 @@
 // Grids are float32 here where the add-on works in float64. That moves
 // heights by around 1e-5 m and can flip a threshold on a few cells.
 
+import type { LidarWaterMode } from '../settings';
 import type { SurfaceLayers } from './layers';
 import {
   BoxSums,
@@ -98,6 +99,15 @@ export const ISLAND_MIN_MM2 = 4;
 // Water this far above the ground is on a roof or a podium (a pool, a garden
 // pond). It stays recessed, since a cut would go down through the building.
 const RAISED_WATER_M = 3;
+// Not in the add-on: with mapped water, a hole this share inside it is water
+// even where the survey files water elsewhere (see findWater).
+const MAPPED_SHARE = 0.5;
+/**
+ * Where mapped water's outline runs within this of the survey's shore, cuts
+ * follow the map's smooth line (model.ts), so the bank's height reaches this
+ * much further into cut water.
+ */
+export const MAP_EDGE_M = 3;
 
 export interface ComposeSettings {
   /** Smoothed domes, or taken down to what stands under them. */
@@ -109,9 +119,15 @@ export interface ComposeSettings {
   heightScale: number;
   terrainExaggeration: number;
   baseMm: number;
-  /** Cut large water out of the model instead of recessing it (see cutWater). */
-  cutWater: boolean;
-  /** Smallest body cut out, in m². Shared with map models. */
+  /**
+   * Water recessed in the surface, cut out of it for a layer of its own, or
+   * cut away through the base. A layer takes the water cutWater picks at any
+   * size and leaves islands, a cut only bodies of at least `cutMinAreaM2`.
+   */
+  water: LidarWaterMode;
+  /** Thickness of the water layer. The base goes under the floor beneath it. */
+  waterLayerMm: number;
+  /** Smallest body cut away, in m². Shared with map models. */
   cutMinAreaM2: number;
 }
 
@@ -123,7 +139,8 @@ export const DEFAULT_COMPOSE: ComposeSettings = {
   heightScale: 1,
   terrainExaggeration: 1,
   baseMm: 1.3,
-  cutWater: false,
+  water: 'recess',
+  waterLayerMm: 1,
   cutMinAreaM2: 5000,
 };
 
@@ -131,8 +148,13 @@ export interface ComposeResult {
   /** Model mm at every grid vertex, row 0 south, bottom of the base at 0. */
   heights: Float32Array;
   water: Uint8Array;
-  /** Water cut out of the model (cutWater). Cells near the shore hold the height of their bank. */
+  /**
+   * Water cut out of the surface (cutWater), for the layer or through the
+   * base. Cells near the shore hold the height of their bank.
+   */
   cut: Uint8Array;
+  /** With a water layer, the water surface over cut cells that are water, NaN elsewhere. */
+  waterTop: Float32Array | null;
   /** Per-vertex factor on the mesher's allowed deviation: 1, or TREE_DETAIL on canopy and its skirt. */
   detail: Float32Array;
   /** Highest ground (not buildings or trees) in model mm, same datum as heights. */
@@ -145,7 +167,8 @@ export interface ComposeResult {
  * metres, and `scaleXY` and `scaleZ` model mm per metre. The horizontal
  * scale only sizes cut water, like in the add-on. With `inside` (1 per cell
  * in the area's shape), only those cells decide where the base is and the
- * highest ground.
+ * highest ground. `mapped` (1 per cell in mapped water) adds water the
+ * survey missed (see findWater).
  */
 export function compose(
   layers: SurfaceLayers,
@@ -155,6 +178,7 @@ export function compose(
   scaleZ: number,
   settings: Partial<ComposeSettings> = {},
   inside?: Uint8Array,
+  mapped?: Uint8Array,
 ): ComposeResult {
   const s = { ...DEFAULT_COMPOSE, ...settings };
   const { nx, ny } = layers;
@@ -165,7 +189,7 @@ export function compose(
 
   const counts: Record<string, number> = {};
   const ground = groundGrid(layers, dx, counts);
-  const { surface, water } = fillSurface(layers, ground, dx, dy, counts);
+  const { surface, water } = fillSurface(layers, ground, dx, dy, counts, mapped);
   const canopy = treeMask(layers, surface, ground);
   for (let i = 0; i < n; i++) if (water[i]) canopy[i] = 0;
   counts.tree_cells = countSet(canopy);
@@ -208,8 +232,11 @@ export function compose(
   counts.spikes_removed = despike(surface, nx, ny, SPIKE_M, water, surface).count;
 
   let cut: Uint8Array = new Uint8Array(n);
-  if (s.cutWater) {
-    const chosen = cutWater(water, surface, ground, nx, ny, dx, dy, scaleXY, s.cutMinAreaM2);
+  const layer = s.water === 'layer';
+  if (s.water !== 'recess') {
+    // A layer takes water of any size and leaves islands, boats and pilings
+    // standing in it: nothing falls out, so only a cut needs them gone.
+    const chosen = layer ? cutWater(water, surface, ground, nx, ny, dx, dy, scaleXY, 0, 0) : cutWater(water, surface, ground, nx, ny, dx, dy, scaleXY, s.cutMinAreaM2);
     cut = chosen.cut;
     counts.cut_water_bodies = chosen.bodies;
     counts.cut_islands = chosen.islands;
@@ -222,10 +249,13 @@ export function compose(
   for (let i = 0; i < n; i++) base = Math.min(base, water[i] ? surface[i] : ground[i]);
   const within = inside && inside.includes(1) ? inside : null;
   const h = { base, te: s.terrainExaggeration, hs: s.heightScale, scaleZ, depth: s.waterDepthMm };
-  // Cut water leaves the model, so the base goes under what's left.
+  // Cut water leaves the surface, so the base goes under what's left, and
+  // under the floor beneath a water layer.
   let lowest = Infinity;
   for (let i = 0; i < n; i++) {
-    if ((!within || within[i]) && !cut[i]) lowest = Math.min(lowest, heightMm(surface[i], ground[i], water[i], h));
+    if (within && !within[i]) continue;
+    if (!cut[i]) lowest = Math.min(lowest, heightMm(surface[i], ground[i], water[i], h));
+    else if (layer && water[i]) lowest = Math.min(lowest, heightMm(surface[i], ground[i], 1, h) - s.waterLayerMm);
   }
   const shift = s.baseMm - lowest;
   let groundMax = -Infinity;
@@ -235,8 +265,13 @@ export function compose(
     surface[i] = heightMm(surface[i], ground[i], water[i], h) + shift;
     detail[i] = canopy[i] | skirt[i] ? TREE_DETAIL : 1;
   }
-  if (counts.cut_water_cells) bankHeights(surface, cut, nx, ny);
-  return { heights: surface, water, cut, detail, groundMaxMm: groundMax + shift, counts };
+  let waterTop: Float32Array | null = null;
+  if (layer && counts.cut_water_cells) {
+    waterTop = new Float32Array(n).fill(NaN);
+    for (let i = 0; i < n; i++) if (cut[i] && water[i]) waterTop[i] = surface[i];
+  }
+  if (counts.cut_water_cells) bankHeights(surface, cut, nx, ny, BANK_RINGS + (mapped ? Math.ceil(MAP_EDGE_M / Math.min(dx, dy)) : 0));
+  return { heights: surface, water, cut, waterTop, detail, groundMaxMm: groundMax + shift, counts };
 }
 
 /**
@@ -244,9 +279,9 @@ export function compose(
  * picks it: bodies of at least `minArea` m², counting water within
  * BRIDGE_GAP_M as one body and leaving out raised water, opened so the cut is
  * CUT_MIN_WIDTH_MM wide everywhere, plus whatever land that leaves on its own
- * below ISLAND_MIN_MM2. The opening doesn't eat in from the grid's edge, so a
- * river leaving the area is cut all the way to the edge. Water cells hold
- * their level in `surface`.
+ * below `islandMm2` (ISLAND_MIN_MM2 for a cut). The opening doesn't eat in
+ * from the grid's edge, so a river leaving the area is cut all the way to the
+ * edge. Water cells hold their level in `surface`.
  */
 export function cutWater(
   water: Uint8Array,
@@ -258,6 +293,7 @@ export function cutWater(
   dy: number,
   scaleXY: number,
   minArea: number,
+  islandMm2 = ISLAND_MIN_MM2,
 ): { cut: Uint8Array; bodies: number; islands: number } {
   const n = nx * ny;
   const none = { cut: new Uint8Array(n), bodies: 0, islands: 0 };
@@ -278,7 +314,7 @@ export function cutWater(
   // still go the add-on's way, after it.
   if (smallLand(cut, nx, ny, (cells) => cells * dx * dy < SPECK_M2) < 0) return none;
   cut = dilate(erode(cut, nx, ny, radius), nx, ny, radius);
-  const islands = smallLand(cut, nx, ny, (cells) => cells * dx * dy * scaleXY ** 2 < ISLAND_MIN_MM2);
+  const islands = smallLand(cut, nx, ny, (cells) => cells * dx * dy * scaleXY ** 2 < islandMm2);
   if (islands < 0) return none;
   return { cut, bodies: compactLabels(label(cut, nx, ny)), islands };
 }
@@ -314,13 +350,13 @@ const BANK_RINGS = 3;
  * vertical wall. Recessed, the cut would run down the slope to the water
  * and leave a bevel along every bank.
  */
-function bankHeights(z: Float32Array, cut: Uint8Array, nx: number, ny: number): void {
+function bankHeights(z: Float32Array, cut: Uint8Array, nx: number, ny: number, rings: number): void {
   const n = nx * ny;
   const done = new Uint8Array(n);
   let front: number[] = [];
   for (let i = 0; i < n; i++) if (!cut[i]) done[i] = 1;
   for (let i = 0; i < n; i++) if (cut[i] && touches(done, i, nx, ny)) front.push(i);
-  for (let ring = 0; ring < BANK_RINGS && front.length; ring++) {
+  for (let ring = 0; ring < rings && front.length; ring++) {
     const next: number[] = [];
     const values = front.map((i) => highestNeighbour(z, done, i, nx, ny));
     front.forEach((i, k) => {
@@ -423,13 +459,15 @@ function fillSurface(
   dx: number,
   dy: number,
   counts: Record<string, number>,
+  mapped?: Uint8Array,
 ): { surface: Float32Array; water: Uint8Array } {
   const { nx, ny, top } = layers;
   const n = nx * ny;
-  const { water, shadow, level, bodies, grown } = findWater(layers, ground, dx, dy);
+  const { water, shadow, level, bodies, grown, fromMap } = findWater(layers, ground, dx, dy, mapped?.includes(1) ? mapped : undefined);
   counts.water_bodies = bodies;
   counts.water_cells = countSet(water);
   counts.water_grown_cells = grown;
+  if (mapped) counts.water_map_cells = fromMap;
   counts.shadow_cells = countSet(shadow);
   const surface = new Float32Array(n);
   const land = new Uint8Array(n);
@@ -463,18 +501,22 @@ interface Water {
   bodies: number;
   /** Cells the bodies grew into. */
   grown: number;
+  /** Cells that are water because of mapped water. */
+  fromMap: number;
 }
 
 // Flat water with one level per body. A survey that files water says where
 // it is. In one that doesn't, a hole can also be a dark roof or the scan
 // shadow at the foot of a tower (Philadelphia's came out as pits in its
 // streets), so it has to be large with its shore mostly on the ground.
-function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: number): Water {
+// Mapped water only ever fills cells the survey has no returns in, so it
+// can't take a bridge, a pier or a boat (mappedHoles, and the growth below).
+function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: number, mapped?: Uint8Array): Water {
   const { nx, ny, count, top, waterZ } = layers;
   const n = nx * ny;
   const water = new Uint8Array(n);
   const shadow = new Uint8Array(n);
-  const none: Water = { water, shadow, level: new Float32Array(0), bodies: 0, grown: 0 };
+  const none: Water = { water, shadow, level: new Float32Array(0), bodies: 0, grown: 0, fromMap: 0 };
 
   // No returns at all, or mostly water returns.
   const candidate = new Uint8Array(n);
@@ -548,6 +590,7 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
   // tenth. Otherwise the level is the shore's low tenth.
   const levels = new Float64Array(regions).fill(NaN);
   const onGround = new Uint8Array(regions);
+  const shoreLow = new Float64Array(regions).fill(NaN);
   for (let r = 0; r < regions; r++) {
     const wet = wetCount[r] ? wetZ[wetStart[r] + (wetCount[r] >> 1)] : NaN;
     const shore = shoreCount[r];
@@ -557,10 +600,12 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
     }
     const low = shoreZ[shoreStart[r] + Math.trunc(0.1 * shore)];
     const near = nearCount[r] / shore;
+    shoreLow[r] = low;
     if (wet === wet) levels[r] = Math.min(wet, low);
     else if (!filesWater && area[r] >= HOLE_WATER_M2 && near >= BANK_SHARE) levels[r] = low;
     else onGround[r] = near >= SHADOW_SHARE ? 1 : 0;
   }
+  let fromMap = mapped ? mappedHoles(region, levels, onGround, shoreLow, mapped, nx, ny) : 0;
 
   let bodies = 0;
   for (let r = 0; r < regions; r++) if (levels[r] === levels[r]) bodies++;
@@ -580,7 +625,8 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
   // water returns and stand at its level. San Francisco's 2023 survey files
   // open bay with fewer than half its returns as water, so the bay came out
   // as land at the water level, and in 36 pieces once cut. Not onto raised
-  // water, which in Philadelphia is bridge decks filed as water.
+  // water, which in Philadelphia is bridge decks filed as water. Mapped
+  // cells with no returns join too, never one the survey saw something in.
   let grown = 0;
   const queue = new Int32Array(n);
   let head = 0;
@@ -593,11 +639,14 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
     const x = i % nx;
     for (let d = 0; d < 4; d++) {
       const j = d === 0 ? (x > 0 ? i - 1 : -1) : d === 1 ? (x + 1 < nx ? i + 1 : -1) : d === 2 ? i - nx : i + nx;
-      if (j < 0 || j >= n || water[j] || !(layers.water[j] > 0)) continue;
-      if (!(Math.abs(top[j] - z) <= GROW_M) || z - ground[j] > RAISED_WATER_M) continue;
+      if (j < 0 || j >= n || water[j]) continue;
+      const empty = mapped !== undefined && mapped[j] === 1 && count[j] === 0;
+      if (!empty && !(layers.water[j] > 0 && Math.abs(top[j] - z) <= GROW_M)) continue;
+      if (z - ground[j] > RAISED_WATER_M) continue;
       water[j] = 1;
       region[j] = r;
       grown++;
+      if (empty) fromMap++;
       queue[tail++] = j;
     }
   }
@@ -605,7 +654,61 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
 
   const level = new Float32Array(cells + grown);
   for (let i = 0, k = 0; i < n; i++) if (water[i]) level[k++] = levels[region[i]];
-  return { water, shadow, level, bodies, grown };
+  return { water, shadow, level, bodies, grown, fromMap };
+}
+
+/**
+ * Not in the add-on: holes mostly inside mapped water are water even where
+ * the survey files water elsewhere. IGN files few water returns in Paris,
+ * and the Petit Bras beside Notre-Dame is three holes with none. Only holes
+ * that would be filled as ground, with their shore mostly on it: one read
+ * as a dark roof (a pier shed inside a harbour's outline) stays a roof. Each
+ * takes the level of the survey's water in the same mapped water, or its
+ * shore's low tenth where that's lower or there is none. Sets `levels` for
+ * the holes it takes and returns their cells.
+ */
+function mappedHoles(
+  region: Int32Array,
+  levels: Float64Array,
+  onGround: Uint8Array,
+  shoreLow: Float64Array,
+  mapped: Uint8Array,
+  nx: number,
+  ny: number,
+): number {
+  const n = nx * ny;
+  const regions = levels.length;
+  const size = new Int32Array(regions);
+  const inside = new Int32Array(regions);
+  for (let i = 0; i < n; i++) {
+    const r = region[i];
+    if (r < 0) continue;
+    size[r]++;
+    inside[r] += mapped[i];
+  }
+  const holes: number[] = [];
+  for (let r = 0; r < regions; r++) {
+    if (onGround[r] && inside[r] >= MAPPED_SHARE * size[r]) holes.push(r);
+  }
+  if (!holes.length) return 0;
+  const piece = label(mapped, nx, ny);
+  const pieceLevel = new Float64Array(compactLabels(piece)).fill(Infinity);
+  for (let i = 0; i < n; i++) {
+    const r = region[i];
+    if (r >= 0 && piece[i] >= 0 && levels[r] === levels[r]) pieceLevel[piece[i]] = Math.min(pieceLevel[piece[i]], levels[r]);
+  }
+  const surveyed = new Float64Array(regions).fill(Infinity);
+  for (let i = 0; i < n; i++) {
+    const r = region[i];
+    if (r >= 0 && piece[i] >= 0) surveyed[r] = Math.min(surveyed[r], pieceLevel[piece[i]]);
+  }
+  let cells = 0;
+  for (const r of holes) {
+    levels[r] = Math.min(shoreLow[r], surveyed[r]);
+    onGround[r] = 0;
+    cells += size[r];
+  }
+  return cells;
 }
 
 /**

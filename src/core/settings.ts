@@ -28,6 +28,8 @@ export type FilamentLine = 'PLA Basic' | 'PLA Matte';
 export type LidarRoofMode = 'envelope' | 'heights';
 /** 'layer' prints large water as a thin layer on a terrain floor, 'through' cuts it through the base. */
 export type WaterMode = 'layer' | 'through';
+/** LiDAR only water: recessed in the one solid, a thin layer of its own on a terrain floor, or cut away through the base. */
+export type LidarWaterMode = 'recess' | 'layer' | 'cut';
 /** 'map' builds a multicolour model from map data, 'lidar' the whole model from a LiDAR survey alone. */
 export type ModelSource = 'map' | 'lidar';
 
@@ -143,8 +145,9 @@ export interface ModelSettings {
     rockSurfaces: boolean;
   };
   /**
-   * The LiDAR Only model: one solid in the terrain colour. Scale, terrain
-   * exaggeration, base thickness and the rim are shared with map models.
+   * The LiDAR Only model: one solid in the terrain colour, and optionally the
+   * water as a part of its own. Scale, terrain exaggeration, base thickness,
+   * the rim, and the water thickness and cut size are shared with map models.
    */
   lidarModel: {
     /** Printed size of one grid cell. Cells grow where the survey is too sparse or the area too large. */
@@ -155,8 +158,9 @@ export interface ModelSettings {
     removeClutter: boolean;
     /** How far water sits below its lowest bank. */
     waterDepthMm: number;
-    /** Cut rivers, lakes and the sea out of the model instead of recessing them. */
-    cutWater: boolean;
+    waterMode: LidarWaterMode;
+    /** Cut water along mapped water's outline where it agrees with the survey, and fill in water where the survey has no returns. */
+    mapWater: boolean;
     /** Multiplies the height of everything standing on the ground. */
     heightScale: number;
   };
@@ -240,7 +244,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     avoidRoads: true,
   },
   lidar: { enabled: false, roofMode: 'envelope', preferLidar: true, minFootprintMm2: 0.7, rockSurfaces: false },
-  lidarModel: { detailMm: 0.05, keepTrees: true, removeClutter: true, waterDepthMm: 0.6, cutWater: false, heightScale: 1 },
+  lidarModel: { detailMm: 0.05, keepTrees: true, removeClutter: true, waterDepthMm: 0.6, waterMode: 'recess', mapWater: true, heightScale: 1 },
   supports: true,
   rim: { enabled: false, heightMm: 1.5, widthMm: 2 },
 };
@@ -554,6 +558,11 @@ export function sanitizeSettings(settings: unknown): ModelSettings {
   if (water.mode === 'layer' || water.mode === 'through') out.water.mode = water.mode;
   const lidar = isObject(source.lidar) ? source.lidar : {};
   if (lidar.roofMode === 'envelope' || lidar.roofMode === 'heights') out.lidar.roofMode = lidar.roofMode;
+  const lidarModel = isObject(source.lidarModel) ? source.lidarModel : {};
+  const waterMode = lidarModel.waterMode;
+  if (waterMode === 'recess' || waterMode === 'layer' || waterMode === 'cut') out.lidarModel.waterMode = waterMode;
+  // Saved before the water modes, when cutting was a checkbox.
+  else if (lidarModel.cutWater === true) out.lidarModel.waterMode = 'cut';
   // The priority must name every surface category once.
   const land = isObject(source.land) ? source.land : {};
   const all = DEFAULT_SETTINGS.land.priority;

@@ -3,15 +3,18 @@
 
 import { describe, expect, it } from 'vitest';
 import { areaModelRing } from '../geo/area';
-import { polygonArea } from '../geometry/polygon';
+import { Projection } from '../geo/projection';
+import { pointInMulti, polygonArea } from '../geometry/polygon';
 import { edgeReport, signedVolume } from '../geometry/validate';
 import { meshLayers, partsBounds } from '../pipeline/mesh';
 import { buildPlates } from '../pipeline/plates';
+import type { PrismSolid } from '../geometry/solid';
 import { cloneSettings, type AreaSpec, type ModelSettings } from '../settings';
-import type { MeshPart } from '../types';
+import type { SourceFeature } from '../pipeline/source';
+import type { MeshPart, Polygon } from '../types';
 import { gridSpec } from './grid';
 import { emptyLayers } from './layers';
-import { surfaceModel } from './model';
+import { followMap, surfaceModel } from './model';
 import type { PreparedSurface } from './prepare';
 
 const GROUND = 100;
@@ -55,6 +58,23 @@ function closed(part: MeshPart) {
   expect([report.open, report.repeated]).toEqual([0, 0]);
   expect(signedVolume(part.positions, part.indices)).toBeGreaterThan(0);
 }
+
+describe('followMap', () => {
+  const box = (x0: number, y0: number, x1: number, y1: number): Polygon => [[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]];
+
+  it("moves the shore onto the map's line but keeps a bridge and the survey's islands", () => {
+    // A river either side of a bridge, mapped a metre off both banks and under the bridge, with a mapped piling.
+    const survey = [box(0, 0, 45, 20), box(55, 0, 100, 20)];
+    const map: Polygon[] = [[...box(0, -1, 100, 21), [[20, 10], [20, 11], [21, 11], [21, 10]]]];
+    const water = followMap(survey, map, 3);
+    const wet = (x: number, y: number) => pointInMulti(x, y, water);
+    expect([wet(10, -0.5), wet(10, 20.5), wet(80, -0.5)]).toEqual([true, true, true]);
+    expect(wet(50, 10)).toBe(false);
+    expect(wet(20.5, 10.5)).toBe(true);
+    // Past the width the survey decides: a map 5 off the bank leaves it alone.
+    expect(pointInMulti(10, -2, followMap(survey, [box(0, -5, 100, 25)], 3))).toBe(false);
+  });
+});
 
 describe('surfaceModel', () => {
   it('is one closed solid on its base, the size of the area', async () => {
@@ -116,7 +136,7 @@ describe('surfaceModel', () => {
 
   it('cuts the river away and still closes, in sections too', async () => {
     const settings = lidarSettings((s) => {
-      s.lidarModel.cutWater = true;
+      s.lidarModel.waterMode = 'cut';
       s.water.cutMinAreaM2 = 1000;
     });
     const spec = await surfaceModel({ area: area('rectangle'), settings, surface: prepared(area('rectangle')) });
@@ -135,6 +155,54 @@ describe('surfaceModel', () => {
     settings.water.cutMinAreaM2 = 5000;
     const recessed = await surfaceModel({ area: area('rectangle'), settings, surface: prepared(area('rectangle')) });
     expect(recessed.stats.lidar_model_cut_water_cells).toBe(0);
+  });
+
+  it('prints the water as a thin layer on a terrain floor, in sections too', async () => {
+    const settings = lidarSettings((s) => (s.lidarModel.waterMode = 'layer'));
+    const spec = await surfaceModel({ area: area('rectangle'), settings, surface: prepared(area('rectangle')) });
+    expect(spec.layers.map((l) => [l.id, l.role])).toEqual([['city', 'terrain'], ['water', 'water']]);
+    // The river is 1,280 m², under the size cut away, and still gets its layer.
+    const water = spec.layers[1].solids as PrismSolid[];
+    for (const solid of water) expect((solid.top as number) - (solid.bottom as number)).toBeCloseTo(1, 9);
+    const floors = spec.layers[0].solids.filter((s): s is PrismSolid => s.kind === 'prism');
+    expect(floors.length).toBe(water.length);
+    // The base runs under the floor, and the city's footprint is still the whole area.
+    for (const floor of floors) expect(floor.top).toBeCloseTo(1.3, 5);
+    const { parts } = await meshLayers(spec.layers);
+    for (const part of parts) closed(part);
+    const [x0, y0, z0, x1, y1] = partsBounds(parts.filter((p) => p.id === 'city'));
+    expect([x1 - x0, y1 - y0, z0]).toEqual([80, 60, 0]);
+    const [, , low, , , high] = partsBounds(parts.filter((p) => p.id === 'water'));
+    expect([low, high - low]).toEqual([expect.closeTo(1.3, 4), expect.closeTo(1, 4)]);
+    const { plates, failed } = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 35, sectionHeightMm: 35, bedWidth: 256, bedDepth: 256 });
+    expect(failed).toBe(0);
+    for (const plate of plates) for (const part of plate.parts) closed(part);
+  });
+
+  it('fills water the survey missed from mapped water, and only there', async () => {
+    // A pond in the north-east corner that returned nothing, mapped a bit larger.
+    const pond = (surface: PreparedSurface) => {
+      const { layers, grid } = surface;
+      for (let j = 95; j < 115; j++) {
+        for (let i = 120; i < 150; i++) {
+          const k = j * grid.nx + i;
+          layers.count[k] = 0;
+          layers.top[k] = layers.solid[k] = layers.ground[k] = NaN;
+        }
+      }
+      return surface;
+    };
+    const frame = new Projection([-87.63, 41.88], 0, 1);
+    const ring = [[36, 30], [72, 30], [72, 58], [36, 58], [36, 30]].map(([x, y]) => frame.localToGeo(x, y));
+    const mapWater: SourceFeature[] = [{ id: 'pond', geometry: { type: 'Polygon', coordinates: [ring] }, props: { subtype: 'lake', class: 'lake' } }];
+    const settings = lidarSettings();
+    const without = await surfaceModel({ area: area('rectangle'), settings, surface: pond(prepared(area('rectangle'))) });
+    const spec = await surfaceModel({ area: area('rectangle'), settings, surface: pond(prepared(area('rectangle'))), mapWater });
+    expect(spec.stats.lidar_model_water_bodies).toBe((without.stats.lidar_model_water_bodies as number) + 1);
+    expect(spec.stats.lidar_model_water_map_cells).toBe(20 * 30);
+    // A swimming pool isn't open water.
+    const pool = await surfaceModel({ area: area('rectangle'), settings, surface: pond(prepared(area('rectangle'))), mapWater: [{ ...mapWater[0], props: { class: 'swimming_pool' } }] });
+    expect(pool.stats.lidar_model_water_bodies).toBe(without.stats.lidar_model_water_bodies);
   });
 
   it('lifts what stands on the ground by the height scale only', async () => {

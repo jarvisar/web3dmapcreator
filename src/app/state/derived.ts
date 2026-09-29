@@ -25,8 +25,11 @@ import type { ResultMeta } from './store';
 export function usedGroups(settings: ModelSettings): ColourGroup[] {
   const used = new Set<ColourGroup>(['terrain']);
   if (settings.rim.enabled) used.add('rim');
-  // A LiDAR Only model is one part in the terrain colour.
-  if (settings.modelSource === 'lidar') return COLOUR_GROUPS.map((group) => group.key).filter((key) => used.has(key));
+  // A LiDAR Only model is one part in the terrain colour, and its water can be another.
+  if (settings.modelSource === 'lidar') {
+    if (settings.lidarModel.waterMode === 'layer') used.add('water');
+    return COLOUR_GROUPS.map((group) => group.key).filter((key) => used.has(key));
+  }
   if (settings.buildings.enabled) used.add('buildings');
   if (settings.roads.enabled || settings.bridges.enabled) used.add('roads');
   if (settings.water.enabled) used.add('water');

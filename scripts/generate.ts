@@ -15,7 +15,9 @@
 // --lidar-threads n (batches read and measured at once, 1 to stay in this thread),
 // --lidar-only (the whole model from a LiDAR survey, no map data), --detail mm (its
 // printed cell size), --cut-water (cut large water through the base, or away in a
-// LiDAR only model), --surface-out dir (write its grid layers as raw binaries).
+// LiDAR only model), --water-layer (a LiDAR only model's water as a thin layer),
+// --no-map-water (a LiDAR only model's water from the survey alone), --surface-out
+// dir (write its grid layers as raw binaries).
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -101,8 +103,10 @@ async function main() {
   if (arg('detail')) settings.lidarModel.detailMm = Number(arg('detail'));
   if (flag('cut-water')) {
     settings.water.mode = 'through';
-    settings.lidarModel.cutWater = true;
+    settings.lidarModel.waterMode = 'cut';
   }
+  if (flag('water-layer')) settings.lidarModel.waterMode = 'layer';
+  if (flag('no-map-water')) settings.lidarModel.mapWater = false;
   settings = sanitizeSettings(settings);
   if (settings.modelSource === 'lidar') return lidarOnly(area, settings);
 
@@ -216,7 +220,14 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
   const pool = threads > 1 ? threadPool(threads, cacheDir) : null;
   try {
     const cell = cellSize(settings.lidarModel.detailMm, scale, area.widthM, area.heightM);
+    const water = settings.lidarModel.mapWater
+      ? fetchOverture({ bounds: dataBoundsFor(area), types: ['water'], keep: dataPlan(settings, dataBoundsFor(area)).keep }).then((data) => {
+          console.log(`map water: ${data.features.water?.length ?? 0} features, ${(data.bytes / 1e6).toFixed(1)} MB, release ${data.release}`);
+          return data.features.water ?? [];
+        })
+      : Promise.resolve(undefined);
     const surface = await prepareSurface({ area, cellM: cell, progress: (label, _fraction, detail) => log(label, detail), runner: pool ?? undefined });
+    const mapWater = await water;
     const t1 = performance.now();
     const { grid } = surface;
     console.log(`lidar: ${grid.nx} x ${grid.ny} cells of ${grid.cell} m (asked ${surface.requestedCellM} m), ${Math.round(surface.coverage * 100)}% with returns, ${surface.points.toLocaleString('en-US')} returns, ${(surface.downloadedBytes / 1e6).toFixed(1)} MB in ${((t1 - t0) / 1000).toFixed(1)} s, ${surface.reusedBlocks} of ${surface.blocks} blocks reused`);
@@ -233,7 +244,7 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
       writeFileSync(join(dir, 'grid.json'), JSON.stringify({ ...grid, requested: surface.requestedCellM, area }));
     }
     const progress = new Progress((e) => log(e.label));
-    const spec = await surfaceModel({ area, settings, surface, progress, runTile: pool ? (tile) => pool.tile(tile) : undefined, concurrency: pool?.concurrency ?? 1 });
+    const spec = await surfaceModel({ area, settings, surface, progress, runTile: pool ? (tile) => pool.tile(tile) : undefined, concurrency: pool?.concurrency ?? 1, mapWater });
     const t2 = performance.now();
     const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ });
     const t3 = performance.now();
@@ -261,7 +272,7 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
         maxPlates: format === 'bambu' ? BAMBU_MAX_PLATES : undefined,
       });
       const credits = [...new Set(surface.surveys.map((s) => `LiDAR: ${s.attribution}`))];
-      const result = exportPlates(plates, { format, printer: printer.key, palette: DEFAULT_PALETTE, multiPlate: flag('multi-plate'), sectionWidthMm: section, sectionHeightMm: section, fileBase: 'model' }, credits, false);
+      const result = exportPlates(plates, { format, printer: printer.key, palette: DEFAULT_PALETTE, multiPlate: flag('multi-plate'), sectionWidthMm: section, sectionHeightMm: section, fileBase: 'model' }, credits, Boolean(mapWater?.length));
       mkdirSync(dirname(out), { recursive: true });
       writeFileSync(out, new Uint8Array(await result.data.arrayBuffer()));
       console.log(`wrote ${out} (${(result.data.size / 1e6).toFixed(1)} MB, ${result.plates} plate(s))`);

@@ -97,4 +97,12 @@ describe('LiDAR only settings', () => {
     expect(lidar.lidarModel).toEqual({ ...DEFAULT_SETTINGS.lidarModel, detailMm: 0.02, keepTrees: false, waterDepthMm: 3, heightScale: 2 });
     expect(sanitizeSettings({ modelSource: 'point cloud' }).modelSource).toBe('map');
   });
+
+  it('keep the water mode, and take a saved cut from before the modes', () => {
+    const layer = sanitizeSettings({ lidarModel: { waterMode: 'layer', mapWater: false } });
+    expect(layer.lidarModel).toEqual({ ...DEFAULT_SETTINGS.lidarModel, waterMode: 'layer', mapWater: false });
+    expect(sanitizeSettings({ lidarModel: { cutWater: true } }).lidarModel).toEqual({ ...DEFAULT_SETTINGS.lidarModel, waterMode: 'cut' });
+    expect(sanitizeSettings({ lidarModel: { cutWater: false } }).lidarModel.waterMode).toBe('recess');
+    expect(sanitizeSettings({ lidarModel: { waterMode: 'sheet', cutWater: true } }).lidarModel.waterMode).toBe('cut');
+  });
 });

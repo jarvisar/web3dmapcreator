@@ -2,7 +2,7 @@ import { ArrowDown, ArrowUp } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cellSize } from '../../core/dsm/grid';
 import { effectiveScale } from '../../core/geo/area';
-import { modelFieldRange, type AreaSpec, type LidarRoofMode, type ModelSettings, type SurfaceCategory, type WaterMode } from '../../core/settings';
+import { modelFieldRange, type AreaSpec, type LidarRoofMode, type LidarWaterMode, type ModelSettings, type SurfaceCategory, type WaterMode } from '../../core/settings';
 import type { ColourGroup } from '../../core/types';
 import { LayerDisclosure } from '../components/LayerDisclosure';
 import { CheckField, SelectField } from '../components/Fields';
@@ -703,7 +703,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
     <div className="lidar-model">
       <p className="layer-help">
         {keepUnits(
-          'Builds the whole model from a public LiDAR survey: the ground, buildings, trees and bridges as the survey saw them, in one piece and one colour. Covers the United States (USGS 3DEP), France (IGN), Canada (NRCan), Switzerland (swisstopo) and much of Europe (Open LiDAR Data). Expect 75 to 450 MB of downloads per km² depending on the survey and Detail, kept in the browser for next time, so start with a small area.',
+          'Builds the whole model from a public LiDAR survey: the ground, buildings, trees and bridges as the survey saw them, in one piece and one colour, with the water in its own colour if you like. Covers the United States (USGS 3DEP), France (IGN), Canada (NRCan), Switzerland (swisstopo) and much of Europe (Open LiDAR Data). Expect 75 to 450 MB of downloads per km² depending on the survey and Detail, kept in the browser for next time, so start with a small area.',
         )}
       </p>
       <NumberField
@@ -729,6 +729,16 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
         onChange={(removeClutter) => patchSettings('lidarModel', { removeClutter })}
         help="Flattens anything lower than 2 m above the ground, such as cars, fences and benches, which print as specks. Also removes poles, crane jibs and wires too thin to print."
       />
+      <SelectField
+        label="Water"
+        value={lidar.waterMode}
+        onChange={(waterMode) => patchSettings('lidarModel', { waterMode: waterMode as LidarWaterMode })}
+        help="Recessed sinks rivers, lakes and the sea into the model in the terrain colour. Thin layer prints them as a part of their own in the water colour, on a floor of terrain, so the colour only changes in the top few layers. Cut away leaves openings through the base. Water narrower than about 0.4 mm printed, or up on a roof, stays recessed."
+      >
+        <option value="recess">Recessed</option>
+        <option value="layer">Thin layer</option>
+        <option value="cut">Cut away</option>
+      </SelectField>
       <NumberField
         label="Water depth"
         value={lidar.waterDepthMm}
@@ -737,15 +747,25 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
         step={0.1}
         decimals={2}
         unit="mm"
-        help="How far rivers, lakes and the sea sit below their lowest bank, so they read as water in one colour."
+        help={
+          lidar.waterMode === 'layer'
+            ? 'How far the water surface sits below its lowest bank.'
+            : 'How far rivers, lakes and the sea sit below their lowest bank, so they read as water in one colour.'
+        }
       />
-      <CheckField
-        label="Cut away water"
-        checked={lidar.cutWater}
-        onChange={(cutWater) => patchSettings('lidarModel', { cutWater })}
-        help="Cuts rivers, lakes and the sea out of the model, leaving openings through the base. Water smaller than the area below, narrower than about 0.4 mm printed or up on a roof stays recessed. Bridges stay as solid walls, and islands print as separate pieces."
-      />
-      {lidar.cutWater && (
+      {lidar.waterMode === 'layer' && (
+        <NumberField
+          label="Water thickness"
+          value={settings.water.thicknessMm}
+          onChange={(thicknessMm) => patchSettings('water', { thicknessMm })}
+          {...modelFieldRange('water', 'thicknessMm')}
+          step={0.1}
+          decimals={2}
+          unit="mm"
+          help="How thick the water prints on the terrain floor under it. Each layer with water in it needs a colour change, and 1 mm is five 0.2 mm layers. Shared with map models."
+        />
+      )}
+      {lidar.waterMode === 'cut' && (
         <NumberField
           label="Cut through the base above"
           value={settings.water.cutMinAreaM2}
@@ -754,9 +774,15 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
           step={500}
           decimals={0}
           unit="m²"
-          help="Water at least this large is cut away. Shared with map models."
+          help="Water at least this large is cut away, and smaller water stays recessed. Bridges stay as solid walls, and islands print as separate pieces. Shared with map models."
         />
       )}
+      <CheckField
+        label="Water outlines from map data"
+        checked={lidar.mapWater}
+        onChange={(mapWater) => patchSettings('lidarModel', { mapWater })}
+        help="Uses mapped water from Overture. Thin layers and cuts follow its smooth shorelines where they agree with the survey to within 3 m, and water the survey has no returns for is filled in. Anything the survey saw standing in the water, like bridges, piers and boats, stays. Downloads a few MB of map data and adds a map data credit."
+      />
       <NumberField
         label="Height scale"
         value={lidar.heightScale}
@@ -818,7 +844,10 @@ export function LayersPanel() {
 
   const roadExtras = [roads.includePaths && 'paths', roads.includeRail && 'rail', roads.includeAirports && 'airports'].filter(Boolean);
   const cell = lidarCell(area, settings);
-  const summary = lidarOnly ? `LiDAR only${cell !== null ? ` · ${formatNumber(cell, 2)} m cells` : ''}${rim.enabled ? ' · rim' : ''}` : layerSummary(settings);
+  const lidarWater = { recess: '', layer: ' · water layer', cut: ' · water cut away' }[settings.lidarModel.waterMode];
+  const summary = lidarOnly
+    ? `LiDAR only${cell !== null ? ` · ${formatNumber(cell, 2)} m cells` : ''}${lidarWater}${rim.enabled ? ' · rim' : ''}`
+    : layerSummary(settings);
 
   const rimRow = (
     <LayerRow

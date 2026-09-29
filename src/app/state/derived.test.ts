@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_SECTIONS } from '../../core/export/sections';
 import { DEFAULT_AREA, DEFAULT_EXPORT, cloneSettings } from '../../core/settings';
-import { bedFit } from './derived';
+import { bedFit, usedGroups } from './derived';
 
 describe('bed fit', () => {
   it('counts only the sections a round model uses', () => {
@@ -21,5 +21,16 @@ describe('bed fit', () => {
     expect(performance.now() - started).toBeLessThan(100);
     expect(fit.plates).toBe(fit.cols * fit.rows);
     expect(fit.plates).toBeGreaterThan(MAX_SECTIONS);
+  });
+});
+
+describe('colour groups', () => {
+  it('give a LiDAR only model the water colour only with a water layer', () => {
+    const settings = cloneSettings();
+    settings.modelSource = 'lidar';
+    expect(usedGroups(settings)).toEqual(['terrain']);
+    settings.lidarModel.waterMode = 'layer';
+    settings.rim.enabled = true;
+    expect(usedGroups(settings)).toEqual(['terrain', 'water', 'rim']);
   });
 });
