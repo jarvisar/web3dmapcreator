@@ -34,7 +34,7 @@ Press the pencil at the top right of the 3D view to change the model before down
 - Add text, map pins, boxes and cylinders, or draw your own roads and buildings. A drawn line starts out as a road and a drawn outline as a building, and either can take any colour. Everything added is built down to what it stands on: the ground, or a roof or bridge you raised it onto. In water it goes down through the water to the bottom.
 - Drag the points of a drawn road or outline to reshape it. Tap or click a point, then `Delete point`, to take it out.
 
-Edits follow the map features, not the mesh, so they stay when you change settings and generate again. They're saved in the browser, in exported options when the map area is included, and in a copied share link unless there are too many for one. `Ctrl+Z` undoes, and Help lists the other keys.
+Edits follow the map features, not the mesh, so they stay when you change settings and generate again. They're saved in the browser, in exported options when the map area is included, and in a copied share link unless there are too many for one. A link only carries the ones on its area. `Ctrl+Z` undoes, and Help lists the other keys.
 
 ### SVG Maps
 
@@ -44,7 +44,7 @@ Pick the piece under `Size`: a plaque, a sheet of paper, a coaster or your own s
 
 Click `Generate SVG` to open the preview, which keeps up with the settings while it's open, then `Download .svg`. `Output` switches between a laser (fills engrave, lines score and the edge cuts, one colour per layer), a pen plotter (everything is a stroke, one numbered layer per pen) and print (coloured themes). The file is sized in millimetres, so check the imported size in your laser software.
 
-To draw a route in a colour of its own, click the route button over the preview and click the roads, paths or railways it follows. Each click adds a road or drops it again. Each route is its own layer in the SVG, and picked roads can be left out instead. Picks go in a copied share link too, unless there are too many.
+To draw a route in a colour of its own, click the route button over the preview and click the roads, paths or railways it follows. Each click adds a road or drops it again. Each route is its own layer in the SVG, and picked roads can be left out instead. The picks on the map go in a copied share link too, unless there are too many.
 
 Two lines closer together than the laser beam burn as one dark band, so `Line cleanup` merges them, like sidewalks next to roads. Set `Line spacing` to about your beam width, or 1.5 to 2 times your pen width. See [SVG maps](docs/SVG_MAPS.md) for more.
 

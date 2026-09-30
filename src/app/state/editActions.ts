@@ -23,6 +23,7 @@ import { Projection } from '../../core/geo/projection';
 import { FILAMENTS } from '../../core/settings';
 import { getEngine } from './engine';
 import { describeCounts } from '../viewer/edit/describe';
+import { applyStep, extendStep, stepBetween, type EditStep } from './history';
 import { applyEditUpdate, getEditData } from './model';
 import { hasPicks, writeBackup, type Backup } from './persist';
 import { HISTORY_LIMIT, keepReplaced, patchSvg, toast, useApp, type Brought, type EditTool, type Toast } from './store';
@@ -79,19 +80,15 @@ function putShapes(edits: ModelEdits, shapes: AddedShape[]): ModelEdits {
  * Replace the edits. Changes tagged with the same `coalesce` in a row (the
  * steps of a drag, keystrokes in a field) undo as one.
  */
-export function commitEdits(next: ModelEdits, coalesce?: string): void {
+export function commitEdits(next: ModelEdits, coalesce?: string, touched?: Iterable<string>): void {
   set((state) => {
     if (next === state.edits) return {};
     const history = state.editHistory;
-    const merge = coalesce !== undefined && coalesce === history.coalesce;
-    return {
-      edits: next,
-      editHistory: {
-        past: merge ? history.past : [...history.past, state.edits].slice(-HISTORY_LIMIT),
-        future: [],
-        coalesce: coalesce ?? null,
-      },
-    };
+    const merge = coalesce !== undefined && coalesce === history.coalesce && history.past.length > 0;
+    const past = merge
+      ? [...history.past.slice(0, -1), extendStep(history.past[history.past.length - 1], state.edits, next, touched)]
+      : [...history.past, stepBetween(state.edits, next, touched)].slice(-HISTORY_LIMIT);
+    return { edits: next, editHistory: { past, future: [], coalesce: coalesce ?? null } };
   });
 }
 
@@ -100,16 +97,28 @@ export function settleEdits(): void {
   set((state) => (state.editHistory.coalesce ? { editHistory: { ...state.editHistory, coalesce: null } } : {}));
 }
 
+/** Where the edits and their history stand, for revertEdits. */
+export interface EditMark {
+  edits: ModelEdits;
+  top: EditStep | null;
+}
+
+export function editMark(): EditMark {
+  const { edits, editHistory } = get();
+  return { edits, top: editHistory.past[editHistory.past.length - 1] ?? null };
+}
+
 /**
- * Puts the edits back to `before` when everything since is one undo step, as
- * a drag's changes are, and leaves nothing to redo: a drag called off never
- * happened. Anything else in between and it does nothing.
+ * Puts the edits back to where they were at `mark` when everything since is
+ * one undo step, as a drag's changes are, and leaves nothing to redo: a drag
+ * called off never happened. Anything else in between and it does nothing.
  */
-export function revertEdits(before: ModelEdits): void {
+export function revertEdits(mark: EditMark): void {
   set((state) => {
     const past = state.editHistory.past;
-    if (state.edits === before || past[past.length - 1] !== before) return {};
-    return { edits: before, editHistory: { past: past.slice(0, -1), future: [], coalesce: null } };
+    if (state.edits === mark.edits || !past.length || (past[past.length - 2] ?? null) !== mark.top) return {};
+    const { edits } = applyStep(state.edits, past[past.length - 1]);
+    return { edits, editHistory: { past: past.slice(0, -1), future: [], coalesce: null } };
   });
 }
 
@@ -117,10 +126,11 @@ export function undoEdit(): void {
   set((state) => {
     const { past, future } = state.editHistory;
     if (!past.length) return {};
+    const { edits, back } = applyStep(state.edits, past[past.length - 1]);
     return {
-      edits: past[past.length - 1],
-      editHistory: { past: past.slice(0, -1), future: [state.edits, ...future], coalesce: null },
-      ui: { ...state.ui, selection: keep(state.ui.selection, past[past.length - 1]) },
+      edits,
+      editHistory: { past: past.slice(0, -1), future: [back, ...future], coalesce: null },
+      ui: { ...state.ui, selection: keep(state.ui.selection, edits) },
     };
   });
 }
@@ -129,10 +139,11 @@ export function redoEdit(): void {
   set((state) => {
     const { past, future } = state.editHistory;
     if (!future.length) return {};
+    const { edits, back } = applyStep(state.edits, future[0]);
     return {
-      edits: future[0],
-      editHistory: { past: [...past, state.edits], future: future.slice(1), coalesce: null },
-      ui: { ...state.ui, selection: keep(state.ui.selection, future[0]) },
+      edits,
+      editHistory: { past: [...past, back], future: future.slice(1), coalesce: null },
+      ui: { ...state.ui, selection: keep(state.ui.selection, edits) },
     };
   });
 }
@@ -291,7 +302,7 @@ export function clearEditsFor(keys: string[]): void {
   const gone = new Set(keys);
   const objects = Object.fromEntries(Object.entries(edits.objects).filter(([key]) => !gone.has(key)));
   const shapes = edits.shapes.filter((shape) => !gone.has(shapeKey(shape.id)));
-  commitEdits({ ...edits, objects, shapes });
+  commitEdits({ ...edits, objects, shapes }, undefined, keys);
   const cleared = edits.shapes.filter((shape) => gone.has(shapeKey(shape.id)));
   toast(
     `Cleared ${keys.length} ${keys.length === 1 ? 'change' : 'changes'}.`,
@@ -334,7 +345,7 @@ export function patchObjects(keys: string[], patch: Partial<ObjectEdit>, coalesc
     if (Object.keys(next).length) objects[key] = next;
     else delete objects[key];
   }
-  commitEdits({ ...edits, objects }, coalesce);
+  commitEdits({ ...edits, objects }, coalesce, keys);
 }
 
 /** Back as generated: every edit of these objects, and of their parts, dropped. */
@@ -342,9 +353,14 @@ export function resetObjects(keys: string[]): void {
   const edits = get().edits;
   const objects = { ...edits.objects };
   const targets = new Set(keys);
-  for (const key of Object.keys(objects)) if (targets.has(key) || targets.has(objectOf(key))) delete objects[key];
+  const dropped: string[] = [];
+  for (const key of Object.keys(objects)) {
+    if (!targets.has(key) && !targets.has(objectOf(key))) continue;
+    delete objects[key];
+    dropped.push(key);
+  }
   const shapes = edits.shapes.filter((s) => !targets.has(shapeKey(s.id)));
-  commitEdits({ ...edits, objects, shapes });
+  commitEdits({ ...edits, objects, shapes }, undefined, dropped);
 }
 
 /** Removes objects, and deletes added shapes, among the keys. */
@@ -354,7 +370,7 @@ export function removeObjects(keys: string[]): void {
   const edits = get().edits;
   const objects = { ...edits.objects };
   for (const key of others) objects[key] = { ...objects[key], removed: true };
-  commitEdits({ ...edits, objects, shapes: edits.shapes.filter((s) => !shapes.has(shapeKey(s.id))) });
+  commitEdits({ ...edits, objects, shapes: edits.shapes.filter((s) => !shapes.has(shapeKey(s.id))) }, undefined, others);
   // Water stays selected, for the choice of keeping its hollow.
   if (!others.length || others.some((key) => kindOf(key) !== 'water')) setSelection([]);
   const deleted = edits.shapes.filter((s) => shapes.has(shapeKey(s.id)));
@@ -366,7 +382,9 @@ export function removeObjects(keys: string[]): void {
 export function restoreObjects(keys: string[]): void {
   const edits = get().edits;
   const objects = { ...edits.objects };
+  const touched: string[] = [];
   const put = (key: string, edit: ObjectEdit) => {
+    touched.push(key);
     if (Object.keys(edit).length) objects[key] = edit;
     else delete objects[key];
   };
@@ -383,7 +401,7 @@ export function restoreObjects(keys: string[]): void {
       put(twin, bridge);
     }
   }
-  commitEdits({ ...edits, objects });
+  commitEdits({ ...edits, objects }, undefined, touched);
 }
 
 // ---------------------------------------------------------------- layers
@@ -442,7 +460,7 @@ export function deleteLayer(id: string): void {
   }
   const moved = new Set(edits.shapes.filter((shape) => shape.layer === id).map((shape) => shape.id));
   const shapes = edits.shapes.map((shape) => (moved.has(shape.id) ? { ...shape, layer: shapeGroup(shape.kind) } : shape));
-  commitEdits({ ...edits, layers: edits.layers.filter((l) => l.id !== id), objects, shapes });
+  commitEdits({ ...edits, layers: edits.layers.filter((l) => l.id !== id), objects, shapes }, undefined, members);
   toast(
     `Deleted ${layer.name}.`,
     'info',
@@ -570,7 +588,21 @@ let started = false;
 let latestSent = 0;
 
 function setPending(editsPending: boolean): void {
-  set((state) => (state.ui.editsPending === editsPending ? {} : { ui: { ...state.ui, editsPending } }));
+  set((state) => (state.ui.editsPending === editsPending ? {} : { ui: { ...state.ui, editsPending, editsSince: Date.now() } }));
+}
+
+/** The worker answered, so a wait that goes on counts from now. */
+function heard(): void {
+  set((state) => (state.ui.editsPending ? { ui: { ...state.ui, editsSince: Date.now() } } : {}));
+}
+
+/**
+ * Stops an edit update taking far too long, stuck in a loop, say. It can't
+ * stop part way, so the worker goes, and the model has to be generated again.
+ */
+export function stopEditUpdates(): void {
+  getEngine().stopEdits();
+  toast('Stopped updating the model. Generate it again to see your latest edits.', 'info');
 }
 
 export function setNotes(editNotes: Record<string, string>): void {
@@ -601,6 +633,7 @@ function send(): void {
       toast(error instanceof Error ? error.message : 'The edit could not be applied.', 'error');
     })
     .finally(() => {
+      heard();
       if (version === latestSent) setPending(false);
     });
 }

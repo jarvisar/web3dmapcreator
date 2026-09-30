@@ -225,15 +225,21 @@ export function sameLine(a: LonLatLine, b: LonLatLine): boolean {
   const local = (line: LonLatLine): Path => line.map(([lon, lat]) => [(lon - lon0) * kx, (lat - lat0) * ky]);
   const covers = (x: Path, y: Path) => {
     const samples = sample(x, 2);
+    // Past this many misses it can't be the same road, so the rest aren't looked at.
+    const allowed = samples.length - SHARE * samples.length;
     let near = 0;
+    let missed = 0;
     for (const [px, py] of samples) {
+      let hit = false;
       for (let i = 1; i < y.length; i++) {
         const s: Segment = { owner: 0, pick: 0, ax: y[i - 1][0], ay: y[i - 1][1], bx: y[i][0], by: y[i][1] };
         if (segmentDistance(px, py, s) <= TOLERANCE_M) {
-          near++;
+          hit = true;
           break;
         }
       }
+      if (hit) near++;
+      else if (++missed > allowed) return false;
     }
     return near >= SHARE * samples.length;
   };
@@ -324,16 +330,17 @@ export interface Picks {
  * moved or changed.
  */
 export function mergePicks(base: Picks, extra: Picks): Picks & { added: number; replaced: number; left: number } {
-  const incoming: { line: LonLatLine; place: string; box: LineBox }[] = [];
-  for (const route of extra.routes) for (const line of route.lines) incoming.push({ line, place: route.id, box: lineBox(line) });
-  for (const line of extra.hiddenLines) incoming.push({ line, place: 'hidden', box: lineBox(line) });
+  const incoming: { line: LonLatLine; place: string }[] = [];
+  for (const route of extra.routes) for (const line of route.lines) incoming.push({ line, place: route.id });
+  for (const line of extra.hiddenLines) incoming.push({ line, place: 'hidden' });
+  const index = new LineIndex(incoming.map((item) => item.line));
   const already = new Set<LonLatLine>();
   let replaced = 0;
   // Whether one of theirs is this road, noting where ours had it.
   const taken = (line: LonLatLine, place: string) => {
-    const box = lineBox(line);
-    for (const other of incoming) {
-      if (!boxesTouch(box, other.box) || !sameLine(line, other.line)) continue;
+    for (const i of index.near(line)) {
+      const other = incoming[i];
+      if (!sameLine(line, other.line)) continue;
       if (other.place === place) already.add(other.line);
       else replaced++;
       return true;
@@ -374,7 +381,64 @@ export function mergePicks(base: Picks, extra: Picks): Picks & { added: number; 
   return { routes, hiddenLines, added, replaced, left };
 }
 
+/**
+ * Stored lines that aren't any of `picked`. Comparing every pair froze the
+ * page for 13 s with 2,000 lines picked, so only lines whose boxes touch are.
+ */
+export function withoutLines(stored: LonLatLine[], picked: readonly LonLatLine[]): LonLatLine[] {
+  if (!stored.length || !picked.length) return stored;
+  const index = new LineIndex(picked);
+  return stored.filter((line) => !index.near(line).some((i) => sameLine(line, picked[i])));
+}
+
 type LineBox = [number, number, number, number];
+
+// Cells of about 200 m. A line whose box covers more than this many across
+// (a hand-made one, say) is checked against everything instead.
+const INDEX_DEG = 0.002;
+const INDEX_MAX_CELLS = 64;
+
+/** Lines by the grid cells their boxes cover, to find the ones near another line without looking at them all. */
+class LineIndex {
+  private readonly boxes: LineBox[];
+  private readonly cells = new Map<number, number[]>();
+  private readonly wide: number[] = [];
+
+  constructor(lines: readonly LonLatLine[]) {
+    this.boxes = lines.map(lineBox);
+    this.boxes.forEach((box, i) => {
+      const indexed = this.visit(box, (key) => {
+        const list = this.cells.get(key);
+        if (list) list.push(i);
+        else this.cells.set(key, [i]);
+      });
+      if (!indexed) this.wide.push(i);
+    });
+  }
+
+  /** Calls `fn` with each cell a box covers, or returns false when that's too many. */
+  private visit(box: LineBox, fn: (key: number) => void): boolean {
+    const x0 = Math.floor(box[0] / INDEX_DEG);
+    const x1 = Math.floor(box[2] / INDEX_DEG);
+    const y0 = Math.floor(box[1] / INDEX_DEG);
+    const y1 = Math.floor(box[3] / INDEX_DEG);
+    if (x1 - x0 >= INDEX_MAX_CELLS || y1 - y0 >= INDEX_MAX_CELLS) return false;
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) fn(cellKey(x, y));
+    return true;
+  }
+
+  /** Lines whose boxes touch this line's, in the order they were given. */
+  near(line: LonLatLine): number[] {
+    const box = lineBox(line);
+    const found = new Set<number>();
+    const take = (i: number) => {
+      if (!found.has(i) && boxesTouch(box, this.boxes[i])) found.add(i);
+    };
+    if (!this.visit(box, (key) => this.cells.get(key)?.forEach(take))) this.boxes.forEach((_, i) => take(i));
+    else this.wide.forEach(take);
+    return [...found].sort((a, b) => a - b);
+  }
+}
 
 // A little over sameLine's tolerance, so the box test never misses a match.
 const BOX_MARGIN_M = TOLERANCE_M + 1;

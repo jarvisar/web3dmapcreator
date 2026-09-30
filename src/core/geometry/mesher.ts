@@ -114,8 +114,23 @@ export function clipRegion(polygons: MultiPolygon): ClipRegion {
   return { polygons, box, rectangular };
 }
 
+/**
+ * Caps worked out for polygons, by polygon, for meshing the same ones again
+ * at other heights: a shape made taller keeps its pieces, and cutting a
+ * draped piece with thousands of holes from the lattice took a second.
+ */
+export interface CapCache {
+  caps: WeakMap<Polygon, { drape: number; lattice: PrismSolid['lattice']; cap: Cap; expected: number; result: 'ok' | 'fallback' }>;
+  /** What a polygon that wouldn't mesh whole was shrunk into, meshed in its place next time. */
+  shrunk: WeakMap<Polygon, Polygon[]>;
+}
+
+export function capCache(): CapCache {
+  return { caps: new WeakMap(), shrunk: new WeakMap() };
+}
+
 /** Mesh one solid into `out`, optionally keeping only what lies inside `clip`. */
-export function meshSolid(solid: Solid, out: MeshBuilder, clip?: MultiPolygon | ClipRegion, stats?: MeshStats): void {
+export function meshSolid(solid: Solid, out: MeshBuilder, clip?: MultiPolygon | ClipRegion, stats?: MeshStats, caps?: CapCache): void {
   const region = clip && !Array.isArray(clip) ? clip : clip ? clipRegion(clip) : undefined;
   if (solid.kind === 'cap') {
     const result = meshCap(solid, out, region);
@@ -141,7 +156,8 @@ export function meshSolid(solid: Solid, out: MeshBuilder, clip?: MultiPolygon | 
     if (!inside) polygons = intersection([solid.polygon], region.polygons);
   }
   for (const polygon of polygons) {
-    let result = meshPrism(polygon, solid, out, false, true);
+    const shrunk = caps?.shrunk.get(polygon);
+    let result = shrunk ? 'pinched' : meshPrism(polygon, solid, out, false, true, caps);
     // Rings touching at a vertex (a pinch), or a hole's corner lying on
     // another ring's edge, which defeats both triangulators. A draped cap
     // whose constrained triangulation failed would fall back to a flat film,
@@ -150,8 +166,10 @@ export function meshSolid(solid: Solid, out: MeshBuilder, clip?: MultiPolygon | 
     // attempt.
     if (result === 'pinched' || result === 'failed' || result === 'fallback') {
       result = 'ok';
-      for (const piece of shrink(polygon)) {
-        const r = meshPrism(piece, solid, out, true);
+      const pieces = shrunk ?? shrink(polygon);
+      if (caps && !shrunk) caps.shrunk.set(polygon, pieces);
+      for (const piece of pieces) {
+        const r = meshPrism(piece, solid, out, true, false, caps);
         if (r === 'failed') result = 'failed';
         else if (r === 'fallback' && result === 'ok') result = 'fallback';
       }
@@ -227,31 +245,39 @@ export function meshPrism(
   out: MeshBuilder,
   allowPinch = false,
   strict = false,
+  caps?: CapCache,
 ): 'ok' | 'fallback' | 'pinched' | 'failed' {
-  const rings = prepareRings(polygon, solid.drape);
-  if (!rings) return 'failed';
-  // Checked after densifying, which can put a vertex right on a touching corner.
-  if (!allowPinch && isPinched(rings)) return 'pinched';
-  const expected = polygonArea(rings);
-  if (expected <= 1e-8) return 'failed';
-
   let cap: Cap | null = null;
   let result: 'ok' | 'fallback' = 'ok';
-  if (solid.drape > 0 && solid.lattice) {
-    // The lattice's edges supply the points along the outline, so it isn't densified.
-    const outline = prepareRings(polygon, 0);
-    if (outline) cap = latticeCap(outline, solid.lattice, polygonArea(outline));
+  let expected: number;
+  const known = caps?.caps.get(polygon);
+  if (known && known.drape === solid.drape && sameLattice(known.lattice, solid.lattice)) {
+    ({ cap, expected, result } = known);
+  } else {
+    const rings = prepareRings(polygon, solid.drape);
+    if (!rings) return 'failed';
+    // Checked after densifying, which can put a vertex right on a touching corner.
+    if (!allowPinch && isPinched(rings)) return 'pinched';
+    expected = polygonArea(rings);
+    if (expected <= 1e-8) return 'failed';
+
+    if (solid.drape > 0 && solid.lattice) {
+      // The lattice's edges supply the points along the outline, so it isn't densified.
+      const outline = prepareRings(polygon, 0);
+      if (outline) cap = latticeCap(outline, solid.lattice, polygonArea(outline));
+    }
+    if (!cap && solid.drape > 0) {
+      cap = constrainedCap(rings, solid.drape, solid.lattice, expected);
+      if (!cap && strict) return 'fallback';
+      if (!cap) result = 'fallback';
+    }
+    if (!cap) cap = earcutCap(rings, expected);
+    // Ear clipping can go wrong around many holes close together (a harbour
+    // full of piers). The constrained triangulation of the outline alone copes.
+    if (!cap && solid.drape <= 0) cap = constrainedCap(rings, 0, undefined, expected);
+    if (!cap) return 'failed';
+    caps?.caps.set(polygon, { drape: solid.drape, lattice: solid.lattice, cap, expected, result });
   }
-  if (!cap && solid.drape > 0) {
-    cap = constrainedCap(rings, solid.drape, solid.lattice, expected);
-    if (!cap && strict) return 'fallback';
-    if (!cap) result = 'fallback';
-  }
-  if (!cap) cap = earcutCap(rings, expected);
-  // Ear clipping can go wrong around many holes close together (a harbour
-  // full of piers). The constrained triangulation of the outline alone copes.
-  if (!cap && solid.drape <= 0) cap = constrainedCap(rings, 0, undefined, expected);
-  if (!cap) return 'failed';
 
   const top = solid.top;
   const bottom = solid.bottom;
@@ -304,6 +330,11 @@ export function meshPrism(
     }
   }
   return result;
+}
+
+// A height field hands out a new lattice object each time.
+function sameLattice(a: PrismSolid['lattice'], b: PrismSolid['lattice']): boolean {
+  return a === b || (a !== undefined && b !== undefined && a.x0 === b.x0 && a.y0 === b.y0 && a.step === b.step);
 }
 
 function withinBox(positions: ArrayLike<number>, box: Box): boolean {

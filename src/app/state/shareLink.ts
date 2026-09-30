@@ -16,6 +16,11 @@ import type { SvgSettings } from '../svgmap/settings';
 
 /** Longest e= or p= a link gets. Chat apps and mail cut longer links off. */
 export const MAX_LINK_EXTRA = 6000;
+// The longest read back, well past what a copied link carries, and the most
+// it may inflate to. A crafted 117 KB link inflated to 700 MB, and since a
+// link stays in the address bar until it's read, every reload crashed again.
+const MAX_READ = 4 * MAX_LINK_EXTRA;
+export const MAX_UNPACKED = 2_000_000;
 
 export interface SharedPicks {
   routes: SvgRoute[];
@@ -30,9 +35,13 @@ function pack(value: unknown): string {
 }
 
 function unpack(value: string): unknown {
+  if (value.length > MAX_READ) return null;
   try {
     const binary = atob(value.replace(/-/g, '+').replace(/_/g, '/'));
-    return JSON.parse(strFromU8(inflateSync(Uint8Array.from(binary, (c) => c.charCodeAt(0)))));
+    // Inflated into a buffer one byte past the limit, so filling it means too much.
+    const bytes = inflateSync(Uint8Array.from(binary, (c) => c.charCodeAt(0)), { out: new Uint8Array(MAX_UNPACKED + 1) });
+    if (bytes.length > MAX_UNPACKED) return null;
+    return JSON.parse(strFromU8(bytes));
   } catch {
     return null;
   }

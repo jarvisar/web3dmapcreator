@@ -29,6 +29,8 @@ const TILED_ABOVE_MM = 250;
 const TILE_MM = 50;
 const TILE_MARGIN_MM = 1;
 export const SLIVER_MM = 0.1;
+/** Slab pieces smaller than this are dropped. */
+export const SLAB_MINIMUM_MM2 = MINIMUM_AREA_MM2 * 0.4;
 
 export type LandSurfaces = Record<SurfaceCategory, MultiPolygon>;
 
@@ -102,7 +104,7 @@ export async function buildLand(
       // road ribbons) can't print as a colour of their own, so open them away.
       return offsetPolygons(offsetPolygons(kept, -SLIVER_MM, 'round'), SLIVER_MM, 'round');
     });
-    result[category] = dropSmall(intersection(region, ctx.cropSet), MINIMUM_AREA_MM2 * 0.4);
+    result[category] = dropSmall(intersection(region, ctx.cropSet), SLAB_MINIMUM_MM2);
     ctx.stats[`land_${category}_polygons`] = result[category].length;
     await ctx.progress.checkpoint(0.5 + (0.5 * (i + 1)) / order.length);
   }

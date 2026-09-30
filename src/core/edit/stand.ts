@@ -6,6 +6,7 @@
 // through whatever was under them, and a column through a building changes
 // filament on every layer of it.
 
+import type { Paths64 } from 'clipper2-ts';
 import { boxesOverlap, ClipSet, difference, intersection, multiArea, multiBounds, ringBounds, SCALE, splitToTiles, union, type Box } from '../geometry/polygon';
 import type { CapSolid, HeightFn, PrismSolid, Solid } from '../geometry/solid';
 import { interiorPoints } from '../terrain/heightfield';
@@ -227,53 +228,135 @@ export function levelOver(holder: Holder, region: MultiPolygon): number {
  */
 export function standPieces(footprint: MultiPolygon, base: number | null, top: number | null, holders: readonly Holder[], wet: readonly WetBody[], embed: number): StandPiece[] {
   if (!footprint.length) return [];
+  if (base === null || top === null) return restPieces(footprint, wet);
+  const held = heldPieces(footprint, base, holders, embed);
+  return [...heldAt(held, top), ...restPieces(held.remaining, wet)];
+}
+
+/**
+ * What holders hold up of a flat shape's footprint, and what's left for the
+ * water and the ground. It doesn't depend on the water or the shape's own
+ * height, so it's kept while only those change: a box over downtown San
+ * Francisco stands on some 9,000 roofs.
+ */
+export interface Held {
+  /** `top` is the holder's own top over the piece, to tell a shape sunk into it. */
+  pieces: { polygons: MultiPolygon; bottom: number; top: number; kind: string }[];
+  remaining: MultiPolygon;
+}
+
+export function heldPieces(footprint: MultiPolygon, base: number, holders: readonly Holder[], embed: number): Held {
+  if (!footprint.length || !holders.length) return { pieces: [], remaining: footprint };
+  const box = multiBounds(footprint);
+  // Only the footprint near each holder is clipped against it: a title
+  // across a city passes thousands.
+  const near = new ClipSet([footprint]);
+  const found: { region: MultiPolygon; box: Box; level: number; top: number; kind: string }[] = [];
+  for (const holder of holders) {
+    if (holder.bottom >= base || !boxesOverlap(holder.box, box)) continue;
+    const local = near.polygonsWithin(holder.box);
+    if (!local.length) continue;
+    const region = intersection(local, [holder.polygon]);
+    if (multiArea(region) < MIN_OVERLAP_MM2) continue;
+    const level = levelOver(holder, region);
+    if (!Number.isFinite(level)) continue;
+    // Sunk into a deck, it stays above the deck's underside rather than sticking out below it.
+    const floor = holder.underside ? highestOver(holder.underside, region) + embed : -Infinity;
+    found.push({ region, box: multiBounds(region), level: Math.min(level, Math.max(base, floor)), top: level, kind: holder.kind });
+  }
+  found.sort((a, b) => b.level - a.level);
+  // Each region less the higher ones already taken. Only those overlapping
+  // it can take anything, and taking every region from what was left one
+  // at a time cost 9 s for a 30 mm title over San Francisco.
+  const pieces: Held['pieces'] = [];
+  const taken = new BoxGrid(box, found.length);
+  for (const item of found) {
+    const over = taken.overlapping(item.box);
+    const piece = over.length ? difference(item.region, over.length === 1 ? over[0] : union(...over)) : item.region;
+    if (multiArea(piece) < MIN_OVERLAP_MM2) continue;
+    taken.add(item.box, item.region);
+    pieces.push({ polygons: piece, bottom: item.level - embed, top: item.top, kind: item.kind });
+  }
+  const regions = taken.values;
+  const remaining = regions.length ? difference(footprint, regions.length === 1 ? regions[0] : union(...regions)) : footprint;
+  return { pieces, remaining };
+}
+
+/** Held pieces under a shape with this top. */
+export function heldAt(held: Held, top: number): StandPiece[] {
+  return held.pieces.map((p) => ({ polygons: p.polygons, bottom: p.bottom, buried: p.top >= top - 1e-6 ? p.kind : undefined, held: true }));
+}
+
+/** The rest of a footprint: over each body of water, then the ground. */
+export function restPieces(footprint: MultiPolygon, wet: readonly WetBody[]): StandPiece[] {
+  const pieces: StandPiece[] = [];
+  if (!footprint.length) return pieces;
   const box = multiBounds(footprint);
   let remaining = footprint;
-  const pieces: StandPiece[] = [];
-
-  if (base !== null && top !== null && holders.length) {
-    // Only the footprint near each holder is clipped against it: a title
-    // across a city passes thousands.
-    const near = new ClipSet([footprint]);
-    const found: { region: MultiPolygon; box: Box; level: number; buried?: string }[] = [];
-    for (const holder of holders) {
-      if (holder.bottom >= base || !boxesOverlap(holder.box, box)) continue;
-      const local = near.polygonsWithin(holder.box);
-      if (!local.length) continue;
-      const region = intersection(local, [holder.polygon]);
-      if (multiArea(region) < MIN_OVERLAP_MM2) continue;
-      const level = levelOver(holder, region);
-      if (!Number.isFinite(level)) continue;
-      // Sunk into a deck, it stays above the deck's underside rather than sticking out below it.
-      const floor = holder.underside ? highestOver(holder.underside, region) + embed : -Infinity;
-      found.push({ region, box: multiBounds(region), level: Math.min(level, Math.max(base, floor)), buried: level >= top - 1e-6 ? holder.kind : undefined });
-    }
-    found.sort((a, b) => b.level - a.level);
-    // Each region less the higher ones already taken. Only those overlapping
-    // it can take anything, and taking every region from what was left one
-    // at a time cost 9 s for a 30 mm title over San Francisco.
-    const taken: { region: MultiPolygon; box: Box }[] = [];
-    for (const item of found) {
-      const over = taken.filter((t) => boxesOverlap(t.box, item.box)).map((t) => t.region);
-      const piece = over.length ? difference(item.region, over.length === 1 ? over[0] : union(...over)) : item.region;
-      if (multiArea(piece) < MIN_OVERLAP_MM2) continue;
-      taken.push(item);
-      pieces.push({ polygons: piece, bottom: item.level - embed, buried: item.buried, held: true });
-    }
-    if (taken.length) remaining = difference(footprint, taken.length === 1 ? taken[0].region : union(...taken.map((t) => t.region)));
-  }
-
   for (const body of wet) {
     if (!remaining.length) break;
     if (!boxesOverlap(body.box, box)) continue;
-    const piece = intersection(remaining, body.polygons);
+    // The body cut to the box first: a bay's outline runs the length of the model.
+    const local = wetSet(body.polygons).polygonsWithin(box, 0.01);
+    if (!local.length) continue;
+    const piece = intersection(remaining, local);
     if (multiArea(piece) < MIN_OVERLAP_MM2) continue;
-    remaining = difference(remaining, body.polygons);
+    remaining = difference(remaining, local);
     pieces.push({ polygons: piece, bottom: body.footing, level: body.level });
   }
-
   if (remaining.length && multiArea(remaining) >= MIN_OVERLAP_MM2) pieces.push({ polygons: remaining, bottom: null });
   return pieces;
+}
+
+/** Regions by their boxes, in a grid, so the ones overlapping a box are found without looking at all of them. */
+class BoxGrid {
+  readonly values: MultiPolygon[] = [];
+  private readonly boxes: Box[] = [];
+  private readonly cells = new Map<number, number[]>();
+  private readonly size: number;
+  private readonly cols: number;
+
+  constructor(
+    private readonly bounds: Box,
+    count: number,
+  ) {
+    const span = Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
+    const across = Math.max(1, Math.min(256, Math.ceil(Math.sqrt(count))));
+    this.size = Math.max(span / across, 1e-3);
+    this.cols = Math.ceil((bounds[2] - bounds[0]) / this.size) + 1;
+  }
+
+  private visit(box: Box, fn: (cell: number) => void): void {
+    const c0 = Math.max(0, Math.floor((box[0] - this.bounds[0]) / this.size));
+    const c1 = Math.max(0, Math.floor((box[2] - this.bounds[0]) / this.size));
+    const r0 = Math.max(0, Math.floor((box[1] - this.bounds[1]) / this.size));
+    const r1 = Math.max(0, Math.floor((box[3] - this.bounds[1]) / this.size));
+    for (let r = r0; r <= r1; r++) for (let c = Math.min(c0, this.cols - 1); c <= Math.min(c1, this.cols - 1); c++) fn(r * this.cols + c);
+  }
+
+  add(box: Box, value: MultiPolygon): void {
+    const index = this.values.length;
+    this.values.push(value);
+    this.boxes.push(box);
+    this.visit(box, (cell) => {
+      const list = this.cells.get(cell);
+      if (list) list.push(index);
+      else this.cells.set(cell, [index]);
+    });
+  }
+
+  overlapping(box: Box): MultiPolygon[] {
+    const seen = new Set<number>();
+    const out: MultiPolygon[] = [];
+    this.visit(box, (cell) => {
+      for (const index of this.cells.get(cell) ?? []) {
+        if (seen.has(index)) continue;
+        seen.add(index);
+        if (boxesOverlap(this.boxes[index], box)) out.push(this.values[index]);
+      }
+    });
+    return out;
+  }
 }
 
 /**
@@ -334,6 +417,49 @@ function ringLength(ring: readonly (readonly number[])[]): number {
     length += Math.hypot(bx - ax, by - ay);
   }
   return length;
+}
+
+const wetSets = new WeakMap<Polygon[], ClipSet>();
+
+/** A body's floor for cutting to boxes, kept while the floor is the same one. */
+function wetSet(polygons: Polygon[]): ClipSet {
+  let set = wetSets.get(polygons);
+  if (!set) wetSets.set(polygons, (set = new ClipSet([polygons])));
+  return set;
+}
+
+/**
+ * The wet floors a box reaches, as a key: all a shape standing in that box
+ * takes from the earth. With the earth's own key in every shape's signature,
+ * one shape moved in water that spans the model built all of them again.
+ */
+export function wetKey(wet: readonly WetBody[], box: Box): string {
+  let key = '';
+  for (const body of wet) {
+    if (!boxesOverlap(body.box, box)) continue;
+    key += `${body.index}:${body.level}:${body.footing}:${edgesKey(wetSet(body.polygons).within(box, 0.01))};`;
+  }
+  return key;
+}
+
+/** A hash of the edges of some paths, whichever vertex a ring starts at and whatever order they come in. */
+function edgesKey(paths: Paths64): string {
+  let sum = 0;
+  let mix = 0;
+  let count = 0;
+  for (const path of paths) {
+    for (let i = 0; i < path.length; i++) {
+      const a = path[i];
+      const b = path[(i + 1) % path.length];
+      let h = Math.imul(a.x ^ Math.imul(a.y, 0x27d4eb2d), 0x85ebca6b);
+      h = Math.imul(h ^ b.x ^ Math.imul(b.y, 0x165667b1), 0xc2b2ae35);
+      h ^= h >>> 15;
+      sum = (sum + h) | 0;
+      mix ^= Math.imul(h, 0x9e3779b1);
+      count++;
+    }
+  }
+  return `${count}.${(sum >>> 0).toString(36)}.${(mix >>> 0).toString(36)}`;
 }
 
 /** Where a footprint is wet: the pieces over each body, for a shape's top. */

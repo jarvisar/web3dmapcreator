@@ -17,6 +17,7 @@ interface Pending {
   resolve: (value: never) => void;
   reject: (error: Error) => void;
   onProgress?: (event: ProgressEvent) => void;
+  sentAt: number;
 }
 
 export class CancelledError extends Error {
@@ -35,6 +36,10 @@ export interface EngineOptions {
 // The pipeline yields often, but a single native-speed loop can still hold
 // the worker for a moment. After this long the worker is replaced instead.
 const CANCEL_GRACE_MS = 1500;
+// An edit or export waiting this long when a new model is asked for is
+// taken as stuck, and the worker is replaced rather than the model queued
+// behind it for good.
+const STUCK_MS = 10_000;
 
 export class EngineClient {
   private worker: Worker | null = null;
@@ -109,7 +114,7 @@ export class EngineClient {
 
   private request<T>(message: Pending['message'], onProgress?: (event: ProgressEvent) => void): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(message.id, { message, resolve: resolve as (value: never) => void, reject, onProgress });
+      this.pending.set(message.id, { message, resolve: resolve as (value: never) => void, reject, onProgress, sentAt: performance.now() });
       try {
         this.ensureWorker().postMessage(message);
       } catch (error) {
@@ -122,7 +127,10 @@ export class EngineClient {
   }
 
   generate(request: GenerateRequest, onProgress?: (event: ProgressEvent) => void): Promise<GenerateResult> {
-    if (this.activeGenerate !== null) this.cancel();
+    const now = performance.now();
+    const stuck = [...this.pending].filter(([, p]) => p.message.type !== 'generate' && now - p.sentAt > STUCK_MS).map(([id]) => id);
+    if (stuck.length) this.replaceWorker(this.activeGenerate !== null ? [...stuck, this.activeGenerate] : stuck);
+    else if (this.activeGenerate !== null) this.cancel();
     const id = this.nextId++;
     this.activeGenerate = id;
     return this.request<GenerateResult>({ type: 'generate', id, request }, onProgress);
@@ -142,30 +150,56 @@ export class EngineClient {
 
   /** Cancel the running generation. The promise rejects with CancelledError. */
   cancel(): void {
-    const id = this.activeGenerate;
-    if (id === null || !this.worker) return;
+    if (this.activeGenerate !== null) this.stop(this.activeGenerate);
+  }
+
+  /** Cancel a download being made. Its promise rejects with CancelledError. */
+  cancelExport(): void {
+    for (const [id, pending] of [...this.pending]) if (pending.message.type === 'export') this.stop(id);
+  }
+
+  /**
+   * Stop edits being applied, for one taking far too long. An update can't
+   * stop part way, so the worker is replaced, and the model with it.
+   */
+  stopEdits(): void {
+    const ids = [...this.pending].filter(([, p]) => p.message.type === 'edit').map(([id]) => id);
+    if (ids.length) this.replaceWorker(ids);
+  }
+
+  /** Asks the worker to stop a request, and replaces the worker when it's still at it after a moment. */
+  private stop(id: number): void {
+    if (!this.worker) return;
     this.worker.postMessage({ type: 'cancel', id } satisfies ToWorker);
     const worker = this.worker;
     setTimeout(() => {
-      if (!this.pending.has(id) || this.worker !== worker) return;
-      // Still busy: replace the worker. Downloaded data cached in it is lost,
-      // and so is its model, so pending exports fail. Each generate cancels
-      // the one before, so only the newest is sent again to the new worker.
-      const generates = [...this.pending.values()].filter((p) => p.message.type === 'generate');
-      const retry = generates.length && generates[generates.length - 1].message.id !== id ? generates[generates.length - 1] : null;
-      this.dropWorker();
-      for (const pending of generates) {
-        if (pending === retry) continue;
-        this.pending.delete(pending.message.id);
-        pending.reject(new CancelledError());
-      }
-      if (retry) this.pending.delete(retry.message.id);
-      this.rejectAll(() => new Error('The generator was restarted. Generate the model again.'));
-      if (retry) {
-        this.activeGenerate = retry.message.id;
-        this.request(retry.message, retry.onProgress).then(retry.resolve as (value: unknown) => void, retry.reject);
-      }
+      if (this.pending.has(id) && this.worker === worker) this.replaceWorker([id]);
     }, CANCEL_GRACE_MS);
+  }
+
+  /**
+   * Replaces the worker. Downloaded data cached in it is lost, and so is its
+   * model, so whatever else was waiting fails. The requests given are
+   * cancelled, and so is every generate but the newest, which is sent again
+   * to the new worker unless it's one of them.
+   */
+  private replaceWorker(cancelled: number[]): void {
+    const stopped = new Set(cancelled);
+    const generates = [...this.pending.values()].filter((p) => p.message.type === 'generate');
+    const newest = generates[generates.length - 1];
+    const retry = newest && !stopped.has(newest.message.id) ? newest : null;
+    this.dropWorker();
+    for (const [id, pending] of [...this.pending]) {
+      if (pending === retry || (!stopped.has(id) && pending.message.type !== 'generate')) continue;
+      this.pending.delete(id);
+      pending.reject(new CancelledError());
+    }
+    if (retry) this.pending.delete(retry.message.id);
+    this.rejectAll(() => new Error('The generator was restarted. Generate the model again.'));
+    if (retry) {
+      this.activeGenerate = retry.message.id;
+      this.request(retry.message, retry.onProgress).then(retry.resolve as (value: unknown) => void, retry.reject);
+    }
   }
 }
 

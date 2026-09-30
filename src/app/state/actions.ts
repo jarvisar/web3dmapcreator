@@ -156,6 +156,11 @@ export function cancelGeneration(): void {
   getEngine().cancel();
 }
 
+/** Stops a download being made. The worker stops at its next checkpoint, or is replaced. */
+export function cancelExport(): void {
+  if (useApp.getState().exporting.status === 'running') getEngine().cancelExport();
+}
+
 export async function exportModel(): Promise<void> {
   const state = useApp.getState();
   const result = state.generation.result;
@@ -188,7 +193,7 @@ export async function exportModel(): Promise<void> {
     if (out.missing) toast(`Downloaded ${out.fileName}, but part of the model is missing from it. See Export for details.`, 'error');
     else toast(`Downloaded ${out.fileName} (${formatBytes(out.data.size)})`, 'success');
   } catch (error) {
-    patchExporting({ status: 'idle', progress: null, error: describe(error) });
+    patchExporting({ status: 'idle', progress: null, error: error instanceof CancelledError ? null : describe(error) });
   }
 }
 

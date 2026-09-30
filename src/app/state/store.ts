@@ -34,6 +34,7 @@ import { normalizeArea } from '../lib/area';
 import { type PieceFit, areaShapeOf, fitAreaToPiece, pieceLayout } from '../svgmap/piece';
 import { useSvgRender } from '../svgmap/render';
 import { type CleanupPreset, type LaserPalette, type PieceSize, type SvgSettings, cleanupForPreset, defaultSvgSettings } from '../svgmap/settings';
+import { stepBetween, type EditStep } from './history';
 import { hasPicks, loadSaved, readBackup, writeBackup, type Backup } from './persist';
 import type { Options } from './options';
 import { type Output, readHash } from './shareLink';
@@ -58,8 +59,8 @@ export type LayerKey = 'terrain' | 'water' | 'land' | 'roads' | 'bridges' | 'bui
 export type EditTool = 'select' | 'several' | 'text' | 'box' | 'cylinder' | 'pin' | 'path' | 'area';
 
 export interface EditHistory {
-  past: ModelEdits[];
-  future: ModelEdits[];
+  past: EditStep[];
+  future: EditStep[];
   /** Changes with the same tag in a row (a drag, typing) undo as one. */
   coalesce: string | null;
 }
@@ -140,6 +141,8 @@ export interface UiState {
   selection: string[];
   /** The worker hasn't sent back the model for the latest edits yet. */
   editsPending: boolean;
+  /** When the wait for it began, or the worker last answered, to tell an update that's stuck. */
+  editsSince: number;
   /** One point of a selected path or area, tapped to delete it. */
   activePoint: { shape: string; index: number } | null;
   /** What the worker noted about added shapes, by key. */
@@ -288,7 +291,7 @@ function initialState(): AppState {
     palette: saved.palette ?? structuredClone(DEFAULT_PALETTE),
     exportSettings: saved.exportSettings ?? { ...DEFAULT_EXPORT },
     edits,
-    editHistory: { past: edits !== saved.edits ? [saved.edits] : [], future: [], coalesce: null },
+    editHistory: { past: edits !== saved.edits ? [stepBetween(saved.edits, edits)] : [], future: [], coalesce: null },
     svg,
     customFontName: null,
     customFontId: null,
@@ -312,6 +315,7 @@ function initialState(): AppState {
       tool: 'select',
       selection: [],
       editsPending: false,
+      editsSince: 0,
       activePoint: null,
       editNotes: {},
       shownBounds: null,
@@ -508,7 +512,7 @@ export function applyOptions(options: Options, includeArea = true): Brought | nu
     svg,
     ...(savedMap ? { placeName: savedMap.placeName, fileName: savedMap.fileName } : {}),
     // Undo takes the file's edits back out.
-    ...(edits ? { edits, editHistory: { past: [...state.editHistory.past, state.edits].slice(-HISTORY_LIMIT), future: [], coalesce: null } } : {}),
+    ...(edits ? { edits, editHistory: { past: [...state.editHistory.past, stepBetween(state.edits, edits)].slice(-HISTORY_LIMIT), future: [], coalesce: null } } : {}),
     generation: withStale(state.generation, area, imported.settings),
     ui: {
       ...state.ui,

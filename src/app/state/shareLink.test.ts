@@ -1,8 +1,9 @@
+import { deflateSync, strToU8 } from 'fflate';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emptyEdits, type ModelEdits } from '../../core/edit/types';
 import { DEFAULT_AREA } from '../../core/settings';
 import { defaultSvgSettings } from '../svgmap/settings';
-import { MAX_LINK_EXTRA, parseHash, shareUrl } from './shareLink';
+import { MAX_LINK_EXTRA, MAX_UNPACKED, parseHash, shareUrl } from './shareLink';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -55,5 +56,16 @@ describe('share links', () => {
     const shared = parseHash('#a=-87.6,41.88,1000,1000,0,rectangle&e=not-deflate');
     expect(shared.area).not.toBeNull();
     expect(shared.edits).toBeNull();
+  });
+
+  it('refuse edits that inflate past the limit, or a part too long for any link we make', () => {
+    // A few kilobytes that inflate to megabytes.
+    const bomb = deflateSync(strToU8('{"objects":{"b:1":{"heightM":' + '0'.repeat(MAX_UNPACKED + 10) + '}}}'), { level: 9 });
+    const packed = btoa(String.fromCharCode(...bomb)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    expect(packed.length).toBeLessThan(MAX_LINK_EXTRA);
+    const t = performance.now();
+    expect(parseHash(`#a=-87.6,41.88,1000,1000,0,rectangle&e=${packed}`).edits).toBeNull();
+    expect(performance.now() - t).toBeLessThan(1000);
+    expect(parseHash(`#a=-87.6,41.88,1000,1000,0,rectangle&p=${'A'.repeat(MAX_LINK_EXTRA * 5)}`).picks).toBeNull();
   });
 });

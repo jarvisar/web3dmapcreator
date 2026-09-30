@@ -166,7 +166,11 @@ export function PickOverlay({ index, selected, hover, unit, routes }: { index: P
   for (let line = 0; line < index.count; line++) {
     const owner = index.pick.owners[line];
     if (owner === -1) hidden.push(line);
-    else if (owner >= 0) routed.set(owner, [...(routed.get(owner) ?? []), line]);
+    else if (owner >= 0) {
+      const list = routed.get(owner);
+      if (list) list.push(line);
+      else routed.set(owner, [line]);
+    }
   }
   return (
     <g fill="none" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none">

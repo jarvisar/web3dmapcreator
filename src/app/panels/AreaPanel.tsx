@@ -12,6 +12,8 @@ import { copyText, readClipboardText } from '../lib/browser';
 import { formatInteger, formatNumber, formatRatio, formatSizePair } from '../lib/format';
 import { areaForView } from '../map/mapHandle';
 import { printedSize } from '../state/derived';
+import { editsForArea, picksForArea } from '../state/linkScope';
+import { getEditData } from '../state/model';
 import { shareUrl } from '../state/shareLink';
 import { patchSettings, setArea, setScaleLocked, setSizeUnit, setSvgScale, toast, useApp } from '../state/store';
 import type { SizeUnit } from '../state/store';
@@ -200,7 +202,12 @@ export function AreaPanel() {
   async function copyLink() {
     writeHashNow();
     const state = useApp.getState();
-    const { url, left } = shareUrl(state.area, state.output, state.svg, state.edits);
+    // Only what's on this area goes: edits and picks are kept for every area.
+    const result = state.generation.result;
+    const model = result ? { data: getEditData(), trees: result.parts.some((part) => part.id === 'trees') } : null;
+    const scoped = editsForArea(state.edits, state.area, model);
+    const picked = picksForArea({ routes: state.svg.routes, hiddenLines: state.svg.hiddenLines }, state.area);
+    const { url, left } = shareUrl(state.area, state.output, { ...state.svg, ...picked.picks }, scoped.edits);
     if (!(await copyText(url))) {
       toast('Could not copy to the clipboard', 'error');
       return;
@@ -208,6 +215,12 @@ export function AreaPanel() {
     if (left) {
       const what = left === 'edits' ? 'your edits' : 'your picked roads';
       toast(`Share link copied, without ${what}: there are too many for a link. Export options to share them.`, 'info');
+    } else if (state.output === 'model' && scoped.unplaced) {
+      toast('Share link copied. Changes to buildings, roads and water go in once the model of this area is generated.', 'info');
+    } else if (state.output === 'model' && scoped.left) {
+      toast('Share link copied, with the edits on this area. Ones made elsewhere stay here.', 'info');
+    } else if (state.output === 'svg' && picked.left) {
+      toast('Share link copied, with the picked roads on this map. Ones elsewhere stay here.', 'info');
     } else {
       toast('Share link copied', 'info');
     }

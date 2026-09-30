@@ -3,6 +3,7 @@ import { emptyEdits } from '../../core/edit/types';
 import { DEFAULT_AREA, DEFAULT_EXPORT, DEFAULT_PALETTE, cloneSettings } from '../../core/settings';
 import { defaultSvgSettings } from '../svgmap/settings';
 import { fitAreaToPiece } from '../svgmap/piece';
+import { undoEdit } from './editActions';
 import { decodeOptions, encodeOptions, MAX_OPTIONS_BYTES, type Options } from './options';
 import { applyOptions, resetAllSettings, snapshotKey, useApp, type ResultMeta } from './store';
 
@@ -168,7 +169,9 @@ describe('applying options', () => {
     expect(useApp.getState().svg.routes).toEqual([myRoute]);
     expect(useApp.getState().svg.hiddenLines).toHaveLength(1);
     expect([brought.edits, brought.picks]).toEqual([1, 1]);
-    expect(useApp.getState().editHistory.past.at(-1)).toBe(mine);
+    // Undo takes the file's edits back out.
+    undoEdit();
+    expect(useApp.getState().edits).toEqual(mine);
   });
 
   it('keeps the picked roads here for a file saved without an area', () => {

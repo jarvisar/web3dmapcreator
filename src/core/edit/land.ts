@@ -1,13 +1,22 @@
-// Ground a removed road or building leaves, given back to the land cover it
-// was cleared from: a path taken out of a park is grass again, not a strip
-// of bare terrain. The fill meets the slab it came out of along the old
-// edge, so the part gets a second shell there, which prints like one.
+// Ground a removed road, building or body of water left, given back to the
+// land cover it was cleared from: a path taken out of a park is grass again,
+// not a strip of bare terrain.
+//
+// The cover is laid again around what was vacated the way the land stage
+// lays it (pipeline/land.ts), from each category's ground before anything was
+// cleared and what clears it now, and the fill is what that has and the
+// generated slab lacks. So the fill meets the slab along the slab's own
+// edges, and the part gets a second shell there, which prints like one.
+// Laying the vacated footprint and opening it on its own left holes: the
+// slab's corners stayed rounded where they had met the road, the fill's were
+// rounded where it met the slab, and pieces between crossing roads were too
+// small to keep on their own.
 
-import { ClipSet, clipToBox, difference, dropSmall, intersection, multiBounds, offsetPolygons } from '../geometry/polygon';
-import { SLIVER_MM } from '../pipeline/land';
+import type { Rect64 } from 'clipper2-ts';
+import { boxesOverlap, ClipSet, clipToUnits, difference, intersection, multiBounds, offsetPolygons, polygonArea, SCALE, type Box } from '../geometry/polygon';
+import { SLAB_MINIMUM_MM2, SLIVER_MM } from '../pipeline/land';
 import type { SurfaceCategory } from '../settings';
 import type { MultiPolygon } from '../types';
-import type { TileGrid } from './roads';
 
 export interface LandFill {
   category: SurfaceCategory;
@@ -16,71 +25,86 @@ export interface LandFill {
 
 type Regions = Partial<Record<SurfaceCategory, MultiPolygon>>;
 
-// Smaller than this isn't worth a solid.
-const MINIMUM_MM2 = 0.1;
+/** How far the land stage's opening carries a change: in by SLIVER_MM and out again. */
+export const FILL_REACH_MM = 2 * SLIVER_MM + 0.05;
+// Cover is laid this far past where it's kept, as the land stage's tiles look past theirs.
+const MARGIN_MM = 1;
+// Two runs of the same booleans can differ by rounding, up to about 0.15 µm.
+const DRIFT_MM = 0.0005;
 
-/**
- * Land cover for ground left bare, before thin strips are opened away.
- * `regions` is each category's ground before anything was cleared from it,
- * `blockers` what still stands there now: water, roads and buildings.
- */
-export function bareLand(regions: Regions, order: readonly SurfaceCategory[], vacated: MultiPolygon, blockers: MultiPolygon): LandFill[] {
-  if (!vacated.length) return [];
-  const box = multiBounds(vacated);
-  const free = blockers.length ? difference(vacated, clipToBox(blockers, box, 1)) : vacated;
-  if (!free.length) return [];
-  const out: LandFill[] = [];
-  for (const category of order) {
-    const region = regions[category];
-    if (!region?.length) continue;
-    const polygons = intersection(clipToBox(region, box, 1), free);
-    if (polygons.length) out.push({ category, polygons });
-  }
-  return out;
+/** Pieces wider than rounding. */
+function real(polygons: MultiPolygon): MultiPolygon {
+  return polygons.filter((p) => offsetPolygons([p], -DRIFT_MM).length > 0);
 }
 
-/** Strips too thin to print in a colour of their own go, as the land stage has them. */
-export function openFill(polygons: MultiPolygon): MultiPolygon {
-  return dropSmall(offsetPolygons(offsetPolygons(polygons, -SLIVER_MM, 'round'), SLIVER_MM, 'round'), MINIMUM_MM2);
-}
-
-export function landFill(regions: Regions, order: readonly SurfaceCategory[], vacated: MultiPolygon, blockers: MultiPolygon): LandFill[] {
-  const out: LandFill[] = [];
-  for (const fill of bareLand(regions, order, vacated, blockers)) {
-    const polygons = openFill(fill.polygons);
-    if (polygons.length) out.push({ category: fill.category, polygons });
-  }
-  return out;
-}
-
-/** Land cover and water cut to tiles, as fills ask for them. */
-export class LandTiles {
+export class LandCover {
   private readonly regions: [SurfaceCategory, ClipSet][] = [];
-  private readonly water: ClipSet;
-  private readonly cache = new Map<number, { regions: Regions; water: MultiPolygon }>();
+  private readonly slabs = new Map<SurfaceCategory, ClipSet>();
+  /** The generated water, which keeps land cover off until some of it is left out. */
+  readonly water: ClipSet;
 
-  constructor(
-    land: { regions: Regions; water: MultiPolygon },
-    private readonly grid: TileGrid,
-  ) {
-    for (const [category, polygons] of Object.entries(land.regions)) {
-      if (polygons?.length) this.regions.push([category as SurfaceCategory, new ClipSet([polygons])]);
+  /** `slabs` is each category's land cover as generated. */
+  constructor(land: { regions: Regions; water: MultiPolygon }, slabs: Regions, order: readonly SurfaceCategory[]) {
+    for (const category of order) {
+      const region = land.regions[category];
+      if (!region?.length) continue;
+      this.regions.push([category, new ClipSet([region])]);
+      this.slabs.set(category, new ClipSet([slabs[category] ?? []]));
     }
     this.water = new ClipSet([land.water]);
   }
 
-  tile(tile: number): { regions: Regions; water: MultiPolygon } {
-    let out = this.cache.get(tile);
-    if (!out) {
-      const rect = this.grid.units(tile);
-      const regions: Regions = {};
-      for (const [category, set] of this.regions) {
-        const polygons = set.polygonsWithinRect(rect);
-        if (polygons.length) regions[category] = polygons;
-      }
-      out = { regions, water: this.water.polygonsWithinRect(rect) };
-      this.cache.set(tile, out);
+  /** Where land cover can come back around ground vacated, rounding left out. */
+  static reach(vacated: MultiPolygon): MultiPolygon {
+    return vacated.length ? offsetPolygons(offsetPolygons(vacated, -DRIFT_MM), FILL_REACH_MM + DRIFT_MM, 'round') : [];
+  }
+
+  /**
+   * Cover the slabs lack in one tile, `rect`, within `reach`. `blockers`
+   * gives what clears land cover now near a box: water, roads and buildings.
+   */
+  tile(rect: Rect64, reach: MultiPolygon, blockers: (box: Box) => MultiPolygon): LandFill[] {
+    if (!reach.length || !this.regions.length) return [];
+    const r = multiBounds(reach);
+    const box: Box = [Math.max(r[0], rect.left / SCALE), Math.max(r[1], rect.top / SCALE), Math.min(r[2], rect.right / SCALE), Math.min(r[3], rect.bottom / SCALE)];
+    if (box[0] > box[2] || box[1] > box[3]) return [];
+    const near: Box = [box[0] - MARGIN_MM, box[1] - MARGIN_MM, box[2] + MARGIN_MM, box[3] + MARGIN_MM];
+    // Only a band around what was vacated is laid again. A piece the land
+    // stage dropped as too small is at least 2 * SLIVER_MM wide and under
+    // SLAB_MINIMUM_MM2, so it can't reach far past the band's inner edge.
+    // Laying the whole box took 430 ms for Mission Creek in San Francisco.
+    const zone = intersection(offsetPolygons(reach, MARGIN_MM), [[[[near[0], near[1]], [near[2], near[1]], [near[2], near[3]], [near[0], near[3]]]]]);
+    let clear: MultiPolygon | null = null;
+    const out: LandFill[] = [];
+    for (const [category, set] of this.regions) {
+      const region = set.polygonsWithin(near);
+      if (!region.length || !boxesOverlap(multiBounds(region), box)) continue;
+      const local = intersection(region, zone);
+      if (!local.length) continue;
+      clear ??= intersection(blockers(near), zone);
+      const kept = clear.length ? difference(local, clear) : local;
+      const laid = clipToUnits(offsetPolygons(offsetPolygons(kept, -SLIVER_MM, 'round'), SLIVER_MM, 'round'), rect);
+      const slab = this.slabs.get(category)!.polygonsWithin(near);
+      const polygons = real(slab.length ? difference(laid, slab) : laid);
+      if (polygons.length) out.push({ category, polygons });
     }
     return out;
+  }
+
+  /**
+   * One category's fill joined across tiles, as the land stage keeps it:
+   * only what reaches vacated ground, not specks the stage dropped elsewhere,
+   * and a piece on its own only when it's as big as the stage keeps.
+   */
+  settle(category: SurfaceCategory, polygons: MultiPolygon, reach: ClipSet): MultiPolygon {
+    const slab = this.slabs.get(category);
+    return polygons.filter((p) => {
+      const box = multiBounds([p]);
+      const near = reach.polygonsWithin(box);
+      if (!near.length || !intersection([p], near).length) return false;
+      if (polygonArea(p) >= SLAB_MINIMUM_MM2) return true;
+      const around = slab?.polygonsWithin(box, 0.01) ?? [];
+      return around.length > 0 && intersection(offsetPolygons([p], 2 * DRIFT_MM), around).length > 0;
+    });
   }
 }

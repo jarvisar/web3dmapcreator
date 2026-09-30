@@ -10,6 +10,7 @@ import {
   boxesOverlap,
   bufferLines,
   ClipSet,
+  clipToBox,
   clipToUnits,
   difference,
   dropSmall,
@@ -28,19 +29,20 @@ import { interiorPoints } from '../terrain/heightfield';
 import type { HeightFn, Layer, PrismSolid, Solid } from '../geometry/solid';
 import type { Projection } from '../geo/projection';
 import type { DeckPiece } from '../pipeline/bridges';
+import { capCache } from '../geometry/mesher';
 import { meshLayers } from '../pipeline/mesh';
 import { LAND_NAMES, LAND_ROLES, type EditContext, type ModelSpec } from '../pipeline/generate';
 import type { ModelSettings, Palette, SurfaceCategory } from '../settings';
 import { Wading } from '../pipeline/wading';
 import { EarthModel, isRecessed, type Earth } from './earth';
-import { bareLand, LandTiles, openFill, type LandFill } from './land';
+import { FILL_REACH_MM, LandCover, type LandFill } from './land';
 import type { LoadedFont } from '../svgmap/text/outline';
 import type { ColourGroup, MaterialRole, MeshPart, MultiPolygon, PartColour, PartObjects, Polygon } from '../types';
 import { heightFactor, lowestBottom, lowestTop, scaleSolid, solidPeak } from './heights';
 import { editOf, isPartKey, kindOf, objectOf, partKey, shapeKey } from './keys';
 import { ROAD_PARTS, RoadTiles, TileGrid, type RoadBucket, type RoadStyle } from './roads';
 import { missingGlyphs, shapeFootprint, type MissingGlyphs } from './shapes';
-import { buriedIn, holdersOf, levelOver, outlinePoints, pieceSolids, standPieces, wetUnder, type Holder } from './stand';
+import { buriedIn, heldAt, heldPieces, holdersOf, levelOver, outlinePoints, pieceSolids, restPieces, standPieces, wetKey, wetUnder, type Held, type Holder, type StandPiece } from './stand';
 import { EDIT_LIMITS, followsGround, type AddedShape, type EditLayer, type ModelEdits, type ObjectEdit, type ShapeKind } from './types';
 
 export interface MeshData {
@@ -247,6 +249,15 @@ interface Standing {
   held: MultiPolygon;
   /** The rest, on the ground or in the water. */
   ground: MultiPolygon;
+  /** Its footprint less what's held, whatever the water under it does. */
+  unheld: MultiPolygon;
+}
+
+/** What held a shape up, and the rest of its footprint, for a footprint that may stay the same. */
+interface HeldGuess {
+  footprint: MultiPolygon;
+  held: MultiPolygon;
+  unheld: MultiPolygon;
 }
 
 /** A text shape's font, as far as its note goes. */
@@ -287,9 +298,14 @@ export class EditSession {
   private readonly grounds: Ground[] = [];
   /** Road edits and land fills are worked out in the same tiles. */
   private readonly grid: TileGrid;
-  private landTiles: LandTiles | null = null;
-  /** Land fill of each tile before openings, by what the tile had. */
+  private landCover: LandCover | null = null;
+  /** Where each tile's land fill can reach, by what the tile had. */
+  private readonly tileReach = new Map<number, { signature: string; reach: MultiPolygon }>();
+  /** Land fill of each tile, by what it and the tiles around it had. */
   private readonly tileFills = new Map<number, { signature: string; fills: LandFill[] }>();
+  private airport: ClipSet | null = null;
+  /** Building grounds by the tiles they reach, for what keeps land cover off. */
+  private groundTiles: Map<number, number[]> | null = null;
   private fillCache: { signature: string; fills: LandFill[] } | null = null;
   /** Water that still keeps land cover off, once some is left out. */
   private landWater: { signature: string; set: ClipSet } | null = null;
@@ -314,8 +330,12 @@ export class EditSession {
   private readonly groundedSolids = new WeakSet<Solid>();
   private readonly tops = new Map<string, { signature: string; top: ShapeTop }>();
   private readonly standing = new Map<string, Standing>();
+  /** A flat shape's pieces: what holds it up, kept while that stays, and over the water and ground. */
+  private readonly pieces = new Map<string, { held: string; value: Held; wet: string; rest: StandPiece[] }>();
+  /** Caps of what was meshed for the viewer, for meshing it again at other heights. */
+  private readonly caps = capCache();
   /** What held each shape up last time, for the next pass's first try (standAll). */
-  private heldGuess = new Map<string, MultiPolygon>();
+  private heldGuess = new Map<string, HeldGuess>();
   /** Holders from each object's solids as generated, for what raised shapes stood on. */
   private readonly generatedHolders = new Map<string, Holder[][]>();
   /** A LiDAR only model's water. */
@@ -552,7 +572,7 @@ export class EditSession {
 
   private async mesh(layerId: string, role: MaterialRole, solids: Solid[]): Promise<MeshData | null> {
     if (!solids.length) return null;
-    const { parts } = await meshLayers([{ id: layerId, name: layerId, role, solids }], { zShift: this.zShift, objects: true });
+    const { parts } = await meshLayers([{ id: layerId, name: layerId, role, solids }], { zShift: this.zShift, objects: true, caps: this.caps });
     const part = parts[0];
     return part ? { positions: part.positions, indices: part.indices, objects: part.objects } : { positions: new Float32Array(0), indices: new Uint32Array(0) };
   }
@@ -606,11 +626,11 @@ export class EditSession {
   // ------------------------------------------------------------- shapes
 
   /** Where a shape's top goes, from the ground and water under it and what it was raised onto. */
-  private shapeTop(shape: AddedShape, polygons: MultiPolygon, earth: Earth | null, earthKey: string, pass: Pass, decks: Map<string, Deck>): ShapeTop {
+  private shapeTop(shape: AddedShape, polygons: MultiPolygon, earth: Earth | null, pass: Pass, decks: Map<string, Deck>): ShapeTop {
     if (!polygons.length || followsGround(shape)) return { polygons, base: null, top: null };
     const box = multiBounds(polygons);
     const supports = shape.liftMm > 0 && this.ctx.heightfield ? this.holderKeys(box) : [];
-    const signature = JSON.stringify([polygonSignature(polygons), shape.liftMm, shape.heightMm, earthKey, supports.map((k) => this.holderState(k, pass, decks))]);
+    const signature = JSON.stringify([polygonSignature(polygons), shape.liftMm, shape.heightMm, wetKey(earth?.wet ?? [], box), supports.map((k) => this.holderState(k, pass, decks))]);
     const cached = this.tops.get(shape.id);
     if (cached?.signature === signature) return cached.top;
     let surface = -Infinity;
@@ -681,13 +701,14 @@ export class EditSession {
   }
 
   /** Every shape as it stands, by id. */
-  private standShapes(pass: Pass, decks: Map<string, Deck>, earth: Earth | null, earthKey: string, footprints: Map<string, MultiPolygon>): Map<string, Standing> {
+  private standShapes(pass: Pass, decks: Map<string, Deck>, earth: Earth | null, footprints: Map<string, MultiPolygon>): Map<string, Standing> {
     const tops = new Map<string, ShapeTop>();
-    for (const shape of pass.edits.shapes) tops.set(shape.id, this.shapeTop(shape, footprints.get(shape.id) ?? [], earth, earthKey, pass, decks));
+    for (const shape of pass.edits.shapes) tops.set(shape.id, this.shapeTop(shape, footprints.get(shape.id) ?? [], earth, pass, decks));
     const out = new Map<string, Standing>();
-    for (const shape of pass.edits.shapes) out.set(shape.id, this.stand(shape, tops, pass, decks, earth, earthKey));
+    for (const shape of pass.edits.shapes) out.set(shape.id, this.stand(shape, tops, pass, decks, earth));
     for (const id of [...this.standing.keys()]) if (!tops.has(id)) this.standing.delete(id);
     for (const id of [...this.tops.keys()]) if (!tops.has(id)) this.tops.delete(id);
+    for (const id of [...this.pieces.keys()]) if (!tops.has(id)) this.pieces.delete(id);
     return out;
   }
 
@@ -695,9 +716,9 @@ export class EditSession {
    * A shape built down to what it stands on (stand.ts): the roof or deck it
    * was raised onto, another shape, the water, or the ground.
    */
-  private stand(shape: AddedShape, tops: Map<string, ShapeTop>, pass: Pass, decks: Map<string, Deck>, earth: Earth | null, earthKey: string): Standing {
+  private stand(shape: AddedShape, tops: Map<string, ShapeTop>, pass: Pass, decks: Map<string, Deck>, earth: Earth | null): Standing {
     const top = tops.get(shape.id)!;
-    if (!top.polygons.length) return { signature: '', solids: [], buried: null, held: [], ground: [] };
+    if (!top.polygons.length) return { signature: '', solids: [], buried: null, held: [], ground: [], unheld: [] };
     const ctx = this.ctx;
     const hf = ctx.heightfield;
     const key = shapeKey(shape.id);
@@ -710,19 +731,14 @@ export class EditSession {
           return other.id !== shape.id && t?.base != null && t.polygons.length > 0 && boxesOverlap(multiBounds(t.polygons), box);
         })
       : [];
-    const signature = JSON.stringify([
-      polygonSignature(top.polygons),
-      shape.heightMm,
-      shape.liftMm,
-      shape.followGround,
-      top.base,
-      earthKey,
-      holderKeys.map((k) => this.holderState(k, pass, decks)),
-      others.map((other) => {
-        const t = tops.get(other.id)!;
-        return [other.id, t.base, t.top, polygonSignature(t.polygons)];
-      }),
-    ]);
+    const footprint = polygonSignature(top.polygons);
+    const wetState = wetKey(earth?.wet ?? [], box);
+    const holderStates = holderKeys.map((k) => this.holderState(k, pass, decks));
+    const otherStates = others.map((other) => {
+      const t = tops.get(other.id)!;
+      return [other.id, t.base, t.top, polygonSignature(t.polygons)];
+    });
+    const signature = JSON.stringify([footprint, shape.heightMm, shape.liftMm, shape.followGround, top.base, wetState, holderStates, otherStates]);
     const cached = this.standing.get(shape.id);
     if (cached?.signature === signature) return flat || !hf ? cached : { ...cached, buried: this.buriedOnGround(shape, top.polygons, pass, decks) };
 
@@ -732,6 +748,7 @@ export class EditSession {
     let buried: string | null = null;
     const held: MultiPolygon = [];
     let ground: MultiPolygon = top.polygons;
+    let unheld: MultiPolygon = top.polygons;
     if (!hf) {
       // A LiDAR only model's surface holds everything, roofs and all. Over
       // its water a shape goes down to the floor, or through a cut to the base.
@@ -764,12 +781,22 @@ export class EditSession {
         solids = pieces.flatMap((piece) => pieceSolids(piece, piece.level !== undefined ? piece.level + rise : (x, y) => ctx.heightAt(x, y) + rise, surface, embed, key));
         buried = this.buriedOnGround(shape, top.polygons, pass, decks);
       } else {
-        const holders = this.holders(holderKeys, box, pass, decks);
-        for (const other of others) {
-          const t = tops.get(other.id)!;
-          for (const polygon of t.polygons) holders.push({ kind: 'shape', polygon, box: ringBounds(polygon[0]), topAt: () => t.top!, flat: t.top!, bottom: t.base! });
+        // A taller or shorter shape, or the water changing, leaves what holds it up as it was.
+        const heldState = JSON.stringify([footprint, top.base, holderStates, otherStates]);
+        const known = this.pieces.get(shape.id);
+        let value = known?.held === heldState ? known.value : null;
+        if (!value) {
+          const holders = this.holders(holderKeys, box, pass, decks);
+          for (const other of others) {
+            const t = tops.get(other.id)!;
+            for (const polygon of t.polygons) holders.push({ kind: 'shape', polygon, box: ringBounds(polygon[0]), topAt: () => t.top!, flat: t.top!, bottom: t.base! });
+          }
+          value = heldPieces(top.polygons, top.base!, holders, embed);
         }
-        const pieces = standPieces(top.polygons, top.base!, top.top!, holders, wet, embed);
+        const rest = known && known.value === value && known.wet === wetState ? known.rest : restPieces(value.remaining, wet);
+        this.pieces.set(shape.id, { held: heldState, value, wet: wetState, rest });
+        unheld = value.remaining;
+        const pieces = [...heldAt(value, top.top!), ...rest];
         solids = pieces.flatMap((piece) => pieceSolids(piece, top.top!, surface, embed, key));
         ground = [];
         for (const piece of pieces) (piece.held ? held : ground).push(...piece.polygons);
@@ -782,7 +809,7 @@ export class EditSession {
         if (hidden < multiArea(top.polygons) * BURIED_SHARE) buried = null;
       }
     }
-    const standing = { signature, solids, buried, held, ground };
+    const standing = { signature, solids, buried, held, ground, unheld };
     this.standing.set(shape.id, standing);
     return standing;
   }
@@ -1186,26 +1213,28 @@ export class EditSession {
     tiles: Map<number, RoadBucket[]>,
     decks: Map<string, Deck>,
     footprints: Map<string, MultiPolygon>,
-  ): { earth: Earth | null; earthKey: string; standing: Map<string, Standing> } {
+  ): { earth: Earth | null; standing: Map<string, Standing> } {
     const wetBox = this.noGroundBox;
     const wetShapes = wetBox && this.earthModel ? new Set(pass.edits.shapes.filter((s) => boxesOverlap(multiBounds(footprints.get(s.id) ?? []), wetBox)).map((s) => s.id)) : new Set<string>();
     let guess = this.heldGuess;
     for (let round = 0; ; round++) {
       const inWater = new Map(footprints);
-      for (const [id, held] of guess) {
+      for (const [id, known] of guess) {
         const polygons = footprints.get(id);
-        if (polygons?.length && wetShapes.has(id)) inWater.set(id, difference(polygons, held));
+        if (!polygons?.length || !wetShapes.has(id)) continue;
+        // While the footprint is the same one, what wasn't held is already worked out.
+        inWater.set(id, known.footprint === polygons ? known.unheld : difference(polygons, known.held));
       }
-      const { earth, key } = this.earthFor(pass, tiles, decks, inWater);
-      const standing = this.standShapes(pass, decks, earth, key, footprints);
-      const held = new Map<string, MultiPolygon>();
+      const { earth } = this.earthFor(pass, tiles, decks, inWater);
+      const standing = this.standShapes(pass, decks, earth, footprints);
+      const held = new Map<string, HeldGuess>();
       for (const id of wetShapes) {
         const stood = standing.get(id);
-        if (stood?.held.length) held.set(id, stood.held);
+        if (stood?.held.length) held.set(id, { footprint: footprints.get(id)!, held: stood.held, unheld: stood.unheld });
       }
       if (round > 0 || sameHeld(held, guess)) {
         this.heldGuess = held;
-        return { earth, earthKey: key, standing };
+        return { earth, standing };
       }
       guess = held;
     }
@@ -1337,7 +1366,7 @@ export class EditSession {
     for (const shape of edits.shapes) {
       const key = shapeKey(shape.id);
       const stood = standing.get(shape.id)!;
-      const note = this.noteFor(shape, stood.solids, stood.buried, text.get(shape.id));
+      const note = this.noteFor(shape, footprints.get(shape.id) ?? [], stood.solids, stood.buried, text.get(shape.id));
       if (note) notes[key] = note;
       await offer(key, SHAPES_PART, 'building', stood.signature, () => stood.solids);
     }
@@ -1362,7 +1391,7 @@ export class EditSession {
   }
 
   /** What's worth knowing about a shape as built: nothing to print, hidden, or bits too thin to print. */
-  private noteFor(shape: AddedShape, solids: PrismSolid[], buried: string | null, text?: TextState): string | null {
+  private noteFor(shape: AddedShape, footprint: MultiPolygon, solids: PrismSolid[], buried: string | null, text?: TextState): string | null {
     if (shape.kind === 'text' && !shape.text.trim()) return 'Type the text it should show.';
     if (text?.unloaded) return "Its font couldn't be loaded, so it won't print. It's tried again with your next change.";
     if (!solids.length) return "It's outside the model, so it won't print.";
@@ -1376,10 +1405,10 @@ export class EditSession {
       note = `It's narrower than a ${NOZZLE_MM} mm nozzle prints well.`;
     } else {
       // Pieces standing on different things meet inside the shape, so the
-      // probe looks at the footprint as a whole.
-      const polygons = union(solids.map((s) => s.polygon));
-      const area = multiArea(polygons);
-      const opened = offsetPolygons(offsetPolygons(polygons, -PROBE_MM / 2, 'round'), PROBE_MM / 2, 'round');
+      // probe looks at the footprint as a whole. Not the pieces unioned back
+      // together: a box over downtown stands on thousands.
+      const area = multiArea(footprint);
+      const opened = offsetPolygons(offsetPolygons(footprint, -PROBE_MM / 2, 'round'), PROBE_MM / 2, 'round');
       if (area > 0 && multiArea(opened) < area * 0.9) {
         note =
           shape.kind === 'text'
@@ -1395,8 +1424,9 @@ export class EditSession {
 
   /**
    * Land cover for the ground removed buildings, roads and water left, by
-   * category. Worked out tile by tile, so an edit only looks at what's near
-   * it, and each tile is kept until what it had changes.
+   * category (see land.ts). Worked out tile by tile, so an edit only looks at
+   * what's near it, and each tile is kept until what it or the tiles around
+   * it had changes.
    */
   private fills(pass: Pass, tiles: Map<number, RoadBucket[]>): LandFill[] {
     const land = this.ctx.land;
@@ -1409,25 +1439,42 @@ export class EditSession {
       if (!entry) todo.set(tile, (entry = { gone: [], bodies: [] }));
       return entry;
     };
+    // A fill reaches a little past what was vacated, into the next tile too.
+    const grow = (b: Box): Box => [b[0] - FILL_REACH_MM, b[1] - FILL_REACH_MM, b[2] + FILL_REACH_MM, b[3] + FILL_REACH_MM];
     for (const tile of tiles.keys()) at(tile);
     this.grounds.forEach((ground, i) => {
       if (!removed(ground)) return;
-      for (const tile of this.grid.tilesTouching(ground.box)) at(tile).gone.push(i);
+      for (const tile of this.grid.tilesTouching(grow(ground.box))) at(tile).gone.push(i);
     });
     for (const i of [...pass.water.vacated].sort((a, b) => a - b)) {
-      for (const tile of this.grid.tilesTouching(ringBounds(this.ctx.bodies[i].polygon[0]))) at(tile).bodies.push(i);
+      for (const tile of this.grid.tilesTouching(grow(ringBounds(this.ctx.bodies[i].polygon[0])))) at(tile).bodies.push(i);
     }
     if (!todo.size) return [];
-    const water = this.landWaterSet(pass.water);
-    const signatures: string[] = [];
-    const pieces = new Map<SurfaceCategory, MultiPolygon[]>();
-    for (const tile of [...todo.keys()].sort((a, b) => a - b)) {
-      const { gone, bodies } = todo.get(tile)!;
+    const cover = (this.landCover ??= new LandCover(land, this.generatedLand(), this.settings.land.priority));
+    const water = this.landWaterSet(pass.water) ?? cover.water;
+    // What each tile vacated, and how far land cover can come back around it.
+    const own = new Map<number, { signature: string; reach: MultiPolygon }>();
+    for (const [tile, { gone, bodies }] of todo) {
       const buckets = tiles.get(tile);
       const signature = `${tile}:${buckets ? buckets.map((b) => polygonSignature(b.polygons)).join('|') : '-'}:${gone.join(',')}:${bodies.join(',')}`;
+      let cached = this.tileReach.get(tile);
+      if (cached?.signature !== signature) this.tileReach.set(tile, (cached = { signature, reach: LandCover.reach(this.vacatedIn(tile, buckets, gone, bodies)) }));
+      own.set(tile, cached);
+    }
+    const signatures: string[] = [];
+    const pieces = new Map<SurfaceCategory, MultiPolygon[]>();
+    const reaches: MultiPolygon[] = [];
+    for (const tile of [...todo.keys()].sort((a, b) => a - b)) {
+      const around = this.grid.around(tile).filter((t) => own.has(t));
+      const signature = around.map((t) => own.get(t)!.signature).join('/');
       signatures.push(signature);
+      reaches.push(own.get(tile)!.reach);
       let cached = this.tileFills.get(tile);
-      if (cached?.signature !== signature) this.tileFills.set(tile, (cached = { signature, fills: this.bareTile(tile, buckets, gone, removed, bodies, water) }));
+      if (cached?.signature !== signature) {
+        const reach = around.flatMap((t) => own.get(t)!.reach);
+        const fills = cover.tile(this.grid.units(tile), reach, (box) => this.landBlockers(box, tiles, water, removed));
+        this.tileFills.set(tile, (cached = { signature, fills }));
+      }
       for (const fill of cached.fills) {
         const list = pieces.get(fill.category);
         if (list) list.push(fill.polygons);
@@ -1436,17 +1483,60 @@ export class EditSession {
     }
     const signature = signatures.join(';');
     if (this.fillCache?.signature === signature) return this.fillCache.fills;
-    // Openings go after the tiles are joined, or every tile edge would round
-    // the fill's corners there.
+    const reach = new ClipSet(reaches);
     const fills: LandFill[] = [];
     for (const category of this.settings.land.priority) {
       const lists = pieces.get(category);
       if (!lists) continue;
-      const polygons = openFill(lists.length === 1 ? lists[0] : union(...lists));
+      const polygons = cover.settle(category, lists.length === 1 ? lists[0] : union(...lists), reach);
       if (polygons.length) fills.push({ category, polygons });
     }
     this.fillCache = { signature, fills };
     return fills;
+  }
+
+  /** Each category's land cover as generated. */
+  private generatedLand(): Partial<Record<SurfaceCategory, MultiPolygon>> {
+    const out: Partial<Record<SurfaceCategory, MultiPolygon>> = {};
+    for (const category of this.settings.land.priority) {
+      const layer = this.spec.layers.find((l) => l.id === `land-${category}`);
+      if (layer) out[category] = layer.solids.flatMap((s) => (s.kind === 'prism' ? [s.polygon] : []));
+    }
+    return out;
+  }
+
+  /** What keeps land cover off near a box now, as in the land stage: water, roads, airport paving and buildings. */
+  private landBlockers(box: Box, tiles: Map<number, RoadBucket[]>, water: ClipSet, removed: (ground: Ground) => boolean): MultiPolygon {
+    const out: MultiPolygon = [...water.polygonsWithin(box)];
+    const roads = this.roadTiles();
+    if (roads) {
+      for (const tile of this.grid.tilesTouching(box)) {
+        for (const bucket of tiles.get(tile) ?? roads.baseTile(tile)) out.push(...clipToBox(bucket.polygons, box, 0));
+      }
+    }
+    this.airport ??= new ClipSet([this.spec.layers.find((l) => l.id === 'airport')?.solids.flatMap((s) => (s.kind === 'prism' ? [s.polygon] : [])) ?? []]);
+    out.push(...this.airport.polygonsWithin(box));
+    if (!this.groundTiles) {
+      // Every building part in San Francisco, looked at for every tile, took 260 ms.
+      this.groundTiles = new Map();
+      this.grounds.forEach((ground, i) => {
+        for (const tile of this.grid.tilesTouching(ground.box)) {
+          const list = this.groundTiles!.get(tile);
+          if (list) list.push(i);
+          else this.groundTiles!.set(tile, [i]);
+        }
+      });
+    }
+    const seen = new Set<number>();
+    for (const tile of this.grid.tilesTouching(box)) {
+      for (const i of this.groundTiles.get(tile) ?? []) {
+        const ground = this.grounds[i];
+        if (seen.has(i) || !boxesOverlap(ground.box, box)) continue;
+        seen.add(i);
+        if (!removed(ground)) out.push(...ground.pieces);
+      }
+    }
+    return out;
   }
 
   /** Water that still keeps land cover off once some is left out, or null for the generated. */
@@ -1459,30 +1549,18 @@ export class EditSession {
     return this.landWater.set;
   }
 
-  /** Bare ground in one tile with the land cover it had. */
-  private bareTile(
-    tile: number,
-    buckets: RoadBucket[] | undefined,
-    gone: number[],
-    removed: (ground: Ground) => boolean,
-    bodies: number[],
-    water: ClipSet | null,
-  ): LandFill[] {
-    this.landTiles ??= new LandTiles(this.ctx.land!, this.grid);
-    const land = this.landTiles.tile(tile);
-    const base = this.roads?.baseTile(tile).flatMap((b) => b.polygons) ?? [];
-    const now = buckets ? buckets.flatMap((b) => b.polygons) : base;
+  /** Ground in one tile that roads, buildings or water no longer keep land cover off. */
+  private vacatedIn(tile: number, buckets: RoadBucket[] | undefined, gone: number[], bodies: number[]): MultiPolygon {
     const vacated: MultiPolygon = [];
-    if (buckets && base.length) vacated.push(...(now.length ? difference(base, now) : base));
+    const base = buckets ? (this.roads?.baseTile(tile).flatMap((b) => b.polygons) ?? []) : [];
+    if (base.length) {
+      const now = buckets!.flatMap((b) => b.polygons);
+      vacated.push(...(now.length ? difference(base, now) : base));
+    }
     const rect = this.grid.units(tile);
     for (const i of gone) vacated.push(...clipToUnits(this.grounds[i].pieces, rect));
     for (const i of bodies) vacated.push(...clipToUnits([this.ctx.bodies[i].polygon], rect));
-    if (!vacated.length) return [];
-    // What still stands there keeps the land cover off, as in the land stage.
-    const box = this.grid.rect(tile);
-    const blockers: MultiPolygon = [...now, ...(water ? water.polygonsWithinRect(rect) : land.water)];
-    for (const ground of this.grounds) if (!removed(ground) && boxesOverlap(ground.box, box)) blockers.push(...ground.pieces);
-    return bareLand(land.regions, this.settings.land.priority, vacated, blockers);
+    return vacated;
   }
 
   private landSolids(fill: LandFill, key: string): PrismSolid[] {
@@ -1850,11 +1928,11 @@ function openSlivers(polygons: MultiPolygon): MultiPolygon {
   return dropSmall(offsetPolygons(offsetPolygons(polygons, -SLIVER_MM, 'miter'), SLIVER_MM, 'miter'), SUPPORT_MIN_MM2);
 }
 
-function sameHeld(a: Map<string, MultiPolygon>, b: Map<string, MultiPolygon>): boolean {
+function sameHeld(a: Map<string, HeldGuess>, b: Map<string, HeldGuess>): boolean {
   if (a.size !== b.size) return false;
-  for (const [id, polygons] of a) {
+  for (const [id, known] of a) {
     const other = b.get(id);
-    if (!other || polygonSignature(other) !== polygonSignature(polygons)) return false;
+    if (!other || polygonSignature(other.held) !== polygonSignature(known.held)) return false;
   }
   return true;
 }

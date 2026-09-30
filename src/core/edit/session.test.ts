@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { filamentUse, preparePlates } from '../export/common';
 import { Projection } from '../geo/projection';
-import { difference, intersection, multiArea, pointInMulti, pointInPolygon, polygonArea } from '../geometry/polygon';
+import { bufferLines, difference, intersection, multiArea, pointInMulti, pointInPolygon, polygonArea } from '../geometry/polygon';
 import type { PrismSolid, Solid } from '../geometry/solid';
 import { edgeReport } from '../geometry/validate';
 import { generateModel, type ModelSpec } from '../pipeline/generate';
@@ -394,6 +394,12 @@ describe('EditSession', () => {
     const area = multiArea(filled.map((s) => s.polygon));
     expect(area).toBeGreaterThan(0.45 * 2.9 * 0.8);
     expect(area).toBeLessThan(0.45 * 2.9 * 1.3);
+    // No bare ground left where it was, and the fill only where the slab isn't.
+    const trail = spec.edit!.roads.filter((p) => p.sourceId === 'trail').map((p) => ({ points: p.points, width: p.widthMm }));
+    const inForest = intersection(bufferLines(trail), spec.edit!.land!.regions.forest!);
+    const slab = forest.solids.filter((s) => s.key !== 'lf:forest').map((s) => (s as PrismSolid).polygon);
+    expect(multiArea(difference(inForest, forest.solids.map((s) => (s as PrismSolid).polygon)))).toBeLessThan(1e-4);
+    expect(multiArea(intersection(filled.map((s) => s.polygon), slab))).toBeLessThan(1e-4);
     const { plates } = await buildPlates(edited, { multiPlate: false, sectionWidthMm: 200, sectionHeightMm: 200, bedWidth: 256, bedDepth: 256 });
     const part = plates[0].parts.find((p) => p.id === 'land-forest')!;
     expect(edgeReport(part.indices, part.positions.length / 3).open).toBe(0);
@@ -637,7 +643,7 @@ describe('Edits in and over water', () => {
   });
 
   it('gives a pond left out in a park its grass back', async () => {
-    const { session, projection } = await setUp();
+    const { session, spec, projection } = await setUp();
     const [x, y] = projection.toModel(...at(320, 315));
     const edits = { ...emptyEdits(), objects: { 'w:pond': { removed: true } } };
     const update = await session.update(edits, 1);
@@ -645,7 +651,49 @@ describe('Edits in and over water', () => {
     const edited = await session.edited(edits, DEFAULT_PALETTE);
     expect(covers(solidsIn(edited, 'land-green').filter((s) => s.key === 'lf:green'), x, y)).toBe(true);
     expect(covers(groundOf(edited), x, y)).toBe(true);
+    // All of it, corners too: the fill was opened on its own and left a notch at each.
+    const pond = spec.edit!.bodies.filter((b) => b.key === 'w:pond').map((b) => b.polygon);
+    expect(multiArea(difference(pond, solidsIn(edited, 'land-green').map((s) => s.polygon)))).toBeLessThan(1e-4);
     await expectClosed(edited);
+  });
+
+  it('gives the water back whole where a road in it goes, with no ground left over', async () => {
+    for (const supports of [true, false]) {
+      const { session, spec } = await setUp({ supports });
+      const river = spec.edit!.bodies.filter((b) => b.key === 'w:river').map((b) => b.polygon);
+      const edits = { ...emptyEdits(), objects: { 'r:cross': { removed: true } } };
+      await session.update(edits, 1);
+      const edited = await session.edited(edits, DEFAULT_PALETTE);
+      // Nothing else stands in the river. Opening the removed footprint on its
+      // own left tabs at the banks and hairlines of the old outline.
+      const water = solidsIn(edited, 'water').filter((s) => s.key === 'w:river').map((s) => s.polygon);
+      expect(water.every((p) => p.length === 1)).toBe(true);
+      expect(multiArea(difference(river, water))).toBeLessThan(1e-6);
+      expect(multiArea(intersection(groundOf(edited).map((s) => s.polygon), river))).toBeLessThan(1e-6);
+      await expectClosed(edited);
+    }
+  });
+
+  it('keeps a thread of water too thin to print as ground, where a road between a building and the bank goes', async () => {
+    for (const supports of [true, false]) {
+      const data = town();
+      // 4 m (0.28 mm) off the south bank, with a road over the gap running on past it.
+      data.features.building!.push(feature('boathouse', { type: 'Polygon', coordinates: rect(300, -56, 450, 20) }, { height: 6 }));
+      data.features.segment!.push(feature('quay', { type: 'LineString', coordinates: [at(200, -58), at(550, -58)] }, { subtype: 'road', class: 'service' }));
+      const { session, projection } = await setUp({ data, supports });
+      const edits = { ...emptyEdits(), objects: { 'r:quay': { removed: true } } };
+      await session.update(edits, 1);
+      const edited = await session.edited(edits, DEFAULT_PALETTE);
+      const water = solidsIn(edited, 'water');
+      const [gx, gy] = projection.toModel(...at(375, -58));
+      expect(covers(groundOf(edited), gx, gy)).toBe(true);
+      expect(covers(water, gx, gy)).toBe(false);
+      // Past the boathouse, beside open water, it's water again.
+      const [ox, oy] = projection.toModel(...at(250, -57));
+      expect(covers(water, ox, oy)).toBe(true);
+      expect(covers(groundOf(edited), ox, oy)).toBe(false);
+      await expectClosed(edited);
+    }
   });
 
   it('takes away ground kept in the water for a road that goes, and only that', async () => {

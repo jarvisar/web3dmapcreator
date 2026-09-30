@@ -4,7 +4,8 @@ import { TaskProgress } from '../components/TaskProgress';
 import { areaHint } from '../lib/area';
 import { PHONE_QUERY, useMediaQuery } from '../lib/browser';
 import { formatCount, formatInteger, formatMm, formatNumber } from '../lib/format';
-import { cancelGeneration, exportModel, generateModel } from '../state/actions';
+import { useState } from 'react';
+import { cancelExport, cancelGeneration, exportModel, generateModel } from '../state/actions';
 import { FORMAT_EXTENSIONS, filamentCount, generationProblem, hiddenDownloadParts, modelSize, resultGroups } from '../state/derived';
 import { getEditData } from '../state/model';
 import { dismissExportError, dismissGenerationError, dismissMapHint, setView, useApp } from '../state/store';
@@ -28,6 +29,24 @@ function Progress() {
       onCancel={cancelGeneration}
       cancelling={cancelling}
     />
+  );
+}
+
+// In place of Generate again while a download is made, which can't be both.
+function CancelExportButton() {
+  const [asked, setAsked] = useState(false);
+  return (
+    <button
+      type="button"
+      className="btn btn-lg"
+      disabled={asked}
+      onClick={() => {
+        setAsked(true);
+        cancelExport();
+      }}
+    >
+      {asked ? 'Cancelling' : 'Cancel'}
+    </button>
   );
 }
 
@@ -124,16 +143,20 @@ function ModelActions() {
             </div>
           )}
           <div className="action-buttons">
-            <button
-              type="button"
-              className={`btn btn-lg${!result || stale ? ' btn-primary' : ''}`}
-              disabled={problem !== null || exporting}
-              title={problem ?? (exporting ? 'Wait for the download to finish' : undefined)}
-              onClick={() => void generateModel()}
-            >
-              {result && <RefreshCw size={15} aria-hidden="true" />}
-              {!result ? 'Generate model' : stale ? 'Regenerate' : 'Generate again'}
-            </button>
+            {exporting ? (
+              <CancelExportButton />
+            ) : (
+              <button
+                type="button"
+                className={`btn btn-lg${!result || stale ? ' btn-primary' : ''}`}
+                disabled={problem !== null}
+                title={problem ?? undefined}
+                onClick={() => void generateModel()}
+              >
+                {result && <RefreshCw size={15} aria-hidden="true" />}
+                {!result ? 'Generate model' : stale ? 'Regenerate' : 'Generate again'}
+              </button>
+            )}
             {result && <DownloadButton primary={!stale} />}
           </div>
           {note && <p className="result-note">{note}</p>}

@@ -13,7 +13,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Vector3 } from 'three';
 import { isPartKey, kindOf, objectOf, partKey } from '../../core/edit/keys';
-import { buildingHeightRange, EDIT_LIMITS, type AddedShape, type ModelEdits } from '../../core/edit/types';
+import { buildingHeightRange, EDIT_LIMITS, type AddedShape } from '../../core/edit/types';
 import { Projection } from '../../core/geo/projection';
 import { printerByKey } from '../../core/settings';
 import { ROLE_GROUP, type ColourGroup } from '../../core/types';
@@ -25,6 +25,7 @@ import {
   addShape,
   deletePoint,
   duplicateShapes,
+  editMark,
   patchObjects,
   redoEdit,
   removeObjects,
@@ -36,9 +37,11 @@ import {
   settleEdits,
   shapeDefaults,
   shiftShape,
+  stopEditUpdates,
   toggleSelected,
   undoEdit,
   updateShape,
+  type EditMark,
 } from '../state/editActions';
 import { fileBase, generationProblem, hiddenDownloadParts, modelSize } from '../state/derived';
 import { currentEditState, getEditData, getModelParts, onEditUpdate } from '../state/model';
@@ -80,6 +83,7 @@ function Banner() {
   const percent = useApp((state) => Math.round((state.generation.progress?.fraction ?? 0) * 100));
   const problem = useApp((state) => generationProblem(state.area, state.settings));
   const exporting = useApp((state) => state.exporting.status === 'running');
+  const exportable = useApp((state) => state.generation.result?.exportable ?? true);
   if (running) {
     return (
       <div className="banner floating">
@@ -91,7 +95,7 @@ function Banner() {
   }
   return (
     <div className="banner floating">
-      <span>Settings changed since this model was made.</span>
+      <span>{exportable ? 'Settings changed since this model was made.' : 'The generator was restarted. Generate the model again to download it or see new edits.'}</span>
       <button
         type="button"
         className="btn btn-primary btn-sm"
@@ -106,19 +110,20 @@ function Banner() {
   );
 }
 
-/** True once `flag` has been true for `ms`, so something quick never flashes up. */
-function useDelayed(flag: boolean, ms: number): boolean {
+/** True once `flag` has been true for `ms`, so something quick never flashes up. A new `since` starts the wait again. */
+function useDelayed(flag: boolean, ms: number, since = 0): boolean {
   const [shown, setShown] = useState(false);
   useEffect(() => {
-    if (!flag) {
-      setShown(false);
-      return;
-    }
+    setShown(false);
+    if (!flag) return;
     const timer = window.setTimeout(() => setShown(true), ms);
     return () => clearTimeout(timer);
-  }, [flag, ms]);
+  }, [flag, ms, since]);
   return shown;
 }
+
+// With no word from the worker for this long, an edit update is offered a Stop.
+const STUCK_MS = 5000;
 
 function isTyping(target: EventTarget | null): boolean {
   const element = target as HTMLElement | null;
@@ -144,7 +149,9 @@ export default function ModelView({ active }: { active: boolean }) {
   const tool = useApp((state) => state.ui.tool);
   const selection = useApp((state) => state.ui.selection);
   const activePoint = useApp((state) => state.ui.activePoint);
-  const updating = useDelayed(useApp((state) => state.ui.editsPending), 300);
+  const pending = useApp((state) => state.ui.editsPending);
+  const updating = useDelayed(pending, 300);
+  const stuck = useDelayed(pending, STUCK_MS, useApp((state) => state.ui.editsSince));
   const edits = useApp((state) => state.edits);
   const dark = useMediaQuery(DARK_QUERY);
   const coarse = useMediaQuery(COARSE_QUERY);
@@ -157,8 +164,8 @@ export default function ModelView({ active }: { active: boolean }) {
   const projectionRef = useRef(projection);
   projectionRef.current = projection;
   const dragOrigins = useRef(new Map<string, AddedShape>());
-  /** The edits a drag started from, to put back if it's called off. */
-  const dragBefore = useRef<ModelEdits | null>(null);
+  /** Where the edits stood when a drag started, to put back if it's called off. */
+  const dragBefore = useRef<EditMark | null>(null);
   const shownBounds = useApp((state) => state.ui.shownBounds);
   // The size goes with the model it's for, so a new one never shows the last one's.
   const versionRef = useRef(version);
@@ -411,7 +418,7 @@ export default function ModelView({ active }: { active: boolean }) {
       },
       dragStart() {
         dragOrigins.current.clear();
-        dragBefore.current = useApp.getState().edits;
+        dragBefore.current = editMark();
         // Its changes are an undo step of their own, whatever was going on before.
         settleEdits();
       },
@@ -542,7 +549,12 @@ export default function ModelView({ active }: { active: boolean }) {
           {editing && updating && (
             <div className="chip floating edit-busy" role="status">
               <span className="spinner" aria-hidden="true" />
-              Updating the model
+              {stuck ? 'Still updating the model' : 'Updating the model'}
+              {stuck && (
+                <button type="button" className="link-btn" onClick={stopEditUpdates} title="The model has to be generated again after">
+                  Stop
+                </button>
+              )}
             </div>
           )}
           {editing && <EditToolbar />}
@@ -685,7 +697,7 @@ export default function ModelView({ active }: { active: boolean }) {
         </div>
       )}
 
-      {result && (stale || running) && (
+      {result && (stale || running || !result.exportable) && (
         <div className="viewer-overlay viewer-banner">
           <Banner />
         </div>

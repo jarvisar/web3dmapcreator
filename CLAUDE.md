@@ -369,23 +369,34 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   once (`splitToTiles`): clipping the city-wide road polygon tile by tile
   took over 2 s per edit in San Francisco. A road with its own height or
   layer owns its ground, the taller one where two cross.
-- Land fill (`land.ts`) gives ground a removed road, building or body of
-  water left back to the land regions from before clearing (`ctx.land`),
-  per tile and cached on what each tile had. The opening runs after the
-  tiles are joined, or every tile edge rounds the fill's corners.
+- Land fill (`land.ts`) lays the land cover again around ground a removed
+  road, building or body of water left, from the land regions before
+  clearing (`ctx.land`) and what clears them now, opened like the land
+  stage, and fills only what that has and the generated slab lacks. The
+  vacated footprint opened on its own left bare notches at the slab's
+  rounded corners and at a pond's corners, and dropped pieces between
+  crossing paths. It's laid per tile in a band 1 mm past what was vacated,
+  cached on what the tile and its neighbours had.
 - Terrain and water after edits (`earth.ts`): water left out is filled with
   ground on the grid (flattened to its bank for cut water), or with
   `hollow` keeps its recess, a new floor where it ran to the base. What
   stands in the water is recomputed from the edited roads, buildings,
   piers and shapes, and the water re-cut around it. Only ground that was
-  kept in the water can go, never land, and water given back narrower than
-  0.4 mm stays ground. Both parts are sent whole (100 ms to mesh San
-  Francisco's terrain) when their inputs change, and exports use the same
-  solids. Only what nothing holds up stands in the water: a shape on a
-  deck cut the water under the bridge, or left an island with supports on.
-  What's held depends on the water, so `standAll` starts from what was
-  held last time and goes round once more when that changed. Water edits
-  are ignored with the water turned off, as the inspector lists them.
+  kept in the water can go, never land. Once that really changed, judged by
+  width (a road along a pier gave back a 0.006 mm² sliver, which an area
+  threshold took for rounding), the water and floors are cut from it as it
+  is now. Patching the generated regions with an opened copy of what went
+  left hairlines of the old outline in the water, and tabs where a road had
+  met the bank. Water given back narrower than 0.4 mm and more than 0.4 mm
+  from wider water, measured through the water, stays ground: threads
+  between a building and the bank, not the corners of open water. Both
+  parts are sent whole (100 ms to mesh San Francisco's terrain) when their
+  inputs change, and exports use the same solids. Only what nothing holds
+  up stands in the water: a shape on a deck cut the water under the bridge,
+  or left an island with supports on. What's held depends on the water,
+  so `standAll` starts from what was held last time and goes round once
+  more when that changed. Water edits are ignored with the water turned
+  off, as the inspector lists them.
 - A bridge deck is its road's segment (`br:x` and `r:x`), so `editOf` gives
   it the road's removal, layer and width unless it has its own, and
   `removed: false` keeps one whose road is removed. `patchObjects` keeps
@@ -418,6 +429,15 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   stays above its underside. `standPieces` only takes each holder's region
   from those overlapping it: taking every region from what was left cost 9 s
   for a 30 mm title over San Francisco.
+- What a shape stands on is kept between updates. Its signature takes the
+  water only inside its own box (`wetKey`): with the earth's own key, one
+  shape moved in water spanning the model built all 500 again (3.6 s).
+  What holds a flat shape up is kept apart from the water and its own
+  height (`heldPieces`, `restPieces`, `heldAt`): a box over downtown San
+  Francisco stands on 9,000 roofs. The session's meshes keep their caps by
+  polygon (`CapCache`), so a taller shape doesn't cut its ground from the
+  lattice again. `standCache.test.ts` holds a long-lived session to a new
+  one given the same edits.
 - A LiDAR only model has no water to edit, but shapes over its water go down
   to the floor, or through a cut to the base (`surfaceWater`). The pieces
   are opened by a micron (`openSlivers`): where the shape's outline and the
@@ -446,6 +466,17 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
 - The size chip, the sidebar's size and Reset view go by what the view
   shows (`ui.shownBounds`), so a raised tower counts. The bed stays under
   the generated bounds.
+- Undo steps hold what they changed (`history.ts`), not a copy of the
+  edits: after an edit reaching every building in San Francisco, a copy per
+  step held 630 MB after a hundred small ones. Pass the keys a change wrote
+  to `commitEdits`, or every key is compared. A step keeps a `WeakRef` to
+  the edits before it, which undo returns while something else holds them.
+- Exports can be cancelled and a stuck edit update stopped
+  (`cancelExport`, `stopEdits` in `engine/client.ts`). An update can't stop
+  part way, so stopping one replaces the worker and the model has to be
+  generated again, which the viewer says. A generate asked for behind an
+  edit or export waiting over 10 s replaces the worker too, or it queued
+  behind a loop for good.
 - Text notes say when its font didn't load (warned once per font, not per
   edit) and which characters the font has no glyph for. No bundled font
   has Hebrew or Arabic. `visualOrder` lays right-to-left text out for
@@ -468,7 +499,11 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
 - Edits and SVG picks are saved under keys of their own
   (`persist.ts`), so running out of space for them doesn't stop the
   settings saving, and a failed save is shown once. Share links carry them
-  deflated (`e=`, `p=`, `shareLink.ts`) up to `MAX_LINK_EXTRA`.
+  deflated (`e=`, `p=`, `shareLink.ts`) up to `MAX_LINK_EXTRA`, and only
+  what's on the linked area (`linkScope.ts`). Object edits go only with a
+  model of that area that has them, since their keys don't say where they
+  are. Reading one back is capped (`MAX_UNPACKED`): a crafted 117 KB link
+  inflated to 700 MB, and it crashed the tab again on every reload.
 - Edits are one document for every area. A share link or options file adds
   its edits and picks to these (`bringIn`, `mergeEdits`, `mergePicks`),
   never replaces them. What it changed goes into the one backup
@@ -529,7 +564,10 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
   come back as `missingPicks`. The `s=` part of a share link leaves
   `routes` and `hiddenLines` out, and `p=` carries them. Options files
   keep them only with the map area, sanitized rather than checked, and all
-  picks together are held to `MAX_PICKED_POINTS`.
+  picks together are held to `MAX_PICKED_POINTS`. Assigning lines takes
+  them out of wherever they were with `withoutLines`, which only compares
+  lines whose boxes touch: comparing every pair froze the page for 13 s
+  with 2,000 picked.
 
 ## Verification
 

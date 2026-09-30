@@ -13,6 +13,7 @@ import {
   deleteLayer,
   deletePoint,
   duplicateShapes,
+  editMark,
   forgetBackup,
   patchObjects,
   redoEdit,
@@ -244,20 +245,21 @@ describe('drags', () => {
   it('puts back what a drag called off changed, with nothing left to redo', () => {
     patchObjects(['b:1'], { heightM: 10 });
     const before = edits();
+    const mark = editMark();
     patchObjects(['b:1'], { heightM: 20 }, 'drag-height:b:1');
     patchObjects(['b:1'], { heightM: 30 }, 'drag-height:b:1');
-    revertEdits(before);
-    expect(edits()).toBe(before);
+    revertEdits(mark);
+    expect(edits()).toEqual(before);
     expect(useApp.getState().editHistory.future).toEqual([]);
     expect(useApp.getState().editHistory.past).toHaveLength(1);
   });
 
   it("won't put back a drag once something else changed the edits", () => {
-    const before = edits();
+    const mark = editMark();
     patchObjects(['b:1'], { heightM: 20 }, 'drag-height:b:1');
     settleEdits();
     patchObjects(['b:2'], { heightM: 5 });
-    revertEdits(before);
+    revertEdits(mark);
     expect(edits().objects['b:2']).toEqual({ heightM: 5 });
   });
 });

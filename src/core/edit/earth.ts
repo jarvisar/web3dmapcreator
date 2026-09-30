@@ -6,8 +6,14 @@
 // (generate.ts). Only ground that was kept in the water ever goes: land is
 // never touched. Both parts are rebuilt whole: the terrain meshes in about
 // 100 ms even for San Francisco.
+//
+// Once anything really changed, the water and floors are cut from what
+// stands in the water now, not from the generated regions patched with what
+// went. The patch was an opened copy of the removed footprint, whose edges
+// and arcs never quite met the old ones, and hairlines of the old outline
+// stayed in the water as ground.
 
-import { ClipSet, difference, differenceSet, dropSmall, multiBounds, offsetPolygons, union, type Box } from '../geometry/polygon';
+import { ClipSet, difference, differenceSet, dropSmall, intersection, multiBounds, offsetPolygons, ringBounds, union, type Box } from '../geometry/polygon';
 import type { PrismSolid } from '../geometry/solid';
 import type { EditContext, EditWater } from '../pipeline/generate';
 import type { ModelSettings } from '../settings';
@@ -15,9 +21,11 @@ import type { MultiPolygon, Polygon } from '../types';
 
 // A hollow in water running down to the base keeps at least this much floor.
 const MIN_FLOOR_MM = 0.6;
-// Changes smaller than this are rounding, not edits.
+// Threads of water given back smaller than this stay water.
 const NOISE_MM2 = 0.01;
-// Water given back narrower than a nozzle stays as it was, or a removed road
+// Half the width of a change that's more than rounding.
+const DRIFT_MM = 0.0005;
+// Water given back narrower than a nozzle stays ground, or a removed road
 // beside a building leaves a thread of water.
 const MIN_WATER_MM = 0.4;
 
@@ -100,40 +108,45 @@ export class EarthModel {
     const bodies = ctx.bodies;
     const embed = this.settings.land.embedMm;
 
-    // Ground kept in the water: only what was kept can go.
-    let kept = this.kept;
-    let dropped: MultiPolygon = [];
-    let keptBox: Box | null = null;
-    if (input.kept) {
-      const change = changes(this.kept, input.kept);
-      dropped = change.dropped;
-      if (change.box) {
-        kept = change.now;
-        keptBox = change.box;
-      }
-    }
-    // What the water is cut around.
-    let standing = this.standing;
-    let standingBox: Box | null = null;
-    if (input.standing) {
-      const change = changes(this.standing, input.standing);
-      if (change.box) {
-        standing = change.now;
-        standingBox = change.box;
-      }
-    }
-    const keptSet = keptBox ? new ClipSet([kept]) : null;
-    const standingSet = standingBox ? new ClipSet([standing]) : null;
+    // What the water is cut around, and the ground kept in it (only what was
+    // kept can go), each as generated until it really changed.
+    const standingChange = input.standing ? changes(this.standing, input.standing) : null;
+    const keptChange = input.kept ? changes(this.kept, input.kept) : null;
+    const standingSet = standingChange ? new ClipSet([input.standing!]) : null;
     const through = [...input.hollow].some((i) => bodies[i].floor === null);
 
-    const floors = bodies.map((body): Polygon[] => {
-      if (!isRecessed(body) || !keptSet || !keptBox || !overlaps(body.polygon, keptBox)) return body.floors;
-      return differenceSet([body.polygon], keptSet);
-    });
     const water = bodies.map((body): Polygon[] => {
-      if (!isRecessed(body) || !standingSet || !standingBox || !overlaps(body.polygon, standingBox)) return body.water;
+      if (!isRecessed(body) || !standingSet || !overlaps(body.polygon, standingChange!.box)) return body.water;
       return differenceSet([body.polygon], standingSet);
     });
+    // Water given back narrower than a nozzle stays ground.
+    const thin: Polygon[] = [];
+    const gone = standingChange?.gone ?? [];
+    if (gone.length) {
+      const goneSet = new ClipSet([gone]);
+      const goneBox = multiBounds(gone);
+      bodies.forEach((body, i) => {
+        if (water[i] === body.water || !overlaps(body.polygon, goneBox)) return;
+        const given = dropSmall(intersection(water[i], goneSet.polygonsWithin(ringBounds(body.polygon[0]))), NOISE_MM2);
+        const narrow = given.length ? thinParts(water[i], given) : [];
+        if (!narrow.length) return;
+        water[i] = difference(water[i], narrow);
+        thin.push(...narrow);
+      });
+    }
+
+    const kept = keptChange ? input.kept! : this.kept;
+    let keptBox = keptChange?.box ?? null;
+    if (thin.length) {
+      const b = multiBounds(thin);
+      keptBox = keptBox ? [Math.min(keptBox[0], b[0]), Math.min(keptBox[1], b[1]), Math.max(keptBox[2], b[2]), Math.max(keptBox[3], b[3])] : b;
+    }
+    const keptSet = keptBox ? new ClipSet([kept, thin]) : null;
+    const floors = bodies.map((body): Polygon[] => {
+      if (!isRecessed(body) || !keptSet || !overlaps(body.polygon, keptBox!)) return body.floors;
+      return differenceSet([body.polygon], keptSet);
+    });
+    const dropped = keptChange?.gone.length ? (thin.length ? difference(keptChange.gone, thin) : keptChange.gone) : [];
 
     const wet: WetBody[] = [];
     bodies.forEach((body, i) => {
@@ -166,7 +179,7 @@ export class EarthModel {
     }
 
     let fills: PrismSolid[] | null = null;
-    if (standingBox !== null && this.waterShown) {
+    if (standingChange && this.waterShown) {
       fills = [];
       bodies.forEach((body, i) => {
         for (const polygon of water[i]) fills!.push({ kind: 'prism', role: 'water', polygon, top: body.top, bottom: body.bottom, drape: 0, key: body.key });
@@ -177,16 +190,38 @@ export class EarthModel {
 }
 
 /**
- * How a region differs from what it was: what went, and what it is now.
- * What went is opened, so a strip of it too thin to be water again stays.
+ * What went from a region, and a box around everything that changed, or null
+ * while it only differs by rounding: road tiles rebuilt for an edit nearby
+ * come out up to about 0.15 µm off the generated ones. That's judged by
+ * width, not area. A road running along a pier left a 0.006 mm² sliver of
+ * water, which an area threshold took for rounding, and the sliver stayed
+ * ground.
  */
-function changes(before: MultiPolygon, after: MultiPolygon): { now: MultiPolygon; dropped: MultiPolygon; box: Box | null } {
-  let dropped = difference(before, after);
-  if (dropped.length) dropped = dropSmall(offsetPolygons(offsetPolygons(dropped, -MIN_WATER_MM / 2, 'round'), MIN_WATER_MM / 2, 'round'), NOISE_MM2);
-  const added = dropSmall(difference(after, before), NOISE_MM2);
-  if (!dropped.length && !added.length) return { now: before, dropped, box: null };
-  const now = union(dropped.length ? difference(before, dropped) : before, added);
-  return { now, dropped, box: multiBounds([...dropped, ...added]) };
+function changes(before: MultiPolygon, after: MultiPolygon): { gone: MultiPolygon; box: Box } | null {
+  const gone = difference(before, after);
+  const added = difference(after, before);
+  const real = (mp: MultiPolygon) => mp.length > 0 && offsetPolygons(mp, -DRIFT_MM).length > 0;
+  if (!real(gone) && !real(added)) return null;
+  return { gone, box: multiBounds([...gone, ...added]) };
+}
+
+/**
+ * Water given back that's narrower than a nozzle and more than a nozzle's
+ * width from any wider water: threads between a building and the bank, not
+ * the corners of open water. It's judged in the water as it is now. Opening
+ * the given back footprint on its own left crescents where another road's end
+ * cut into it and tabs where it met the bank, and filling every narrow corner
+ * left a triangle of ground where a road had met the bank at an angle.
+ */
+function thinParts(water: MultiPolygon, given: MultiPolygon): MultiPolygon {
+  const r = MIN_WATER_MM / 2;
+  // The opening reaches 2r and the wide water MIN_WATER_MM past that, so the
+  // water around what was given back is cut well clear of both.
+  const local = intersection(water, offsetPolygons(given, 3 * MIN_WATER_MM));
+  let near = offsetPolygons(offsetPolygons(local, -r, 'round'), r, 'round');
+  // Grown in steps through the water, not across a pier between a sliver and the harbour.
+  for (let i = 0; i < 4; i++) near = intersection(offsetPolygons(near, MIN_WATER_MM / 4, 'round'), local);
+  return dropSmall(difference(given, near), NOISE_MM2);
 }
 
 function overlaps(polygon: Polygon, box: Box): boolean {

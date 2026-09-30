@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Polygon } from '../types';
-import { MeshBuilder, meshPrism, meshSolid, newMeshStats } from './mesher';
+import { capCache, MeshBuilder, meshPrism, meshSolid, newMeshStats } from './mesher';
 import { difference, polygonArea, rectangle, union } from './polygon';
 import { edgeReport, signedVolume } from './validate';
 
@@ -144,5 +144,30 @@ describe('meshPrism', () => {
     const m = mesh(ribbon, (x) => 1 + Math.sin(x / 10), (x) => Math.sin(x / 10) - 0.15, 0.8);
     expect(m.report.open).toBe(0);
     expect(m.volume).toBeCloseTo(200 * 0.5 * 1.15, 1);
+  });
+});
+
+describe('cap cache', () => {
+  const meshed = (polygon: Polygon, top: number, caps?: ReturnType<typeof capCache>, lattice = { x0: 0, y0: 0, step: 1.5 }) => {
+    const out = new MeshBuilder();
+    const stats = newMeshStats();
+    meshSolid({ kind: 'prism', role: 'terrain', polygon, top, bottom: (x, y) => 0.1 * Math.sin(x) + 0.05 * y, drape: 1.5, lattice }, out, undefined, stats, caps);
+    return { ...out.finish(), failed: stats.failed };
+  };
+
+  it('meshes a polygon again at another height the same as from scratch', () => {
+    // Two holes sharing a corner, so it only meshes once it's shrunk.
+    const polygon = difference(rectangle(0, 0, 20, 12), union(rectangle(3, 3, 6, 6), rectangle(6, 6, 9, 9)))[0];
+    const caps = capCache();
+    // A height field hands out a new lattice object each time, which still counts as the same.
+    meshed(polygon, 2, caps, { x0: 0, y0: 0, step: 1.5 });
+    const again = meshed(polygon, 3, caps, { x0: 0, y0: 0, step: 1.5 });
+    const scratch = meshed(polygon, 3);
+    expect(again.failed).toBe(0);
+    expect(Array.from(again.positions)).toEqual(Array.from(scratch.positions));
+    expect(Array.from(again.indices)).toEqual(Array.from(scratch.indices));
+    // Another lattice is another cap.
+    const other = meshed(polygon, 3, caps, { x0: 0.5, y0: 0, step: 1.5 });
+    expect(Array.from(other.positions)).toEqual(Array.from(meshed(polygon, 3, undefined, { x0: 0.5, y0: 0, step: 1.5 }).positions));
   });
 });

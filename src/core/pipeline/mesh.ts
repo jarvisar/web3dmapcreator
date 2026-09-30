@@ -1,6 +1,6 @@
 // Layers of solids to printable parts.
 
-import { clipRegion, MeshBuilder, meshSolid, newMeshStats } from '../geometry/mesher';
+import { clipRegion, MeshBuilder, meshSolid, newMeshStats, type CapCache } from '../geometry/mesher';
 import type { Layer, Solid } from '../geometry/solid';
 import type { MeshPart, MultiPolygon, PartObjects } from '../types';
 import type { Progress } from './context';
@@ -15,6 +15,8 @@ export interface MeshOptions {
   span?: [number, number];
   /** Record which triangles each keyed solid made (for the viewer). */
   objects?: boolean;
+  /** Caps to reuse for polygons meshed before, and keep for next time (the editor's). */
+  caps?: CapCache;
 }
 
 export interface MeshResult {
@@ -71,7 +73,7 @@ export async function meshLayers(layers: Layer[], options: MeshOptions = {}): Pr
     for (const solid of layer.solids) {
       const triStart = out.indexCount / 3;
       const vertStart = out.vertexCount;
-      meshSolid(solid, out, clip, stats);
+      meshSolid(solid, out, clip, stats, options.caps);
       runs?.add(solid, triStart, out.indexCount / 3, vertStart, out.vertexCount);
       done++;
       if (options.progress && done % 64 === 0) await options.progress.checkpoint(from + ((to - from) * done) / total);

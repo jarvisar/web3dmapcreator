@@ -2,7 +2,7 @@
 // A road is in one place at a time, so assigning lines takes them out of
 // wherever they were first.
 
-import { MAX_PICKED_POINTS, MAX_ROUTES, pickedPoints, sameLine, type LonLatLine, type SvgRoute } from '../../core/svgmap/routes';
+import { MAX_PICKED_POINTS, MAX_ROUTES, pickedPoints, withoutLines, type LonLatLine, type SvgRoute } from '../../core/svgmap/routes';
 import { forgetBackup, keepBackup } from '../state/editActions';
 import { hasPicks } from '../state/persist';
 import { patchSvg, toast, useApp } from '../state/store';
@@ -48,7 +48,7 @@ export function deleteRoute(id: string): void {
 /** Puts lines in a route, leaves them out ('hidden'), or back to normal (null). */
 export function assignLines(lines: LonLatLine[], target: string | 'hidden' | null): boolean {
   if (!lines.length) return true;
-  const others = (stored: LonLatLine[]) => stored.filter((line) => !lines.some((picked) => sameLine(line, picked)));
+  const others = (stored: LonLatLine[]) => withoutLines(stored, lines);
   const svg = useApp.getState().svg;
   const routes = svg.routes.map((route) => ({ ...route, lines: [...others(route.lines), ...(route.id === target ? lines : [])] }));
   const hiddenLines = [...others(svg.hiddenLines), ...(target === 'hidden' ? lines : [])];

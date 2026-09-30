@@ -48,6 +48,8 @@ interface Running {
 }
 
 let running: Running | null = null;
+/** Exports under way, so a cancel reaches their progress. */
+const exporting = new Map<number, Progress>();
 let lastSpec: ModelSpec | null = null;
 let session: EditSession | null = null;
 /** The newest edit request not applied yet. Older ones waiting are dropped. */
@@ -512,10 +514,11 @@ async function generateLidarOnly(id: number, request: GenerateRequest) {
 }
 
 async function exportModel(id: number, request: ExportRequest) {
+  const progress = new Progress((event) => post({ type: 'progress', id, progress: { ...event, stage: 'export' } }));
+  exporting.set(id, progress);
   try {
     if (!lastSpec) throw new Error('Generate a model first.');
     const printer = printerByKey(request.printer);
-    const progress = new Progress((event) => post({ type: 'progress', id, progress: { ...event, stage: 'export' } }));
     progress.begin('export', 'Preparing parts', 0, 0.8);
     const edits = request.edits ? sanitizeEdits(request.edits) : null;
     const withEdits = edits !== null && hasEdits(edits);
@@ -546,7 +549,10 @@ async function exportModel(id: number, request: ExportRequest) {
     }
     post({ type: 'exported', id, result });
   } catch (error) {
-    post({ type: 'error', id, message: describe(error) });
+    const cancelled = error instanceof CancelError || progress.cancelled;
+    post({ type: 'error', id, message: cancelled ? 'Cancelled' : describe(error), cancelled });
+  } finally {
+    exporting.delete(id);
   }
 }
 
@@ -608,6 +614,8 @@ ctx.onmessage = (event) => {
       running.progress.cancelled = true;
       running.abort.abort();
     }
+    const progress = exporting.get(message.id);
+    if (progress) progress.cancelled = true;
     return;
   }
   if (message.type === 'generate') void generate(message.id, message.request);

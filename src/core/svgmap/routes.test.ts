@@ -17,6 +17,7 @@ import {
   sameLine,
   sanitizeLines,
   sanitizeRoutes,
+  withoutLines,
   type LonLatLine,
   type PickLines,
   type SvgRoute,
@@ -215,5 +216,34 @@ describe('merging picks', () => {
     const merged = mergePicks({ routes: [], hiddenLines: full }, { routes: [], hiddenLines: [road(5)] });
     expect([merged.added, merged.left]).toEqual([0, 1]);
     expect(pickedPoints(merged.routes, merged.hiddenLines)).toBe(MAX_PICKED_POINTS);
+  });
+});
+
+describe('withoutLines', () => {
+  it('takes out the same roads as comparing every pair, and a line too long to index', () => {
+    let seed = 9;
+    const random = () => {
+      seed = (Math.imul(seed ^ (seed >>> 15), 0x2c1b3c6d) + 0x6d2b79f5) | 0;
+      return ((seed >>> 0) % 1e6) / 1e6;
+    };
+    const m = 1 / 111_320;
+    const street = (): LonLatLine => {
+      const x = random() * 3000;
+      const y = random() * 3000;
+      const across = random() < 0.5;
+      const out: LonLatLine = [];
+      for (let d = 0; d <= 200; d += 20) out.push([-87.6 + (across ? x + d : x) * m * 1.35, 41.88 + (across ? y : y + d) * m]);
+      return out;
+    };
+    const stored = Array.from({ length: 300 }, street);
+    // A road across the whole city, whose box covers too many cells to index.
+    const long: LonLatLine = Array.from({ length: 200 }, (_, i) => [-87.6 + i * 100 * m * 1.35, 41.88 + 1500 * m]);
+    stored.push(long);
+    const picked = [...Array.from({ length: 300 }, (_, i) => (i % 3 ? street() : stored[i].map(([lon, lat]) => [lon + m, lat] as [number, number]))), long];
+    const expected = stored.filter((line) => !picked.some((p) => sameLine(line, p)));
+    const kept = withoutLines(stored, picked);
+    expect(kept).toEqual(expected);
+    expect(kept).not.toContain(long);
+    expect(stored.length - kept.length).toBeGreaterThan(100);
   });
 });

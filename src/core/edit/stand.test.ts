@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { intersection, multiArea } from '../geometry/polygon';
+import { difference, intersection, multiArea, multiBounds, type Box } from '../geometry/polygon';
 import type { PrismSolid } from '../geometry/solid';
 import type { MultiPolygon, Polygon } from '../types';
-import { holdersOf, standPieces, type Holder } from './stand';
+import { holdersOf, standPieces, wetKey, type Holder } from './stand';
 
 const square = (x0: number, y0: number, x1: number, y1: number): Polygon => [
   [
@@ -72,5 +72,21 @@ describe('standPieces', () => {
     const at = (x: number, y: number) => pieces.find((p) => multiArea(intersection(p.polygons, [square(x - 0.01, y - 0.01, x + 0.01, y + 0.01)])) > 0)!;
     const tops = holders.filter((h) => h.box[0] < 1.6 && h.box[2] > 1.6 && h.box[1] < 1.6 && h.box[3] > 1.6).map((h) => h.flat!);
     expect(at(1.6, 1.6).bottom).toBeCloseTo(Math.max(...tops) - 0.04, 6);
+  });
+});
+
+describe('wetKey', () => {
+  const body = (polygons: Polygon[], level = 1) => ({ index: 0, polygons, box: multiBounds(polygons), level, footing: 0.5 });
+
+  it('changes with the water inside the box and nowhere else', () => {
+    const lake = [square(0, 0, 100, 10)];
+    // A notch cut far along it, which also starts its ring somewhere else.
+    const notched = difference(lake, [square(80, 5, 90, 12)]);
+    const here: Box = [10, 0, 20, 10];
+    const there: Box = [75, 0, 95, 10];
+    expect(wetKey([body(lake)], here)).toBe(wetKey([body(notched)], here));
+    expect(wetKey([body(lake)], there)).not.toBe(wetKey([body(notched)], there));
+    expect(wetKey([body(lake, 2)], here)).not.toBe(wetKey([body(lake)], here));
+    expect(wetKey([body(lake)], [200, 0, 210, 10])).toBe('');
   });
 });

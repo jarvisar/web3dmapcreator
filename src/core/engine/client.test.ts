@@ -110,4 +110,56 @@ describe('EngineClient', () => {
     workers[1].reply({ type: 'generated', id: 3, result: { parts: [] } as never });
     await expect(third).resolves.toEqual({ parts: [] });
   });
+
+  it('cancels a download, with the worker when it stops in time and by replacing it when not', async () => {
+    vi.useFakeTimers();
+    const { client, workers, onReplaced } = setup();
+    const first = client.export({} as never);
+    client.cancelExport();
+    expect(workers[0].sent[1]).toEqual({ type: 'cancel', id: 1 });
+    workers[0].reply({ type: 'error', id: 1, message: 'Cancelled', cancelled: true });
+    await expect(first).rejects.toBeInstanceOf(CancelledError);
+    vi.advanceTimersByTime(2000);
+    expect(workers).toHaveLength(1);
+
+    // Stuck in a loop, it never answers the cancel.
+    const second = client.export({} as never);
+    const edit = client.edit({} as never);
+    client.cancelExport();
+    vi.advanceTimersByTime(2000);
+    await expect(second).rejects.toBeInstanceOf(CancelledError);
+    await expect(edit).rejects.toThrow(/Generate the model again/);
+    expect(workers[0].terminated).toBe(true);
+    expect(onReplaced).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops edits being applied by replacing the worker', async () => {
+    const { client, workers, onReplaced } = setup();
+    const model = client.generate(request);
+    workers[0].reply({ type: 'generated', id: 1, result: { parts: [] } as never });
+    await model;
+    const edit = client.edit({} as never);
+    client.stopEdits();
+    await expect(edit).rejects.toBeInstanceOf(CancelledError);
+    expect(workers[0].terminated).toBe(true);
+    expect(onReplaced).toHaveBeenCalledTimes(1);
+  });
+
+  it('replaces a worker stuck on an edit when a new model is asked for', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const { client, workers } = setup();
+    const edit = client.edit({} as never);
+    vi.advanceTimersByTime(5000);
+    // Not long enough to call it stuck: the model waits its turn.
+    const first = client.generate(request);
+    expect(workers).toHaveLength(1);
+    vi.advanceTimersByTime(6000);
+    const second = client.generate(request);
+    await expect(edit).rejects.toBeInstanceOf(CancelledError);
+    await expect(first).rejects.toBeInstanceOf(CancelledError);
+    expect(workers[0].terminated).toBe(true);
+    expect(workers[1].sent).toEqual([{ type: 'generate', id: 3, request }]);
+    workers[1].reply({ type: 'generated', id: 3, result: { parts: [] } as never });
+    await expect(second).resolves.toEqual({ parts: [] });
+  });
 });

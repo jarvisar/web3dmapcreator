@@ -81,6 +81,17 @@ export class TileGrid {
     return this.cols * this.rows;
   }
 
+  /** The tile and the ones next to it, diagonals too. */
+  around(tile: number): number[] {
+    const c = tile % this.cols;
+    const r = Math.floor(tile / this.cols);
+    const out: number[] = [];
+    for (let rr = Math.max(0, r - 1); rr <= Math.min(this.rows - 1, r + 1); rr++) {
+      for (let cc = Math.max(0, c - 1); cc <= Math.min(this.cols - 1, c + 1); cc++) out.push(rr * this.cols + cc);
+    }
+    return out;
+  }
+
   tilesTouching(box: Box): number[] {
     const c0 = Math.max(0, Math.floor((box[0] * SCALE - this.left) / this.step));
     const r0 = Math.max(0, Math.floor((box[1] * SCALE - this.top) / this.step));
