@@ -7,7 +7,20 @@ import { defaultRenderSettings } from './defaults';
 import { TILE_EXTENT, worldToLonLat } from './geo/mercator';
 import { computeLayout } from './layout/layout';
 import { planTiles, prepareArea } from './prepare';
-import { MAX_PICKED_POINTS, PICK_LAYERS, pickToWorld, sameLine, sanitizeLines, sanitizeRoutes, type LonLatLine, type PickLines, type SvgRoute } from './routes';
+import {
+  MAX_PICKED_POINTS,
+  MAX_ROUTES,
+  mergePicks,
+  pickedPoints,
+  PICK_LAYERS,
+  pickToWorld,
+  sameLine,
+  sanitizeLines,
+  sanitizeRoutes,
+  type LonLatLine,
+  type PickLines,
+  type SvgRoute,
+} from './routes';
 import type { OutputMode, RenderSettings } from './settings';
 import { toSvg } from './svg/writer';
 import { type HersheyFile, parseHershey } from './text/hershey';
@@ -155,5 +168,52 @@ describe('sanitizing picks', () => {
     const c: LonLatLine = [[0.001, -0.001], [0.001, 0.001]];
     expect(sameLine(a, b)).toBe(true);
     expect(sameLine(a, c)).toBe(false);
+  });
+});
+
+describe('merging picks', () => {
+  const road = (lat: number): LonLatLine => [[0, lat], [0.001, lat], [0.002, lat]];
+  const route = (id: string, lines: LonLatLine[], color = '#E4002B'): SvgRoute => ({ id, name: id, color, width: 0.6, lines });
+
+  it('adds theirs to ours', () => {
+    const merged = mergePicks({ routes: [route('mine', [road(0)])], hiddenLines: [road(0.01)] }, { routes: [route('theirs', [road(0.02)], '#0057B8')], hiddenLines: [road(0.03)] });
+    expect(merged.routes.map((r) => [r.id, r.lines.length])).toEqual([['mine', 1], ['theirs', 1]]);
+    expect(merged.hiddenLines).toHaveLength(2);
+    expect([merged.added, merged.replaced, merged.left]).toEqual([2, 0, 0]);
+  });
+
+  it('moves a road they put somewhere else out of ours, which counts as replaced', () => {
+    const merged = mergePicks({ routes: [route('mine', [road(0)])], hiddenLines: [] }, { routes: [], hiddenLines: [[[0.0000001, 0.00001], [0.002, 0.00001]]] });
+    expect(merged.routes[0].lines).toEqual([]);
+    expect(merged.hiddenLines).toHaveLength(1);
+    expect([merged.added, merged.replaced]).toEqual([1, 1]);
+  });
+
+  it('changes nothing for the same picks again', () => {
+    const picks = { routes: [route('mine', [road(0), road(0.01)])], hiddenLines: [road(0.02)] };
+    const merged = mergePicks(picks, structuredClone(picks));
+    expect([merged.added, merged.replaced, merged.left]).toEqual([0, 0, 0]);
+    expect(merged.routes[0].lines).toHaveLength(2);
+    expect(merged.hiddenLines).toHaveLength(1);
+    // Ours are left as they were.
+    expect(picks.routes[0].lines).toHaveLength(2);
+  });
+
+  it('takes the name and colour of a route both have, and keeps its lines', () => {
+    const merged = mergePicks({ routes: [route('r', [road(0)])], hiddenLines: [] }, { routes: [{ ...route('r', [road(0.01)], '#0057B8'), name: 'Race' }], hiddenLines: [] });
+    expect(merged.routes).toHaveLength(1);
+    expect(merged.routes[0]).toMatchObject({ name: 'Race', color: '#0057B8' });
+    expect(merged.routes[0].lines).toHaveLength(2);
+    expect(merged.replaced).toBe(1);
+  });
+
+  it('leaves out what of theirs goes over the limits', () => {
+    const many = Array.from({ length: MAX_ROUTES }, (_, i) => route(`r${i}`, []));
+    expect(mergePicks({ routes: many, hiddenLines: [] }, { routes: [route('more', [road(0)])], hiddenLines: [] }).left).toBe(1);
+    const long: LonLatLine = Array.from({ length: 2000 }, (_, i) => [i * 1e-6, 0] as [number, number]);
+    const full = Array.from({ length: MAX_PICKED_POINTS / 2000 }, (_, i) => long.map(([lon]) => [lon, i * 0.01] as [number, number]));
+    const merged = mergePicks({ routes: [], hiddenLines: full }, { routes: [], hiddenLines: [road(5)] });
+    expect([merged.added, merged.left]).toEqual([0, 1]);
+    expect(pickedPoints(merged.routes, merged.hiddenLines)).toBe(MAX_PICKED_POINTS);
   });
 });

@@ -13,7 +13,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Vector3 } from 'three';
 import { isPartKey, kindOf, objectOf, partKey } from '../../core/edit/keys';
-import type { AddedShape } from '../../core/edit/types';
+import { buildingHeightRange, EDIT_LIMITS, type AddedShape } from '../../core/edit/types';
 import { Projection } from '../../core/geo/projection';
 import { printerByKey } from '../../core/settings';
 import { ROLE_GROUP, type ColourGroup } from '../../core/types';
@@ -38,7 +38,7 @@ import {
   undoEdit,
   updateShape,
 } from '../state/editActions';
-import { fileBase, generationProblem } from '../state/derived';
+import { fileBase, generationProblem, hiddenDownloadParts } from '../state/derived';
 import { currentEditState, getEditData, getModelParts, onEditUpdate } from '../state/model';
 import { setHiddenParts, setShowBed, toast, togglePartHidden, useApp, type EditTool } from '../state/store';
 import { describeCounts, describeKey } from './edit/describe';
@@ -387,8 +387,9 @@ export default function ModelView({ active }: { active: boolean }) {
         const ground = target.ground ?? target.point.z;
         // Put on a roof or a bridge, it stands on it.
         const onTop = target.key !== null && ['building', 'bridge', 'shape'].includes(kindOf(target.key) ?? '');
-        const lift = onTop ? Math.max(0, Math.round((target.point.z - ground) * 10) / 10) : 0;
-        addShape({ ...shapeDefaults(tool), at: [lon, lat], points: [], rotationDeg: editData.frame?.rotationDeg ?? 0, liftMm: lift });
+        const lift = onTop ? Math.min(EDIT_LIMITS.liftMm[1], Math.max(0, Math.round((target.point.z - ground) * 10) / 10)) : 0;
+        // Raised, it has a flat top that sits on the roof, whatever the tool's default.
+        addShape({ ...shapeDefaults(tool), at: [lon, lat], points: [], rotationDeg: editData.frame?.rotationDeg ?? 0, liftMm: lift, ...(lift > 0 ? { followGround: false } : {}) });
         setTool('select');
       },
       draw(tool, points) {
@@ -400,11 +401,13 @@ export default function ModelView({ active }: { active: boolean }) {
       },
       drawing: setDrawing,
       dragHeight(key, heightMm, done) {
+        // Held to the limits here, or the inspector showed heights the export clamps.
+        const clamp = ([low, high]: readonly [number, number]) => Math.min(high, Math.max(low, heightMm));
         if (kindOf(key) === 'shape') {
-          updateShape(key.slice(2), { heightMm }, `drag-height:${key}`);
+          updateShape(key.slice(2), { heightMm: clamp(EDIT_LIMITS.shapeHeightMm) }, `drag-height:${key}`);
         } else {
           const scale = getEditData().frame?.buildingMmPerMetre;
-          if (scale) patchObjects([key], { heightM: heightMm / scale }, `drag-height:${key}`);
+          if (scale) patchObjects([key], { heightM: clamp(buildingHeightRange(scale)) / scale }, `drag-height:${key}`);
         }
         if (done) settleEdits();
       },
@@ -461,7 +464,7 @@ export default function ModelView({ active }: { active: boolean }) {
     : null;
   const stats = result ? Object.entries(result.stats).filter(([, value]) => value !== '' && value !== null) : [];
   const totalTime = result ? Object.values(result.timings).reduce((sum, value) => sum + value, 0) : 0;
-  const allHidden = result ? result.parts.every((part) => hidden.includes(part.id)) : false;
+  const allHidden = result ? hiddenDownloadParts(result, edits, getEditData(), hidden).all : false;
   const groupShapes = edits.shapes.filter((shape) => !edits.layers.some((layer) => layer.id === shape.layer));
   const infoRows: [string, string][] = result
     ? [

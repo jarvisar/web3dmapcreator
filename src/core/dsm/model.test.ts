@@ -9,7 +9,9 @@ import { edgeReport, signedVolume } from '../geometry/validate';
 import { meshLayers, partsBounds } from '../pipeline/mesh';
 import { buildPlates } from '../pipeline/plates';
 import type { PrismSolid } from '../geometry/solid';
-import { cloneSettings, type AreaSpec, type ModelSettings } from '../settings';
+import { cloneSettings, DEFAULT_PALETTE, type AreaSpec, type ModelSettings } from '../settings';
+import { EditSession } from '../edit/session';
+import { emptyEdits, type AddedShape } from '../edit/types';
 import type { SourceFeature } from '../pipeline/source';
 import type { MeshPart, Polygon } from '../types';
 import { gridSpec } from './grid';
@@ -196,6 +198,30 @@ describe('surfaceModel', () => {
     const { plates, failed } = await buildPlates(spec, { multiPlate: true, sectionWidthMm: 35, sectionHeightMm: 35, bedWidth: 256, bedDepth: 256 });
     expect(failed).toBe(0);
     for (const plate of plates) for (const part of plate.parts) closed(part);
+  });
+
+  it('stands a shape over cut water on the bed, and over a water layer on its floor', async () => {
+    for (const mode of ['cut', 'layer'] as const) {
+      const settings = lidarSettings((s) => {
+        s.lidarModel.waterMode = mode;
+        s.water.cutMinAreaM2 = 1000;
+      });
+      const spec = await surfaceModel({ area: area('rectangle'), settings, surface: prepared(area('rectangle')) });
+      const projection = new Projection(area('rectangle').center, 0, spec.mmPerMetre);
+      const session = new EditSession(spec, settings, projection);
+      // Half over the river along the south edge, half on its bank.
+      const box: AddedShape = { id: 'b', kind: 'box', layer: 'buildings', at: projection.modelToGeo(0, -25), points: [], rotationDeg: 0, sizeMm: 6, depthMm: 6, heightMm: 2, liftMm: 0, followGround: false, text: '', font: 'montserrat' };
+      const edited = await session.edited({ ...emptyEdits(), shapes: [box] }, DEFAULT_PALETTE);
+      const solids = edited.layers.flatMap((l) => l.solids).filter((s): s is PrismSolid => s.key === 's:b' && s.kind === 'prism');
+      const wet = solids.filter((s) => pointInMulti(0, -27.5, [s.polygon]));
+      const dry = solids.filter((s) => pointInMulti(0, -23, [s.polygon]));
+      expect([wet.length, dry.length]).toEqual([1, 1]);
+      // Cut out, there's nothing under the water but the bed. A layer has its floor.
+      expect(wet[0].bottom).toBeCloseTo(mode === 'cut' ? 0 : 1.3 - settings.land.embedMm, 6);
+      expect(dry[0].bottom as number).toBeGreaterThan(1.3);
+      const { parts } = await meshLayers(edited.layers);
+      for (const part of parts) closed(part);
+    }
   });
 
   it('fills water the survey missed from mapped water, and only there', async () => {

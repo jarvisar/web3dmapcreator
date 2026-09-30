@@ -19,7 +19,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
         <div className="crash-card floating">
           <h1>Something went wrong</h1>
           <p>{error.message}</p>
-          <p className="muted">Resetting clears the settings saved in this browser. Downloaded map data is kept.</p>
+          <p className="muted">Resetting clears the settings saved in this browser. Your edits and picked roads are kept aside, to put back from Edit the model or Pick roads. Downloaded map data is kept.</p>
           <div className="crash-buttons">
             <button type="button" className="btn" onClick={() => location.reload()}>
               Reload

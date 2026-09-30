@@ -136,6 +136,32 @@ if (svg) {
   const text = readFileSync(file, 'utf8');
   if (text.includes('id="route-1"')) ok('the SVG has the route as a group of its own');
   else fail('no route-1 group in the SVG');
+
+  // Undo all picks keeps them aside, and Reset all settings leaves them alone.
+  const storedLines = () =>
+    page.evaluate(() => {
+      const picks = JSON.parse(localStorage.getItem('jarvizar-city-model:picks') ?? '{}');
+      return (picks.routes ?? []).reduce((n, r) => n + r.lines.length, 0) + (picks.hiddenLines ?? []).length;
+    });
+  const card = page.locator('.route-card');
+  await card.getByRole('button', { name: 'Undo all picks' }).click();
+  await wait(600);
+  if (await card.getByText(/are kept aside/).count()) ok('Undo all picks kept them aside');
+  else fail('no kept-aside note after Undo all picks');
+  await card.getByRole('button', { name: 'Put them back' }).click();
+  await wait(600);
+  if ((await card.getByRole('button', { name: 'Undo all picks' }).count()) && !(await card.getByText(/are kept aside/).count())) ok('put the picks back');
+  else fail('the picks did not come back from the note');
+  await wait(1500);
+  const lines = await storedLines();
+  if (!phone) {
+    await page.getByRole('button', { name: 'Reset all settings' }).click();
+    await page.getByRole('button', { name: /Click again to reset/ }).click();
+    await wait(1500);
+    const after = await storedLines();
+    if (lines > 0 && after === lines) ok(`Reset all settings kept the ${lines} picked lines`);
+    else fail(`Reset all settings left ${after} of ${lines} picked lines`);
+  }
   await finish();
 }
 
@@ -291,6 +317,125 @@ await page.getByRole('button', { name: /^Undo/ }).first().click();
 await wait(500);
 await page.getByRole('button', { name: /^Redo/ }).first().click();
 await wait(1500);
+
+if (!phone) {
+  // Undo all keeps the edits aside, and a share link's edits are added to the
+  // ones here, whether it's opened in this tab or another.
+  const changes = async () => {
+    const text = (await inspector.locator('.inspector-changes span').first().innerText().catch(() => '')).trim();
+    return text.startsWith('No changes') ? 0 : Number(text.match(/^(\d+)/)?.[1] ?? NaN);
+  };
+  const stored = () => page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('jarvizar-city-model:edits') ?? '{}').objects ?? {}).length);
+  const removeBuilding = async (what) => {
+    await page.getByRole('button', { name: 'Reset view' }).click();
+    await wait(800);
+    if (!(await pressUntil(isBuilding, what))) return;
+    await inspector.getByRole('button', { name: 'Remove', exact: true }).click();
+    await wait(1200);
+    await clearSelection();
+  };
+  await clearSelection();
+  const all = await changes();
+  await page.evaluate(() => {
+    navigator.clipboard.writeText = async (text) => {
+      window.__copied = text;
+    };
+  });
+  await page.getByRole('button', { name: 'Copy share link' }).click();
+  await wait(500);
+  const link = await page.evaluate(() => window.__copied);
+  if (link && /[#&]e=/.test(link)) ok(`the share link carries the ${all} changes`);
+  else fail(`the share link has no edits: ${link}`);
+
+  const kept = inspector.getByText(/are kept aside/);
+  await inspector.getByRole('button', { name: 'Undo all' }).click();
+  await wait(1000);
+  if ((await changes()) === 0 && (await kept.count())) ok('Undo all kept the edits aside');
+  else fail(`after Undo all: ${await changes()} changes, ${await kept.count()} notes`);
+  await inspector.getByRole('button', { name: 'Put them back' }).click();
+  await wait(1500);
+  if ((await changes()) === all && !(await kept.count())) ok('put the edits back from the note');
+  else fail(`putting them back left ${await changes()} changes of ${all}`);
+
+  // Opened over other work in this tab, and taken back out with Undo.
+  await inspector.getByRole('button', { name: 'Undo all' }).click();
+  await wait(800);
+  await removeBuilding('a building to remove');
+  const mine = await changes();
+  await page.evaluate((hash) => {
+    location.hash = hash;
+  }, new URL(link).hash);
+  await wait(2000);
+  const fromLink = page.locator('.toast', { hasText: /from the link/ });
+  const merged = await changes();
+  if ((await fromLink.count()) && merged > mine) ok(`opened the link over ${mine} changes, now ${merged}: ${await fromLink.first().innerText()}`);
+  else fail(`the link left ${merged} changes, had ${mine}`);
+  await fromLink.first().locator('.toast-action').click();
+  await wait(1500);
+  if ((await changes()) === mine) ok('Undo took the link back out');
+  else fail(`Undo on the link left ${await changes()} changes, wanted ${mine}`);
+
+  // An idle tab closing doesn't write its old copy over this tab's edits.
+  const idle = await context.newPage();
+  await idle.goto(url);
+  await idle.waitForTimeout(2500);
+  await removeBuilding('another building to remove');
+  await wait(1500);
+  const saved = await stored();
+  await idle.close({ runBeforeUnload: true });
+  await wait(800);
+  if (saved > mine && (await stored()) === saved) ok(`an idle tab closed and left this tab's ${saved} saved edits alone`);
+  else fail(`an idle tab closing left ${await stored()} saved edits, this tab had saved ${saved}`);
+
+  // The link in a new tab is added to what's saved, and this tab takes it on.
+  const before = await changes();
+  const other = await context.newPage();
+  await other.goto(link);
+  await other.waitForTimeout(3000);
+  const otherToast = await other.locator('.toast', { hasText: /from the link/ }).first().innerText().catch(() => '');
+  await wait(1500);
+  const after = await changes();
+  if (otherToast && after > before) ok(`a new tab opened the link (${otherToast.trim()}), and this one took on its edits: ${before} to ${after}`);
+  else fail(`a new tab with the link showed "${otherToast}", this tab went from ${before} to ${after} changes`);
+  await other.close();
+  await wait(500);
+
+  // A building in the custom layer shows, and downloads, with the model's parts hidden.
+  await page.getByRole('button', { name: 'Reset view' }).click();
+  await wait(800);
+  const layered = await pressUntil(isBuilding, 'a building for the layer');
+  if (layered) {
+    await inspector.getByLabel('Colour', { exact: true }).selectOption({ label: 'Layer 1' });
+    await wait(1500);
+    await page.getByRole('button', { name: 'Parts', exact: true }).click();
+    await wait(400);
+    const rows = page.locator('section.parts-card .parts-list li');
+    const custom = rows.filter({ has: page.locator('.part-count', { hasText: /^Custom$/ }) });
+    for (let i = 0; i < (await rows.count()); i++) {
+      const row = rows.nth(i);
+      if ((await row.locator('.part-count').innerText()) !== 'Custom') await row.locator('input[type="checkbox"]').uncheck();
+    }
+    await wait(1500);
+    const downloadButton = page.getByRole('button', { name: /^Download/ });
+    const note = await page.locator('.result-note').innerText().catch(() => '');
+    const withLayer = await viewAt(layered);
+    await shot('only-the-layer');
+    if (!(await downloadButton.isDisabled()) && /left out of the download/.test(note)) ok(`only the custom layer shown, it still downloads: ${note}`);
+    else fail(`only the custom layer shown: download disabled ${await downloadButton.isDisabled()}, note "${note}"`);
+    await custom.first().locator('input[type="checkbox"]').uncheck();
+    await wait(1500);
+    if ((await downloadButton.isDisabled()) && (await page.locator('.viewer-empty').count())) ok('with the layer hidden too, there is nothing to download');
+    else fail('with every part hidden, download is still offered');
+    await page.addStyleTag({ content: '.viewer-empty { display: none !important; }' });
+    const withoutLayer = await viewAt(layered);
+    if (withLayer.equals(withoutLayer)) fail('the building in the custom layer went with the hidden buildings');
+    else ok('the building in the custom layer showed with the buildings hidden');
+    await page.locator('section.parts-card').getByRole('button', { name: 'Show all' }).click();
+    await wait(1500);
+    await page.getByRole('button', { name: 'Parts', exact: true }).click();
+    await wait(400);
+  }
+}
 await shot('before-export');
 
 // Every format, each checked for the custom layer.

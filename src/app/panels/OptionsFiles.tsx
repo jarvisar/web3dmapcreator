@@ -5,6 +5,7 @@ import { CheckField } from '../components/Fields';
 import { CUSTOM_FONT_ID } from '../../core/svgmap/text/fonts';
 import { downloadBlob } from '../lib/browser';
 import { decodeOptions, encodeOptions, MAX_OPTIONS_BYTES, OPTIONS_TOO_BIG, type Options } from '../state/options';
+import { broughtText, undoBrought } from '../state/editActions';
 import { applyOptions, toast, useApp } from '../state/store';
 
 const usesCustomFont = ({ svg }: Options) => svg.label.font === CUSTOM_FONT_ID || svg.label.subtitleFont === CUSTOM_FONT_ID;
@@ -20,9 +21,11 @@ export function OptionsFiles() {
     try {
       if (file.size > MAX_OPTIONS_BYTES) throw new Error(OPTIONS_TOO_BIG);
       const options = decodeOptions(await file.text());
-      applyOptions(options, includeArea);
+      const brought = applyOptions(options, includeArea);
       const message = options.map && includeArea ? 'Options and map area imported' : 'Options imported';
-      toast(usesCustomFont(options) ? `${message}. Custom font files are separate; load the matching font under Title.` : message, 'success');
+      const font = usesCustomFont(options) ? '. Custom font files are separate; load the matching font under Title' : '';
+      if (brought) toast(`${message}${font}. ${broughtText(brought, 'the file')}`, 'success', { label: 'Undo', run: () => undoBrought(brought) });
+      else toast(`${message}${font}`, 'success');
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Could not read the options file.', 'error');
     } finally {

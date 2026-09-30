@@ -102,12 +102,52 @@ function flattenCommands(commands: PathCommand[], tolerance: number): Path[] {
   return rings;
 }
 
+// Hebrew and the other scripts written right to left that opentype.js leaves
+// in the order they were typed. It reverses Arabic itself as it shapes it,
+// so that's left to it.
+const RTL = /[֐-׿܀-ݏހ-࡟יִ-ﭏ]/u;
+const MIRRORED: Record<string, string> = { '(': ')', ')': '(', '[': ']', ']': '[', '{': '}', '}': '{', '<': '>', '>': '<', '«': '»', '»': '«', '‹': '›', '›': '‹' };
+
+/**
+ * Text in the order its glyphs go from left to right. A small part of the
+ * bidi algorithm, enough for a name or a title: the first letter or digit
+ * sets which way the text runs, right-to-left letters and the spaces and
+ * punctuation between them are reversed, numbers keep their order, and in
+ * right-to-left text the runs go right to left too. Text without these
+ * scripts comes back as it is.
+ */
+export function visualOrder(text: string): string {
+  if (!RTL.test(text)) return text;
+  // Accents and points stay on their letters.
+  const clusters = text.match(/\P{M}\p{M}*|\p{M}+/gu) ?? [];
+  const strong = (cluster: string): 'l' | 'r' | null => (RTL.test(cluster) ? 'r' : /[\p{L}\p{Nd}]/u.test(cluster) ? 'l' : null);
+  const dirs = clusters.map(strong);
+  const base = dirs.find((d) => d !== null) ?? 'l';
+  for (let i = 0; i < dirs.length; i++) {
+    if (dirs[i] !== null) continue;
+    let j = i;
+    while (j < dirs.length && dirs[j] === null) j++;
+    const before = i > 0 ? dirs[i - 1] : base;
+    const after = j < dirs.length ? dirs[j] : base;
+    dirs.fill(before === after ? before : base, i, j);
+    i = j - 1;
+  }
+  const runs: { dir: 'l' | 'r' | null; clusters: string[] }[] = [];
+  clusters.forEach((cluster, i) => {
+    const last = runs[runs.length - 1];
+    if (last?.dir === dirs[i]) last.clusters.push(cluster);
+    else runs.push({ dir: dirs[i], clusters: [cluster] });
+  });
+  const ordered = base === 'r' ? runs.reverse() : runs;
+  return ordered.map((run) => (run.dir === 'r' ? run.clusters.reverse().map((c) => MIRRORED[c] ?? c) : run.clusters).join('')).join('');
+}
+
 // spacing scales each glyph's advance. 1 is the font's own spacing.
 export function textGeometry(loaded: LoadedFont, text: string, spacing = 1, tolerance = 0.0015): TextGeometry {
-  if (loaded.kind === 'stroke') return strokeText(loaded.font, text, spacing);
+  if (loaded.kind === 'stroke') return strokeText(loaded.font, visualOrder(text), spacing);
   const font = loaded.font;
   const em = font.unitsPerEm;
-  const glyphs = font.stringToGlyphs(text);
+  const glyphs = font.stringToGlyphs(visualOrder(text));
   const rings: Path[] = [];
   let x = 0;
   glyphs.forEach((glyph, i) => {

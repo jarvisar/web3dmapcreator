@@ -50,4 +50,4 @@ Picks are kept in the browser under a key of their own, in exported options when
 
 ## Titles
 
-Titles come in a box in a corner or a band across the piece, in six outline fonts, five single-line Hershey fonts or a font you load (TTF, OTF or WOFF, not WOFF2). A loaded font is kept in the browser's IndexedDB. The map on screen lays the title out with the same code as the render, so what's drawn on the map is what ends up in the file.
+Titles come in a box in a corner or a band across the piece, in six outline fonts, five single-line Hershey fonts or a font you load (TTF, OTF or WOFF, not WOFF2). A loaded font is kept in the browser's IndexedDB. Hebrew in a loaded font is laid out right to left, and Arabic is left to opentype.js, which does the same and joins the letters. The map on screen lays the title out with the same code as the render, so what's drawn on the map is what ends up in the file.

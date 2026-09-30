@@ -15,7 +15,7 @@ import { surfaceModel } from '../core/dsm/model';
 import { prepareSurface, type PreparedSurface } from '../core/dsm/prepare';
 import { groundGrid } from '../core/edit/ground';
 import { roadLines } from '../core/edit/lines';
-import { EditSession, type EditUpdate } from '../core/edit/session';
+import { EditSession, excludedParts, type EditUpdate } from '../core/edit/session';
 import { emptyEdits, hasEdits, sanitizeEdits } from '../core/edit/types';
 import type { EditRequest, ExportRequest, FromWorker, GenerateRequest, GenerateResult, LidarSummary, ProgressEvent, SurfaceSummary, ToWorker } from '../core/engine/protocol';
 import { effectiveScale } from '../core/geo/area';
@@ -104,24 +104,36 @@ async function startSession(id: number, spec: ModelSpec, request: GenerateReques
     result.editable = false;
     return [];
   }
+  let transfers: Transferable[];
   try {
     const projection = new Projection(request.area.center, request.area.rotationDeg, spec.mmPerMetre);
-    session = new EditSession(spec, request.settings, projection, { load: (font) => fonts.load(font, null) }, id);
-    result.editable = true;
-    result.objects = session.describe();
-    result.buildingMmPerMetre = session.buildingScale;
+    const created = new EditSession(spec, request.settings, projection, { load: (font) => fonts.load(font, null) }, id);
+    result.objects = created.describe();
+    result.buildingMmPerMetre = created.buildingScale;
     if (spec.edit.roads.length) result.roads = roadLines(spec.edit, -spec.baseZ, request.settings.roads.thicknessMm);
     result.ground = groundGrid(spec.edit, -spec.baseZ) ?? undefined;
-    const transfers = [...(result.roads ? roadTransfers(result.roads) : []), ...(result.ground ? [result.ground.values.buffer] : [])];
-    const edits = sanitizeEdits(request.edits ?? emptyEdits());
-    if (!hasEdits(edits)) return transfers;
-    result.edit = await session.update(edits, request.editsVersion ?? 0);
-    return [...meshTransfers(result.edit), ...transfers];
+    transfers = [...(result.roads ? roadTransfers(result.roads) : []), ...(result.ground ? [result.ground.values.buffer] : [])];
+    session = created;
+    result.editable = true;
   } catch (error) {
     session = null;
     result.editable = false;
+    result.objects = undefined;
+    result.roads = undefined;
+    result.ground = undefined;
     result.warnings.push(`The model can't be edited: ${describe(error)}`);
     return [];
+  }
+  // Edits that fail here leave the model editable. The session sends
+  // everything again with the next change, and exports try them afresh.
+  const edits = sanitizeEdits(request.edits ?? emptyEdits());
+  if (!hasEdits(edits)) return transfers;
+  try {
+    result.edit = await session.update(edits, request.editsVersion ?? 0);
+    return [...meshTransfers(result.edit), ...transfers];
+  } catch (error) {
+    result.warnings.push(`The edits couldn't be applied to this model: ${describe(error)}`);
+    return transfers;
   }
 }
 
@@ -499,19 +511,6 @@ async function generateLidarOnly(id: number, request: GenerateRequest) {
   }
 }
 
-/**
- * Part ids the export leaves out. A custom layer hidden in the viewer takes
- * its water part with it, and hidden added shapes take every colour's.
- */
-function excludedParts(spec: ModelSpec, hidden: string[] = []): string[] {
-  const out = new Set(hidden);
-  for (const layer of spec.layers) {
-    if (layer.id.endsWith(':water') && out.has(layer.id.slice(0, -':water'.length))) out.add(layer.id);
-    if (layer.id.startsWith('added-') && out.has('shapes')) out.add(layer.id);
-  }
-  return [...out];
-}
-
 async function exportModel(id: number, request: ExportRequest) {
   try {
     if (!lastSpec) throw new Error('Generate a model first.');
@@ -519,7 +518,8 @@ async function exportModel(id: number, request: ExportRequest) {
     const progress = new Progress((event) => post({ type: 'progress', id, progress: { ...event, stage: 'export' } }));
     progress.begin('export', 'Preparing parts', 0, 0.8);
     const edits = request.edits ? sanitizeEdits(request.edits) : null;
-    const spec = session && edits && hasEdits(edits) ? await session.edited(edits, request.palette) : lastSpec;
+    const withEdits = edits !== null && hasEdits(edits);
+    const spec = session && withEdits ? await session.edited(edits, request.palette) : lastSpec;
     const { plates, failed } = await buildPlates(spec, {
       multiPlate: request.multiPlate,
       sectionWidthMm: request.sectionWidthMm,
@@ -532,6 +532,8 @@ async function exportModel(id: number, request: ExportRequest) {
     });
     post({ type: 'progress', id, progress: { stage: 'export', label: 'Writing the file', fraction: 0.85 } });
     const result = exportPlates(plates, request, lastCredits, lastMapData);
+    // Said, not skipped quietly: the file looks finished either way.
+    if (withEdits && !session) result.warnings.unshift("This model couldn't be edited, so the file is the model as generated, without your edits.");
     if (failed) {
       // A section cut can fail where the whole model meshed, and cutting elsewhere usually works.
       const retry = request.multiPlate ? ' Try another section size.' : '';

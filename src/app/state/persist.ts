@@ -1,7 +1,10 @@
 // Saved state in localStorage, merged onto the defaults on load so settings
 // added later start at their default value. The model's edits and an SVG
 // map's picked roads can get big, so each has a key of its own: running out
-// of space for them shouldn't stop the settings from saving.
+// of space for them shouldn't stop the settings from saving. They're the
+// user's work, so a tab only writes them once it has changed them, and
+// takes on what another tab saves (sync.ts). Otherwise an idle tab closing
+// wrote its old copy over the other tab's.
 
 import {
   COLOUR_GROUPS,
@@ -14,14 +17,15 @@ import {
   sanitizeSettings,
 } from '../../core/settings';
 import type { AreaSpec, ExportSettings, ModelSettings, Palette } from '../../core/settings';
-import { sanitizeEdits, type ModelEdits } from '../../core/edit/types';
-import { sanitizeLines, sanitizeRoutes } from '../../core/svgmap/routes';
+import { emptyEdits, hasEdits, sanitizeEdits, type ModelEdits } from '../../core/edit/types';
+import { sanitizeLines, sanitizeRoutes, type Picks } from '../../core/svgmap/routes';
 import { type SvgSettings, defaultSvgSettings, mergeSettings } from '../svgmap/settings';
 import { matchingPreset } from './derived';
 
 export const STORAGE_KEY = 'jarvizar-city-model:v1';
 export const EDITS_KEY = 'jarvizar-city-model:edits';
 export const PICKS_KEY = 'jarvizar-city-model:picks';
+export const BACKUP_KEY = 'jarvizar-city-model:backup';
 const KEY = STORAGE_KEY;
 
 export interface SavedState {
@@ -30,7 +34,10 @@ export interface SavedState {
   settings?: ModelSettings;
   palette?: Palette;
   exportSettings?: ExportSettings;
-  edits?: ModelEdits;
+  /** Read even when the settings can't be, and empty when nothing was saved. */
+  edits: ModelEdits;
+  picks: Picks;
+  /** Without the picks. */
   svg?: SvgSettings;
   placeName?: string;
   fileName?: string | null;
@@ -114,22 +121,60 @@ function readJson(key: string): unknown {
   }
 }
 
+export function readStoredEdits(text: string | null): ModelEdits | null {
+  try {
+    const raw: unknown = text ? JSON.parse(text) : null;
+    return isObject(raw) ? sanitizeEdits(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function readStoredPicks(text: string | null): Picks | null {
+  try {
+    const raw: unknown = text ? JSON.parse(text) : null;
+    return isObject(raw) ? readPicks(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function readPicks(raw: Json): Picks {
+  return { routes: sanitizeRoutes(raw.routes), hiddenLines: sanitizeLines(raw.hiddenLines) };
+}
+
+export function hasPicks(picks: Picks): boolean {
+  return picks.hiddenLines.length > 0 || picks.routes.some((route) => route.lines.length > 0);
+}
+
+function readText(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
 export function loadSaved(): SavedState {
-  const raw = readJson(KEY);
-  if (!isObject(raw)) return {};
+  const read = readJson(KEY);
+  const raw = isObject(read) ? read : {};
   const ui = isObject(raw.ui) ? raw.ui : {};
-  const edits = readJson(EDITS_KEY);
-  const picks = readJson(PICKS_KEY);
-  let svg = isObject(raw.svg) ? mergeSettings(defaultSvgSettings(), raw.svg) : undefined;
-  if (svg && isObject(picks)) svg = { ...svg, routes: sanitizeRoutes(picks.routes), hiddenLines: sanitizeLines(picks.hiddenLines) };
+  // The edits and picks keys are read whatever happened to the settings, or
+  // the next save wrote nothing over them.
+  const edits = readStoredEdits(readText(EDITS_KEY)) ?? emptyEdits();
+  const picks = readStoredPicks(readText(PICKS_KEY)) ?? { routes: [], hiddenLines: [] };
+  // They're what's in storage now, so saving them again waits for a change.
+  written.set(EDITS_KEY, [edits]);
+  written.set(PICKS_KEY, [picks.routes, picks.hiddenLines]);
   return {
     output: raw.output === 'svg' || raw.output === 'model' ? raw.output : undefined,
     area: readArea(raw.area),
     settings: readSettings(raw.settings),
     palette: readPalette(raw.palette, raw.palettePreset),
     exportSettings: readExport(raw.exportSettings),
-    edits: isObject(edits) ? sanitizeEdits(edits) : undefined,
-    svg,
+    edits,
+    picks,
+    svg: isObject(raw.svg) ? mergeSettings(defaultSvgSettings(), raw.svg) : undefined,
     placeName: typeof raw.placeName === 'string' ? raw.placeName : undefined,
     fileName: typeof raw.fileName === 'string' ? raw.fileName : null,
     sections: isObject(ui.sections) ? (ui.sections as Record<string, boolean>) : undefined,
@@ -146,12 +191,79 @@ let saving = true;
 
 // Also stops saving for the rest of this page. Otherwise a save still waiting
 // in the sync, or the one on pagehide, puts the cleared settings straight back.
+// The edits and picks go into the backup rather than away, unread in case
+// they're what crashed.
 export function clearSavedState(): void {
   saving = false;
+  try {
+    const edits = readStoredEdits(readText(EDITS_KEY));
+    const picks = readStoredPicks(readText(PICKS_KEY));
+    const backup: Backup = { savedAt: Date.now(), reason: 'reset' };
+    if (edits && hasEdits(edits)) backup.edits = edits;
+    if (picks && hasPicks(picks)) backup.picks = picks;
+    if (backup.edits || backup.picks) localStorage.setItem(BACKUP_KEY, JSON.stringify(backup));
+  } catch {
+    // Unreadable or no room: they go with the rest.
+  }
   try {
     for (const key of [KEY, EDITS_KEY, PICKS_KEY]) localStorage.removeItem(key);
   } catch {
     // Storage is off, so nothing was saved either.
+  }
+}
+
+/** Whether these are what this tab last read or wrote under the key, so it has no change of its own waiting. */
+export function isSaved(key: string, values: unknown[]): boolean {
+  const before = written.get(key);
+  return Boolean(before && before.length === values.length && before.every((value, i) => value === values[i]));
+}
+
+/** What another tab saved under the key, taken on here as if this tab had written it. */
+export function markSaved(key: string, values: unknown[]): void {
+  written.set(key, values);
+}
+
+// ---------------------------------------------------------------- backup
+
+export type BackupReason = 'link' | 'import' | 'clear' | 'clear-picks' | 'reset' | 'restore';
+
+const REASONS: readonly BackupReason[] = ['link', 'import', 'clear', 'clear-picks', 'reset', 'restore'];
+
+/**
+ * The user's edits or picked roads from before something replaced them: a
+ * link or an options file that changed some of them, Undo all, or the crash
+ * screen's reset. It stays until it's put back or forgotten.
+ */
+export interface Backup {
+  savedAt: number;
+  reason: BackupReason;
+  edits?: ModelEdits;
+  picks?: Picks;
+}
+
+export function readBackup(): Backup | null {
+  try {
+    const raw = readJson(BACKUP_KEY);
+    if (!isObject(raw) || !REASONS.includes(raw.reason as BackupReason) || typeof raw.savedAt !== 'number' || !Number.isFinite(raw.savedAt)) return null;
+    const backup: Backup = { savedAt: raw.savedAt, reason: raw.reason as BackupReason };
+    const edits = isObject(raw.edits) ? sanitizeEdits(raw.edits) : null;
+    const picks = isObject(raw.picks) ? readPicks(raw.picks) : null;
+    if (edits && hasEdits(edits)) backup.edits = edits;
+    if (picks && hasPicks(picks)) backup.picks = picks;
+    return backup.edits || backup.picks ? backup : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keeps a backup in place of the one before, or drops it given nothing. False when the browser refused it. */
+export function writeBackup(backup: Backup | null): boolean {
+  try {
+    if (!backup || (!backup.edits && !backup.picks)) localStorage.removeItem(BACKUP_KEY);
+    else localStorage.setItem(BACKUP_KEY, JSON.stringify(backup));
+    return true;
+  } catch {
+    return false;
   }
 }
 

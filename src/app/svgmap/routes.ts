@@ -3,6 +3,8 @@
 // wherever they were first.
 
 import { MAX_PICKED_POINTS, MAX_ROUTES, pickedPoints, sameLine, type LonLatLine, type SvgRoute } from '../../core/svgmap/routes';
+import { forgetBackup, keepBackup } from '../state/editActions';
+import { hasPicks } from '../state/persist';
 import { patchSvg, toast, useApp } from '../state/store';
 
 const ROUTE_COLOURS = ['#E4002B', '#0057B8', '#FF8200', '#7A3E9D', '#009A44', '#E0A800', '#00A3AD', '#D62598'];
@@ -30,7 +32,17 @@ export function updateRoute(id: string, patch: Partial<Omit<SvgRoute, 'id' | 'li
 }
 
 export function deleteRoute(id: string): void {
+  const before = useApp.getState().svg.routes;
+  const route = before.find((r) => r.id === id);
+  if (!route) return;
   patchSvg((svg) => ({ routes: svg.routes.filter((r) => r.id !== id) }));
+  const after = useApp.getState().svg.routes;
+  toast(`Deleted ${route.name}.`, 'info', {
+    label: 'Undo',
+    run: () => {
+      if (useApp.getState().svg.routes === after) patchSvg({ routes: before });
+    },
+  });
 }
 
 /** Puts lines in a route, leaves them out ('hidden'), or back to normal (null). */
@@ -55,7 +67,21 @@ export function dropPicks(lines: LonLatLine[]): void {
   patchSvg((svg) => ({ routes: svg.routes.map((route) => ({ ...route, lines: keep(route.lines) })), hiddenLines: keep(svg.hiddenLines) }));
 }
 
-/** Every road back to normal. */
+/** Every road back to normal. A copy is kept aside in case that wasn't meant. */
 export function clearPicks(): void {
-  patchSvg((svg) => ({ routes: svg.routes.map((route) => ({ ...route, lines: [] })), hiddenLines: [] }));
+  const svg = useApp.getState().svg;
+  const picks = { routes: svg.routes, hiddenLines: svg.hiddenLines };
+  if (!hasPicks(picks)) return;
+  const kept = keepBackup({ savedAt: Date.now(), reason: 'clear-picks', picks });
+  patchSvg({ routes: picks.routes.map((route) => ({ ...route, lines: [] })), hiddenLines: [] });
+  const after = useApp.getState().svg;
+  toast('Every road is back to normal.', 'info', {
+    label: 'Undo',
+    run: () => {
+      const now = useApp.getState().svg;
+      if (now.routes !== after.routes || now.hiddenLines !== after.hiddenLines) return;
+      patchSvg(picks);
+      if (kept && useApp.getState().backup === kept) forgetBackup();
+    },
+  });
 }

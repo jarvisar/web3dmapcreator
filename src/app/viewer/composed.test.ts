@@ -39,4 +39,13 @@ describe('ComposedMesh', () => {
     mesh.update(() => null);
     expect(mesh.geometry.index!.count).toBe(3);
   });
+
+  it('hides the triangles no object owns on their own, for a hidden part', () => {
+    const mesh = composed();
+    mesh.update(() => '');
+    expect(mesh.update(() => '', null)).toBe(true);
+    expect(mesh.geometry.index!.count).toBe(6);
+    expect(mesh.update(() => '', '')).toBe(true);
+    expect(mesh.geometry.index!.count).toBe(9);
+  });
 });

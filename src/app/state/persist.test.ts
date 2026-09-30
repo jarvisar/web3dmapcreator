@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emptyEdits } from '../../core/edit/types';
 import { DEFAULT_AREA, DEFAULT_EXPORT, DEFAULT_PALETTE, cloneSettings } from '../../core/settings';
 import { defaultSvgSettings } from '../svgmap/settings';
-import { EDITS_KEY, PICKS_KEY, STORAGE_KEY, clearSavedState, loadSaved, saveState } from './persist';
+import { EDITS_KEY, PICKS_KEY, STORAGE_KEY, clearSavedState, isSaved, loadSaved, markSaved, readStoredEdits, readStoredPicks, saveState } from './persist';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -46,9 +46,52 @@ describe('saved edits and picked roads', () => {
     expect(JSON.parse(stored.get(EDITS_KEY)!).objects['b:1'].heightM).toBe(42);
     expect(JSON.parse(stored.get(PICKS_KEY)!).routes).toHaveLength(1);
     const loaded = loadSaved();
-    expect(loaded.edits?.objects['b:1']).toEqual({ heightM: 42 });
-    expect(loaded.svg?.routes[0].name).toBe('Home');
+    expect(loaded.edits.objects['b:1']).toEqual({ heightM: 42 });
+    expect(loaded.picks.routes[0].name).toBe('Home');
+    expect(loaded.svg?.routes).toEqual([]);
     expect(loaded.placeName).toBe('Somewhere');
+  });
+
+  it('are read even when the saved settings are broken or gone', () => {
+    const stored = storage();
+    saveState(sample(), '#a=1');
+    stored.set(STORAGE_KEY, '{not json');
+    let loaded = loadSaved();
+    expect(loaded.edits.objects['b:1']).toEqual({ heightM: 42 });
+    expect(loaded.picks.routes[0].name).toBe('Home');
+    stored.delete(STORAGE_KEY);
+    loaded = loadSaved();
+    expect(loaded.edits.objects['b:1']).toEqual({ heightM: 42 });
+    expect(loaded.area).toBeUndefined();
+  });
+
+  it("aren't written by a tab that didn't change them, so an idle tab can't put an old copy back", () => {
+    const stored = storage();
+    saveState(sample(), '#a=1');
+    const loaded = loadSaved();
+    const state = { ...sample(), edits: loaded.edits, svg: { ...sample().svg, routes: loaded.picks.routes, hiddenLines: loaded.picks.hiddenLines } };
+    // Another tab saves while this one sits there.
+    stored.set(EDITS_KEY, JSON.stringify({ ...emptyEdits(), objects: { 'b:2': { removed: true } } }));
+    stored.set(PICKS_KEY, JSON.stringify({ routes: [], hiddenLines: [] }));
+    saveState(state, '#a=1');
+    expect(JSON.parse(stored.get(EDITS_KEY)!).objects).toEqual({ 'b:2': { removed: true } });
+    expect(JSON.parse(stored.get(PICKS_KEY)!).routes).toEqual([]);
+    // A change of its own is written.
+    saveState({ ...state, edits: { ...emptyEdits(), objects: { 'b:3': { removed: true } } } }, '#a=1');
+    expect(JSON.parse(stored.get(EDITS_KEY)!).objects).toEqual({ 'b:3': { removed: true } });
+  });
+
+  it("tell a change of this tab's own from what another tab saved", () => {
+    storage();
+    const loaded = loadSaved();
+    expect(isSaved(EDITS_KEY, [loaded.edits])).toBe(true);
+    const mine = emptyEdits();
+    expect(isSaved(EDITS_KEY, [mine])).toBe(false);
+    markSaved(EDITS_KEY, [mine]);
+    expect(isSaved(EDITS_KEY, [mine])).toBe(true);
+    expect(readStoredEdits(JSON.stringify({ objects: { 'b:1': { removed: true } } }))?.objects).toEqual({ 'b:1': { removed: true } });
+    expect(readStoredEdits('nonsense')).toBeNull();
+    expect(readStoredPicks(null)).toBeNull();
   });
 
   it("don't stop the settings saving when they don't fit", () => {

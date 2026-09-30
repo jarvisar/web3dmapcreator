@@ -6,8 +6,8 @@
 // through whatever was under them, and a column through a building changes
 // filament on every layer of it.
 
-import { boxesOverlap, difference, intersection, multiArea, multiBounds, ringBounds, union, type Box } from '../geometry/polygon';
-import type { CapSolid, PrismSolid, Solid } from '../geometry/solid';
+import { boxesOverlap, ClipSet, difference, intersection, multiArea, multiBounds, ringBounds, SCALE, splitToTiles, union, type Box } from '../geometry/polygon';
+import type { CapSolid, HeightFn, PrismSolid, Solid } from '../geometry/solid';
 import { interiorPoints } from '../terrain/heightfield';
 import type { MultiPolygon, Polygon } from '../types';
 import type { WetBody } from './earth';
@@ -24,6 +24,8 @@ export interface Holder {
   flat?: number;
   /** Lowest point of its underside. */
   bottom: number;
+  /** A deck's underside, which something sunk into the deck stays above. */
+  underside?: HeightFn;
 }
 
 export interface StandPiece {
@@ -34,6 +36,8 @@ export interface StandPiece {
   level?: number;
   /** Sunk into something taller than the shape. */
   buried?: string;
+  /** Held up by a building, bridge or shape, not the ground or the water. */
+  held?: boolean;
 }
 
 // Overlaps smaller than this don't hold anything up.
@@ -41,23 +45,91 @@ const MIN_OVERLAP_MM2 = 1e-3;
 // Tops that aren't flat are sampled about this far apart, up to a limit.
 const SAMPLE_MM = 0.5;
 const MAX_SAMPLES = 400;
+// A deck whose underside rises or falls more than this is looked at in
+// squares. Whole, a span high over a shape held it up because its ramp came
+// down to the ground somewhere else, and the shape hung under it. A square
+// is quartered again while its top rises more than a third of the deck's
+// thickness across it: a piece set on its lowest point stuck out under a
+// steep ramp at the other side.
+const DECK_RISE_MM = 0.2;
+const DECK_SQUARE_MM = 2;
+const DECK_MIN_SQUARE_MM = 0.25;
 
 /** Holders from a building, bridge or shape solid. Trees hold nothing up. */
 export function holdersOf(solid: Solid, kind: string): Holder[] {
   if (solid.kind === 'mesh') return [];
   if (solid.kind === 'cap') return capHolders(solid, kind);
+  if (kind === 'bridge') {
+    const bottom = solid.bottom;
+    const underside = typeof bottom === 'number' ? () => bottom : bottom;
+    const squares = typeof bottom === 'number' ? null : deckSquares(solid, bottom);
+    return (squares ?? [solid.polygon]).map((polygon) => ({ ...prismHolder(solid, polygon, kind), underside }));
+  }
+  return [prismHolder(solid, solid.polygon, kind)];
+}
+
+function prismHolder(solid: PrismSolid, polygon: Polygon, kind: string): Holder {
   const top = solid.top;
-  const bottom = typeof solid.bottom === 'number' ? solid.bottom : lowestOver(solid.polygon, solid.bottom);
-  return [
-    {
-      kind,
-      polygon: solid.polygon,
-      box: ringBounds(solid.polygon[0]),
-      topAt: typeof top === 'number' ? () => top : top,
-      flat: typeof top === 'number' ? top : undefined,
-      bottom,
-    },
-  ];
+  return {
+    kind,
+    polygon,
+    box: ringBounds(polygon[0]),
+    topAt: typeof top === 'number' ? () => top : top,
+    flat: typeof top === 'number' ? top : undefined,
+    bottom: typeof solid.bottom === 'number' ? solid.bottom : lowestOver(polygon, solid.bottom),
+  };
+}
+
+const deckCuts = new WeakMap<PrismSolid, Polygon[] | null>();
+
+/** A sloping deck cut into squares on a fixed grid, or null for one that's about level. */
+function deckSquares(solid: PrismSolid, bottom: HeightFn): Polygon[] | null {
+  const cached = deckCuts.get(solid);
+  if (cached !== undefined) return cached;
+  // Inside as well as the outline: an arched deck is low at both ends, where all its corners are.
+  let low = Infinity;
+  let high = -Infinity;
+  for (const [x, y] of samples([solid.polygon])) {
+    const z = bottom(x, y);
+    if (z < low) low = z;
+    if (z > high) high = z;
+  }
+  let squares: Polygon[] | null = null;
+  if (high - low > DECK_RISE_MM) {
+    const deckTop = solid.top;
+    const topAt = typeof deckTop === 'number' ? () => deckTop : deckTop;
+    const out: Polygon[] = [];
+    // Squares are on whole Clipper units, left and top their corner.
+    const refine = (pieces: MultiPolygon, left: number, top: number, size: number) => {
+      let lowTop = Infinity;
+      let highTop = -Infinity;
+      let thickness = Infinity;
+      for (const [x, y] of samples(pieces)) {
+        const z = topAt(x, y);
+        if (z < lowTop) lowTop = z;
+        if (z > highTop) highTop = z;
+        thickness = Math.min(thickness, z - bottom(x, y));
+      }
+      const half = size / 2;
+      if (highTop - lowTop <= thickness / 3 || half < DECK_MIN_SQUARE_MM * SCALE) {
+        out.push(...pieces);
+        return;
+      }
+      for (const [index, part] of splitToTiles(pieces, left, top, half, 2, 2)) refine(part, left + (index % 2) * half, top + Math.floor(index / 2) * half, half);
+    };
+    const step = DECK_SQUARE_MM * SCALE;
+    const [minX, minY, maxX, maxY] = ringBounds(solid.polygon[0]);
+    const left = Math.floor((minX * SCALE) / step) * step;
+    const top = Math.floor((minY * SCALE) / step) * step;
+    const cols = Math.max(1, Math.ceil((maxX * SCALE - left) / step));
+    const rows = Math.max(1, Math.ceil((maxY * SCALE - top) / step));
+    for (const [index, pieces] of splitToTiles([solid.polygon], left, top, step, cols, rows)) {
+      refine(pieces, left + (index % cols) * step, top + Math.floor(index / cols) * step, step);
+    }
+    squares = out;
+  }
+  deckCuts.set(solid, squares);
+  return squares;
 }
 
 // By triangles: a building made taller keeps its outline and its triangle list.
@@ -129,8 +201,14 @@ function samples(region: MultiPolygon): [number, number][] {
   return out;
 }
 
+function highestOver(fn: HeightFn, region: MultiPolygon): number {
+  let high = -Infinity;
+  for (const [x, y] of samples(region)) high = Math.max(high, fn(x, y));
+  return high;
+}
+
 /** The lowest a holder's top gets over a region, or NaN when it has no top there. */
-function levelOver(holder: Holder, region: MultiPolygon): number {
+export function levelOver(holder: Holder, region: MultiPolygon): number {
   if (holder.flat !== undefined) return holder.flat;
   let low = Infinity;
   for (const [x, y] of samples(region)) {
@@ -153,24 +231,36 @@ export function standPieces(footprint: MultiPolygon, base: number | null, top: n
   let remaining = footprint;
   const pieces: StandPiece[] = [];
 
-  if (base !== null && top !== null) {
-    const found: { region: MultiPolygon; level: number; buried?: string }[] = [];
+  if (base !== null && top !== null && holders.length) {
+    // Only the footprint near each holder is clipped against it: a title
+    // across a city passes thousands.
+    const near = new ClipSet([footprint]);
+    const found: { region: MultiPolygon; box: Box; level: number; buried?: string }[] = [];
     for (const holder of holders) {
       if (holder.bottom >= base || !boxesOverlap(holder.box, box)) continue;
-      const region = intersection(footprint, [holder.polygon]);
+      const local = near.polygonsWithin(holder.box);
+      if (!local.length) continue;
+      const region = intersection(local, [holder.polygon]);
       if (multiArea(region) < MIN_OVERLAP_MM2) continue;
       const level = levelOver(holder, region);
       if (!Number.isFinite(level)) continue;
-      found.push({ region, level: Math.min(level, base), buried: level >= top - 1e-6 ? holder.kind : undefined });
+      // Sunk into a deck, it stays above the deck's underside rather than sticking out below it.
+      const floor = holder.underside ? highestOver(holder.underside, region) + embed : -Infinity;
+      found.push({ region, box: multiBounds(region), level: Math.min(level, Math.max(base, floor)), buried: level >= top - 1e-6 ? holder.kind : undefined });
     }
     found.sort((a, b) => b.level - a.level);
+    // Each region less the higher ones already taken. Only those overlapping
+    // it can take anything, and taking every region from what was left one
+    // at a time cost 9 s for a 30 mm title over San Francisco.
+    const taken: { region: MultiPolygon; box: Box }[] = [];
     for (const item of found) {
-      if (!remaining.length) break;
-      const piece = intersection(item.region, remaining);
+      const over = taken.filter((t) => boxesOverlap(t.box, item.box)).map((t) => t.region);
+      const piece = over.length ? difference(item.region, over.length === 1 ? over[0] : union(...over)) : item.region;
       if (multiArea(piece) < MIN_OVERLAP_MM2) continue;
-      remaining = difference(remaining, item.region);
-      pieces.push({ polygons: piece, bottom: item.level - embed, buried: item.buried });
+      taken.push(item);
+      pieces.push({ polygons: piece, bottom: item.level - embed, buried: item.buried, held: true });
     }
+    if (taken.length) remaining = difference(footprint, taken.length === 1 ? taken[0].region : union(...taken.map((t) => t.region)));
   }
 
   for (const body of wet) {
@@ -184,6 +274,66 @@ export function standPieces(footprint: MultiPolygon, base: number | null, top: n
 
   if (remaining.length && multiArea(remaining) >= MIN_OVERLAP_MM2) pieces.push({ polygons: remaining, bottom: null });
   return pieces;
+}
+
+/**
+ * What a shape is hidden inside, when at least `share` of its footprint is
+ * under something whose top clears the shape's own `top`.
+ */
+export function buriedIn(footprint: MultiPolygon, holders: readonly Holder[], top: number, share: number): string | null {
+  if (!footprint.length) return null;
+  const box = multiBounds(footprint);
+  const near = new ClipSet([footprint]);
+  const regions: MultiPolygon[] = [];
+  let kind: string | null = null;
+  for (const holder of holders) {
+    if (holder.bottom >= top || !boxesOverlap(holder.box, box)) continue;
+    const local = near.polygonsWithin(holder.box);
+    if (!local.length) continue;
+    const region = intersection(local, [holder.polygon]);
+    if (multiArea(region) < MIN_OVERLAP_MM2) continue;
+    if (!(levelOver(holder, region) >= top - 1e-6)) continue;
+    regions.push(region);
+    kind = holder.kind;
+  }
+  if (!regions.length) return null;
+  return multiArea(union(...regions)) >= multiArea(footprint) * share ? kind : null;
+}
+
+/** About `count` points spread evenly along a footprint's outlines. */
+export function outlinePoints(footprint: MultiPolygon, count: number): [number, number][] {
+  let length = 0;
+  for (const polygon of footprint) length += ringLength(polygon[0]);
+  if (!(length > 0)) return [];
+  const step = length / count;
+  const out: [number, number][] = [];
+  let next = step / 2;
+  let walked = 0;
+  for (const polygon of footprint) {
+    const ring = polygon[0];
+    for (let i = 0; i < ring.length; i++) {
+      const [ax, ay] = ring[i];
+      const [bx, by] = ring[(i + 1) % ring.length];
+      const edge = Math.hypot(bx - ax, by - ay);
+      while (next < walked + edge && out.length < count) {
+        const t = (next - walked) / edge;
+        out.push([ax + (bx - ax) * t, ay + (by - ay) * t]);
+        next += step;
+      }
+      walked += edge;
+    }
+  }
+  return out;
+}
+
+function ringLength(ring: readonly (readonly number[])[]): number {
+  let length = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const [ax, ay] = ring[i];
+    const [bx, by] = ring[(i + 1) % ring.length];
+    length += Math.hypot(bx - ax, by - ay);
+  }
+  return length;
 }
 
 /** Where a footprint is wet: the pieces over each body, for a shape's top. */

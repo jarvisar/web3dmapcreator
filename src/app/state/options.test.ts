@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { emptyEdits } from '../../core/edit/types';
 import { DEFAULT_AREA, DEFAULT_EXPORT, DEFAULT_PALETTE, cloneSettings } from '../../core/settings';
 import { defaultSvgSettings } from '../svgmap/settings';
 import { fitAreaToPiece } from '../svgmap/piece';
 import { decodeOptions, encodeOptions, MAX_OPTIONS_BYTES, type Options } from './options';
-import { applyOptions, snapshotKey, useApp, type ResultMeta } from './store';
+import { applyOptions, resetAllSettings, snapshotKey, useApp, type ResultMeta } from './store';
 
 function options(): Options {
   return {
@@ -146,5 +147,48 @@ describe('applying options', () => {
     source.svg.product.width = 0;
     expect(() => applyOptions(source)).toThrow(/Invalid SVG options/);
     expect(useApp.getState()).toBe(initial);
+  });
+
+  const road = (lat: number): [number, number][] => [[0, lat], [0.001, lat], [0.002, lat]];
+  const myRoute = { id: 'mine', name: 'Mine', color: '#E4002B', width: 0.6, lines: [road(0)] };
+
+  it("adds a file's edits and picked roads to the ones here, and only with its map area", () => {
+    const mine = { ...emptyEdits(), objects: { 'b:mine': { removed: true } } };
+    useApp.setState({ edits: mine, svg: { ...initial.svg, routes: [myRoute], hiddenLines: [] } });
+    const source = options();
+    source.svg.hiddenLines = [road(0.01)];
+    const file = decodeOptions(encodeOptions(source, { ...savedMap, edits: { ...emptyEdits(), objects: { 'b:theirs': { heightM: 40 } } } }));
+    // Without the area, they stay out: they belong to that area.
+    expect(applyOptions(file, false)).toBeNull();
+    expect(useApp.getState().edits).toBe(mine);
+    expect(useApp.getState().svg.routes).toEqual([myRoute]);
+    expect(useApp.getState().svg.hiddenLines).toEqual([]);
+    const brought = applyOptions(file)!;
+    expect(Object.keys(useApp.getState().edits.objects).sort()).toEqual(['b:mine', 'b:theirs']);
+    expect(useApp.getState().svg.routes).toEqual([myRoute]);
+    expect(useApp.getState().svg.hiddenLines).toHaveLength(1);
+    expect([brought.edits, brought.picks]).toEqual([1, 1]);
+    expect(useApp.getState().editHistory.past.at(-1)).toBe(mine);
+  });
+
+  it('keeps the picked roads here for a file saved without an area', () => {
+    useApp.setState({ svg: { ...initial.svg, routes: [myRoute], hiddenLines: [road(0.02)] } });
+    const withRoutes = options();
+    withRoutes.svg.routes = [{ ...myRoute, id: 'theirs', lines: [road(0.03)] }];
+    applyOptions(decodeOptions(encodeOptions(withRoutes)));
+    expect(useApp.getState().svg.routes).toEqual([myRoute]);
+    expect(useApp.getState().svg.hiddenLines).toHaveLength(1);
+  });
+});
+
+describe('resetting all settings', () => {
+  it('keeps the edits and picked roads, which are work, not settings', () => {
+    const edits = { ...emptyEdits(), objects: { 'b:1': { removed: true } } };
+    useApp.setState({ edits, svg: { ...initial.svg, routes: [{ id: 'r', name: 'Route', color: '#E4002B', width: 0.6, lines: [[[0, 0], [0.001, 0]]] }], hiddenLines: [[[0, 1], [0.001, 1]]] } });
+    const { routes, hiddenLines } = useApp.getState().svg;
+    resetAllSettings();
+    expect(useApp.getState().edits).toBe(edits);
+    expect(useApp.getState().svg.routes).toBe(routes);
+    expect(useApp.getState().svg.hiddenLines).toBe(hiddenLines);
   });
 });

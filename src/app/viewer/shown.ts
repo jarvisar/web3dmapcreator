@@ -33,9 +33,11 @@ export function layerOf(entry: Entry, edits: ModelEdits): string | null {
 /**
  * How an entry shows: null when hidden, '' in its part's own colour, or
  * 'layer:<id>' or 'group:<colour group>'. `overridden`: the worker sent new
- * geometry for it, which shows instead.
+ * geometry for it, which shows instead. `part` is the part it's drawn in.
+ * Hiding a part only hides what's still in its own colour: something moved
+ * into a custom layer shows and exports with that layer.
  */
-export function entryColour(entry: Entry, ctx: ShownContext, overridden: boolean): string | null {
+export function entryColour(entry: Entry, ctx: ShownContext, overridden: boolean, part?: string): string | null {
   const { key, sub } = entry;
   const edits = ctx.edits;
   if (overridden || ctx.implicitHidden.has(key)) return null;
@@ -48,5 +50,5 @@ export function entryColour(entry: Entry, ctx: ShownContext, overridden: boolean
     const shape = edits.shapes.find((s) => `s:${s.id}` === key);
     return shape ? `group:${shape.layer}` : null;
   }
-  return '';
+  return part !== undefined && ctx.hiddenParts.has(part) ? null : '';
 }

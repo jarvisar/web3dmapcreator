@@ -79,11 +79,15 @@ export class ComposedMesh {
     return this.source.positions;
   }
 
-  /** Rebuilds the index for what's shown. Returns false when nothing changed. */
-  update(style: EntryStyle): boolean {
+  /**
+   * Rebuilds the index for what's shown: each entry as `style` has it, and
+   * the triangles no object owns as `unkeyed` has them. Returns false when
+   * nothing changed.
+   */
+  update(style: EntryStyle, unkeyed: string | null = ''): boolean {
     const styles = this.entries.map(style);
     // join() writes null as '', the part's own colour, so hidden needs a mark of its own.
-    const signature = styles.map((s) => s ?? '\u0002').join('\u0001');
+    const signature = [unkeyed, ...styles].map((s) => s ?? '\u0002').join('\u0001');
     if (signature === this.lastSignature && this.geometry.index) return false;
     this.lastSignature = signature;
     const indices = this.source.indices;
@@ -95,7 +99,7 @@ export class ComposedMesh {
     };
     for (let r = 0; r < this.runs.length; r += 3) {
       const entry = this.runs[r];
-      const colour = entry < 0 ? '' : styles[entry];
+      const colour = entry < 0 ? unkeyed : styles[entry];
       if (colour === null) continue;
       push(colour, this.runs[r + 1], this.runs[r + 2]);
     }

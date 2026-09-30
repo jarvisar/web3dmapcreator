@@ -310,6 +310,95 @@ export function sanitizeRoutes(value: unknown): SvgRoute[] {
   return out;
 }
 
+export interface Picks {
+  routes: SvgRoute[];
+  hiddenLines: LonLatLine[];
+}
+
+/**
+ * Picks from a share link or an options file added to these. A road is in
+ * one place at a time, so theirs moves it out of wherever ours had it, and a
+ * route both have (the same link opened twice) takes their name and colour.
+ * The limits still hold, and what doesn't fit is theirs. `added` counts
+ * their lines that weren't already in the same place, `replaced` ours they
+ * moved or changed.
+ */
+export function mergePicks(base: Picks, extra: Picks): Picks & { added: number; replaced: number; left: number } {
+  const incoming: { line: LonLatLine; place: string; box: LineBox }[] = [];
+  for (const route of extra.routes) for (const line of route.lines) incoming.push({ line, place: route.id, box: lineBox(line) });
+  for (const line of extra.hiddenLines) incoming.push({ line, place: 'hidden', box: lineBox(line) });
+  const already = new Set<LonLatLine>();
+  let replaced = 0;
+  // Whether one of theirs is this road, noting where ours had it.
+  const taken = (line: LonLatLine, place: string) => {
+    const box = lineBox(line);
+    for (const other of incoming) {
+      if (!boxesTouch(box, other.box) || !sameLine(line, other.line)) continue;
+      if (other.place === place) already.add(other.line);
+      else replaced++;
+      return true;
+    }
+    return false;
+  };
+  const routes = base.routes.map((route) => ({ ...route, lines: route.lines.filter((line) => !taken(line, route.id)) }));
+  const hiddenLines = base.hiddenLines.filter((line) => !taken(line, 'hidden'));
+  let points = pickedPoints(routes, hiddenLines);
+  let added = 0;
+  let left = 0;
+  const put = (line: LonLatLine, list: LonLatLine[]) => {
+    if (points + line.length > MAX_PICKED_POINTS || list.length >= MAX_PICKED_LINES) {
+      left++;
+      return;
+    }
+    points += line.length;
+    list.push(line);
+    if (!already.has(line)) added++;
+  };
+  for (const route of extra.routes) {
+    let target = routes.find((r) => r.id === route.id);
+    if (target) {
+      if (target.name !== route.name || target.color !== route.color || target.width !== route.width) replaced++;
+      target.name = route.name;
+      target.color = route.color;
+      target.width = route.width;
+    } else if (routes.length < MAX_ROUTES) {
+      target = { ...route, lines: [] };
+      routes.push(target);
+    } else {
+      left += route.lines.length;
+      continue;
+    }
+    for (const line of route.lines) put(line, target.lines);
+  }
+  for (const line of extra.hiddenLines) put(line, hiddenLines);
+  return { routes, hiddenLines, added, replaced, left };
+}
+
+type LineBox = [number, number, number, number];
+
+// A little over sameLine's tolerance, so the box test never misses a match.
+const BOX_MARGIN_M = TOLERANCE_M + 1;
+
+function lineBox(line: LonLatLine): LineBox {
+  let minLon = Infinity;
+  let minLat = Infinity;
+  let maxLon = -Infinity;
+  let maxLat = -Infinity;
+  for (const [lon, lat] of line) {
+    if (lon < minLon) minLon = lon;
+    if (lat < minLat) minLat = lat;
+    if (lon > maxLon) maxLon = lon;
+    if (lat > maxLat) maxLat = lat;
+  }
+  const dLat = BOX_MARGIN_M / 110_574;
+  const dLon = BOX_MARGIN_M / (111_320 * Math.max(0.01, Math.cos((Math.max(Math.abs(minLat), Math.abs(maxLat)) * Math.PI) / 180)));
+  return [minLon - dLon, minLat - dLat, maxLon + dLon, maxLat + dLat];
+}
+
+function boxesTouch(a: LineBox, b: LineBox): boolean {
+  return a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
+}
+
 /** An SVG group id for a route: safe to write as it is and unique. */
 export function routeGroupId(index: number): string {
   return `route-${index + 1}`;

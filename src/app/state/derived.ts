@@ -19,6 +19,11 @@ import { ROLE_GROUP } from '../../core/types';
 import type { ColourGroup } from '../../core/types';
 import { areaInBox, withRim } from '../lib/area';
 import { cleanFileName, slugify } from '../lib/browser';
+import { editOf, objectOf } from '../../core/edit/keys';
+import type { ModelEdits } from '../../core/edit/types';
+import type { RoadLines } from '../../core/engine/protocol';
+import { SHAPES_PART } from '../viewer/shown';
+import type { EditData } from './model';
 import type { ResultMeta } from './store';
 
 /** Colour groups the enabled layers can produce, in palette order. */
@@ -58,6 +63,51 @@ export function matchingPreset(palette: Palette): PalettePreset | null {
 export function resultGroups(result: ResultMeta): ColourGroup[] {
   const groups = new Set(result.parts.map((part) => ROLE_GROUP[part.role]));
   return COLOUR_GROUPS.map((group) => group.key).filter((key) => groups.has(key));
+}
+
+const roadKeySets = new WeakMap<RoadLines, Set<string>>();
+
+function roadKeys(roads: RoadLines | null): Set<string> {
+  if (!roads) return new Set();
+  let keys = roadKeySets.get(roads);
+  if (!keys) roadKeySets.set(roads, (keys = new Set(roads.keys)));
+  return keys;
+}
+
+/**
+ * The parts a download can have, by the ids the viewer hides them by: the
+ * model's own, custom layers something in this model is in, and added
+ * shapes in a model colour. Hiding one leaves it out of the download.
+ * Edits are kept for every area, so a layer can hold only things this
+ * model doesn't have, and then it adds nothing.
+ */
+export function downloadParts(result: ResultMeta, edits: ModelEdits, data: Pick<EditData, 'editable' | 'objects' | 'roads'>): string[] {
+  const ids = result.parts.map((part) => part.id);
+  // A model that couldn't be edited downloads as generated.
+  if (!data.editable) return ids;
+  const trees = ids.includes('trees');
+  const roads = roadKeys(data.roads);
+  const has = (key: string) => (key.startsWith('t:') ? trees : key.startsWith('r:') ? roads.has(key) : objectOf(key) in data.objects);
+  const filled = new Set(edits.shapes.map((shape) => shape.layer));
+  for (const [key, edit] of Object.entries(edits.objects)) {
+    if (!edit.layer || edit.removed || editOf(edits, objectOf(key))?.removed) continue;
+    if (has(key)) filled.add(edit.layer);
+  }
+  for (const layer of edits.layers) if (filled.has(layer.id)) ids.push(`layer:${layer.id}`);
+  if (edits.shapes.some((shape) => !edits.layers.some((layer) => layer.id === shape.layer))) ids.push(SHAPES_PART);
+  return ids;
+}
+
+/** How many of those are hidden, and whether that's all of them. */
+export function hiddenDownloadParts(
+  result: ResultMeta,
+  edits: ModelEdits,
+  data: Pick<EditData, 'editable' | 'objects' | 'roads'>,
+  hidden: readonly string[],
+): { hidden: number; all: boolean } {
+  const ids = downloadParts(result, edits, data);
+  const count = ids.filter((id) => hidden.includes(id)).length;
+  return { hidden: count, all: ids.length > 0 && count === ids.length };
 }
 
 export interface BedFit {

@@ -26,7 +26,7 @@ import {
 import type { Projection } from '../../core/geo/projection';
 import { kindOf } from '../../core/edit/keys';
 import type { ObjectFacts } from '../../core/edit/session';
-import { emptyEdits, type AddedShape, type ModelEdits } from '../../core/edit/types';
+import { emptyEdits, followsGround, MAX_SHAPE_POINTS, type AddedShape, type ModelEdits } from '../../core/edit/types';
 import type { EditTool } from '../state/store';
 import type { HoverTarget, PickTarget, ViewerEngine } from './ViewerEngine';
 
@@ -306,6 +306,8 @@ export class EditController {
       const point = this.surfacePoint(target);
       const previous = this.drawingPoints[this.drawingPoints.length - 1];
       if (previous && Math.hypot(previous.x - point.x, previous.y - point.y) < 0.05) return;
+      // Saved edits keep no more points than this.
+      if (this.drawingPoints.length >= MAX_SHAPE_POINTS) return;
       this.drawingPoints.push(point);
       this.handlers.drawing(this.drawingPoints.length);
       this.updateGuide();
@@ -471,12 +473,14 @@ export class EditController {
     const shape = kind === 'shape' ? this.shape(key) : undefined;
     const projection = this.state.projection;
     if (shape && projection && (shape.kind === 'path' || shape.kind === 'area')) {
+      // A flat shape's top is where it stands now, which moves with the roof it's on.
+      const flat = !followsGround(shape);
       const points = shape.points.map(([lon, lat]) => {
         const [x, y] = projection.toModel(lon, lat);
-        return new Vector3(x, y, (this.engine.groundAt(x, y) ?? bounds.max.z) + shape.liftMm + shape.heightMm);
+        return new Vector3(x, y, flat ? bounds.max.z : (this.engine.groundAt(x, y) ?? bounds.max.z) + shape.heightMm);
       });
       points.forEach((position, index) => this.handles.push({ kind: 'vertex', key, index, position }));
-      const count = shape.kind === 'area' ? points.length : points.length - 1;
+      const count = shape.points.length >= MAX_SHAPE_POINTS ? 0 : shape.kind === 'area' ? points.length : points.length - 1;
       for (let i = 0; i < count; i++) {
         const a = points[i];
         const b = points[(i + 1) % points.length];

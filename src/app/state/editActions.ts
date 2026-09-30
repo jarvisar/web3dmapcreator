@@ -4,14 +4,13 @@
 
 import { CancelledError } from '../../core/engine/client';
 import { kindOf, objectOf, shapeKey, twinOf } from '../../core/edit/keys';
-import { editCount, emptyEdits, MAX_LAYERS, type AddedShape, type EditLayer, type ModelEdits, type ObjectEdit } from '../../core/edit/types';
+import { editCount, emptyEdits, hasEdits, MAX_LAYERS, MAX_SHAPES, MAX_TEXT_LENGTH, type AddedShape, type EditLayer, type ModelEdits, type ObjectEdit } from '../../core/edit/types';
 import { FILAMENTS } from '../../core/settings';
 import { getEngine } from './engine';
 import { describeCounts } from '../viewer/edit/describe';
 import { applyEditUpdate, getEditData } from './model';
-import { toast, useApp, type EditTool } from './store';
-
-const HISTORY_LIMIT = 100;
+import { hasPicks, writeBackup, type Backup } from './persist';
+import { HISTORY_LIMIT, keepReplaced, patchSvg, toast, useApp, type Brought, type EditTool } from './store';
 
 const set = useApp.setState;
 const get = useApp.getState;
@@ -71,12 +70,116 @@ function keep(selection: string[], edits: ModelEdits): string[] {
   return selection.filter((key) => kindOf(key) !== 'shape' || shapes.has(key));
 }
 
+/** Every edit gone, for every area. A copy is kept aside in case that wasn't meant. */
 export function clearEdits(): void {
   const edits = get().edits;
   if (!editCount(edits) && !edits.layers.length) return;
-  commitEdits(emptyEdits());
+  const kept = keepBackup({ savedAt: Date.now(), reason: 'clear', edits });
+  const cleared = emptyEdits();
+  commitEdits(cleared);
   setSelection([]);
-  toast('Every edit was undone.', 'info', { label: 'Undo', run: undoEdit });
+  toast('Every edit was undone.', 'info', {
+    label: 'Undo',
+    run: () => {
+      if (get().edits !== cleared) return;
+      undoEdit();
+      if (kept && get().backup === kept) forgetBackup();
+    },
+  });
+}
+
+/**
+ * Edits another tab saved, taken on here in place of this tab's. Its undo
+ * steps were for the old ones, and undoing them would write the old ones
+ * back over the other tab's, so they go.
+ */
+export function adoptEdits(edits: ModelEdits): void {
+  set((state) => ({
+    edits,
+    editHistory: { past: [], future: [], coalesce: null },
+    ui: { ...state.ui, selection: keep(state.ui.selection, edits), activePoint: null },
+  }));
+}
+
+// ---------------------------------------------------------------- backup
+
+/** Keeps a backup in place of the one before. Returns it, or null when the browser refused it. */
+export function keepBackup(backup: Backup): Backup | null {
+  if (!writeBackup(backup)) return null;
+  set({ backup });
+  return backup;
+}
+
+export function forgetBackup(): void {
+  writeBackup(null);
+  set({ backup: null });
+}
+
+/** Puts the backup back, and keeps what it replaces in its place, so doing it again swaps them back. */
+export function restoreBackup(): void {
+  const state = get();
+  const backup = state.backup;
+  if (!backup) return;
+  const swapped: Backup = { savedAt: Date.now(), reason: 'restore' };
+  if (backup.edits) {
+    if (hasEdits(state.edits)) swapped.edits = state.edits;
+    commitEdits(backup.edits);
+    settleEdits();
+    set((s) => ({ ui: { ...s.ui, selection: keep(s.ui.selection, backup.edits!), activePoint: null } }));
+  }
+  if (backup.picks) {
+    const current = { routes: state.svg.routes, hiddenLines: state.svg.hiddenLines };
+    if (hasPicks(current)) swapped.picks = current;
+    patchSvg({ routes: backup.picks.routes, hiddenLines: backup.picks.hiddenLines });
+  }
+  const next = swapped.edits || swapped.picks ? swapped : null;
+  writeBackup(next);
+  set({ backup: next });
+  const what = backup.edits && backup.picks ? 'edits and picked roads' : backup.edits ? 'edits' : 'picked roads';
+  toast(`Put back your ${what}.`, 'info', next ? { label: 'Undo', run: restoreBackup } : undefined);
+}
+
+// ------------------------------------------------------------ links, files
+
+/** What a link or file brought, as a sentence for a toast. */
+export function broughtText(brought: Brought, from: string): string {
+  const parts: string[] = [];
+  if (brought.edits) parts.push(`${brought.edits} ${brought.edits === 1 ? 'edit' : 'edits'}`);
+  if (brought.picks) parts.push(`${brought.picks} picked ${brought.picks === 1 ? 'road' : 'roads'}`);
+  let text = parts.length ? `Added ${parts.join(' and ')} from ${from}.` : `Nothing new came from ${from}.`;
+  if (brought.left) text += ` ${brought.left} didn't fit within the limits.`;
+  if (brought.kept) {
+    const where = [brought.kept.edits ? 'Edit the model' : '', brought.kept.picks ? 'Pick roads' : ''].filter(Boolean).join(' or ');
+    text += ` Yours that it changed are kept aside, to put back from ${where}.`;
+  }
+  return text;
+}
+
+/** Takes what a link or file brought back out, if nothing changed since. */
+export function undoBrought(brought: Brought): void {
+  const state = get();
+  if (brought.after.edits !== brought.before.edits && state.edits === brought.after.edits) undoEdit();
+  const picks = brought.after.picks;
+  if (picks !== brought.before.picks && state.svg.routes === picks.routes && state.svg.hiddenLines === picks.hiddenLines) {
+    patchSvg({ routes: brought.before.picks.routes, hiddenLines: brought.before.picks.hiddenLines });
+  }
+  if (brought.kept && get().backup === brought.kept) forgetBackup();
+}
+
+/** Says what a link brought, with a way to take it back out. */
+export function broughtToast(brought: Brought, from = 'the link'): void {
+  toast(broughtText(brought, from), 'info', { label: 'Undo', run: () => undoBrought(brought) });
+}
+
+/** A link opened in a tab that's already running: its edits and picks go in with the others. */
+export function takeInLink(brought: Brought): void {
+  if (brought.after.edits !== get().edits) {
+    commitEdits(brought.after.edits);
+    settleEdits();
+  }
+  if (brought.after.picks !== brought.before.picks) patchSvg({ routes: brought.after.picks.routes, hiddenLines: brought.after.picks.hiddenLines });
+  set({ backup: keepReplaced(brought, 'link', get().backup) });
+  broughtToast(brought);
 }
 
 // ------------------------------------------------------------- selection
@@ -147,7 +250,8 @@ export function patchObjects(keys: string[], patch: Partial<ObjectEdit>, coalesc
     if (kindOf(key) === 'shape') continue;
     const next: ObjectEdit = { ...objects[key], ...patch };
     for (const field of Object.keys(next) as (keyof ObjectEdit)[]) if (next[field] === undefined) delete next[field];
-    if (next.removed === false) delete next.removed;
+    // A bridge kept while its road is removed has to say so, or it goes with the road again.
+    if (next.removed === false && !(key.startsWith('br:') && objects[twinOf(key)!]?.removed)) delete next.removed;
     if (Object.keys(next).length) objects[key] = next;
     else delete objects[key];
   }
@@ -258,7 +362,16 @@ export function deleteLayer(id: string): void {
 
 let created: string | null = null;
 
-export function addShape(shape: Omit<AddedShape, 'id'>): string {
+/** Whether `count` more shapes would go over the limit, which it says. */
+function shapesFull(count: number): boolean {
+  if (get().edits.shapes.length + count <= MAX_SHAPES) return false;
+  toast(`A model can have at most ${MAX_SHAPES} added shapes.`, 'error');
+  return true;
+}
+
+/** Adds a shape and selects it. Null at the limit, which saved edits and exports hold to. */
+export function addShape(shape: Omit<AddedShape, 'id'>): string | null {
+  if (shapesFull(1)) return null;
   const edits = get().edits;
   const id = newId();
   created = id;
@@ -296,7 +409,7 @@ export function duplicateShapes(ids: string[]): void {
   const copies = edits.shapes
     .filter((shape) => ids.includes(shape.id))
     .map((shape) => ({ ...structuredClone(shape), id: newId() }));
-  if (!copies.length) return;
+  if (!copies.length || shapesFull(copies.length)) return;
   commitEdits({ ...edits, shapes: [...edits.shapes, ...copies] });
   setSelection(copies.map((shape) => shapeKey(shape.id)));
 }
@@ -310,7 +423,7 @@ export function shapeDefaults(kind: AddedShape['kind']): Omit<AddedShape, 'id' |
   const common = { kind, layer: firstLayer(fallback), rotationDeg: 0, liftMm: 0, text: '', font: 'montserrat' };
   switch (kind) {
     case 'text':
-      return { ...common, sizeMm: 5, depthMm: 5, heightMm: 1.2, followGround: true, text: get().placeName || 'Label' };
+      return { ...common, sizeMm: 5, depthMm: 5, heightMm: 1.2, followGround: true, text: (get().placeName || 'Label').slice(0, MAX_TEXT_LENGTH) };
     case 'box':
       return { ...common, sizeMm: 8, depthMm: 8, heightMm: 4, followGround: false };
     case 'cylinder':

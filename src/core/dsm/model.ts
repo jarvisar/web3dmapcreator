@@ -336,6 +336,8 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
   stats.lidar_model_surface_triangles = tin.triangles.length / 3;
   let floors: PrismSolid[] = [];
   let water: PrismSolid[] = [];
+  // Where a shape added in the editor goes down to a floor, or through a cut to the base.
+  let surfaceWater: { polygons: MultiPolygon; floor: number | null }[] = [];
   if (result.counts.cut_water_cells) {
     let cut = maskOutline(result.cut, nx, ny, x0, y0, dx, dy);
     if (mapOutline) cut = followMap(cut, mapOutline, MAP_EDGE_M * mmPerMetre);
@@ -343,7 +345,13 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
     const region = landRegion(crop, cut, result.waterTop ? 0 : ISLAND_MIN_MM2);
     if (!region.length) throw new Error('Nothing but water is left in this area. Move it onto land, or recess the water.');
     tin = cutSurface(tin, region);
-    if (result.waterTop) ({ floors, water } = waterLayer(difference([[crop]], region), result.waterTop, settings.water.thicknessMm, cells));
+    const wet = difference([[crop]], region);
+    if (result.waterTop) {
+      ({ floors, water } = waterLayer(wet, result.waterTop, settings.water.thicknessMm, cells));
+      surfaceWater = water.map((w) => ({ polygons: [w.polygon], floor: typeof w.bottom === 'number' && w.bottom > 0 ? w.bottom : null }));
+    } else if (wet.length) {
+      surfaceWater = [{ polygons: wet, floor: null }];
+    }
   } else if (!rectangle) {
     tin = cutSurface(tin, [[crop]]);
   }
@@ -373,6 +381,16 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
   for (const failure of surface.failures.slice(0, 3)) warnings.push(`LiDAR from ${failure.source} could not be read: ${failure.reason}`);
   // Nothing in the surface can be picked out, but shapes can stand on it.
   const surfaceGrid: GroundGrid = { minX: x0, minY: y0, step: dx, stepY: dy, cols: nx, rows: ny, values: result.heights };
-  const edit: EditContext = { heightAt: (x, y) => groundAt(surfaceGrid, x, y), grid: surfaceGrid, roads: [], bodies: [], noGround: [], kept: { roads: [], buildings: [], piers: [], decks: [], airport: [] }, decks: [], objects: new Map() };
+  const edit: EditContext = {
+    heightAt: (x, y) => groundAt(surfaceGrid, x, y),
+    grid: surfaceGrid,
+    surfaceWater,
+    roads: [],
+    bodies: [],
+    noGround: [],
+    kept: { roads: [], buildings: [], piers: [], decks: [], airport: [] },
+    decks: [],
+    objects: new Map(),
+  };
   return { layers: layersOut, outline, crop: [crop], baseZ: 0, mmPerMetre, stats, warnings, edit };
 }

@@ -69,6 +69,15 @@ export interface ModelEdits {
   shapes: AddedShape[];
 }
 
+/**
+ * A shape follows the ground only while it's on it. Raised onto a roof or a
+ * bridge its top is flat, so it can stand on what's under it rather than
+ * run down to the street.
+ */
+export function followsGround(shape: Pick<AddedShape, 'followGround' | 'liftMm'>): boolean {
+  return shape.followGround && !(shape.liftMm > 0);
+}
+
 export function emptyEdits(): ModelEdits {
   return { version: EDITS_VERSION, layers: [], objects: {}, shapes: [] };
 }
@@ -94,7 +103,8 @@ export const EDIT_LIMITS = {
   sizeMm: [0.5, 300],
   depthMm: [0.5, 300],
   shapeHeightMm: [0.1, 100],
-  liftMm: [0, 150],
+  // As high as the tallest building, so a shape can go on its roof.
+  liftMm: [0, 300],
   pathWidthMm: [0.3, 20],
 } as const;
 
@@ -102,6 +112,16 @@ export const MAX_TEXT_LENGTH = 80;
 export const MAX_SHAPE_POINTS = 2000;
 export const MAX_LAYERS = 24;
 export const MAX_SHAPES = 500;
+
+/**
+ * A building's printed height as the edits can hold it at this scale: the
+ * printed limits and the real height's, whichever is tighter.
+ */
+export function buildingHeightRange(mmPerMetre: number): [number, number] {
+  const low = Math.max(EDIT_LIMITS.buildingHeightMm[0], EDIT_LIMITS.heightM[0] * mmPerMetre);
+  const high = Math.min(EDIT_LIMITS.buildingHeightMm[1], EDIT_LIMITS.heightM[1] * mmPerMetre);
+  return [low, Math.max(low, high)];
+}
 
 const HEX = /^#[0-9a-f]{6}$/i;
 const clamp = (value: number, [min, max]: readonly [number, number]) => Math.min(max, Math.max(min, value));
@@ -169,6 +189,52 @@ export function sanitizeEdits(raw: unknown): ModelEdits {
     }
   }
   return out;
+}
+
+/**
+ * Edits from a share link or an options file added to these, rather than put
+ * in their place: edits are one document for every area, so replacing them
+ * lost everything done elsewhere. Theirs win for an object, shape or layer
+ * both have. `added` counts their objects and shapes that weren't here as
+ * they are, `replaced` ours that theirs changed, and `left` what the limits
+ * left out, which is always theirs since ours come first.
+ */
+export function mergeEdits(base: ModelEdits, extra: ModelEdits): { edits: ModelEdits; added: number; replaced: number; left: number } {
+  let added = 0;
+  let replaced = 0;
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const byId = <T extends { id: string }>(ours: T[], theirs: T[], counted: boolean): T[] => {
+    const incoming = new Map(theirs.map((item) => [item.id, item]));
+    const out = ours.map((item) => {
+      const other = incoming.get(item.id);
+      if (!other) return item;
+      incoming.delete(item.id);
+      if (!same(item, other)) {
+        replaced++;
+        if (counted) added++;
+      }
+      return other;
+    });
+    for (const item of incoming.values()) {
+      out.push(item);
+      if (counted) added++;
+    }
+    return out;
+  };
+  const layers = byId(base.layers, extra.layers, false);
+  const shapes = byId(base.shapes, extra.shapes, true);
+  const objects = { ...base.objects };
+  for (const [key, edit] of Object.entries(extra.objects)) {
+    const before = objects[key];
+    if (!before || !same(before, edit)) {
+      added++;
+      if (before) replaced++;
+    }
+    objects[key] = edit;
+  }
+  const edits = sanitizeEdits({ version: EDITS_VERSION, layers, objects, shapes });
+  const left = layers.length - edits.layers.length + shapes.length - edits.shapes.length;
+  return { edits, added, replaced, left };
 }
 
 function sanitizeShape(item: unknown, layerIds: Set<string>): AddedShape | null {

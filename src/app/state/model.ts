@@ -21,6 +21,7 @@ const EMPTY: EditData = { editable: false, roads: null, objects: {}, ground: nul
 
 let parts: MeshPart[] = [];
 let data: EditData = EMPTY;
+/** By part and key: a bridge has its deck and its piers in two parts. */
 const objectMeshes = new Map<string, ObjectMesh>();
 const replacedParts = new Map<string, MeshPart | null>();
 let hidden: string[] = [];
@@ -55,9 +56,14 @@ export function editVersion(): number {
 }
 
 function record(update: EditUpdate) {
+  if (update.reset) {
+    objectMeshes.clear();
+    replacedParts.clear();
+  }
   for (const object of update.objects) {
-    if (object.mesh) objectMeshes.set(object.key, object);
-    else objectMeshes.delete(object.key);
+    const id = `${object.part}|${object.key}`;
+    if (object.mesh) objectMeshes.set(id, object);
+    else objectMeshes.delete(id);
   }
   for (const { id, part } of update.parts) {
     if (part) replacedParts.set(id, part);
@@ -76,11 +82,12 @@ export function applyEditUpdate(update: EditUpdate): boolean {
   return true;
 }
 
-/** Everything the worker sent since the model was generated, as one update. */
+/** Everything the worker sent since the model was generated, as one update in place of any before. */
 export function currentEditState(): EditUpdate {
   return {
     model,
     version,
+    reset: true,
     objects: [...objectMeshes.values()],
     parts: [...replacedParts].map(([id, part]) => ({ id, part })),
     hidden,

@@ -59,6 +59,11 @@ export interface EditContext {
   heightfield?: HeightField;
   /** A LiDAR only model's surface grid, in place of a terrain grid. */
   grid?: GroundGrid;
+  /**
+   * A LiDAR only model's water, with the floor under it, or null where it's
+   * cut out through the base.
+   */
+  surfaceWater?: { polygons: MultiPolygon; floor: number | null }[];
   /** Ground road pieces as they were widened: bridges left out, demoted decks back in. */
   roads: RoadPiece[];
   /** Water bodies with their levels, for editing water and what stands in it (edit/earth.ts). */

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { filamentUse, preparePlates } from '../export/common';
 import { Projection } from '../geo/projection';
 import { difference, intersection, multiArea, pointInMulti, pointInPolygon, polygonArea } from '../geometry/polygon';
@@ -9,13 +9,17 @@ import { generateModel, type ModelSpec } from '../pipeline/generate';
 import { meshLayers } from '../pipeline/mesh';
 import { buildPlates } from '../pipeline/plates';
 import type { SourceData, SourceFeature } from '../pipeline/source';
+import type { MultiPolygon } from '../types';
 import { cloneSettings, DEFAULT_PALETTE, type AreaSpec } from '../settings';
 import { parseOutlineFont } from '../svgmap/text/loadFont';
 import { editOf } from './keys';
 import { roadLines } from './lines';
+import { RoadTiles } from './roads';
 import { EditSession } from './session';
 import { shapeFootprint } from './shapes';
-import { emptyEdits, sanitizeEdits, type AddedShape, type ModelEdits } from './types';
+import { emptyEdits, followsGround, MAX_SHAPES, mergeEdits, sanitizeEdits, type AddedShape, type ModelEdits } from './types';
+import { solidPeak } from './heights';
+import { parseHershey, type HersheyFile } from '../svgmap/text/hershey';
 
 const LAT = 45;
 const LON = 0.01;
@@ -73,7 +77,7 @@ const hills = { sample: (lon: number, lat: number) => 30 + 20 * Math.sin((lon - 
 const montserrat = readFileSync('public/fonts/Montserrat-SemiBold.ttf');
 const font = parseOutlineFont(montserrat.buffer.slice(montserrat.byteOffset, montserrat.byteOffset + montserrat.byteLength) as ArrayBuffer);
 
-async function setUp(options: { data?: SourceData; groundRaisedParts?: boolean; bridges?: boolean; supports?: boolean; through?: boolean } = {}) {
+async function setUp(options: { data?: SourceData; groundRaisedParts?: boolean; bridges?: boolean; supports?: boolean; through?: boolean; water?: boolean } = {}) {
   const settings = cloneSettings();
   settings.terrain.resolution = 96;
   settings.trees.enabled = true;
@@ -86,6 +90,7 @@ async function setUp(options: { data?: SourceData; groundRaisedParts?: boolean; 
   }
   if (options.supports === false) settings.supports = false;
   if (options.through) settings.water.mode = 'through';
+  if (options.water === false) settings.water.enabled = false;
   const spec = await generateModel({ area, settings, data: options.data ?? town(), elevation: hills });
   const projection = new Projection(area.center, area.rotationDeg, spec.mmPerMetre);
   const session = new EditSession(spec, settings, projection, { load: async () => font });
@@ -128,6 +133,16 @@ function groundOf(model: ModelSpec): PrismSolid[] {
 
 function covers(solids: Solid[], x: number, y: number): boolean {
   return solids.some((s) => s.kind === 'prism' && pointInPolygon(x, y, s.polygon));
+}
+
+/** How much of the solids lies in a square around a point, from above. */
+function areaNear(solids: Solid[], x: number, y: number, r: number): number {
+  const square: MultiPolygon = [[[[x - r, y - r], [x + r, y - r], [x + r, y + r], [x - r, y + r]]]];
+  return multiArea(intersection(solids.flatMap((s) => (s.kind === 'prism' ? [s.polygon] : [])), square));
+}
+
+function shapeSolids(model: ModelSpec, key: string): PrismSolid[] {
+  return model.layers.flatMap((l) => l.solids).filter((s): s is PrismSolid => s.key === key && s.kind === 'prism');
 }
 
 async function expectClosed(model: ModelSpec) {
@@ -194,6 +209,43 @@ describe('sanitizeEdits', () => {
     expect(edits.objects['w:pond']).toBeUndefined();
     expect(edits.objects['br:deck']).toEqual({ removed: false, widthMm: 2 });
     expect(edits.objects['b:tower']).toEqual({ heightM: 20 });
+  });
+});
+
+describe('mergeEdits', () => {
+  const layer = (id: string, hex = '#FF0000') => ({ id, name: id, hex, line: 'PLA Basic' as const });
+
+  it("adds theirs to ours, and theirs win where both changed something", () => {
+    const ours: ModelEdits = { ...emptyEdits(), layers: [layer('A')], objects: { 'b:1': { layer: 'A' }, 'b:2': { removed: true } }, shapes: [shape({ id: 'mine' })] };
+    const theirs: ModelEdits = { ...emptyEdits(), layers: [layer('B', '#0000FF')], objects: { 'b:2': { heightM: 30 }, 'r:9': { layer: 'B' } }, shapes: [shape({ id: 'theirs' })] };
+    const merged = mergeEdits(ours, theirs);
+    expect(merged.edits.layers.map((l) => l.id)).toEqual(['A', 'B']);
+    expect(merged.edits.objects).toEqual({ 'b:1': { layer: 'A' }, 'b:2': { heightM: 30 }, 'r:9': { layer: 'B' } });
+    expect(merged.edits.shapes.map((s) => s.id)).toEqual(['mine', 'theirs']);
+    expect([merged.added, merged.replaced, merged.left]).toEqual([3, 1, 0]);
+    // Ours are left as they were.
+    expect(ours.objects['b:2']).toEqual({ removed: true });
+  });
+
+  it('changes nothing for the same edits again', () => {
+    const ours: ModelEdits = { ...emptyEdits(), layers: [layer('A')], objects: { 'b:1': { layer: 'A' } }, shapes: [shape({ id: 's' })] };
+    const merged = mergeEdits(ours, structuredClone(ours));
+    expect([merged.added, merged.replaced, merged.left]).toEqual([0, 0, 0]);
+    expect(merged.edits).toEqual(ours);
+  });
+
+  it('keeps ours first, so the limits leave out theirs', () => {
+    const ours: ModelEdits = { ...emptyEdits(), shapes: Array.from({ length: MAX_SHAPES }, (_, i) => shape({ id: `mine${i}` })) };
+    const merged = mergeEdits(ours, { ...emptyEdits(), shapes: [shape({ id: 'theirs' }), shape({ id: 'more' })] });
+    expect(merged.edits.shapes).toHaveLength(MAX_SHAPES);
+    expect(merged.edits.shapes.every((s) => s.id.startsWith('mine'))).toBe(true);
+    expect(merged.left).toBe(2);
+  });
+
+  it('follows the ground only while a shape is on it', () => {
+    expect(followsGround({ followGround: true, liftMm: 0 })).toBe(true);
+    expect(followsGround({ followGround: true, liftMm: 2 })).toBe(false);
+    expect(followsGround({ followGround: false, liftMm: 0 })).toBe(false);
   });
 });
 
@@ -458,6 +510,76 @@ describe('EditSession', () => {
     expect(update.notes['s:tiny']).toMatch(/thinner than/);
     expect(update.notes['s:away']).toMatch(/outside the model/);
   });
+
+  it('makes a building as tall as asked from the parts left, when its tallest is removed', async () => {
+    const { session, spec } = await setUp({ data: townWithArcade() });
+    const base = spec.edit!.objects.get('b:arcade')!.base!;
+    const edits = { ...emptyEdits(), objects: { 'b:arcade': { heightM: 50 }, 'b:arcade/arcade-upper': { removed: true } } };
+    const kept = shapeSolids(await session.edited(edits, DEFAULT_PALETTE), 'b:arcade');
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.some((s) => s.sub === 'arcade-upper')).toBe(false);
+    // Scaled by the upper floors' height it came out at 15 m times 50 / 40.
+    expect(Math.max(...kept.map(solidPeak))).toBeCloseTo(base + 50 * session.buildingScale, 2);
+  });
+
+  it('sends everything again after an update that failed part way', async () => {
+    const { session } = await setUp();
+    const tall = (mm: number): ModelEdits => ({
+      ...emptyEdits(),
+      objects: { 'b:tower': { heightM: mm / session.buildingScale }, 'b:shed': { heightM: mm / session.buildingScale }, 'r:main': { widthMm: 2 } },
+    });
+    expect((await session.update(tall(10), 1)).parts.map((p) => p.id)).toContain('roads');
+    const target = session as unknown as { mesh(layer: string, role: string, solids: Solid[]): Promise<unknown> };
+    const mesh = target.mesh;
+    let buildings = 0;
+    const spy = vi.spyOn(target, 'mesh').mockImplementation(function (this: unknown, layer, role, solids) {
+      if (solids.some((s) => s.key?.startsWith('b:')) && ++buildings === 2) return Promise.reject(new Error('out of memory'));
+      return mesh.call(this, layer, role, solids);
+    });
+    await expect(session.update(tall(12), 2)).rejects.toThrow('out of memory');
+    spy.mockRestore();
+    // The first building went through, but the viewer never got it.
+    const again = await session.update(tall(12), 3);
+    expect(again.reset).toBe(true);
+    expect(again.objects.map((o) => o.key).sort()).toEqual(['b:shed', 'b:tower']);
+    expect(again.parts.map((p) => p.id)).toContain('roads');
+    const next = await session.update(tall(12), 4);
+    expect(next.reset).toBeUndefined();
+    expect([next.objects, next.parts]).toEqual([[], []]);
+  });
+
+  it('exports the edits asked for while an update is still rebuilding roads', async () => {
+    // Download clicked right after an undo, while the undone edit is still being applied.
+    const { session } = await setUp();
+    const kept: ModelEdits = { ...emptyEdits(), objects: { 'r:cross': { widthMm: 2 } } };
+    const undone: ModelEdits = { ...emptyEdits(), objects: { 'r:cross': { widthMm: 2 }, 'r:main': { widthMm: 3 } } };
+    await session.update(kept, 1);
+    const roadArea = (model: ModelSpec) => multiArea(solidsIn(model, 'roads').map((s) => s.polygon));
+    const expected = roadArea(await session.edited(kept, DEFAULT_PALETTE));
+    const tile = RoadTiles.prototype.tile;
+    let calls = 0;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let reached = () => {};
+    const blocked = new Promise<void>((resolve) => (reached = resolve));
+    const spy = vi.spyOn(RoadTiles.prototype, 'tile').mockImplementation(async function (this: RoadTiles, ...args) {
+      if (++calls === 2) {
+        reached();
+        await gate;
+      }
+      return tile.apply(this, args);
+    });
+    try {
+      const updating = session.update(undone, 2);
+      await blocked;
+      expect(roadArea(await session.edited(kept, DEFAULT_PALETTE))).toBeCloseTo(expected, 3);
+      release();
+      await updating;
+      expect(roadArea(await session.edited(undone, DEFAULT_PALETTE))).toBeGreaterThan(expected + 1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe('Edits in and over water', () => {
@@ -486,6 +608,17 @@ describe('Edits in and over water', () => {
     expect(recess.layers.find((l) => l.id === 'terrain')!.solids.every((s, i) => s === generated[i])).toBe(true);
     expect(recess.layers.find((l) => l.id === 'water')!.solids.some((s) => s.key === 'w:river')).toBe(false);
     expect((await session.update(emptyEdits(), 3)).parts).toEqual([]);
+  });
+
+  it('leaves water edits alone with the water turned off, as the editor lists them', async () => {
+    const { session, spec } = await setUp({ water: false });
+    expect(session.describe()['w:river']).toBeUndefined();
+    expect(spec.edit!.bodies.some((b) => b.key === 'w:river')).toBe(true);
+    const edits = { ...emptyEdits(), objects: { 'w:river': { removed: true } } };
+    expect((await session.update(edits, 1)).parts).toEqual([]);
+    const edited = await session.edited(edits, DEFAULT_PALETTE);
+    const generated = spec.layers.find((l) => l.id === 'terrain')!.solids;
+    expect(edited.layers.find((l) => l.id === 'terrain')!.solids.every((s, i) => s === generated[i])).toBe(true);
   });
 
   it('keeps a floor under a hollow in water that ran down to the base', async () => {
@@ -648,10 +781,128 @@ describe('Shapes standing on things', () => {
     expect(update.objects.map((o) => o.key)).toEqual(expect.arrayContaining(['b:tower', 's:r', 's:o']));
   });
 
+  it('moves a shape raised onto a roof with the roof, and brings it down when the building goes', async () => {
+    const { session, spec, projection } = await setUp();
+    const facts = session.describe()['b:tower'];
+    const base = spec.edit!.objects.get('b:tower')!.base!;
+    const roof = base + facts.heightMm!;
+    const [x, y] = projection.toModel(...at(70, 170));
+    // Placed the way the editor does it, the lift measured from the ground where it lands.
+    const pin = shape({ id: 'p', kind: 'pin', at: at(70, 170), sizeMm: 0.8, heightMm: 1, liftMm: roof - spec.edit!.heightAt(x, y) });
+    const on = shapeSolids(await session.edited({ ...emptyEdits(), shapes: [pin] }, DEFAULT_PALETTE), 's:p');
+    expect(on.length).toBeGreaterThan(0);
+    for (const s of on) expect(s.bottom as number).toBeCloseTo(roof - 0.04, 1);
+    // Made taller, the tower takes it up rather than burying it.
+    const taller = shapeSolids(await session.edited({ ...emptyEdits(), objects: { 'b:tower': { heightM: 45 } }, shapes: [pin] }, DEFAULT_PALETTE), 's:p');
+    const newRoof = base + 45 * session.buildingScale;
+    for (const s of taller) expect(s.bottom as number).toBeCloseTo(newRoof - 0.04, 1);
+    // Removed, it comes down to the ground rather than standing on a column.
+    const gone = shapeSolids(await session.edited({ ...emptyEdits(), objects: { 'b:tower': { removed: true } }, shapes: [pin] }, DEFAULT_PALETTE), 's:p');
+    expect(gone.length).toBeGreaterThan(0);
+    for (const s of gone) {
+      expect(typeof s.bottom).toBe('function');
+      expect(s.top as number).toBeLessThan(spec.edit!.heightAt(x, y) + 1.5);
+    }
+  });
+
+  it('stands a shape raised onto a deck on it, and leaves the water under the bridge alone', async () => {
+    for (const supports of [true, false]) {
+      const { session, spec, projection } = await setUp({ bridges: true, supports });
+      // Over the river between two piers, where the cross street's deck runs.
+      const [x, y] = projection.toModel(...at(5, 1.5));
+      const deck = solidsIn(spec, 'bridges').find((s) => s.key === 'br:cross' && pointInPolygon(x, y, s.polygon))!;
+      expect(deck).toBeDefined();
+      expect(covers(solidsIn(spec, 'water'), x, y)).toBe(true);
+      const deckTop = (deck.top as (x: number, y: number) => number)(x, y);
+      const deckBottom = (deck.bottom as (x: number, y: number) => number)(x, y);
+      const lift = deckTop - spec.edit!.heightAt(x, y);
+      // A box stands on ground of its own in the water with supports on, text on the floor.
+      for (const placed of [shape({ id: 'd', at: at(5, 1.5), sizeMm: 1, depthMm: 1, heightMm: 1, liftMm: lift }), shape({ id: 'd', kind: 'text', text: 'HI', at: at(5, 1.5), sizeMm: 1, heightMm: 0.5, liftMm: lift })]) {
+        const edits = { ...emptyEdits(), objects: { 'br:cross': { widthMm: 3 } }, shapes: [placed] };
+        await session.update(edits, 1);
+        const edited = await session.edited(edits, DEFAULT_PALETTE);
+        expect(areaNear(solidsIn(edited, 'water'), x, y, 1.5)).toBeCloseTo(areaNear(solidsIn(spec, 'water'), x, y, 1.5), 3);
+        expect(areaNear(groundOf(edited), x, y, 1.5)).toBeCloseTo(areaNear(groundOf(spec), x, y, 1.5), 3);
+        const solids = shapeSolids(edited, 's:d');
+        expect(solids.length).toBeGreaterThan(0);
+        for (const s of solids) expect(s.bottom as number).toBeGreaterThan(deckBottom);
+        await expectClosed(edited);
+      }
+    }
+  });
+
+  it("notes text whose font didn't load, and warns once, not on every edit", async () => {
+    const { spec, settings, projection } = await setUp();
+    const session = new EditSession(spec, settings, projection, {
+      load: async () => {
+        throw new Error('Offline.');
+      },
+    });
+    const edits = { ...emptyEdits(), shapes: [shape({ id: 't', kind: 'text', text: 'Hi', sizeMm: 5 })] };
+    const first = await session.update(edits, 1);
+    expect(first.notes['s:t']).toMatch(/font couldn't be loaded/);
+    expect(first.warnings).toEqual(['The font for “Hi” could not be loaded. Offline.']);
+    const second = await session.update({ ...edits, objects: { 'b:shed': { removed: true } } }, 2);
+    expect(second.notes['s:t']).toMatch(/font couldn't be loaded/);
+    expect(second.warnings).toEqual([]);
+    // An export says so every time, since the file is missing the text.
+    expect((await session.edited(edits, DEFAULT_PALETTE)).warnings).toContain('The font for “Hi” could not be loaded. Offline.');
+  });
+
+  it('notes characters the font has no glyph for, and what prints instead', async () => {
+    const { spec, settings, projection } = await setUp();
+    const hershey = parseHershey(JSON.parse(readFileSync('public/fonts/hershey/futural.json', 'utf8')) as HersheyFile);
+    const session = new EditSession(spec, settings, projection, { load: async (id) => (id === 'hershey-sans' ? { kind: 'stroke', font: hershey } : font) });
+    const update = await session.update(
+      {
+        ...emptyEdits(),
+        shapes: [
+          shape({ id: 'a', kind: 'text', text: 'Café 日本', sizeMm: 6 }),
+          shape({ id: 'b', kind: 'text', text: 'Café', font: 'hershey-sans', sizeMm: 6 }),
+          shape({ id: 'c', kind: 'text', text: 'Café', sizeMm: 6 }),
+        ],
+      },
+      1,
+    );
+    expect(update.notes['s:a']).toBe('This font has no “日” or “本”, so they print as boxes.');
+    expect(update.notes['s:b']).toBe('This font has no “é”, so it prints as a question mark.');
+    expect(update.notes['s:c']).toBeUndefined();
+  });
+
   it('notes a shape hidden inside a building', async () => {
     const { session } = await setUp();
     const update = await session.update({ ...emptyEdits(), shapes: [shape({ id: 'in', at: at(70, 170), sizeMm: 1, depthMm: 1, heightMm: 0.5 })] }, 1);
     expect(update.notes['s:in']).toMatch(/inside a building/);
+  });
+
+  it('stands raised text on the roof, though text follows the ground by default', async () => {
+    // Following the ground, its letters ran from the street up through every layer of the building.
+    const { session, spec } = await setUp();
+    const facts = session.describe()['b:tower'];
+    const roof = spec.edit!.objects.get('b:tower')!.base! + facts.heightMm!;
+    const label = shape({ id: 't', kind: 'text', text: 'HI', at: at(70, 170), sizeMm: 1, heightMm: 0.6, liftMm: facts.heightMm!, followGround: true });
+    const edited = await session.edited({ ...emptyEdits(), shapes: [label] }, DEFAULT_PALETTE);
+    const letters = edited.layers.flatMap((l) => l.solids).filter((s): s is PrismSolid => s.key === 's:t' && s.kind === 'prism');
+    expect(letters.length).toBeGreaterThan(0);
+    for (const solid of letters) {
+      expect(solid.bottom).toBeCloseTo(roof - 0.04, 3);
+      expect(typeof solid.top).toBe('number');
+      expect(solid.top as number).toBeGreaterThan(roof + 0.5);
+    }
+    await expectClosed(edited);
+  });
+
+  it('notes a shape following the ground that was dragged into a building, and only then', async () => {
+    const { session } = await setUp();
+    const inside = shape({ id: 'in', at: at(70, 170), sizeMm: 1, depthMm: 1, heightMm: 0.5, followGround: true });
+    const open = shape({ id: 'open', at: at(300, -150), sizeMm: 1, depthMm: 1, heightMm: 0.5, followGround: true });
+    const update = await session.update({ ...emptyEdits(), shapes: [inside, open] }, 1);
+    expect(update.notes['s:in']).toMatch(/inside a building/);
+    expect(update.notes['s:open']).toBeUndefined();
+    // The note follows the building, though the shape itself doesn't change.
+    const removed = await session.update({ ...emptyEdits(), objects: { 'b:tower': { removed: true } }, shapes: [inside, open] }, 2);
+    expect(removed.notes['s:in']).toBeUndefined();
+    expect(removed.objects.map((o) => o.key)).not.toContain('s:in');
   });
 });
 

@@ -1,7 +1,7 @@
 import { Copy, Crosshair, Eraser, Plus, RotateCcw, Route, Search, Trash2, TriangleAlert, Undo2, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
 import { editOf, isPartKey, kindOf, objectOf, partKey, shapeKey, twinOf } from '../../../core/edit/keys';
-import { EDIT_LIMITS, editCount, type AddedShape, type EditLayer, type ModelEdits } from '../../../core/edit/types';
+import { buildingHeightRange, EDIT_LIMITS, editCount, followsGround, MAX_TEXT_LENGTH, type AddedShape, type EditLayer, type ModelEdits } from '../../../core/edit/types';
 import { Projection } from '../../../core/geo/projection';
 import { COLOUR_GROUPS } from '../../../core/settings';
 import { FONTS } from '../../../core/svgmap/text/fonts';
@@ -32,6 +32,7 @@ import { getEditData, type EditData } from '../../state/model';
 import { useApp } from '../../state/store';
 import { FilamentPopover } from '../../panels/ColourPopover';
 import { describeCounts, describeKey, roadClassName } from './describe';
+import { BackupNote } from '../../components/BackupNote';
 
 const NEW_LAYER = '__new';
 const MIXED = '__mixed';
@@ -257,8 +258,8 @@ function BuildingHeight({ keys, edits, data, heightOf, tag }: { keys: string[]; 
     <NumberRow
       label={same ? 'Height' : 'Height (all)'}
       value={value}
-      min={EDIT_LIMITS.buildingHeightMm[0]}
-      max={EDIT_LIMITS.buildingHeightMm[1]}
+      min={buildingHeightRange(scale)[0]}
+      max={buildingHeightRange(scale)[1]}
       step={0.5}
       unit="mm"
       hint={`About ${formatNumber(metres, metres < 20 ? 1 : 0)} m in real life${edited ? '' : ', as mapped'}. Drag the arrow on top to change it.`}
@@ -382,7 +383,7 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
         max={EDIT_LIMITS.shapeHeightMm[1]}
         step={0.1}
         unit="mm"
-        hint={shape?.followGround ? 'Above the ground or water under it.' : 'Above the highest ground or water under it.'}
+        hint={shape && followsGround(shape) ? 'Above the ground or water under it.' : 'Above the highest ground or water under it.'}
         onChange={(heightMm) => updateShapes(ids, { heightMm }, `shape-height:${tag}`)}
       />
       {shape && (
@@ -393,7 +394,7 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
           max={EDIT_LIMITS.liftMm[1]}
           step={0.5}
           unit="mm"
-          hint="Stands it on a roof or a bridge. It's built down to whatever is under it, so it never floats."
+          hint="Stands it on a roof or a bridge, and it moves with them. It's built down to whatever is under it, so it never floats."
           onChange={(liftMm) => updateShape(shape.id, { liftMm }, `lift:${shape.id}`)}
         />
       )}
@@ -413,9 +414,10 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
       {shape && (
         <CheckRow
           label="Follow the ground"
-          checked={shape.followGround}
+          checked={followsGround(shape)}
+          disabled={shape.liftMm > 0}
           onChange={(followGround) => updateShape(shape.id, { followGround })}
-          help="The top follows the terrain under it. Off, the top is flat."
+          help={shape.liftMm > 0 ? 'A raised shape has a flat top, so it stands on what it was raised onto.' : 'The top follows the terrain under it. Off, the top is flat.'}
         />
       )}
       <LayerField label="Colour" value={layers.size === 1 ? [...layers][0] : MIXED} groups onChange={(layer) => updateShapes(ids, { layer })} />
@@ -485,7 +487,7 @@ function TextControls({ shape }: { shape: AddedShape }) {
           id={id}
           className="text-input"
           value={shape.text}
-          maxLength={80}
+          maxLength={MAX_TEXT_LENGTH}
           spellCheck={false}
           autoFocus={fresh}
           onFocus={(event) => fresh && event.currentTarget.select()}
@@ -568,12 +570,24 @@ function NumberRow({
   );
 }
 
-function CheckRow({ label, checked, onChange, help }: { label: string; checked: boolean; onChange: (checked: boolean) => void; help?: string }) {
+function CheckRow({
+  label,
+  checked,
+  onChange,
+  help,
+  disabled,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  help?: string;
+  disabled?: boolean;
+}) {
   const id = useId();
   return (
     <div className="field check-field">
       <label className="check-label" htmlFor={id} title={help}>
-        <Checkbox id={id} checked={checked} onChange={onChange} />
+        <Checkbox id={id} checked={checked} onChange={onChange} disabled={disabled} />
         {label}
       </label>
     </div>
@@ -723,6 +737,7 @@ function Overview({ edits, data, focusOn }: { edits: ModelEdits; data: EditData;
             </button>
           </p>
         )}
+        <BackupNote of="edits" />
         <div className="inspector-changes">
           <span>
             {changes ? `${changes} ${changes === 1 ? 'change' : 'changes'}` : 'No changes yet'}

@@ -357,7 +357,12 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   viewer only gets what changed and hides removed objects and colours
   layers itself. Exports mesh `session.edited()`. The worker only runs the
   newest pending edit, and updates carry the model id and edits version so
-  a late one for an older model is dropped.
+  a late one for an older model is dropped. An update that throws forgets
+  what it sent (`forget`), and the next one carries `reset` and sends
+  everything, for the viewer to take in place of what it had. Road tiles
+  are rebuilt in a copy and swapped in with their styles: rebuilt in place,
+  an export during a slow update (Download right after an undo) read half
+  of the undone edit.
 - Road edits rebuild square tiles (`roads.ts`, 12 to 30 mm on whole Clipper
   units) from the pieces near them with `bufferRoads`, the tile as the
   crop. Other tiles keep the generated polygons, split into every tile at
@@ -376,10 +381,15 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   kept in the water can go, never land, and water given back narrower than
   0.4 mm stays ground. Both parts are sent whole (100 ms to mesh San
   Francisco's terrain) when their inputs change, and exports use the same
-  solids.
+  solids. Only what nothing holds up stands in the water: a shape on a
+  deck cut the water under the bridge, or left an island with supports on.
+  What's held depends on the water, so `standAll` starts from what was
+  held last time and goes round once more when that changed. Water edits
+  are ignored with the water turned off, as the inspector lists them.
 - A bridge deck is its road's segment (`br:x` and `r:x`), so `editOf` gives
   it the road's removal, layer and width unless it has its own, and
-  `removed: false` keeps one whose road is removed. Decks are built again
+  `removed: false` keeps one whose road is removed. `patchObjects` keeps
+  that flag through later changes to the bridge. Decks are built again
   from their centrelines at a new width (`DeckPiece`), and piers are cut
   to a narrower deck.
 - Custom layers export as `layer:<id>` (building rank) and
@@ -392,24 +402,70 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   the base cut a column through anything under it, and a column through a
   building changes filament on every layer. Drawn roads, outlines, boxes
   and cylinders get ground kept under them in water with supports on, like
-  the structures they stand for. Text and pins never do.
+  the structures they stand for. Text and pins never do. A raised shape
+  never follows the ground (`followsGround`), it's flat on what it was
+  raised onto. Text follows the ground by default, and put on a roof its
+  letters ran from the street up through every layer of the building. A
+  shape on the ground dragged into a building gets the buried note too,
+  worked out apart from its signature (`buriedOnGround`). A raised shape
+  moves with what it stood on or over as generated (`supportShift`): a
+  taller roof takes it up, and once the building goes it comes down to
+  what's under that. Its lift stays what it was when placed.
+- Sloping bridge decks hold shapes in squares (`deckSquares`), quartered
+  while the top rises more than a third of the deck's thickness across one.
+  Whole, a span high over a shape held it because its ramp reached the
+  ground elsewhere, and the shape hung under it. Something sunk into a deck
+  stays above its underside. `standPieces` only takes each holder's region
+  from those overlapping it: taking every region from what was left cost 9 s
+  for a 30 mm title over San Francisco.
+- A LiDAR only model has no water to edit, but shapes over its water go down
+  to the floor, or through a cut to the base (`surfaceWater`). The pieces
+  are opened by a micron (`openSlivers`): where the shape's outline and the
+  water's nearly met, the slivers left made Constrainautor loop on the
+  draped top, and the shape was missing from the export.
 - A height edit scales everything above the building's ground
   (`heights.ts`). A part's own height beats its building's. A raised part
   left on air by a removed or lowered part is built down to the ground
   (`settle`), the way `groundRaisedParts` builds them. Group edits by
   building once per update (`reshaped`): scanning every edit per building
-  took five minutes with a box around San Francisco.
+  took five minutes with a box around San Francisco. A building's own
+  height counts from the parts left, or taking out its tallest left it short.
+- The UI holds edits to the limits saved edits and exports do: 500 shapes,
+  heights from drags (`buildingHeightRange` for buildings at the model's
+  scale), 2000 points, 80 characters. Past them the inspector showed things
+  the export clamped or dropped.
+- Text notes say when its font didn't load (warned once per font, not per
+  edit) and which characters the font has no glyph for. No bundled font
+  has Hebrew or Arabic. `visualOrder` lays right-to-left text out for
+  fonts that do, custom SVG title fonts for now, and leaves Arabic to
+  opentype.js, which reverses and shapes it itself.
 - The view and the export are separate code, so they can disagree. The
   view hides and colours by `shown.ts`, and `ComposedMesh` only rebuilds
   its index when the styles change, with hidden marked apart from the
   part's own colour (`''`). Joined as plain strings the two matched, and
   removed buildings stayed on screen. `scripts/fuzz-edits.ts` holds the
   export to `shown.ts` volume by volume, and `e2e-edit.mjs` checks the
-  view changes when something is removed.
+  view changes when something is removed. A hidden part is hidden entry by
+  entry, never as a mesh: what's in a custom layer shows and exports with
+  the layer (`entryColour` with the part id, `excludedParts` in
+  `session.ts`). The fuzzer compares with random parts hidden too.
+  `downloadParts` only counts a custom layer when something this model has
+  is in it, since edits from other areas are kept. The
+  client's copy of edit geometry (`model.ts`) is keyed by part and key,
+  since a bridge's deck and piers share a key.
 - Edits and SVG picks are saved under keys of their own
   (`persist.ts`), so running out of space for them doesn't stop the
   settings saving, and a failed save is shown once. Share links carry them
   deflated (`e=`, `p=`, `shareLink.ts`) up to `MAX_LINK_EXTRA`.
+- Edits are one document for every area. A share link or options file adds
+  its edits and picks to these (`bringIn`, `mergeEdits`, `mergePicks`),
+  never replaces them. What it changed goes into the one backup
+  (`BACKUP_KEY`), like what `Undo all`, `Undo all picks` and the crash
+  reset clear, and `BackupNote` offers it back. A tab writes edits and
+  picks only once it changed them (`written` is seeded at load) and takes
+  on another tab's saves (`storage` in `sync.ts`), dropping its undo
+  steps. An idle tab closing used to write its old copy over the other
+  tab's, and a broken settings key made the next save wipe them.
 
 SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.md`):
 

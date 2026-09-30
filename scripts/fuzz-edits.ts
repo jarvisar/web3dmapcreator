@@ -6,7 +6,7 @@
 // options file, so `scripts/generate.ts --options <file>` rebuilds it.
 //
 //   npx tsx scripts/fuzz-edits.ts --preset "Chicago - The Loop (small)" [--steps 40] [--seed 1]
-//     [--check-every 5] [--trees] [--bridges] [--no-supports] [--through] [--shape circle] [--rotation 30] [--lidar-only]
+//     [--check-every 5] [--trees] [--bridges] [--no-supports] [--through] [--shape circle] [--rotation 30] [--lidar-only [--lidar-water cut|layer]]
 //
 // --selftest exports without the last step's edits, which every check has to
 // catch, to show the checks still catch something.
@@ -27,7 +27,7 @@ import { cellSize } from '../src/core/dsm/grid';
 import { surfaceModel } from '../src/core/dsm/model';
 import { prepareSurface } from '../src/core/dsm/prepare';
 import { roadLines } from '../src/core/edit/lines';
-import { EditSession, type EditUpdate, type ObjectMesh } from '../src/core/edit/session';
+import { EditSession, excludedParts, SHAPES_PART, type EditUpdate, type ObjectMesh } from '../src/core/edit/session';
 import { emptyEdits, sanitizeEdits, SHAPE_KINDS, type AddedShape, type ModelEdits, type ObjectEdit } from '../src/core/edit/types';
 import { areaFromBounds, effectiveScale, parseBoundsText } from '../src/core/geo/area';
 import { Projection } from '../src/core/geo/projection';
@@ -126,6 +126,8 @@ async function main() {
   const checkEvery = Number(arg('check-every') ?? 5);
   const presetName = arg('preset') ?? 'Chicago - The Loop (small)';
   const rand = random(seed);
+  // Its own stream, so a seed still makes the same edits.
+  const hideRand = random(seed + 0x9e3779b9);
   const pick = <T>(list: readonly T[]): T => list[Math.floor(rand() * list.length)];
   const chance = (p: number) => rand() < p;
 
@@ -138,6 +140,8 @@ async function main() {
   if (flag('no-supports')) settings.supports = false;
   if (flag('through')) settings.water.mode = 'through';
   if (flag('lidar-only')) settings.modelSource = 'lidar';
+  const lidarWater = arg('lidar-water');
+  if (lidarWater === 'cut' || lidarWater === 'layer') settings.lidarModel.waterMode = lidarWater;
   settings = sanitizeSettings(settings);
 
   const t0 = performance.now();
@@ -158,7 +162,10 @@ async function main() {
   const bridges = keysOf('bridge');
   const trees = [...new Set(spec.layers.flatMap((l) => l.solids.map((s) => s.key ?? '')).filter((key) => key.startsWith('t:')))];
   // Points in cut water and basins, to put shapes and roads in.
-  const wetPoints = spec.edit.bodies.filter((b) => b.kind !== 'sheet').flatMap((b) => interiorPoints(b.polygon, 2, 400));
+  const wetPoints = [
+    ...spec.edit.bodies.filter((b) => b.kind !== 'sheet').map((b) => b.polygon),
+    ...(spec.edit.surfaceWater ?? []).flatMap((w) => w.polygons),
+  ].flatMap((polygon) => interiorPoints(polygon, 2, 400));
   const lines = spec.edit.roads.length ? roadLines(spec.edit, -spec.baseZ, settings.roads.thicknessMm) : null;
   const roads = lines ? [...new Set(lines.keys)] : [];
   const streets = new Map<string, string[]>();
@@ -181,6 +188,10 @@ async function main() {
   const replaced = new Map<string, MeshPart>();
   let hidden = new Set<string>();
   const record = (update: EditUpdate) => {
+    if (update.reset) {
+      objectMeshes.clear();
+      replaced.clear();
+    }
     for (const object of update.objects) {
       const id = `${object.part}|${object.key}`;
       if (object.mesh) objectMeshes.set(id, object);
@@ -238,6 +249,33 @@ async function main() {
       font: pick(fontIds),
     };
   };
+  // Solids of each object as generated, for where a shape put on it lands.
+  const layerSolids = new Map<string, PrismSolid[]>();
+  for (const layer of spec.layers) {
+    for (const solid of layer.solids) {
+      if (solid.kind !== 'prism' || !solid.key) continue;
+      const list = layerSolids.get(solid.key) ?? [];
+      list.push(solid);
+      layerSolids.set(solid.key, list);
+    }
+  }
+  const heightAt = spec.edit.heightAt;
+  const zOf = (z: PrismSolid['top'], x: number, y: number) => (typeof z === 'number' ? z : z(x, y));
+  const raisedShape = (x: number, y: number, top: number): AddedShape => {
+    const shape = newShape();
+    const kind = pick(['pin', 'box', 'cylinder', 'text'] as const);
+    return {
+      ...shape,
+      kind,
+      at: projection.modelToGeo(x, y),
+      points: [],
+      sizeMm: 0.5 + rand() * (chance(0.2) ? 20 : 3),
+      depthMm: 0.5 + rand() * 3,
+      heightMm: 0.3 + rand() * 3,
+      liftMm: Math.min(300, Math.max(0, Math.round((top - heightAt(x, y)) * 10) / 10)),
+      followGround: false,
+    };
+  };
   const ops: [string, number, () => boolean][] = [
     ['remove building', 3, () => buildings.length > 0 && (set(pick(buildings), { removed: true }), true)],
     ['building height', 3, () => buildings.length > 0 && (set(pick(buildings), { heightM: 2 + rand() ** 2 * 450 }), true)],
@@ -292,6 +330,40 @@ async function main() {
       },
     ],
     ['remove tree', 1, () => trees.length > 0 && (set(pick(trees), { removed: true }), true)],
+    [
+      'shape on a roof',
+      2,
+      () => {
+        // Placed the way the editor does: on the roof where it lands, the lift from the ground there.
+        const key = pick(buildings);
+        const info = spec.edit!.objects.get(key);
+        const pieces = info ? [...(info.ground?.values() ?? [])].flat() : [];
+        if (!pieces.length) return false;
+        const inside = interiorPoints(pick(pieces), 0.3, 20);
+        if (!inside.length) return false;
+        const [x, y] = pick(inside);
+        const tops = (layerSolids.get(key) ?? []).filter((s) => pointInPolygon(x, y, s.polygon)).map((s) => zOf(s.top, x, y));
+        if (!tops.length) return false;
+        edits = { ...edits, shapes: [...edits.shapes, raisedShape(x, y, Math.max(...tops))] };
+        return true;
+      },
+    ],
+    [
+      'shape on a bridge',
+      2,
+      () => {
+        const decks = spec.edit!.decks;
+        if (!decks.length) return false;
+        const deck = pick(decks);
+        if (deck.points.length < 2) return false;
+        const i = Math.floor(rand() * (deck.points.length - 1));
+        const t = rand();
+        const x = deck.points[i][0] + (deck.points[i + 1][0] - deck.points[i][0]) * t;
+        const y = deck.points[i][1] + (deck.points[i + 1][1] - deck.points[i][1]) * t;
+        edits = { ...edits, shapes: [...edits.shapes, raisedShape(x, y, deck.top(x, y))] };
+        return true;
+      },
+    ],
     ['add shape', 4, () => ((edits = { ...edits, shapes: [...edits.shapes, newShape()] }), true)],
     [
       'change shape',
@@ -367,10 +439,10 @@ async function main() {
     console.log(`  saved ${file}: npx tsx scripts/generate.ts --options ${file} --out out/fuzz/repro.3mf`);
   };
 
-  const viewerVolumes = (): Map<string, number> => {
+  const viewerVolumes = (hiddenParts: ReadonlySet<string> = new Set()): Map<string, number> => {
     const out = new Map<string, number>();
     const add = (colour: string, v: number) => out.set(colour, (out.get(colour) ?? 0) + v);
-    const context = { edits, hiddenParts: new Set<string>(), implicitHidden: hidden };
+    const context = { edits, hiddenParts, implicitHidden: hidden };
     const ids = new Set([...generated.keys(), ...replaced.keys(), ...[...objectMeshes.values()].map((o) => o.part)]);
     for (const id of ids) {
       const base = replaced.get(id) ?? generated.get(id);
@@ -390,9 +462,11 @@ async function main() {
           const style =
             entry < 0
               ? key === null
-                ? ''
-                : entryColour({ key, sub: '' }, context, false)
-              : entryColour({ key: objects!.keys[entry], sub: objects!.subs[entry] }, context, isBase && overridden.has(objects!.keys[entry]));
+                ? hiddenParts.has(id)
+                  ? null
+                  : ''
+                : entryColour({ key, sub: '' }, context, false, id)
+              : entryColour({ key: objects!.keys[entry], sub: objects!.subs[entry] }, context, isBase && overridden.has(objects!.keys[entry]), id);
           if (style !== null) add(colourOf(style), volume(positions, indices, start, t));
           start = t;
         }
@@ -412,7 +486,6 @@ async function main() {
     return out;
   };
 
-  const heightAt = spec.edit.heightAt;
   const floating = (model: ModelSpec): Set<string> => {
     const out = new Set<string>();
     const byKey = new Map<string, PrismSolid[]>();
@@ -455,8 +528,11 @@ async function main() {
   // Whatever stands in cut water or a basin has to stand on something other
   // than the water, since the water may be left out in the slicer: ground,
   // a floor, another solid, or the base. Bridge decks span between piers.
-  const wetBoxes = spec.edit.bodies.filter((b) => b.kind !== 'sheet').map((b) => ({ polygon: b.polygon, box: ringBounds(b.polygon[0]) }));
-  const zOf = (z: PrismSolid['top'], x: number, y: number) => (typeof z === 'number' ? z : z(x, y));
+  const wetBoxes = [
+    ...spec.edit.bodies.filter((b) => b.kind !== 'sheet').map((b) => b.polygon),
+    // A LiDAR only model's water, cut out or a layer on a floor.
+    ...(spec.edit.surfaceWater ?? []).flatMap((w) => w.polygons),
+  ].map((polygon) => ({ polygon, box: ringBounds(polygon[0]) }));
   const unheld = (model: ModelSpec): string[] => {
     const out: string[] = [];
     const holders: { solid: PrismSolid; box: ReturnType<typeof ringBounds> }[] = [];
@@ -481,12 +557,40 @@ async function main() {
       if (bottom <= model.baseZ + 1e-6) continue;
       const held = holders.some(({ solid: other, box }) => {
         if (other === solid || x < box[0] || x > box[2] || y < box[1] || y > box[3] || !pointInPolygon(x, y, other.polygon)) return false;
-        return zOf(other.bottom, x, y) < bottom && zOf(other.top, x, y) >= bottom - 0.05;
+        return zOf(other.bottom, x, y) <= bottom + 0.05 && zOf(other.top, x, y) >= bottom - 0.05;
       });
       if (!held) out.push(`${layer} ${solid.key ?? solid.role} at ${x.toFixed(2)}, ${y.toFixed(2)}`);
     }
     return out;
   };
+  // No part of an added shape may hang in the air: it's on the ground, on
+  // the base, or on something that holds it. A shape reaching under a high
+  // bridge span once hung below the deck there.
+  const shapesFloating = (model: ModelSpec): string[] => {
+    const out: string[] = [];
+    const solids: { solid: PrismSolid; box: ReturnType<typeof ringBounds> }[] = [];
+    for (const layer of model.layers) {
+      if (layer.role === 'water') continue;
+      for (const solid of layer.solids) if (solid.kind === 'prism' && solid.role !== 'water') solids.push({ solid, box: ringBounds(solid.polygon[0]) });
+    }
+    for (const { solid } of solids) {
+      if (!solid.key?.startsWith('s:')) continue;
+      for (const [x, y] of interiorPoints(solid.polygon, 0.5, 12)) {
+        const bottom = zOf(solid.bottom, x, y);
+        if (bottom <= model.baseZ + 1e-6 || bottom <= heightAt(x, y) + 0.05) continue;
+        const held = solids.some(({ solid: other, box }) => {
+          if (other === solid || x < box[0] || x > box[2] || y < box[1] || y > box[3] || !pointInPolygon(x, y, other.polygon)) return false;
+          return zOf(other.bottom, x, y) <= bottom + 0.05 && zOf(other.top, x, y) >= bottom - 0.05;
+        });
+        if (!held) {
+          out.push(`${solid.key} at ${x.toFixed(2)}, ${y.toFixed(2)} is ${(bottom - heightAt(x, y)).toFixed(2)} mm over the ground on nothing`);
+          break;
+        }
+      }
+    }
+    return out;
+  };
+
   const unheldBefore = new Set(unheld(spec));
   if (unheldBefore.size) console.log(`  ${unheldBefore.size} solids in water already stand on nothing but water as generated, and aren't counted`);
 
@@ -497,6 +601,16 @@ async function main() {
     for (const multiPlate of [false, true]) {
       const { plates, failed } = await buildPlates(edited, { multiPlate, sectionWidthMm: 80, sectionHeightMm: 80, bedWidth: 256, bedDepth: 256 });
       if (failed) found.push(`${failed} solids failed to mesh (${multiPlate ? 'sections' : 'one plate'})`);
+      if (failed && !multiPlate) {
+        // Which ones, one at a time.
+        for (const layer of edited.layers) {
+          for (const solid of layer.solids) {
+            if ((await meshLayers([{ ...layer, solids: [solid] }], { zShift: -edited.baseZ })).failed) {
+              found.push(`  ${layer.id} ${solid.key ?? solid.role} ${solid.kind === 'prism' ? `${JSON.stringify(solid.polygon).slice(0, 300)}` : solid.kind}`);
+            }
+          }
+        }
+      }
       for (const plate of plates) {
         for (const part of plate.parts) {
           if (!part.positions.every(Number.isFinite)) found.push(`${plate.name} ${part.name}: positions that aren't finite`);
@@ -506,19 +620,29 @@ async function main() {
         }
       }
       if (!multiPlate) {
-        const shown = viewerVolumes();
-        const exported = exportVolumes(plates[0]?.parts ?? []);
-        for (const colour of new Set([...shown.keys(), ...exported.keys()])) {
-          const a = shown.get(colour) ?? 0;
-          const b = exported.get(colour) ?? 0;
-          if (Math.abs(a - b) > Math.max(0.5, 0.003 * Math.max(Math.abs(a), Math.abs(b)))) {
-            found.push(`${colour}: the viewer shows ${a.toFixed(1)} mm³, the export has ${b.toFixed(1)} mm³`);
+        const compare = (shown: Map<string, number>, exported: Map<string, number>, suffix: string) => {
+          for (const colour of new Set([...shown.keys(), ...exported.keys()])) {
+            const a = shown.get(colour) ?? 0;
+            const b = exported.get(colour) ?? 0;
+            if (Math.abs(a - b) > Math.max(0.5, 0.003 * Math.max(Math.abs(a), Math.abs(b)))) {
+              found.push(`${colour}: the viewer shows ${a.toFixed(1)} mm³, the export has ${b.toFixed(1)} mm³${suffix}`);
+            }
           }
+        };
+        const parts = plates[0]?.parts ?? [];
+        compare(viewerVolumes(), exportVolumes(parts), '');
+        // Some of what the parts list offers hidden, which the download leaves out.
+        const offered = [...generated.keys(), ...edits.layers.map((l) => `layer:${l.id}`), SHAPES_PART];
+        const hiddenIds = offered.filter(() => hideRand() < 0.3);
+        if (hiddenIds.length) {
+          const excluded = new Set(excludedParts(edited, hiddenIds));
+          compare(viewerVolumes(new Set(hiddenIds)), exportVolumes(parts.filter((p) => !excluded.has(p.id))), ` with ${hiddenIds.join(', ')} hidden`);
         }
       }
     }
     for (const part of floating(edited)) if (!floatingBefore.has(part)) found.push(`${part} floats`);
     for (const solid of unheld(edited)) if (!unheldBefore.has(solid)) found.push(`${solid} stands on nothing but water`);
+    found.push(...shapesFloating(edited));
     console.log(`  check after step ${step}, ${((performance.now() - t) / 1000).toFixed(1)} s: ${found.length ? `${found.length} problems` : 'ok'}`);
     return found;
   };

@@ -9,6 +9,7 @@ import { NumberInput } from '../components/NumberField';
 import { useApp } from '../state/store';
 import { useSvgRender } from './render';
 import { addRoute, assignLines, clearPicks, deleteRoute, dropPicks, updateRoute } from './routes';
+import { BackupNote } from '../components/BackupNote';
 
 const CELL_MM = 3;
 // Ends this close meet.
@@ -295,6 +296,7 @@ export function RouteCard({ index, selected, onSelect, onClose }: { index: PickI
             </button>
           </p>
         )}
+        <BackupNote of="picks" />
         {(hiddenCount > 0 || routes.some((r) => r.lines.length)) && (
           <div className="inspector-changes">
             <span>{hiddenCount ? `${hiddenCount} left out` : 'Nothing left out'}</span>

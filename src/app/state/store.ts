@@ -2,7 +2,7 @@
 // a rendered SVG map: see svgmap/render.ts.
 
 import { create } from 'zustand';
-import { editCount, emptyEdits, hasEdits, type ModelEdits } from '../../core/edit/types';
+import { hasEdits, mergeEdits, type ModelEdits } from '../../core/edit/types';
 import type { LidarSummary, ProgressEvent, SurfaceSummary } from '../../core/engine/protocol';
 import {
   DEFAULT_AREA,
@@ -27,13 +27,14 @@ import type { CleanupSettings } from '../../core/svgmap/lines/cleanup';
 import { PRODUCT_PRESETS } from '../../core/svgmap/presets';
 import { LASER_PALETTES, type ModeStyle, type OutputMode, PRINT_THEMES, type PlotterSettings, printStyle } from '../../core/svgmap/settings';
 import type { LabelSettings } from '../../core/svgmap/text/label';
+import { mergePicks, type Picks } from '../../core/svgmap/routes';
 import type { FeatureFilters } from '../../core/svgmap/tiles/schema';
 import type { ColourGroup, MaterialRole, ModelStats } from '../../core/types';
 import { normalizeArea } from '../lib/area';
 import { type PieceFit, areaShapeOf, fitAreaToPiece, pieceLayout } from '../svgmap/piece';
 import { useSvgRender } from '../svgmap/render';
 import { type CleanupPreset, type LaserPalette, type PieceSize, type SvgSettings, cleanupForPreset, defaultSvgSettings } from '../svgmap/settings';
-import { loadSaved } from './persist';
+import { hasPicks, loadSaved, readBackup, writeBackup, type Backup } from './persist';
 import type { Options } from './options';
 import { type Output, readHash } from './shareLink';
 
@@ -176,7 +177,12 @@ export interface AppState {
   generation: GenerationState;
   exporting: ExportState;
   toasts: Toast[];
+  /** The user's edits or picks from before a link, a file or Undo all replaced them, to put back. */
+  backup: Backup | null;
 }
+
+/** Undo steps kept for the edits. */
+export const HISTORY_LIMIT = 100;
 
 export const DEFAULT_SECTIONS: Record<SectionKey, boolean> = {
   area: true,
@@ -192,13 +198,62 @@ export const DEFAULT_SECTIONS: Record<SectionKey, boolean> = {
   data: false,
 };
 
-let openedFromLink = 0;
+/** What a share link or an options file brought in, for the toast that says so and its Undo. */
+export interface Brought {
+  edits: number;
+  picks: number;
+  /** Theirs that didn't fit the limits. */
+  left: number;
+  /** Ours that theirs changed, to keep aside. */
+  replaced: { edits?: ModelEdits; picks?: Picks };
+  /** The backup that keeps them, once kept. */
+  kept?: Backup;
+  before: { edits: ModelEdits; picks: Picks };
+  after: { edits: ModelEdits; picks: Picks };
+}
 
-/** How many edits the share link the app was opened with brought, once. */
-export function takeLinkedEdits(): number {
-  const count = openedFromLink;
-  openedFromLink = 0;
-  return count;
+/**
+ * Edits and picks from a share link or an options file, added to these
+ * rather than put in their place (mergeEdits, mergePicks). Null when they
+ * change nothing.
+ */
+export function bringIn(edits: ModelEdits, picks: Picks, from: { edits?: ModelEdits | null; picks?: Picks | null }): Brought | null {
+  const brought: Brought = { edits: 0, picks: 0, left: 0, replaced: {}, before: { edits, picks }, after: { edits, picks } };
+  if (from.edits && hasEdits(from.edits)) {
+    const merged = mergeEdits(edits, from.edits);
+    if (merged.added || merged.replaced) brought.after.edits = merged.edits;
+    if (merged.replaced) brought.replaced.edits = edits;
+    brought.edits = merged.added;
+    brought.left += merged.left;
+  }
+  if (from.picks && hasPicks(from.picks)) {
+    const merged = mergePicks(picks, from.picks);
+    if (merged.added || merged.replaced) brought.after.picks = { routes: merged.routes, hiddenLines: merged.hiddenLines };
+    if (merged.replaced) brought.replaced.picks = picks;
+    brought.picks = merged.added;
+    brought.left += merged.left;
+  }
+  const changed = brought.after.edits !== edits || brought.after.picks !== picks;
+  return changed || brought.left ? brought : null;
+}
+
+/** Keeps what a link or a file changed of ours, when it changed anything. Returns the backup in place now. */
+export function keepReplaced(brought: Brought, reason: 'link' | 'import', current: Backup | null): Backup | null {
+  const { edits, picks } = brought.replaced;
+  if (!edits && !picks) return current;
+  const backup: Backup = { savedAt: Date.now(), reason, ...(edits ? { edits } : {}), ...(picks ? { picks } : {}) };
+  if (!writeBackup(backup)) return current;
+  brought.kept = backup;
+  return backup;
+}
+
+let openedLink: Brought | null = null;
+
+/** What the share link the app was opened with brought, once. */
+export function takeOpenedLink(): Brought | null {
+  const brought = openedLink;
+  openedLink = null;
+  return brought;
 }
 
 function initialState(): AppState {
@@ -206,11 +261,13 @@ function initialState(): AppState {
   // The app keeps its own area in the hash too. Only a different hash is a share link.
   const shared = typeof location !== 'undefined' && location.hash !== saved.hash ? readHash() : null;
   const output = shared?.output ?? saved.output ?? 'model';
-  let svg = shared?.svg?.svg ?? saved.svg ?? defaultSvgSettings();
-  if (shared?.picks) svg = { ...svg, ...shared.picks };
-  // A link's edits replace what was here, which undo brings back.
-  const linkedEdits = shared?.edits && hasEdits(shared.edits) ? shared.edits : null;
-  openedFromLink = linkedEdits ? Math.max(1, editCount(linkedEdits)) : 0;
+  // A link's edits and picks are added to what's here. Its SVG settings
+  // don't carry picks, so they never clear them.
+  openedLink = shared ? bringIn(saved.edits, saved.picks, { edits: shared.edits, picks: shared.picks }) : null;
+  const edits = openedLink?.after.edits ?? saved.edits;
+  const picks = openedLink?.after.picks ?? saved.picks;
+  let svg: SvgSettings = { ...(shared?.svg?.svg ?? saved.svg ?? defaultSvgSettings()), routes: picks.routes, hiddenLines: picks.hiddenLines };
+  const backup = openedLink ? keepReplaced(openedLink, 'link', readBackup()) : readBackup();
   let area = normalizeArea({
     ...(shared?.area ?? saved.area ?? DEFAULT_AREA),
     ...shared?.svg?.area,
@@ -228,8 +285,8 @@ function initialState(): AppState {
     settings: saved.settings ?? cloneSettings(DEFAULT_SETTINGS),
     palette: saved.palette ?? structuredClone(DEFAULT_PALETTE),
     exportSettings: saved.exportSettings ?? { ...DEFAULT_EXPORT },
-    edits: linkedEdits ?? saved.edits ?? emptyEdits(),
-    editHistory: { past: linkedEdits ? [saved.edits ?? emptyEdits()] : [], future: [], coalesce: null },
+    edits,
+    editHistory: { past: edits !== saved.edits ? [saved.edits] : [], future: [], coalesce: null },
     svg,
     customFontName: null,
     customFontId: null,
@@ -267,6 +324,7 @@ function initialState(): AppState {
     },
     exporting: { status: 'idle', progress: null, error: null, last: null },
     toasts: [],
+    backup,
   };
 }
 
@@ -389,7 +447,11 @@ export function resetSettingsSection(key: SettingsSection): void {
   });
 }
 
-/** Settings, colours and export options of both outputs back to their defaults. The area, SVG title and scale (fixed or not) are kept. */
+/**
+ * Settings, colours and export options of both outputs back to their
+ * defaults. The area, SVG title and scale (fixed or not) are kept, and so are
+ * the model's edits and the SVG map's picked roads, which are work, not settings.
+ */
 export function resetAllSettings(): void {
   set((state) => {
     const settings = cloneSettings(DEFAULT_SETTINGS);
@@ -399,6 +461,8 @@ export function resetAllSettings(): void {
       label: { ...defaults.label, text: state.svg.label.text },
       scale: state.svg.scale,
       scaleLocked: state.svg.scaleLocked,
+      routes: state.svg.routes,
+      hiddenLines: state.svg.hiddenLines,
     };
     const { area, svg } = fitForOutput(state.output, state.area, reset);
     return {
@@ -413,37 +477,45 @@ export function resetAllSettings(): void {
   });
 }
 
-export function applyOptions(options: Options, includeArea = true): void {
-  set((state) => {
-    const { map, ...imported } = structuredClone(options);
-    const savedMap = includeArea ? map : undefined;
-    const requestedArea = savedMap?.area ?? state.area;
-    // A piece preset also names a shape, which an options-only import keeps.
-    const preset = PRODUCT_PRESETS.find((item) => item.id === imported.svg.productPreset);
-    if (preset && areaShapeOf(preset.product.shape) !== requestedArea.shape) imported.svg.productPreset = 'custom';
-    const { error } = pieceLayout(imported.svg.product, requestedArea.shape, imported.svg.border);
-    if (error) throw new Error(`Invalid SVG options: ${error}`);
-    const { area, svg } = fitForOutput(imported.output, requestedArea, imported.svg);
-    const view = state.ui.view === 'result' && !hasResult({ output: imported.output, generation: state.generation }) ? 'map' : state.ui.view;
-    // Edits come with a saved area, and undo back to what was there.
-    const edits = savedMap?.edits
-      ? { edits: savedMap.edits, editHistory: { past: [...state.editHistory.past, state.edits], future: [], coalesce: null } }
-      : {};
-    return {
-      ...imported,
-      area,
-      svg,
-      ...(savedMap ? { placeName: savedMap.placeName, fileName: savedMap.fileName } : {}),
-      ...edits,
-      generation: withStale(state.generation, area, imported.settings),
-      ui: {
-        ...state.ui,
-        view,
-        ...(savedMap ? { mapFocus: { seq: state.ui.mapFocus.seq + 1, mode: 'always' as const } } : {}),
-        ...(savedMap?.edits ? { selection: [] } : {}),
-      },
-    };
+/**
+ * Options from a file. With its map area, its edits and picked roads are
+ * added to the ones here, as a link's are. Without it they're left out, since
+ * they belong to that area. Returns what came in, for a toast.
+ */
+export function applyOptions(options: Options, includeArea = true): Brought | null {
+  const state = get();
+  const { map, ...imported } = structuredClone(options);
+  const savedMap = includeArea ? map : undefined;
+  const requestedArea = savedMap?.area ?? state.area;
+  // A piece preset also names a shape, which an options-only import keeps.
+  const preset = PRODUCT_PRESETS.find((item) => item.id === imported.svg.productPreset);
+  if (preset && areaShapeOf(preset.product.shape) !== requestedArea.shape) imported.svg.productPreset = 'custom';
+  const { error } = pieceLayout(imported.svg.product, requestedArea.shape, imported.svg.border);
+  if (error) throw new Error(`Invalid SVG options: ${error}`);
+  const current: Picks = { routes: state.svg.routes, hiddenLines: state.svg.hiddenLines };
+  const filePicks: Picks | undefined = savedMap ? { routes: imported.svg.routes, hiddenLines: imported.svg.hiddenLines } : undefined;
+  const brought = bringIn(state.edits, current, { edits: savedMap?.edits, picks: filePicks });
+  const picks = brought?.after.picks ?? current;
+  const { area, svg } = fitForOutput(imported.output, requestedArea, { ...imported.svg, routes: picks.routes, hiddenLines: picks.hiddenLines });
+  const view = state.ui.view === 'result' && !hasResult({ output: imported.output, generation: state.generation }) ? 'map' : state.ui.view;
+  const edits = brought && brought.after.edits !== state.edits ? brought.after.edits : null;
+  set({
+    ...imported,
+    area,
+    svg,
+    ...(savedMap ? { placeName: savedMap.placeName, fileName: savedMap.fileName } : {}),
+    // Undo takes the file's edits back out.
+    ...(edits ? { edits, editHistory: { past: [...state.editHistory.past, state.edits].slice(-HISTORY_LIMIT), future: [], coalesce: null } } : {}),
+    generation: withStale(state.generation, area, imported.settings),
+    ui: {
+      ...state.ui,
+      view,
+      ...(savedMap ? { mapFocus: { seq: state.ui.mapFocus.seq + 1, mode: 'always' as const } } : {}),
+      ...(edits ? { selection: [], activePoint: null } : {}),
+    },
   });
+  if (brought) set({ backup: keepReplaced(brought, 'import', get().backup) });
+  return brought;
 }
 
 // --------------------------------------------------------------- palette

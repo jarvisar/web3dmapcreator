@@ -101,6 +101,7 @@ const DARK_THEME: Theme = {
 
 const SELECT_COLOUR = '#2f7cf6';
 const ROAD_PARTS: Record<string, number> = { roads: 0, rail: 1, paths: 2 };
+const ROAD_PART_IDS = ['roads', 'rail', 'paths'];
 
 interface Tween {
   fromTarget: Vector3;
@@ -308,13 +309,19 @@ export class ViewerEngine {
   /** Geometry the worker sent for edits: applied on top of what came before. */
   applyEditUpdate(update: EditUpdate): void {
     const touched = new Set<string>();
+    const rebuilt = new Set<string>();
+    if (update.reset) {
+      for (const object of this.objectMeshes.values()) touched.add(object.part);
+      for (const id of this.replaced.keys()) rebuilt.add(id);
+      this.objectMeshes.clear();
+      this.replaced.clear();
+    }
     for (const object of update.objects) {
       const id = `${object.part}|${object.key}`;
       if (object.mesh) this.objectMeshes.set(id, object);
       else this.objectMeshes.delete(id);
       touched.add(object.part);
     }
-    const rebuilt = new Set<string>();
     for (const { id, part } of update.parts) {
       if (part) this.replaced.set(id, part);
       else this.replaced.delete(id);
@@ -347,8 +354,8 @@ export class ViewerEngine {
 
   setHidden(ids: string[]): void {
     this.hiddenParts = new Set(ids);
-    for (const view of this.views.values()) this.updateVisibility(view);
     this.restyle();
+    this.refreshHighlights();
     this.renderer.shadowMap.needsUpdate = true;
     this.requestRender();
   }
@@ -564,7 +571,6 @@ export class ViewerEngine {
       return !p.behind && p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1;
     };
     for (const view of this.views.values()) {
-      if (!view.base.mesh.visible) continue;
       for (const composed of [view.base, view.override]) {
         if (!composed || !composed.entries.length) continue;
         let centres = this.centres.get(composed);
@@ -579,7 +585,7 @@ export class ViewerEngine {
     if (roads) {
       for (let piece = 0; piece < roads.count; piece++) {
         const key = roads.lines.keys[piece];
-        if (found.has(key) || this.edits.objects[key]?.removed) continue;
+        if (found.has(key) || !this.roadShown(piece)) continue;
         const [x, y, z] = roads.midpoint(piece);
         if (inside(x, y, z)) found.add(key);
       }
@@ -692,7 +698,6 @@ export class ViewerEngine {
     this.views.set(id, view);
     this.model.add(view.base.mesh);
     this.buildOverrides(id);
-    this.updateVisibility(view);
   }
 
   private hasOverridesIn(part: string): boolean {
@@ -730,9 +735,7 @@ export class ViewerEngine {
       this.model.add(override.mesh);
     } else if (!this.generated.has(id) && !this.replaced.has(id)) {
       this.dropView(view);
-      return;
     }
-    this.updateVisibility(view);
   }
 
   private addSlot(view: PartView, composed: ComposedMesh): number {
@@ -767,28 +770,37 @@ export class ViewerEngine {
     this.views.delete(view.id);
   }
 
-  private updateVisibility(view: PartView): void {
-    const visible = !this.hiddenParts.has(view.id);
-    view.base.mesh.visible = visible;
-    if (view.override) view.override.mesh.visible = visible;
-  }
-
   private entryVisible(view: PartView, composed: ComposedMesh, entry: Entry): boolean {
     return this.entryStyle(view, composed, entry) !== null;
   }
 
   private entryStyle(view: PartView, composed: ComposedMesh, entry: Entry): string | null {
     const context = { edits: this.edits, hiddenParts: this.hiddenParts, implicitHidden: this.implicitHidden };
-    return entryColour(entry, context, composed === view.base && view.overrideKeys.has(entry.key));
+    return entryColour(entry, context, composed === view.base && view.overrideKeys.has(entry.key), view.id);
   }
 
+  // A hidden part is hidden entry by entry rather than as a mesh, since what
+  // was moved from it into a custom layer still shows, and exports, with that.
   private restyle(): void {
     for (const view of this.views.values()) {
+      const unkeyed = this.hiddenParts.has(view.id) ? null : '';
       for (const composed of [view.base, view.override]) {
         if (!composed) continue;
-        composed.update((entry) => this.entryStyle(view, composed, entry));
+        composed.update((entry) => this.entryStyle(view, composed, entry), unkeyed);
       }
     }
+  }
+
+  /** The part a road piece is drawn in now: its custom layer's, or its group's. */
+  private roadPart(piece: number): string {
+    const lines = this.roads!.lines;
+    const layer = this.edits.objects[lines.keys[piece]]?.layer;
+    if (layer && this.edits.layers.some((l) => l.id === layer)) return `layer:${layer}`;
+    return ROAD_PART_IDS[lines.groups[piece]];
+  }
+
+  private roadShown(piece: number): boolean {
+    return !this.edits.objects[this.roads!.lines.keys[piece]]?.removed && !this.hiddenParts.has(this.roadPart(piece));
   }
 
   /** Road pieces a part holds now, given the edits. */
@@ -835,7 +847,7 @@ export class ViewerEngine {
     const objects = new Map<string, Set<string> | null>();
     for (const key of keys) {
       if (kindOf(key) === 'road') {
-        if (this.roads && !this.edits.objects[key]?.removed) roadPieces.push(...this.roads.piecesOf(key));
+        if (this.roads) roadPieces.push(...this.roads.piecesOf(key).filter((piece) => this.roadShown(piece)));
         // A bridge on the road's segment goes with its edits, so it lights up too.
         if (this.data.objects[twinOf(key)!]) objects.set(twinOf(key)!, null);
         continue;
@@ -855,7 +867,6 @@ export class ViewerEngine {
     }
     if (objects.size) {
       for (const view of this.views.values()) {
-        if (!view.base.mesh.visible) continue;
         for (const composed of [view.base, view.override]) {
           if (!composed || !composed.entries.length) continue;
           const match = (entry: Entry) => {

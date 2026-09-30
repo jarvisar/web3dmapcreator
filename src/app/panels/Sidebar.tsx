@@ -74,7 +74,7 @@ function ResetAll() {
         toast('Settings, colours and export options are back to their defaults', 'info');
       }}
     >
-      {confirming ? 'Click again to reset everything but the area' : 'Reset all settings'}
+      {confirming ? 'Click again to reset everything but the area and your edits' : 'Reset all settings'}
     </button>
   );
 }

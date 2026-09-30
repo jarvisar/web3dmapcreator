@@ -5,7 +5,8 @@ import { areaHint } from '../lib/area';
 import { PHONE_QUERY, useMediaQuery } from '../lib/browser';
 import { formatCount, formatInteger, formatMm, formatNumber } from '../lib/format';
 import { cancelGeneration, exportModel, generateModel } from '../state/actions';
-import { FORMAT_EXTENSIONS, filamentCount, generationProblem, resultGroups } from '../state/derived';
+import { FORMAT_EXTENSIONS, filamentCount, generationProblem, hiddenDownloadParts, resultGroups } from '../state/derived';
+import { getEditData } from '../state/model';
 import { dismissExportError, dismissGenerationError, dismissMapHint, setView, useApp } from '../state/store';
 import { downloadSvg, generateSvg, svgProblem, useSvgKey } from '../svgmap/actions';
 import { cancelRender, renderFraction, useSvgRender } from '../svgmap/render';
@@ -35,7 +36,8 @@ function DownloadButton({ primary }: { primary: boolean }) {
   const exporting = useApp((state) => state.exporting);
   const format = useApp((state) => state.exportSettings.format);
   const hidden = useApp((state) => state.ui.hiddenParts);
-  const allHidden = result ? result.parts.every((part) => hidden.includes(part.id)) : false;
+  const edits = useApp((state) => state.edits);
+  const allHidden = result ? hiddenDownloadParts(result, edits, getEditData(), hidden).all : false;
   const running = exporting.status === 'running';
   const disabled = !result || running || allHidden || !result.exportable;
   return (
@@ -97,9 +99,10 @@ function ModelActions() {
       `${colours} ${colours === 1 ? 'colour' : 'colours'}`,
       ...(changes ? [`${changes} ${changes === 1 ? 'edit' : 'edits'}`] : []),
     ].join(' · ');
-    const hiddenCount = result.parts.filter((part) => hidden.includes(part.id)).length;
+    const hiddenParts = hiddenDownloadParts(result, edits, getEditData(), hidden);
+    const hiddenCount = hiddenParts.hidden;
     if (!result.exportable) note = 'The generator was restarted. Generate the model again before downloading.';
-    else if (hiddenCount === result.parts.length) note = 'Every part is hidden in the 3D view, so there is nothing to download.';
+    else if (hiddenParts.all) note = 'Every part is hidden in the 3D view, so there is nothing to download.';
     else if (hiddenCount > 0) note = `${hiddenCount} hidden ${hiddenCount === 1 ? 'part is' : 'parts are'} left out of the download.`;
   }
 

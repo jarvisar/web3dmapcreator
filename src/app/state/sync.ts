@@ -1,19 +1,25 @@
-// Keeps localStorage and the URL hash in step with the store.
+// Keeps localStorage and the URL hash in step with the store, and this tab
+// in step with others saving the same edits and picks.
 
 import { sameArea } from '../lib/area';
-import { saveState } from './persist';
+import {
+  BACKUP_KEY,
+  EDITS_KEY,
+  isSaved,
+  markSaved,
+  PICKS_KEY,
+  readBackup,
+  readStoredEdits,
+  readStoredPicks,
+  saveState,
+} from './persist';
 import { formatAreaHash, parseHash } from './shareLink';
-import { editCount, hasEdits } from '../../core/edit/types';
-import { commitEdits, undoEdit } from './editActions';
-import { patchSvg, setArea, setOutput, takeLinkedEdits, toast, useApp } from './store';
+import { adoptEdits, broughtToast, takeInLink } from './editActions';
+import { bringIn, patchSvg, setArea, setOutput, takeOpenedLink, toast, useApp } from './store';
 
 let started = false;
 let written = '';
 let warned = false;
-
-function linkedEdits(count: number): void {
-  toast(`Opened with ${count} ${count === 1 ? 'edit' : 'edits'} from the link.`, 'info', { label: 'Undo', run: undoEdit });
-}
 
 function save(): void {
   if (saveState(useApp.getState(), written)) {
@@ -81,15 +87,15 @@ export function startSync(): void {
     if (document.visibilityState === 'hidden') flush();
   });
 
-  // A link pasted into the address bar of an open tab.
+  // A link pasted into the address bar of an open tab. Its SVG settings
+  // carry no picks, so the ones here stay, and its edits and picks are
+  // added to these.
   window.addEventListener('hashchange', () => {
     const shared = parseHash(location.hash);
-    if (shared.svg) useApp.setState({ svg: shared.svg.svg });
-    if (shared.picks) patchSvg(shared.picks);
-    if (shared.edits && hasEdits(shared.edits)) {
-      commitEdits(shared.edits);
-      linkedEdits(Math.max(1, editCount(shared.edits)));
-    }
+    const state = useApp.getState();
+    if (shared.svg) useApp.setState({ svg: { ...shared.svg.svg, routes: state.svg.routes, hiddenLines: state.svg.hiddenLines } });
+    const brought = bringIn(state.edits, { routes: state.svg.routes, hiddenLines: state.svg.hiddenLines }, { edits: shared.edits, picks: shared.picks });
+    if (brought) takeInLink(brought);
     if (shared.output) setOutput(shared.output);
     const area = shared.area ?? useApp.getState().area;
     const next = { ...area, ...shared.svg?.area, ...(shared.svg?.shape ? { shape: shared.svg.shape } : {}) };
@@ -99,7 +105,36 @@ export function startSync(): void {
     if (shared.svg || shared.edits || shared.picks) writeHashNow();
   });
 
-  const linked = takeLinkedEdits();
-  if (linked) linkedEdits(linked);
+  // Another tab saved its edits or picks. They're taken on here unless this
+  // tab has a change of its own still to save, which then wins.
+  window.addEventListener('storage', (event) => {
+    if (event.storageArea !== localStorage) return;
+    if (event.key === BACKUP_KEY) {
+      useApp.setState({ backup: readBackup() });
+      return;
+    }
+    if (event.newValue === null) return;
+    const state = useApp.getState();
+    if (event.key === EDITS_KEY) {
+      if (!isSaved(EDITS_KEY, [state.edits])) return;
+      const edits = readStoredEdits(event.newValue);
+      if (!edits) return;
+      markSaved(EDITS_KEY, [edits]);
+      adoptEdits(edits);
+    } else if (event.key === PICKS_KEY) {
+      if (!isSaved(PICKS_KEY, [state.svg.routes, state.svg.hiddenLines])) return;
+      const picks = readStoredPicks(event.newValue);
+      if (!picks) return;
+      markSaved(PICKS_KEY, [picks.routes, picks.hiddenLines]);
+      patchSvg({ routes: picks.routes, hiddenLines: picks.hiddenLines });
+    }
+  });
+
   writeHashNow();
+  const opened = takeOpenedLink();
+  if (opened) {
+    broughtToast(opened);
+    // Saved now, not with the next change, so it's there after a reload.
+    save();
+  }
 }
