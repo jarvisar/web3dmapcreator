@@ -125,46 +125,64 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 Road network tidy (`pipeline/network/`, `roads.tidy`, run in `collectRoadPieces`
 before bridges are split off):
 
-- A rewrite of the add-on's `road_network.py`, not a port. The cull keeps its
-  rules (ranks, 28 degrees, streets dropped at 68% doubled, welding through a
-  junction only when the continuation is unambiguous from both sides, or a
-  divided street's kept carriageway hops sides). Pruning is the web app's own:
-  a graph of the lines as printed, a node wherever an end lands in another
-  ribbon or two centerlines cross, spurs judged from the loose end to the
-  first junction. That one rule replaced the add-on's terminal bends, loop
-  anchoring and "leaned on" checks.
-- `alongside` ignores a kept line past its ends, or the stem of a divided
-  street through an intersection reads as doubled by the carriageway it
-  continues.
+- The web app's own. The first version (after the add-on's `road_network.py`)
+  held a moved carriageway at every junction and bent it back, so divided
+  streets zigzagged at every cross street, thinned rail yards and car parks
+  into ladders, and joined loose ends with long diagonals and tapers. The
+  rule now: lines are cut, dropped, extended a little along themselves or
+  moved onto the middle of their own divided road, never bent towards
+  something else. Check changes with before/after renders on many areas
+  (motorway interchanges, Irvine's arterials, rail yards, car parks, old
+  town centres), not just Chicago.
+- Order: merge divided roads (`divided.ts`), cull, join, prune. Merging goes
+  first, or a service road beside one carriageway was culled and the
+  carriageway then moved away from it.
+- Divided roads merge only as clear pairs: one-way lines (`oneway`, from
+  `access_restrictions`, general traffic only, no time or vehicle
+  conditions) of one class and subclass travelling opposite ways, each the
+  other's only partner, nothing of their rank or higher between them. A pair
+  starts below the gap and runs on to 1.5 times it, or medians near the
+  limit merged for a block and forked again. The midline averages closest
+  points taken both ways (one way leans on a fork's arms), kept in order
+  along the other line, and a one-way ring's partner is unrolled from
+  beside its start. Junctions slide along the street meeting them onto the
+  midline, so cross streets stay straight and the stub across the median
+  vanishes. Pairs run on to a fork both carriageways share, or to a cross
+  street joining both, within 4 mm, or they forked just short of junctions.
+  Lines left over bend in to the merged line with the move eased out along
+  them, so curved ramps keep their curve.
+  Crossing divided roads merge in successive rounds, and a merged line never
+  merges again.
+- Neighbours only count when they're beside a sample (`SegmentIndex.beside`).
+  A line carrying straight on from another's end vertex read as doubling it
+  and paired one-way streets end to end.
+- The cull only drops a line beside a strictly more important one (twin
+  decks excepted). Equal lines side by side, like rail yards, car parks and
+  plaza path grids, are left to the fill. `alongside` ignores a kept line
+  past its ends, and cuts snap to a vertex within a sample, or a scrap of the
+  doubled stretch is left pointing along the road.
 - End origins decide what may move. `met` ends (their partner was left out or
   culled) join within twice the gap and go as stubs. `dead` ends only join
   when the ground left wouldn't print and only go as nubs. `portal` ends
   (tunnels, indoor corridors) never join far but can go as stubs. Skipped
   sidewalks and crossings go in `leftOut`, or every path that met one reads
-  as a dead end.
+  as a dead end. Joins go straight on, or across within 60 degrees of the
+  heading, never across another line.
 - A part lying wholly inside a ribbon at least as important is dropped. Such
   scraps passed every other rule and printed as slivers.
 - Decks and ground never double each other, deck ends never move, and decks
   only meet the ground where their lines meet.
-- The kept carriageway of a divided street moves halfway to its dropped twin
-  (`center.ts`), or the road jogs by half the median wherever the
-  carriageways split. Twins match on class and subclass (a parking aisle
-  isn't a service road's twin, a ramp isn't the motorway's). The shift is
-  sideways only, worked along chains of the street's pieces, changes no
-  faster than 1:3 and is held at zero where three or more ends meet. It never
-  carries a line into the corridor of one it wasn't doubling: upper and lower
-  Wacker each moved towards twins between them and met.
 - `fillGaps` fills ground narrower than the gap between two lines alongside
   each other with strips from centerline to centerline, in the same union as
-  the roads (`gaps.ts`). A closing of the whole footprint was tried: round
-  joins filleted every block corner, mitred ones left zero-area slivers, and
-  it cost seconds on large areas.
+  the roads (`gaps.ts`). Strips run on to 1.3 times the gap and need 0.5 mm,
+  or lines near the limit gave rows of rungs. A strip between groups takes
+  the lesser group, so a street keeps its edge. Enclosed ground nowhere as
+  wide as the gap is filled per group (`fillThinHoles`). A closing of the
+  whole footprint was tried: round joins filleted every block corner, mitred
+  ones left zero-area slivers, and it cost seconds on large areas.
 - Road polygons of one group touching at a single vertex are pulled apart
   by 0.2 µm (`separateTouching`), or their prisms share a wall edge.
 - Every step has its own switch and the tidy off gives the untidied network.
-  Check changes on the regression areas with before/after renders: specks,
-  loose ends that met something and doubled length should drop, and no
-  street should lose a stretch from its middle.
 
 LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
 

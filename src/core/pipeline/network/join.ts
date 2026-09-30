@@ -1,21 +1,25 @@
 // Pulling a loose end onto the road it nearly meets. Once sidewalks are left
-// out, a park path stops at the kerb, and a side street that met the culled
-// carriageway stops beside the kept one.
+// out, a park path stops at the kerb, and a side street that met the dropped
+// carriageway of a divided road stops short of the one kept.
 //
 // An end that met something in the source that's gone now is joined to a
 // road at least as important within twice the gap of its edge. A real dead
 // end (a cul-de-sac, a driveway stopping short of the next street) is only
 // joined when the ground left would be too thin to print, so no junction is
-// invented. Ends on the model's edge and bridge decks never move.
+// invented. The join carries the line straight on when that meets the road,
+// and otherwise takes the shortest way across, but only heading on the way
+// the line was going and never across another line. Nothing bends: a taper
+// sideways into a road drew long diagonals where nothing was mapped. Ends on
+// the model's edge and bridge decks never move.
 
 import type { Vec2 } from '../../types';
 import { polylineLength } from '../linework';
-import { endHeading, SegmentIndex } from './lines';
+import { SegmentIndex } from './lines';
 import type { Candidate, Part } from './routes';
 
 const PARALLEL_DEG = 28;
-// A sideways merge bends in over this many times the distance it moves.
-const TAPER_RATIO = 3;
+// How far off its own heading the shortest way across may point.
+const AHEAD_DEG = 60;
 
 export function joinEnds(parts: Part[], candidates: Candidate[], gap: number, tolerance: number): number {
   const maxHalfWidth = candidates.reduce((m, c) => Math.max(m, c.halfWidth), 0);
@@ -23,8 +27,28 @@ export function joinEnds(parts: Part[], candidates: Candidate[], gap: number, to
   parts.forEach((part, i) => {
     if (!candidates[part.source].deck) index.add(part.points, i);
   });
-  const cos = Math.cos((PARALLEL_DEG * Math.PI) / 180);
+  const parallel = Math.cos((PARALLEL_DEG * Math.PI) / 180);
+  const ahead = Math.cos((AHEAD_DEG * Math.PI) / 180);
   let joined = 0;
+
+  // Whether the straight join from p to q crosses any line but the target's.
+  const crosses = (p: Vec2, q: Vec2, self: number, target: number) => {
+    const dx = q[0] - p[0];
+    const dy = q[1] - p[1];
+    const length = Math.hypot(dx, dy);
+    const steps = Math.max(1, Math.ceil(length / (index.cell / 2)));
+    for (let k = 0; k <= steps; k++) {
+      const x = p[0] + (dx * k) / steps;
+      const y = p[1] + (dy * k) / steps;
+      const hit = index.near(x, y, (s) => {
+        const o = index.owner[s];
+        if (o === self || o === target) return false;
+        return segmentsCross(p, q, [index.ax[s], index.ay[s]], [index.bx[s], index.by[s]]);
+      });
+      if (hit) return true;
+    }
+    return false;
+  };
 
   parts.forEach((part, i) => {
     const c = candidates[part.source];
@@ -35,82 +59,81 @@ export function joinEnds(parts: Part[], candidates: Candidate[], gap: number, to
       const origin = part.ends[end];
       if (origin === 'edge') continue;
       const point = end ? part.points[part.points.length - 1] : part.points[0];
-      const heading = endHeading(part.points, end);
+      const heading = outward(part.points, end);
       if (!heading) continue;
       const orphan = origin === 'met';
       const reach = (orphan ? 2 * gap : gap) + c.halfWidth;
-      const best = { distance: Infinity, target: null as Vec2 | null, parallel: false };
-      const touching = index.near(point[0], point[1], (s) => {
+      let touching = false;
+      let straight = { distance: Infinity, target: null as Vec2 | null, owner: -1 };
+      let across = { distance: Infinity, target: null as Vec2 | null, owner: -1 };
+      index.near(point[0], point[1], (s) => {
         const o = index.owner[s];
         const other = candidates[parts[o].source];
         if (o === i || other.rank > c.rank) return false;
-        const t = index.along(s, point[0], point[1]);
-        const distance = index.distance(s, point[0], point[1], t);
-        if (distance <= Math.max(other.halfWidth, tolerance)) return true;
-        if (distance > reach + other.halfWidth || distance >= best.distance) return false;
-        // Running alongside rather than heading in. Only an end whose partner
-        // went merges sideways, from inside the corridor that doubled it and
-        // beside the road, not past its end: a taper to a road's last point
-        // drew a long diagonal where nothing was mapped.
-        const parallel = Math.abs(heading[0] * index.ux[s] + heading[1] * index.uy[s]) >= cos;
-        const pastEnd = (t <= 0 && index.first[s]) || (t >= 1 && index.last[s]);
-        if (parallel && (!orphan || pastEnd || distance > gap + c.halfWidth + other.halfWidth)) return false;
-        best.distance = distance;
-        best.target = index.closest(s, point[0], point[1]);
-        best.parallel = parallel;
+        const distance = index.distance(s, point[0], point[1]);
+        if (distance <= Math.max(other.halfWidth, tolerance)) {
+          touching = true;
+          return true;
+        }
+        if (distance > reach + other.halfWidth) return false;
+        // Running alongside rather than heading in.
+        if (Math.abs(heading[0] * index.ux[s] + heading[1] * index.uy[s]) >= parallel) return false;
+        const hit = rayHit(point, heading, [index.ax[s], index.ay[s]], [index.bx[s], index.by[s]]);
+        if (hit !== null && hit <= reach + other.halfWidth && hit < straight.distance) {
+          straight = { distance: hit, target: [point[0] + heading[0] * hit, point[1] + heading[1] * hit], owner: o };
+        }
+        const q = index.closest(s, point[0], point[1]);
+        const toward = ((q[0] - point[0]) * heading[0] + (q[1] - point[1]) * heading[1]) / (distance || 1);
+        if (toward >= ahead && distance < across.distance) across = { distance, target: q, owner: o };
         return false;
       });
-      if (touching || !best.target) continue;
-      const moved = best.parallel ? taper(part.points, end, best.target, tolerance) : connect(part.points, end, best.target, heading, tolerance);
-      if (moved) joined++;
+      if (touching) continue;
+      const choice = straight.target ? straight : across;
+      if (!choice.target) continue;
+      // A real dead end only joins across ground too thin to print.
+      if (!orphan) {
+        const other = candidates[parts[choice.owner].source];
+        if (choice.distance - c.halfWidth - other.halfWidth >= gap) continue;
+      }
+      if (crosses(point, choice.target, i, choice.owner)) continue;
+      if (end) part.points.push(choice.target);
+      else part.points.unshift(choice.target);
+      joined++;
     }
   });
   return joined;
 }
 
-// A short connector from the end to the road, or the end cut back where it
-// ran past it. Moving the end vertex would swing its whole last segment, and
-// Overture draws a straight kilometre with two vertices.
-function connect(points: Vec2[], end: 0 | 1, target: Vec2, heading: Vec2, tolerance: number): boolean {
-  const point = end ? points[points.length - 1] : points[0];
-  const dx = target[0] - point[0];
-  const dy = target[1] - point[1];
-  if (Math.hypot(dx, dy) <= tolerance) return false;
-  if (dx * heading[0] + dy * heading[1] < 0) {
-    const neighbour = end ? points[points.length - 2] : points[1];
-    if (Math.hypot(target[0] - neighbour[0], target[1] - neighbour[1]) <= tolerance) return false;
-    if (end) points[points.length - 1] = target;
-    else points[0] = target;
-    return true;
+// The way a line points at its end, over its last 0.2 mm, so a scrap of a
+// last segment doesn't decide it.
+function outward(points: Vec2[], end: 0 | 1): Vec2 | null {
+  const n = points.length;
+  const tip = end ? points[n - 1] : points[0];
+  for (let k = 1; k < n; k++) {
+    const v = end ? points[n - 1 - k] : points[k];
+    const d = Math.hypot(tip[0] - v[0], tip[1] - v[1]);
+    if (d >= 0.2 || k === n - 1) return d > 1e-12 ? [(tip[0] - v[0]) / d, (tip[1] - v[1]) / d] : null;
   }
-  if (end) points.push(target);
-  else points.unshift(target);
-  return true;
+  return null;
 }
 
-// Bend the last stretch of a line running beside a road into it. Everything
-// before the taper keeps its place.
-function taper(points: Vec2[], end: 0 | 1, target: Vec2, tolerance: number): boolean {
-  const ordered = end ? [...points] : [...points].reverse();
-  const last = ordered[ordered.length - 1];
-  const lateral = Math.hypot(target[0] - last[0], target[1] - last[1]);
-  if (lateral <= tolerance) return false;
-  const length = TAPER_RATIO * lateral;
-  if (polylineLength(ordered) < 2 * length) return false;
-  let remaining = length;
-  for (let i = ordered.length - 1; i > 0; i--) {
-    const a = ordered[i - 1];
-    const b = ordered[i];
-    const segment = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    if (segment >= remaining) {
-      const t = segment > 0 ? (segment - remaining) / segment : 0;
-      const start: Vec2 = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-      const rebuilt = [...ordered.slice(0, i), start, target];
-      if (!end) rebuilt.reverse();
-      points.splice(0, points.length, ...rebuilt);
-      return true;
-    }
-    remaining -= segment;
-  }
-  return false;
+// Distance along a ray from p in direction u to where it crosses segment ab, or null.
+function rayHit(p: Vec2, u: Vec2, a: Vec2, b: Vec2): number | null {
+  const ex = b[0] - a[0];
+  const ey = b[1] - a[1];
+  const denominator = u[0] * ey - u[1] * ex;
+  if (Math.abs(denominator) < 1e-12) return null;
+  const t = ((a[0] - p[0]) * ey - (a[1] - p[1]) * ex) / denominator;
+  const s = ((a[0] - p[0]) * u[1] - (a[1] - p[1]) * u[0]) / denominator;
+  return t >= 0 && s >= 0 && s <= 1 ? t : null;
+}
+
+// Proper crossings only: touching at an end doesn't count.
+function segmentsCross(p: Vec2, q: Vec2, a: Vec2, b: Vec2): boolean {
+  const d = (u: Vec2, v: Vec2, w: Vec2) => (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0]);
+  const d1 = d(a, b, p);
+  const d2 = d(a, b, q);
+  const d3 = d(p, q, a);
+  const d4 = d(p, q, b);
+  return d1 * d2 < -1e-12 && d3 * d4 < -1e-12;
 }

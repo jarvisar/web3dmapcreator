@@ -61,6 +61,55 @@ export function intervals(points: Vec2[], cum: number[], count: number): Sample[
   return out;
 }
 
+/**
+ * Douglas-Peucker on a polyline: the indices of the points kept, always the
+ * first, the last and any in `keep`.
+ */
+export function simplifyIndices(points: Vec2[], tolerance: number, keep: Set<number> = new Set()): number[] {
+  if (points.length <= 2) return points.map((_p, k) => k);
+  const marked = new Uint8Array(points.length);
+  marked[0] = 1;
+  marked[points.length - 1] = 1;
+  for (const k of keep) if (k >= 0 && k < points.length) marked[k] = 1;
+  const stack: [number, number][] = [];
+  // Split at the kept indices first, then simplify each run between them.
+  let last = 0;
+  for (let k = 1; k < points.length; k++) {
+    if (!marked[k]) continue;
+    stack.push([last, k]);
+    last = k;
+  }
+  while (stack.length) {
+    const [i, j] = stack.pop()!;
+    if (j - i < 2) continue;
+    const [ax, ay] = points[i];
+    const [bx, by] = points[j];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const l2 = dx * dx + dy * dy;
+    let worst = -1;
+    let at = -1;
+    for (let k = i + 1; k < j; k++) {
+      const [px, py] = points[k];
+      const t = l2 > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2)) : 0;
+      const d = Math.hypot(px - ax - dx * t, py - ay - dy * t);
+      if (d > worst) {
+        worst = d;
+        at = k;
+      }
+    }
+    if (worst > tolerance) {
+      marked[at] = 1;
+      stack.push([i, at], [at, j]);
+    }
+  }
+  const out: number[] = [];
+  marked.forEach((m, k) => {
+    if (m) out.push(k);
+  });
+  return out;
+}
+
 export function unit(a: Vec2, b: Vec2): Vec2 | null {
   const dx = b[0] - a[0];
   const dy = b[1] - a[1];
@@ -200,6 +249,19 @@ export class SegmentIndex {
     const px = this.ax[segment] + (this.bx[segment] - this.ax[segment]) * f;
     const py = this.ay[segment] + (this.by[segment] - this.ay[segment]) * f;
     return Math.hypot(x - px, y - py);
+  }
+
+  /**
+   * Whether the closest point of a segment lies beside a point heading along
+   * (ux, uy), not ahead or behind it. Where a line ends at a vertex, its
+   * next segment's closest point is that vertex, and a line carrying straight
+   * on from it isn't running beside it.
+   */
+  beside(segment: number, x: number, y: number, ux: number, uy: number): boolean {
+    const [qx, qy] = this.closest(segment, x, y);
+    const along = (qx - x) * ux + (qy - y) * uy;
+    const lateral = (qx - x) * -uy + (qy - y) * ux;
+    return Math.abs(along) <= 0.3 * Math.abs(lateral) + 0.02;
   }
 
   closest(segment: number, x: number, y: number): Vec2 {

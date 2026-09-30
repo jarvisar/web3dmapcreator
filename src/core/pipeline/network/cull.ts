@@ -1,16 +1,18 @@
 // Dropping lines that run alongside a more important line closer than a
-// printable gap: both carriageways of a divided street, the footway that is
-// a sidewalk in all but tag, the cycle track beside the road, the tram in
-// the street.
+// printable gap: the footway that is a sidewalk in all but tag, the cycle
+// track beside the road, the tram in the street, the service road along an
+// arterial.
 //
 // Routes go in order of importance, longest first within a rank, and each is
-// judged against what's already kept, so a line can only lose to one at
-// least as important. "Close" is edge to edge: two ribbons nearer than the
-// gap leave a strip of ground too thin to print between them.
+// judged against what's already kept. A line only loses to one strictly more
+// important. Lines of one rank side by side (both carriageways of a divided
+// street, the tracks of a rail yard, the aisles of a car park) are left to
+// divided.ts and the gap fill: thinning them to every other line broke them
+// into ladders. "Close" is edge to edge: two ribbons nearer than the gap
+// leave a strip of ground too thin to print between them.
 
 import { densifyLine } from '../../geometry/polygon';
-import type { Vec2 } from '../../types';
-import { cumulative, intervals, pointAt, SegmentIndex, slice } from './lines';
+import { intervals, pointAt, SegmentIndex, slice, cumulative } from './lines';
 import type { Candidate, EndOrigin, Part, Route } from './routes';
 
 export interface CullOptions {
@@ -18,19 +20,10 @@ export interface CullOptions {
   stub: number;
 }
 
-/** A doubled stretch of a street dropped for running beside one at least as important. */
-export interface Twin {
-  points: Vec2[];
-  roadClass: string;
-  subclass: string;
-  halfWidth: number;
-}
-
 export interface CullResult {
   parts: Part[];
   droppedRoutes: number;
   hiddenParts: number;
-  twins: Twin[];
 }
 
 const PARALLEL_DEG = 28;
@@ -39,11 +32,9 @@ const PARALLEL_DEG = 28;
 // bite from its middle for running beside a main road for a block.
 const SHADOW_FRACTION = 0.68;
 const STEP = 0.2;
-// How far a losing street's surviving stretch follows its own line to reach
-// the road that doubled it, and failing that, how far along the join to that
-// road may start. In corridor widths.
-const FOLLOW_CORRIDORS = 6;
-const JOIN_CORRIDORS = 3;
+// How far a losing street's surviving stretch may follow its own line back
+// to reach the road that doubled it, in corridor widths.
+const FOLLOW_CORRIDORS = 4;
 const EPSILON = 1e-7;
 
 export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrigin, EndOrigin][], options: CullOptions): CullResult {
@@ -59,46 +50,35 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
   const pieceCum = candidates.map((c) => cumulative(c.points));
   const parts: Part[] = [];
 
+  // Decks only ever double decks, and a twin deck goes whole, so of two
+  // bridge carriageways one is kept.
+  const beats = (o: number, deck: boolean, rank: number) => keptDeck[o] === deck && (deck ? keptRank[o] <= rank : keptRank[o] < rank);
+
   // Beside a kept line, not past its end: the stem of a divided street through
   // an intersection starts where the kept carriageway stops, and measured to
   // its end it would read as doubled by the line it continues.
   const alongside = (x: number, y: number, ux: number, uy: number, halfWidth: number, deck: boolean, rank: number) =>
     kept.near(x, y, (s) => {
       const o = kept.owner[s];
-      if (keptDeck[o] !== deck || keptRank[o] > rank) return false;
+      if (!beats(o, deck, rank)) return false;
       const t = kept.along(s, x, y);
       if ((t <= 0 && kept.first[s]) || (t >= 1 && kept.last[s])) return false;
       if (kept.distance(s, x, y, t) > gap + halfWidth + keptHalfWidth[o]) return false;
-      return Math.abs(ux * kept.ux[s] + uy * kept.uy[s]) >= cos;
+      return Math.abs(ux * kept.ux[s] + uy * kept.uy[s]) >= cos && kept.beside(s, x, y, ux, uy);
     });
 
-  // `self` leaves out the route's own stretches kept so far.
-  const covered = (x: number, y: number, deck: boolean, rank = Infinity, self = -1) =>
+  // Inside the ribbon of a line that beats this one.
+  const covered = (x: number, y: number, deck: boolean, rank: number, self = -1) =>
     kept.near(x, y, (s) => {
       const o = kept.owner[s];
-      return keptDeck[o] === deck && keptRank[o] <= rank && keptRoute[o] !== self && kept.distance(s, x, y) <= keptHalfWidth[o];
+      return beats(o, deck, rank) && keptRoute[o] !== self && kept.distance(s, x, y) <= keptHalfWidth[o];
     });
 
   const clear = (x: number, y: number, halfWidth: number, deck: boolean, rank: number, self: number) =>
     !kept.near(x, y, (s) => {
       const o = kept.owner[s];
-      return keptDeck[o] === deck && keptRank[o] <= rank && keptRoute[o] !== self && kept.distance(s, x, y) <= gap + halfWidth + keptHalfWidth[o];
+      return beats(o, deck, rank) && keptRoute[o] !== self && kept.distance(s, x, y) <= gap + halfWidth + keptHalfWidth[o];
     });
-
-  const nearest = (x: number, y: number, halfWidth: number, deck: boolean, rank: number, self: number): Vec2 | null => {
-    let best = Infinity;
-    let point: Vec2 | null = null;
-    kept.near(x, y, (s) => {
-      const o = kept.owner[s];
-      if (keptDeck[o] !== deck || keptRank[o] > rank || keptRoute[o] === self) return;
-      const d = kept.distance(s, x, y);
-      if (d <= gap + halfWidth + keptHalfWidth[o] && d < best) {
-        best = d;
-        point = kept.closest(s, x, y);
-      }
-    });
-    return point;
-  };
 
   const sample = (route: Route) => {
     const count = Math.max(1, Math.ceil(route.length / STEP));
@@ -113,8 +93,8 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
     return { step: route.length / count, samples, halfWidths };
   };
 
-  /** Keep the stretch [a, b] of a route as parts of its pieces, optionally joined on to a kept road at either end. */
-  const keep = (id: number, route: Route, a: number, b: number, joints: [Vec2 | null, Vec2 | null] = [null, null]) => {
+  /** Keep the stretch [a, b] of a route as parts of its pieces. */
+  const keep = (id: number, route: Route, a: number, b: number) => {
     for (const member of route.members) {
       const x = Math.max(a, member.from);
       const y = Math.min(b, member.to);
@@ -131,13 +111,10 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
       if (points.length < 2) continue;
       const origin = origins[member.source];
       const ends: [EndOrigin, EndOrigin] = [l0 <= EPSILON ? origin[0] : 'met', l1 >= length - EPSILON ? origin[1] : 'met'];
+      // Which of the part's ends are ends of the kept stretch, not joints inside it.
       const atStart = x <= a + EPSILON;
       const atEnd = y >= b - EPSILON;
-      // Which of the part's ends are ends of the kept stretch, not joints inside it.
       const [head, tail] = member.reversed ? [atEnd, atStart] : [atStart, atEnd];
-      const [headJoint, tailJoint] = member.reversed ? [atEnd ? joints[1] : null, atStart ? joints[0] : null] : [atStart ? joints[0] : null, atEnd ? joints[1] : null];
-      if (headJoint) points.unshift(headJoint);
-      if (tailJoint) points.push(tailJoint);
       parts.push({ source: member.source, points, ends });
       keptHalfWidth.push(c.halfWidth);
       keptRank.push(c.rank);
@@ -147,11 +124,20 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
     }
   };
 
+  // Cuts land on the sample grid. One that close to a corner moves to it, or
+  // it leaves a scrap of the doubled stretch pointing along the road.
+  const snap = (route: Route, s: number) => {
+    let best = s;
+    for (const a of route.cum) if (Math.abs(a - s) <= STEP && Math.abs(a - s) < Math.abs(best - s) + (best === s ? STEP : 0)) best = a;
+    return best;
+  };
+
   const keepAllBut = (id: number, route: Route, cuts: [number, number][]) => {
     let from = 0;
     for (const [a, b] of cuts) {
-      if (a - from > EPSILON) keep(id, route, from, a);
-      from = b;
+      const cutFrom = a > EPSILON ? snap(route, a) : a;
+      if (cutFrom - from > EPSILON) keep(id, route, from, cutFrom);
+      from = b < route.length - EPSILON ? snap(route, b) : b;
     }
     if (route.length - from > EPSILON) keep(id, route, from, route.length);
   };
@@ -171,24 +157,19 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
     return out;
   };
 
-  /**
-   * Where a stretch cut at `s` rejoins the road that doubled it. The cut end
-   * follows its own line until it's inside a kept ribbon at least as
-   * important. Failing that it's joined straight to such a road beside the
-   * furthest point it reached within the join distance, a taper rather than a
-   * square jog. Null when nothing is in reach.
-   */
-  const follow = (id: number, route: Route, s: number, direction: 1 | -1, halfWidth: number): { s: number; joint: Vec2 | null } | null => {
+  // A losing street's surviving stretch, cut at `s`, runs on along its own
+  // line until it's inside the ribbon that beat it, so it still meets that
+  // road. Nothing is drawn that wasn't mapped: when the ribbon is out of
+  // reach the stretch stops where it was cut.
+  const follow = (id: number, route: Route, s: number, direction: 1 | -1, halfWidth: number): number => {
     const step = Math.max(Math.min(halfWidth, STEP), 0.02);
-    let joint: Vec2 | null = null;
     for (let travelled = step; travelled <= FOLLOW_CORRIDORS * corridor; travelled += step) {
       const at = s + direction * travelled;
       if (at < 0 || at > route.length) break;
       const [x, y] = pointAt(route.points, route.cum, at);
-      if (covered(x, y, route.deck, route.rank, id)) return { s: at, joint: null };
-      if (travelled <= JOIN_CORRIDORS * corridor) joint = nearest(x, y, halfWidth, route.deck, route.rank, id) ?? joint;
+      if (covered(x, y, route.deck, route.rank, id)) return at;
     }
-    return joint ? { s, joint } : null;
+    return s;
   };
 
   const order = [...routes].sort((p, q) => p.rank - q.rank || q.length - p.length || p.order - q.order);
@@ -197,7 +178,7 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
   for (let id = 0; id < order.length; id++) {
     const route = order[id];
     const { step, samples, halfWidths } = sample(route);
-    const flags = samples.map((p, k) => alongside(p.x, p.y, p.ux, p.uy, halfWidths[k], route.deck, Infinity));
+    const flags = samples.map((p, k) => alongside(p.x, p.y, p.ux, p.uy, halfWidths[k], route.deck, route.rank));
     const shadowed = flags.filter(Boolean).length * step;
     if (route.deck) {
       // Whole or nothing: a footbridge can't keep one end in the air.
@@ -222,7 +203,7 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
         let c0 = -1;
         let c1 = -1;
         for (let k = k0; k < k1; k++) {
-          if (!covered(samples[k].x, samples[k].y, route.deck)) continue;
+          if (!covered(samples[k].x, samples[k].y, route.deck, route.rank)) continue;
           if (c0 < 0) c0 = k;
           c1 = k;
         }
@@ -232,23 +213,13 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
     }
   }
 
-  // A losing street keeps the stretches nothing at least as important
-  // doubles (a ramp curving away, carriageways parting round an island),
-  // when they're long enough to read as a line of their own.
-  const twins: Twin[] = [];
+  // A losing street keeps the stretches nothing more important doubles (a
+  // ramp curving away, a service road turning into a car park), when
+  // they're long enough to read as a line of their own.
   for (const id of losing) {
     const route = order[id];
     const { step, samples, halfWidths } = sample(route);
     const flags = samples.map((p, k) => alongside(p.x, p.y, p.ux, p.uy, halfWidths[k], false, route.rank));
-    const first = candidates[route.members[0].source];
-    for (const [k0, k1] of runs(flags, true)) {
-      twins.push({
-        points: slice(route.points, route.cum, k0 * step, k1 * step),
-        roadClass: first.piece.roadClass,
-        subclass: first.piece.subclass,
-        halfWidth: first.halfWidth,
-      });
-    }
     let any = false;
     for (const [k0, k1] of runs(flags, false)) {
       const a = k0 * step;
@@ -257,10 +228,9 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
       let visible = 0;
       for (let k = k0; k < k1; k++) if (clear(samples[k].x, samples[k].y, halfWidths[k], false, route.rank, id)) visible += step;
       if (visible < stub) continue;
-      const start = a > EPSILON ? follow(id, route, a, -1, halfWidths[k0]) : { s: a, joint: null };
-      const end = b < route.length - EPSILON ? follow(id, route, b, 1, halfWidths[k1 - 1]) : { s: b, joint: null };
-      if (!start || !end) continue;
-      keep(id, route, start.s, end.s, [start.joint, end.joint]);
+      const start = a > EPSILON ? follow(id, route, a, -1, halfWidths[k0]) : a;
+      const end = b < route.length - EPSILON ? follow(id, route, b, 1, halfWidths[k1 - 1]) : b;
+      keep(id, route, start, end);
       any = true;
     }
     if (!any) droppedRoutes++;
@@ -289,5 +259,11 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
     alive[i] = false;
     hiddenParts++;
   }
-  return { parts: parts.filter((_p, i) => alive[i]), droppedRoutes, hiddenParts, twins };
+  return { parts: parts.filter((_p, i) => alive[i]), droppedRoutes, hiddenParts };
 }
+
+/** Parts of a route as they are, for when nothing is culled. */
+export function wholeParts(candidates: Candidate[], origins: [EndOrigin, EndOrigin][]): Part[] {
+  return candidates.map((c, i): Part => ({ source: i, points: [...c.points], ends: origins[i] }));
+}
+

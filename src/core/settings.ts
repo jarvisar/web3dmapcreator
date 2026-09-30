@@ -84,6 +84,8 @@ export interface ModelSettings {
     tidy: boolean;
     /** Leave out a line running alongside a more important one closer than the gap. */
     removeDoubled: boolean;
+    /** Merge the two carriageways of a divided road onto the middle of the road. */
+    mergeDivided: boolean;
     /** Join a loose end to the road it nearly meets. */
     joinEnds: boolean;
     /** Leave out short spurs leading nowhere and small pieces touching nothing. */
@@ -203,6 +205,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     includeAirports: true,
     tidy: true,
     removeDoubled: true,
+    mergeDivided: true,
     joinEnds: true,
     removeFragments: true,
     fillGaps: true,

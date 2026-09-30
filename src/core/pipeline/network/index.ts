@@ -7,20 +7,25 @@
 // with hairlines of ground between them, paths stopping just short of the
 // street, and specks of road filament floating in plazas.
 //
-// The tidy drops lines doubling a more important one (cull.ts), moves a kept
-// carriageway onto the middle of its street (center.ts), pulls loose ends
-// onto the road they nearly meet (join.ts), and removes spurs and fragments
-// that lead nowhere (prune.ts). Pieces keep their own attributes
-// and are only cut, extended or dropped. Thresholds are printed millimetres.
+// The tidy merges the carriageways of divided roads onto the middle of the
+// road (divided.ts), drops lines doubling a more important one (cull.ts),
+// pulls loose ends onto the road they nearly meet (join.ts), and removes
+// spurs and fragments that lead nowhere (prune.ts). Merging goes first: a
+// service road beside one carriageway was dropped for doubling it, and then
+// the carriageway moved away onto the middle. It changes as little as
+// it can: lines are cut, dropped, extended a little or moved onto the middle
+// of their own road, never bent towards something else. What's left too
+// close to print apart is filled in after widening (gaps.ts). Thresholds are
+// printed millimetres.
 
 import type { Vec2 } from '../../types';
 import { polylineLength } from '../linework';
 import type { RoadPiece } from '../roads';
-import { centerOnTwins } from './center';
-import { cull } from './cull';
+import { cull, wholeParts } from './cull';
+import { mergeDivided } from './divided';
 import { joinEnds } from './join';
 import { prune } from './prune';
-import { candidate, endOrigins, weld, type Part } from './routes';
+import { candidate, endOrigins, weld } from './routes';
 
 // Less than this doesn't read as a line of its own: the kerb stub of a
 // dropped crossing, the scrap of a footway left beside the road it doubled.
@@ -45,6 +50,7 @@ export interface NetworkInput {
   /** Narrowest strip of ground left between two ribbons running alongside each other. */
   gapMm: number;
   removeDoubled: boolean;
+  mergeDivided: boolean;
   joinEnds: boolean;
   removeFragments: boolean;
 }
@@ -53,7 +59,8 @@ export interface NetworkStats {
   network_culled_mm: number;
   network_culled_routes: number;
   network_hidden_parts: number;
-  network_centered_parts: number;
+  network_merged_pairs: number;
+  network_merged_mm: number;
   network_joined_ends: number;
   network_pruned_stubs: number;
   network_pruned_nubs: number;
@@ -67,31 +74,39 @@ export function tidyNetwork(input: NetworkInput): { pieces: RoadPiece[]; stats: 
   const origins = endOrigins(candidates, input.leftOut, input.hidden, input.onEdge, NODE_MM);
   const length = (parts: { points: Vec2[] }[]) => parts.reduce((sum, p) => sum + polylineLength(p.points), 0);
 
-  const culled = input.removeDoubled
-    ? cull(candidates, weld(candidates, NODE_MM), origins, { gap, stub: STUB_MM })
-    : { parts: candidates.map((c, i): Part => ({ source: i, points: [...c.points], ends: origins[i] })), droppedRoutes: 0, hiddenParts: 0, twins: [] };
-  const afterCull = length(culled.parts);
-  const centered = centerOnTwins(culled.parts, candidates, culled.twins, gap);
-  const joined = input.joinEnds ? joinEnds(culled.parts, candidates, gap, NODE_MM) : 0;
-  const afterJoin = length(culled.parts);
+  let parts = wholeParts(candidates, origins);
+  const merged = input.mergeDivided ? mergeDivided(parts, candidates, gap, NODE_MM) : { pairs: 0, droppedMm: 0 };
+  const afterMerge = length(parts);
+  let culled = { droppedRoutes: 0, hiddenParts: 0 };
+  if (input.removeDoubled) {
+    // Cull works on whole candidates, so each part stands in as one.
+    const lines = parts.map((p) => ({ ...candidates[p.source], points: p.points }));
+    const result = cull(lines, weld(lines, NODE_MM), parts.map((p) => p.ends), { gap, stub: STUB_MM });
+    parts = result.parts.map((q) => ({ ...q, source: parts[q.source].source, merged: parts[q.source].merged }));
+    culled = result;
+  }
+  const afterCull = length(parts);
+  const joined = input.joinEnds ? joinEnds(parts, candidates, gap, NODE_MM) : 0;
+  const afterJoin = length(parts);
   const pruned = input.removeFragments
-    ? prune(culled.parts, candidates, { stub: STUB_MM, island: ISLAND_MM, tolerance: NODE_MM })
-    : { parts: culled.parts, stubs: 0, nubs: 0, islands: 0 };
+    ? prune(parts, candidates, { stub: STUB_MM, island: ISLAND_MM, tolerance: NODE_MM })
+    : { parts, stubs: 0, nubs: 0, islands: 0 };
 
-  const parts = pruned.parts.sort((a, b) => a.source - b.source);
+  const out = pruned.parts.sort((a, b) => a.source - b.source);
   const round = (mm: number) => Math.round(mm * 10) / 10;
   return {
-    pieces: parts.map((part) => ({ ...candidates[part.source].piece, points: part.points })),
+    pieces: out.map((part) => ({ ...candidates[part.source].piece, points: part.points })),
     stats: {
-      network_culled_mm: round(length(candidates) - afterCull),
+      network_culled_mm: round(afterMerge - afterCull),
       network_culled_routes: culled.droppedRoutes,
       network_hidden_parts: culled.hiddenParts,
-      network_centered_parts: centered,
+      network_merged_pairs: merged.pairs,
+      network_merged_mm: round(merged.droppedMm),
       network_joined_ends: joined,
       network_pruned_stubs: pruned.stubs,
       network_pruned_nubs: pruned.nubs,
       network_pruned_islands: pruned.islands,
-      network_pruned_mm: round(afterJoin - length(parts)),
+      network_pruned_mm: round(afterJoin - length(out)),
     },
   };
 }

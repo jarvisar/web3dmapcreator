@@ -130,6 +130,17 @@ describe('linear referencing', () => {
     expect(pieces[1].subclass).toBe('sidewalk');
   });
 
+  it('reads one-way streets from their access restrictions', () => {
+    const oneway = (rules: unknown[]) => splitSegment('s', [[0, 0], [100, 0]], { class: 'primary', access_restrictions: rules }).map((p) => p.oneway);
+    expect(oneway([{ access_type: 'denied', when: { heading: 'backward' } }])).toEqual([1]);
+    expect(oneway([{ access_type: 'denied', when: { heading: 'forward', mode: ['motor_vehicle'] } }])).toEqual([-1]);
+    // Two-way for cars: only bicycles, only at rush hour, or a one-way stretch.
+    expect(oneway([{ access_type: 'denied', when: { heading: 'backward', mode: ['bicycle'] } }])).toEqual([0]);
+    expect(oneway([{ access_type: 'denied', when: { heading: 'backward', during: 'Mo-Fr 07:00-09:00' } }])).toEqual([0]);
+    expect(oneway([{ access_type: 'denied', when: { heading: 'backward' }, between: [0.5, 1] }])).toEqual([0, 1]);
+    expect(oneway([])).toEqual([0]);
+  });
+
   it('ignores degenerate input and slices with interpolated ends', () => {
     expect(splitSegment('x', [[1, 1]], {})).toEqual([]);
     expect(splitSegment('x', [[1, 1], [1, 1]], {})).toEqual([]);

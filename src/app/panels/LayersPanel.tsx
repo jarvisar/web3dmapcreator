@@ -319,7 +319,14 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
           checked={roads.removeDoubled}
           disabled={!roads.tidy}
           onChange={(removeDoubled) => patchSettings('roads', { removeDoubled })}
-          help="A road or path running alongside a more important one, closer than the minimum gap, is left out. Both carriageways of a divided street print as one road down the middle of the street, and footways mapped beside streets go."
+          help="A path, track or service road running alongside a more important road, closer than the minimum gap, is left out, like footways mapped beside streets and trams running in them."
+        />
+        <CheckField
+          label="Merge divided roads"
+          checked={roads.mergeDivided}
+          disabled={!roads.tidy}
+          onChange={(mergeDivided) => patchSettings('roads', { mergeDivided })}
+          help="Where the two carriageways of a divided road are closer than the minimum gap, they print as one road down the middle. Streets meeting it are extended or trimmed along their own line to meet it."
         />
         <CheckField
           label="Join loose ends"
@@ -340,7 +347,7 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
           checked={roads.fillGaps}
           disabled={!roads.tidy}
           onChange={(fillGaps) => patchSettings('roads', { fillGaps })}
-          help="Ground narrower than the minimum gap between two roads running side by side is filled in, so they print as one wider road instead of two with a hairline between them."
+          help="Ground narrower than the minimum gap between two roads running side by side is filled in, so they print as one wider road instead of two with a hairline between them. So is ground enclosed by roads that's too thin to print anywhere, like a plaza criss-crossed by paths."
         />
         <NumberField
           label="Minimum gap"

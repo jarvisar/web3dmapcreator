@@ -35,6 +35,9 @@ export interface Candidate {
   deck: boolean;
   /** Footways and the like lose only their doubled stretches. Streets are judged whole. */
   minor: boolean;
+  /** Class and subclass: a ramp isn't the motorway's other carriageway, nor a parking aisle a street's. */
+  kind: string;
+  oneway: -1 | 0 | 1;
 }
 
 // Vertices this close are one. A micrometre segment at the end of a line
@@ -49,6 +52,8 @@ export function candidate(piece: RoadPiece, deck: boolean): Candidate {
     rank: rankOf(piece.roadClass),
     deck,
     minor: MINOR_ROAD_CLASSES.has(piece.roadClass),
+    kind: `${piece.roadClass}/${piece.subclass}`,
+    oneway: piece.oneway ?? 0,
   };
 }
 
@@ -57,6 +62,8 @@ export interface Part {
   source: number;
   points: Vec2[];
   ends: [EndOrigin, EndOrigin];
+  /** Moved onto the middle of a divided road, standing for both carriageways. */
+  merged?: boolean;
 }
 
 export function endOrigins(
@@ -119,7 +126,7 @@ const CONTINUATION_DEG = 25;
 const REVERSAL_DEG = 120;
 
 /** Ids for points, the same for points within `tolerance`. */
-class Nodes {
+export class Nodes {
   private readonly cells = new Map<string, number[]>();
   private readonly points: Vec2[] = [];
 

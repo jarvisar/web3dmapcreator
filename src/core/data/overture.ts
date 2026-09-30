@@ -72,7 +72,7 @@ export const OVERTURE_COLUMNS: Record<OvertureType, readonly string[]> = {
     'building_id', 'height', 'min_height', 'num_floors', 'min_floor', 'roof_shape', 'roof_height',
     'roof_direction', 'roof_orientation', 'is_underground', 'level', 'roof_color', 'facade_color',
   ],
-  segment: ['subtype', 'class', 'subclass', 'subclass_rules', 'road_flags', 'rail_flags', 'width_rules', 'level_rules'],
+  segment: ['subtype', 'class', 'subclass', 'subclass_rules', 'road_flags', 'rail_flags', 'width_rules', 'level_rules', 'access_restrictions'],
   water: ['subtype', 'class', 'is_salt', 'is_intermittent', 'level', 'source_tags'],
   land: ['subtype', 'class', 'surface', 'elevation', 'source_tags'],
   land_use: ['subtype', 'class', 'surface', 'source_tags'],

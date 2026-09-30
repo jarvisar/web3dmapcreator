@@ -24,7 +24,7 @@ import { MINIMUM_BRIDGE_M } from './bridges';
 import { count, type Context } from './context';
 import { MINOR_ROAD_CLASSES, polylineLength, RAIL_CLASS, RAIL_WIDTH_M, SIDEPATH_SUBCLASSES, splitSegment, type SubSegment } from './linework';
 import { tidyNetwork } from './network';
-import { gapStrips } from './network/gaps';
+import { fillThinHoles, gapStrips } from './network/gaps';
 import { projectLines, projectPolygons, str, type SourceFeature } from './source';
 
 // Clipped ends land on the window's edge to Clipper's precision.
@@ -114,7 +114,7 @@ export async function collectRoadPieces(
     }
     if (index % 64 === 0) await ctx.progress.checkpoint((0.5 * index) / features.length);
   }
-  if (roads.tidy && (roads.removeDoubled || roads.joinEnds || roads.removeFragments)) {
+  if (roads.tidy && (roads.removeDoubled || roads.mergeDivided || roads.joinEnds || roads.removeFragments)) {
     const edges = new EdgeIndex(window, 2);
     const minDeck = MINIMUM_BRIDGE_M * mm;
     const tidied = tidyNetwork({
@@ -125,6 +125,7 @@ export async function collectRoadPieces(
       isDeck: (piece) => settings.bridges.enabled && piece.flags.has('is_bridge') && polylineLength(piece.points) >= minDeck,
       gapMm: roads.gapMm,
       removeDoubled: roads.removeDoubled,
+      mergeDivided: roads.mergeDivided,
       joinEnds: roads.joinEnds,
       removeFragments: roads.removeFragments,
     });
@@ -147,15 +148,22 @@ export async function bufferRoads(
   const roads = ctx.settings.roads;
   const strips = roads.tidy && roads.fillGaps ? gapStrips(pieces, roads.gapMm) : null;
   if (strips) count(ctx, 'road_gaps_filled', strips.road.length + strips.rail.length + strips.path.length);
+  let holes = 0;
   const buffer = async (group: RoadGroup, fraction: number) => {
     const lines = pieces.filter((p) => p.group === group).map((p) => ({ points: p.points, width: p.widthMm }));
-    const ribbons = bufferLines(lines, 'round', strips?.[group]);
+    let ribbons = bufferLines(lines, 'round', strips?.[group]);
+    if (strips) {
+      const filled = fillThinHoles(ribbons, roads.gapMm);
+      ribbons = filled.polygons;
+      holes += filled.filled;
+    }
     await ctx.progress.checkpoint(fraction);
     return ribbons;
   };
   let road = await buffer('road', 0.65);
   let rail = await buffer('rail', 0.75);
   let path = await buffer('path', 0.85);
+  if (holes) count(ctx, 'road_holes_filled', holes);
 
   // One owner per spot: streets over rail at level crossings, both over paths.
   road = separateTouching(dropSmall(intersection(road, ctx.cropSet), 0.02));

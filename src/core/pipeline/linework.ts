@@ -36,6 +36,8 @@ export interface SubSegment {
   widthM: number;
   flags: Set<string>;
   level: number;
+  /** 1 when traffic may only travel along the points' order, -1 against it, 0 both ways. */
+  oneway: -1 | 0 | 1;
 }
 
 type Rule = Record<string, unknown>;
@@ -65,13 +67,12 @@ function activeRule(value: unknown, t: number): Rule | null {
 
 function boundaries(props: Record<string, unknown>): number[] {
   const set = new Set<number>([0, 1]);
-  for (const field of RULE_FIELDS) {
-    for (const rule of rules(props[field])) {
-      if (rule.between === undefined || rule.between === null) continue;
-      const [a, b] = between(rule);
-      set.add(a);
-      set.add(b);
-    }
+  const scoped = [...RULE_FIELDS.flatMap((field) => rules(props[field])), ...rules(props.access_restrictions).filter(onewayRule)];
+  for (const rule of scoped) {
+    if (rule.between === undefined || rule.between === null) continue;
+    const [a, b] = between(rule);
+    set.add(a);
+    set.add(b);
   }
   const ordered = [...set].filter((v) => v >= 0 && v <= 1).sort((a, b) => a - b);
   const out = [ordered[0]];
@@ -148,6 +149,32 @@ function flagValues(props: Record<string, unknown>, t: number): Set<string> {
   return active;
 }
 
+// Modes that stand for general traffic. A one-way rule for buses or bicycles
+// alone doesn't make the street one-way.
+const GENERAL_MODES = new Set(['vehicle', 'motor_vehicle', 'car']);
+
+// Overture writes one-way streets as travel denied in one heading. Rules that
+// only apply at certain times, to some vehicles or to some users (tidal lanes,
+// "except buses") are left out.
+function onewayRule(rule: Rule): boolean {
+  if (rule.access_type !== 'denied') return false;
+  const when = rule.when;
+  if (!when || typeof when !== 'object') return false;
+  const w = when as Record<string, unknown>;
+  if (w.heading !== 'forward' && w.heading !== 'backward') return false;
+  if (w.during || w.using || w.recognized || w.vehicle) return false;
+  const modes = w.mode;
+  return !Array.isArray(modes) || modes.some((m) => typeof m === 'string' && GENERAL_MODES.has(m));
+}
+
+function resolveOneway(props: Record<string, unknown>, t: number): -1 | 0 | 1 {
+  for (const rule of rules(props.access_restrictions)) {
+    if (!onewayRule(rule) || !covers(rule, t)) continue;
+    return (rule.when as Record<string, unknown>).heading === 'backward' ? 1 : -1;
+  }
+  return 0;
+}
+
 function resolveLevel(props: Record<string, unknown>, t: number): number {
   const rule = activeRule(props.level_rules, t);
   const value = rule ? num(rule.value) : null;
@@ -186,6 +213,7 @@ export function splitSegment(
       widthM: resolveWidth(props, mid, cls, defaults),
       flags: flagValues(props, mid),
       level: resolveLevel(props, mid),
+      oneway: resolveOneway(props, mid),
     });
   }
   return out;
