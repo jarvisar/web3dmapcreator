@@ -71,8 +71,27 @@ describe('followMap', () => {
     expect([wet(10, -0.5), wet(10, 20.5), wet(80, -0.5)]).toEqual([true, true, true]);
     expect(wet(50, 10)).toBe(false);
     expect(wet(20.5, 10.5)).toBe(true);
-    // Past the width the survey decides: a map 5 off the bank leaves it alone.
-    expect(pointInMulti(10, -2, followMap(survey, [box(0, -5, 100, 25)], 3))).toBe(false);
+    // Past twice the width the survey decides: a map 7 off the bank leaves it alone.
+    expect(pointInMulti(10, -1, followMap(survey, [box(0, -7, 100, 27)], 3))).toBe(false);
+  });
+
+  it('runs from the map back to the survey without a jog where they part', () => {
+    // The map's bank drifts from 1 to 9 off the survey's along 80.
+    const survey = [box(0, 0, 100, 20)];
+    const map: Polygon[] = [[[[0, -1], [10, -1], [90, -9], [100, -9], [100, 21], [0, 21]]]];
+    const water = followMap(survey, map, 3);
+    // The bank's distance off the survey's, sampled along the river.
+    const bank = (x: number) => {
+      let y = 0;
+      while (y < 10 && pointInMulti(x, -y - 0.05, water)) y += 0.05;
+      return y;
+    };
+    expect(bank(12)).toBeCloseTo(1.2, 0);
+    expect(bank(80)).toBeLessThan(0.1);
+    let step = 0;
+    for (let x = 12; x < 80; x += 0.5) step = Math.max(step, Math.abs(bank(x + 0.5) - bank(x)));
+    // The map's own slope is 0.05 per 0.5, and switching at the width jumped 3.
+    expect(step).toBeLessThan(1);
   });
 });
 

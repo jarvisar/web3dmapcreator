@@ -760,7 +760,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
         unit="mm"
         help={
           lidar.waterMode === 'layer'
-            ? 'How far the water surface sits below its lowest bank.'
+            ? 'How far water left recessed (narrower than about 0.4 mm printed, or up on a roof) sits below its lowest bank. The layer itself sits 0.25 mm below its bank, like map models.'
             : 'How far rivers, lakes and the sea sit below their lowest bank, so they read as water in one colour.'
         }
       />
@@ -792,7 +792,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
         label="Water outlines from map data"
         checked={lidar.mapWater}
         onChange={(mapWater) => patchSettings('lidarModel', { mapWater })}
-        help="Uses mapped water from Overture. Thin layers and cuts follow its smooth shorelines where they agree with the survey to within 3 m, and water the survey has no returns for is filled in. Anything the survey saw standing in the water, like bridges, piers and boats, stays. Downloads a few MB of map data and adds a map data credit."
+        help="Uses mapped water from Overture. Thin layers and cuts follow its smooth shorelines where they agree with the survey to within 3 m, sea and lake beaches follow its coastline instead of the tide on the survey day, and water the survey has no returns for is filled in. Anything the survey saw standing in the water, like bridges, piers and boats, stays. Downloads a few MB of map data and adds a map data credit."
       />
       <NumberField
         label="Height scale"

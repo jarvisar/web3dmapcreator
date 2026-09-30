@@ -102,6 +102,19 @@ const RAISED_WATER_M = 3;
 // Not in the add-on: with mapped water, a hole this share inside it is water
 // even where the survey files water elsewhere (see findWater).
 const MAPPED_SHARE = 0.5;
+// Not in the add-on: along a sea or lake shore (`shore`), the survey's
+// waterline is the tide or lake level of the survey day, often tens of
+// metres off the map's coastline. Bare ground within BEACH_M of the water's
+// level inside the mapped sea or lake turns to water, and water outside any
+// mapped water with such ground behind it turns to land at the water's
+// level, as long as the whole strip is within SHORE_M of the other line
+// (see followShore).
+const BEACH_M = 1.5;
+const SHORE_M = 60;
+// Standing no more than this over its own ground returns, a cell is bare.
+const BARE_M = 0.3;
+// Share of the land behind a strip of water that has to be beach.
+const BEACH_SHARE = 0.8;
 /**
  * Where mapped water's outline runs within this of the survey's shore, cuts
  * follow the map's smooth line (model.ts), so the bank's height reaches this
@@ -130,6 +143,8 @@ export interface ComposeSettings {
   water: LidarWaterMode;
   /** Thickness of the water layer. The base goes under the floor beneath it. */
   waterLayerMm: number;
+  /** How far a water layer's surface sits below its lowest bank. Water left recessed takes `waterDepthMm`. */
+  layerDepthMm: number;
   /** Smallest body cut away, in m². Shared with map models. */
   cutMinAreaM2: number;
 }
@@ -145,6 +160,7 @@ export const DEFAULT_COMPOSE: ComposeSettings = {
   baseMm: 1.3,
   water: 'recess',
   waterLayerMm: 1,
+  layerDepthMm: 0.25,
   cutMinAreaM2: 5000,
 };
 
@@ -172,7 +188,8 @@ export interface ComposeResult {
  * scale only sizes cut water, like in the add-on. With `inside` (1 per cell
  * in the area's shape), only those cells decide where the base is and the
  * highest ground. `mapped` (1 per cell in mapped water) adds water the
- * survey missed (see findWater).
+ * survey missed (see findWater), and `shore` (the mapped sea and lakes)
+ * moves the waterline on beaches to the map's (see followShore).
  */
 export function compose(
   layers: SurfaceLayers,
@@ -183,6 +200,7 @@ export function compose(
   settings: Partial<ComposeSettings> = {},
   inside?: Uint8Array,
   mapped?: Uint8Array,
+  shore?: Uint8Array,
 ): ComposeResult {
   const s = { ...DEFAULT_COMPOSE, ...settings };
   const { nx, ny } = layers;
@@ -194,6 +212,7 @@ export function compose(
   const counts: Record<string, number> = {};
   const ground = groundGrid(layers, dx, counts);
   const { surface, water } = fillSurface(layers, ground, dx, dy, counts, mapped);
+  if (shore?.includes(1)) Object.assign(counts, followShore(layers, surface, ground, water, shore, mapped ?? shore, dx, dy));
   const canopy = treeMask(layers, surface, ground);
   for (let i = 0; i < n; i++) if (water[i]) canopy[i] = 0;
   counts.tree_cells = countSet(canopy);
@@ -256,20 +275,24 @@ export function compose(
   for (let i = 0; i < n; i++) base = Math.min(base, water[i] ? surface[i] : ground[i]);
   const within = inside && inside.includes(1) ? inside : null;
   const h = { base, te: s.terrainExaggeration, hs: s.heightScale, scaleZ, depth: s.waterDepthMm };
+  // A layer has its own colour, so it only needs to sit a little below the
+  // bank, like map models' water. Recessed water has to read by its depth.
+  const hl = { ...h, depth: s.layerDepthMm };
+  const scaled = (i: number) => (layer && cut[i] && water[i] ? hl : h);
   // Cut water leaves the surface, so the base goes under what's left, and
   // under the floor beneath a water layer.
   let lowest = Infinity;
   for (let i = 0; i < n; i++) {
     if (within && !within[i]) continue;
     if (!cut[i]) lowest = Math.min(lowest, heightMm(surface[i], ground[i], water[i], h));
-    else if (layer && water[i]) lowest = Math.min(lowest, heightMm(surface[i], ground[i], 1, h) - s.waterLayerMm);
+    else if (layer && water[i]) lowest = Math.min(lowest, heightMm(surface[i], ground[i], 1, hl) - s.waterLayerMm);
   }
   const shift = s.baseMm - lowest;
   let groundMax = -Infinity;
   const detail = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     if ((!within || within[i]) && !cut[i]) groundMax = Math.max(groundMax, heightMm(ground[i], ground[i], 0, h));
-    surface[i] = heightMm(surface[i], ground[i], water[i], h) + shift;
+    surface[i] = heightMm(surface[i], ground[i], water[i], scaled(i)) + shift;
     detail[i] = canopy[i] | skirt[i] ? TREE_DETAIL : 1;
   }
   let waterTop: Float32Array | null = null;
@@ -279,6 +302,132 @@ export function compose(
   }
   if (counts.cut_water_cells) bankHeights(surface, cut, nx, ny, BANK_RINGS + (mapped ? Math.ceil(MAP_EDGE_M / Math.min(dx, dy)) : 0));
   return { heights: surface, water, cut, waterTop, detail, groundMaxMm: groundMax + shift, counts };
+}
+
+/**
+ * The waterline on beaches moved to the map's coastline. Bare ground in the
+ * mapped sea or lake (`shore`) within BEACH_M of the water beside it becomes
+ * water at its level, and water outside all mapped water (`mapped`) becomes
+ * land at the water's level where most of the land behind it is such ground.
+ * Either only when the whole strip lies within SHORE_M of the other line, so
+ * a pier, a boat or a dock (none of them bare ground), a quay or a river
+ * running into the lake keeps the survey's shore. Returns the cells each way.
+ */
+function followShore(
+  layers: SurfaceLayers,
+  surface: Float32Array,
+  ground: Float32Array,
+  water: Uint8Array,
+  shore: Uint8Array,
+  mapped: Uint8Array,
+  dx: number,
+  dy: number,
+): { shore_water_cells: number; shore_land_cells: number } {
+  const { nx, ny } = layers;
+  const n = nx * ny;
+  const reach = SHORE_M / Math.min(dx, dy);
+  const bare = (i: number, level: number) => {
+    const g = layers.ground[i];
+    return g === g && surface[i] - g < BARE_M && surface[i] < level + BEACH_M && surface[i] > level - BEACH_M;
+  };
+  const neighbours = (i: number, visit: (j: number) => void) => {
+    const x = i % nx;
+    const y = (i - x) / nx;
+    for (let b = -1; b <= 1; b++) {
+      for (let a = -1; a <= 1; a++) {
+        if ((a || b) && x + a >= 0 && x + a < nx && y + b >= 0 && y + b < ny) visit(i + b * nx + a);
+      }
+    }
+  };
+  // Water that reaches into the mapped sea or lake is on the coast.
+  const bodies = label(water, nx, ny);
+  const coastal = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (water[i] && shore[i]) coastal[bodies[i]] = 1;
+  const onCoast = (i: number) => water[i] === 1 && coastal[bodies[i]] === 1;
+
+  // Beach in the map's water: out from the coast's water over bare ground,
+  // each cell taking the level of the water it was reached from.
+  const level = new Float32Array(n).fill(NaN);
+  const steps = new Float32Array(n).fill(Infinity);
+  let queue: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (!onCoast(i)) continue;
+    neighbours(i, (j) => {
+      if (water[j] || !shore[j] || steps[j] <= 1 || !bare(j, surface[i])) return;
+      steps[j] = 1;
+      level[j] = surface[i];
+      queue.push(j);
+    });
+  }
+  for (let at = 0; at < queue.length; at++) {
+    const i = queue[at];
+    neighbours(i, (j) => {
+      if (water[j] || !shore[j] || steps[j] <= steps[i] + 1 || !bare(j, level[i])) return;
+      steps[j] = steps[i] + 1;
+      level[j] = level[i];
+      queue.push(j);
+    });
+  }
+  const beach = new Uint8Array(n);
+  for (const i of queue) beach[i] = 1;
+  const strips = label(beach, nx, ny);
+  const far = new Uint8Array(n);
+  for (const i of queue) if (steps[i] > reach) far[strips[i]] = 1;
+  let wet = 0;
+  for (const i of queue) {
+    if (!beach[i] || far[strips[i]]) continue;
+    beach[i] = 0;
+    water[i] = 1;
+    surface[i] = level[i];
+    wet++;
+  }
+
+  // Water out of the map's: strips of the coast's water outside all mapped
+  // water, near enough to the sea or lake, with beach behind them.
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (onCoast(i) && !mapped[i]) out[i] = 1;
+  const pieces = label(out, nx, ny);
+  steps.fill(Infinity);
+  queue = [];
+  for (let i = 0; i < n; i++) {
+    if (!out[i]) continue;
+    neighbours(i, (j) => {
+      if (steps[i] > 1 && water[j] && shore[j]) steps[i] = 1;
+    });
+    if (steps[i] === 1) queue.push(i);
+  }
+  for (let at = 0; at < queue.length; at++) {
+    const i = queue[at];
+    neighbours(i, (j) => {
+      if (!out[j] || steps[j] <= steps[i] + 1) return;
+      steps[j] = steps[i] + 1;
+      queue.push(j);
+    });
+  }
+  const ids = compactLabels(pieces);
+  const worst = new Float32Array(ids);
+  const behind = new Int32Array(ids);
+  const sandy = new Int32Array(ids);
+  for (let i = 0; i < n; i++) {
+    if (!out[i]) continue;
+    const p = pieces[i];
+    worst[p] = Math.max(worst[p], steps[i]);
+    neighbours(i, (j) => {
+      if (water[j]) return;
+      behind[p]++;
+      if (bare(j, surface[i])) sandy[p]++;
+    });
+  }
+  let dry = 0;
+  for (let i = 0; i < n; i++) {
+    if (!out[i]) continue;
+    const p = pieces[i];
+    if (!(worst[p] <= reach && behind[p] > 0 && sandy[p] >= BEACH_SHARE * behind[p])) continue;
+    water[i] = 0;
+    ground[i] = surface[i];
+    dry++;
+  }
+  return { shore_water_cells: wet, shore_land_cells: dry };
 }
 
 /**

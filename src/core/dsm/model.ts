@@ -14,6 +14,7 @@ import { rowCrossings } from '../geometry/scanline';
 import type { CapSolid, Layer, PrismSolid } from '../geometry/solid';
 import { clipTin, type Tin } from '../geometry/tinclip';
 import { isPrintableWater } from '../pipeline/classify';
+import { WATER_DROP_MM } from '../pipeline/water';
 import { Progress } from '../pipeline/context';
 import type { ModelSpec } from '../pipeline/generate';
 import { projectPolygons, type SourceFeature } from '../pipeline/source';
@@ -57,6 +58,8 @@ const OUTLINE_CELLS = 1.5;
 // Thick parts grow by this before they're taken out of a shape, so float
 // rounding along their edges leaves no slivers behind.
 const SEAM_MM = 0.005;
+// Steps a cut takes from the map's shoreline back to the survey's (followMap).
+const TAPER_STEPS = 4;
 
 export interface SurfaceModelInput {
   area: AreaSpec;
@@ -121,6 +124,10 @@ function cellsIn(polygons: Polygon[], grid: CellGrid): Uint8Array {
   return out;
 }
 
+// Water whose shore moves with the tide or the lake's level (followShore in compose.ts).
+const COAST = new Set(['ocean', 'sea', 'bay', 'lagoon', 'strait', 'lake']);
+const coastal = (feature: SourceFeature) => COAST.has(String(feature.props.subtype ?? '')) || COAST.has(String(feature.props.class ?? ''));
+
 /** Mapped water over the grid, in model mm. Pools and fountains aren't open water (as for map models). */
 function mappedWater(features: SourceFeature[], area: AreaSpec, mmPerMetre: number, grid: CellGrid): MultiPolygon {
   const projection = new Projection(area.center, area.rotationDeg, mmPerMetre);
@@ -138,6 +145,10 @@ function mappedWater(features: SourceFeature[], area: AreaSpec, mmPerMetre: numb
  * does water the map doesn't have. Only the shoreline moves: the map's
  * islands and ponds under twice `width` across (mapped pilings, mostly) are
  * left to the survey too.
+ *
+ * Between `width` and twice that apart, the line runs from one to the other
+ * in TAPER_STEPS steps. Switching at `width` left a jog of that size in
+ * the map's clean line wherever the two parted.
  */
 export function followMap(survey: MultiPolygon, water: MultiPolygon, width: number): MultiPolygon {
   if (!survey.length || !water.length) return survey;
@@ -146,12 +157,23 @@ export function followMap(survey: MultiPolygon, water: MultiPolygon, width: numb
   for (const polygon of water) {
     if (Math.abs(ringArea(polygon[0])) >= small) map.push(polygon.filter((ring, k) => !k || Math.abs(ringArea(ring)) >= small));
   }
-  const thin = (mp: MultiPolygon) => difference(mp, offsetPolygons(offsetPolygons(mp, -width / 2, 'miter'), width / 2 + SEAM_MM, 'miter'));
-  const add = intersection(thin(difference(map, survey)), offsetPolygons(survey, width, 'miter'));
-  const drop = thin(difference(survey, map));
+  // The parts of mp narrower than w.
+  const thin = (mp: MultiPolygon, w: number) => difference(mp, offsetPolygons(offsetPolygons(mp, -w / 2, 'miter'), w / 2 + SEAM_MM, 'miter'));
+  const outside = difference(map, survey);
+  const inside = difference(survey, map);
+  const add: MultiPolygon[] = [];
+  const drop: MultiPolygon[] = [];
+  for (let step = 1; step <= TAPER_STEPS; step++) {
+    // Up to `reach` from the survey's line where the two are at most `apart`
+    // apart: all of a gap under `width`, none of one over twice that.
+    const reach = (width * step) / TAPER_STEPS;
+    const apart = width + Math.sqrt(width * (width - reach));
+    add.push(intersection(thin(outside, apart), offsetPolygons(survey, reach, 'miter')));
+    drop.push(difference(thin(inside, apart), offsetPolygons(survey, -reach, 'miter')));
+  }
   // The offsets leave edges a Clipper unit long where the pieces meet, and
   // a print section cut beside one left prisms the mesher couldn't close.
-  return simplifyPolygons(difference(union(survey, add), drop), SEAM_MM);
+  return simplifyPolygons(difference(union(survey, ...add), union(...drop)), SEAM_MM);
 }
 
 /**
@@ -268,6 +290,7 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
   const inside = rectangle ? undefined : cellsIn([[crop]], cells);
   const mapOutline = input.mapWater?.length ? mappedWater(input.mapWater, area, mmPerMetre, cells) : null;
   const mapped = mapOutline ? cellsIn(mapOutline, cells) : undefined;
+  const coast = input.mapWater?.some(coastal) ? cellsIn(mappedWater(input.mapWater.filter(coastal), area, mmPerMetre, cells), cells) : undefined;
   const lidar = settings.lidarModel;
   const result = compose(
     layers,
@@ -285,10 +308,12 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
       baseMm: settings.terrain.baseThicknessMm,
       water: lidar.waterMode,
       waterLayerMm: settings.water.thicknessMm,
+      layerDepthMm: WATER_DROP_MM,
       cutMinAreaM2: settings.water.cutMinAreaM2,
     },
     inside,
     mapped,
+    coast,
   );
   for (const [key, value] of Object.entries(result.counts)) stats[`lidar_model_${key}`] = value;
   const cell = Math.min(dx, dy);

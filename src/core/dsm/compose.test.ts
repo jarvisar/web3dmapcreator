@@ -300,6 +300,47 @@ describe('water', () => {
 });
 
 // Not in the add-on.
+describe('mapped coastline', () => {
+  it('moves the waterline on a beach to the map, but keeps a pier and a river', () => {
+    const nx = 120;
+    const layers = blank(100, nx);
+    const level = GROUND - 1;
+    const lake = (r0: number, r1: number, c0: number, c1: number) => {
+      for (const layer of [layers.count, layers.water]) fill(layer, nx, r0, r1, c0, c1, 2);
+      for (const layer of [layers.top, layers.solid, layers.waterZ]) fill(layer, nx, r0, r1, c0, c1, level);
+      fill(layers.ground, nx, r0, r1, c0, c1, NaN);
+    };
+    const beach = (r0: number, r1: number, c0: number, c1: number) => {
+      for (const layer of [layers.top, layers.solid, layers.ground]) fill(layer, nx, r0, r1, c0, c1, level + 0.3);
+    };
+    // The mapped lake is rows under 40. The survey saw it 5 m further up the beach in the west,
+    // 5 m further out in the middle, with a pier, and a river running north in the east.
+    lake(0, 50, 0, 40);
+    beach(50, 60, 0, 40);
+    lake(0, 30, 40, nx);
+    beach(30, 40, 40, 90);
+    fill(layers.top, nx, 20, 40, 60, 64, level + 2.5);
+    fill(layers.solid, nx, 20, 40, 60, 64, level + 2.5);
+    fill(layers.ground, nx, 20, 40, 60, 64, NaN);
+    fill(layers.water, nx, 20, 30, 60, 64, 0);
+    lake(30, 100, 90, 100);
+    // A seawall past the river, inside the mapped lake.
+    for (const layer of [layers.top, layers.solid, layers.ground]) fill(layer, nx, 30, 40, 100, nx, level + 3);
+    const shore = shape(nx, 100, (r) => r < 40);
+    const mapped = shape(nx, 100, (r, c) => r < 40 || (c >= 90 && c < 100));
+    const result = compose(layers, CELL, CELL, 1, 1, {}, undefined, mapped, shore);
+    const water = (r: number, c: number) => at(result.water, nx, r, c);
+    expect([water(45, 20), water(55, 20), water(35, 50), water(35, 80)]).toEqual([0, 0, 1, 1]);
+    expect([water(30, 62), water(35, 62), water(70, 95), water(35, 110)]).toEqual([0, 0, 1, 0]);
+    expect(result.counts.shore_water_cells).toBe(10 * 46);
+    expect(result.counts.shore_land_cells).toBe(10 * 40);
+    // The strip of the lake taken for beach is level with the water, above the recess.
+    expect(at(result.heights, nx, 45, 20)).toBeGreaterThan(at(result.heights, nx, 10, 20));
+    const without = compose(layers, CELL, CELL, 1, 1, {}, undefined, mapped);
+    expect([at(without.water, nx, 45, 20), at(without.water, nx, 35, 50)]).toEqual([1, 0]);
+  });
+});
+
 describe('mapped water', () => {
   /** A river filed as water, a bridge, and past it a stretch with no returns at all, the Petit Bras's way. */
   function river(): SurfaceLayers {
@@ -376,11 +417,13 @@ describe('water layer', () => {
     // The boat stays, where a cut away through the base would take it.
     expect(at(result.cut, 80, 4, 35)).toBe(0);
     expect(at(compose(layers, CELL, CELL, 1, 1, { ...options, water: 'cut', cutMinAreaM2: 100 }, undefined).cut, 80, 4, 35)).toBe(0);
-    // The water surface sits where the recess did, over a floor 0.5 mm down on the base.
-    const top = at(recessed.heights, 80, 4, 10) + 0.5;
-    expect(at(result.waterTop!, 80, 4, 10)).toBeCloseTo(top, 5);
+    // The water surface sits 0.25 mm below the bank rather than the recess's 1 mm, over a floor 0.5 mm down,
+    // and the base goes under the floor or the water left recessed, whichever is lower.
+    const drop = (r: ReturnType<typeof compose>, water: ArrayLike<number>) => at(r.heights, 80, 50, 5) - at(water, 80, 4, 10);
+    expect(drop(recessed, recessed.heights) - drop(result, result.waterTop!)).toBeCloseTo(0.75, 5);
+    expect(at(result.waterTop!, 80, 4, 10) - 0.5).toBeGreaterThan(2 - 1e-5);
+    expect(Math.min(...result.heights)).toBeCloseTo(2, 5);
     expect(at(result.waterTop!, 80, 50, 5)).toBeNaN();
-    expect(top - 0.5).toBeCloseTo(2, 5);
     expect(compose(city().layers, CELL, CELL, 1, 1, options).waterTop).toBeNull();
   });
 });

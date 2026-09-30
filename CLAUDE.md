@@ -303,11 +303,16 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   `lidarModel.mapWater` it only fills cells without returns (`mappedHoles`,
   and growth into empty mapped cells), never a hole read as a dark roof, and
   moves cut and layer shorelines onto its outline where that's within
-  `MAP_EDGE_M` of the survey's (`followMap`). The survey decides wherever
-  they part by more. Keep it that conservative: taking returns at the
-  water's level took floating docks and boats, and mapped pilings under
-  6 m across became columns at bridge deck height until small map islands
-  were ignored.
+  `MAP_EDGE_M` of the survey's (`followMap`), easing back to the survey's
+  line by twice that. The survey decides wherever they part by more. Keep it
+  that conservative: taking returns at the water's level took floating docks
+  and boats, and mapped pilings under 6 m across became columns at bridge
+  deck height until small map islands were ignored. The one exception is
+  sea and lake beaches (`followShore`): only bare ground within `BEACH_M` of
+  the water, or survey water outside all mapped water with such ground
+  behind it, and only strips wholly within `SHORE_M` of the map's line.
+- A water layer sits `WATER_DROP_MM` (0.25 mm) under its bank like map
+  models' water. `waterDepthMm` is for recessed water only.
 
 SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.md`):
 

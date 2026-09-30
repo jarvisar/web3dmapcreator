@@ -160,7 +160,7 @@ export interface ModelSettings {
     trees: TreeStyle;
     /** Keep cars, fences, benches and whatever else stands under 2 m. Off flattens them. Poles, crane jibs and wires go either way. */
     keepClutter: boolean;
-    /** How far water sits below its lowest bank. */
+    /** How far recessed water sits below its lowest bank. A water layer sits 0.25 mm below, like map models'. */
     waterDepthMm: number;
     waterMode: LidarWaterMode;
     /** Cut water along mapped water's outline where it agrees with the survey, and fill in water where the survey has no returns. */
