@@ -52,6 +52,21 @@ const SPECK_M = 1;
 const SURFACE_M = 0.5;
 const SURFACE_REACH = 3;
 const UNFILED_SHARE = 0.5;
+// And into ground within LEVEL_M of its level where everything within
+// FLAT_REACH_M is that flat: water filed as ground. Cook County's 2017
+// survey files a tile of Lake Michigan as ground at the lake's level. A
+// beach or a bank rises more than that within a few metres.
+const LEVEL_M = 0.2;
+const FLAT_REACH_M = 8;
+// Without clutter, land standing alone in water smaller than this, no longer
+// than BOAT_M, with half of it no higher than BOAT_HIGH_M over the water (a
+// mast doesn't count), ground returns in under half of it and mostly not
+// filed as building, is a boat, a buoy or a piling and goes with the water.
+// A detached breakwater is longer, and a bridge house or a scrap of building
+// cut off by the river stays as it was.
+const BOAT_M2 = 1000;
+const BOAT_M = 80;
+const BOAT_HIGH_M = 6;
 // A large hole that isn't water, with this share of its shore on the ground,
 // is street in a tower's scan shadow. With less, it's a dark roof.
 const SHADOW_SHARE = 0.5;
@@ -224,6 +239,7 @@ export function compose(
   const ground = groundGrid(layers, dx, counts);
   const { surface, water } = fillSurface(layers, ground, dx, dy, counts, mapped);
   if (shore?.includes(1)) Object.assign(counts, followShore(layers, surface, ground, water, shore, mapped ?? shore, dx, dy));
+  if (s.removeClutter) counts.boat_cells = clearBoats(layers, surface, water, dx, dy);
   const canopy = treeMask(layers, surface, ground);
   for (let i = 0; i < n; i++) if (water[i]) canopy[i] = 0;
   counts.tree_cells = countSet(canopy);
@@ -313,6 +329,65 @@ export function compose(
   }
   if (counts.cut_water_cells) bankHeights(surface, cut, nx, ny, BANK_RINGS + (mapped ? Math.ceil(MAP_EDGE_M / Math.min(dx, dy)) : 0));
   return { heights: surface, water, cut, waterTop, detail, groundMaxMm: groundMax + shift, counts };
+}
+
+/**
+ * Boats, buoys and pilings (see BOAT_M2). They become water at the lowest
+ * level beside them. Returns the cells.
+ */
+function clearBoats(layers: SurfaceLayers, surface: Float32Array, water: Uint8Array, dx: number, dy: number): number {
+  const { nx, ny } = layers;
+  const n = nx * ny;
+  const land = new Uint8Array(n);
+  for (let i = 0; i < n; i++) land[i] = water[i] ^ 1;
+  const pieces = label(land, nx, ny);
+  const count = compactLabels(pieces);
+  const cells = new Int32Array(count);
+  const grounded = new Int32Array(count);
+  const returns = new Float64Array(count);
+  const filed = new Float64Array(count);
+  const tops: number[][] = Array.from({ length: count }, () => []);
+  const x0 = new Int32Array(count).fill(nx);
+  const x1 = new Int32Array(count).fill(-1);
+  const y0 = new Int32Array(count).fill(ny);
+  const y1 = new Int32Array(count).fill(-1);
+  const level = new Float64Array(count).fill(Infinity);
+  const edge = new Uint8Array(count);
+  for (let i = 0; i < n; i++) {
+    const p = pieces[i];
+    if (p < 0) continue;
+    const x = i % nx;
+    const y = (i - x) / nx;
+    cells[p]++;
+    if (layers.ground[i] === layers.ground[i]) grounded[p]++;
+    returns[p] += layers.count[i];
+    filed[p] += layers.building[i];
+    if (cells[p] <= BOAT_M2 / (dx * dy) && layers.top[i] === layers.top[i]) tops[p].push(layers.top[i]);
+    x0[p] = Math.min(x0[p], x);
+    x1[p] = Math.max(x1[p], x);
+    y0[p] = Math.min(y0[p], y);
+    y1[p] = Math.max(y1[p], y);
+    if (x === 0 || y === 0 || x === nx - 1 || y === ny - 1) edge[p] = 1;
+    for (const j of [x > 0 ? i - 1 : -1, x + 1 < nx ? i + 1 : -1, y > 0 ? i - nx : -1, y + 1 < ny ? i + nx : -1]) {
+      if (j >= 0 && water[j]) level[p] = Math.min(level[p], surface[j]);
+    }
+  }
+  const boat = new Uint8Array(count);
+  for (let p = 0; p < count; p++) {
+    const long = Math.max((x1[p] - x0[p] + 1) * dx, (y1[p] - y0[p] + 1) * dy);
+    const middle = tops[p].sort((a, b) => a - b)[tops[p].length >> 1];
+    const small = cells[p] * dx * dy <= BOAT_M2 && long <= BOAT_M && !(middle - level[p] > BOAT_HIGH_M);
+    boat[p] = !edge[p] && small && 2 * grounded[p] < cells[p] && 2 * filed[p] < returns[p] && level[p] < Infinity ? 1 : 0;
+  }
+  let cleared = 0;
+  for (let i = 0; i < n; i++) {
+    const p = pieces[i];
+    if (p < 0 || !boat[p]) continue;
+    water[i] = 1;
+    surface[i] = level[p];
+    cleared++;
+  }
+  return cleared;
 }
 
 /**
@@ -811,6 +886,14 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
     const usual = localWet[j] > 0 ? localReturns[j] / localWet[j] : 1;
     return layers.water[j] === 0 && g !== g && !layers.building[j] && !layers.vegetation[j] && count[j] <= 2 * Math.max(1, usual) && above <= SURFACE_M && above >= -GROW_M;
   };
+  // How far the tops within FLAT_REACH_M spread, holes left out.
+  const reach = Math.max(1, Math.round(FLAT_REACH_M / Math.min(dx, dy)));
+  const high = windowMax(Float32Array.from(top, (z) => (z === z ? z : -Infinity)), nx, ny, reach);
+  const low = windowMin(Float32Array.from(top, (z) => (z === z ? z : Infinity)), nx, ny, reach);
+  const filedAsGround = (j: number, z: number) => {
+    const g = layers.ground[j];
+    return g === g && top[j] - g < LEVEL_M && Math.abs(top[j] - z) <= LEVEL_M && high[j] - low[j] <= LEVEL_M;
+  };
   let grown = 0;
   const queue = new Int32Array(n);
   const open = new Uint8Array(regions);
@@ -826,7 +909,7 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
       const j = d === 0 ? (x > 0 ? i - 1 : -1) : d === 1 ? (x + 1 < nx ? i + 1 : -1) : d === 2 ? i - nx : i + nx;
       if (j < 0 || j >= n || water[j]) continue;
       const empty = mapped !== undefined && mapped[j] === 1 && count[j] === 0;
-      if (!empty && !(layers.water[j] > 0 && Math.abs(top[j] - z) <= GROW_M) && !(open[r] && surface(j, z))) continue;
+      if (!empty && !(layers.water[j] > 0 && Math.abs(top[j] - z) <= GROW_M) && !(open[r] && surface(j, z)) && !filedAsGround(j, z)) continue;
       if (z - ground[j] > RAISED_WATER_M) continue;
       water[j] = 1;
       region[j] = r;

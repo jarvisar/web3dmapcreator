@@ -290,7 +290,7 @@ describe('water', () => {
     fill(layers.water, nx, 20, 50, 0, nx, 2);
     fill(layers.top, nx, 30, 40, 40, 60, GROUND - 1);
     fill(layers.solid, nx, 30, 40, 40, 60, GROUND - 1);
-    const result = compose(layers, CELL, CELL, 1, 1);
+    const result = compose(layers, CELL, CELL, 1, 1, { removeClutter: false });
     expect(result.counts.water_bodies).toBe(1);
     expect(at(result.water, nx, 45, 10)).toBe(1);
     expect(at(result.water, nx, 35, 50)).toBe(0);
@@ -300,6 +300,55 @@ describe('water', () => {
 });
 
 // Not in the add-on.
+describe('water filed as something else', () => {
+  it('takes a stretch of lake filed as ground at its level, but not a beach', () => {
+    const nx = 120;
+    const layers = blank(100, nx);
+    const level = GROUND - 1;
+    // A lake over rows under 60, its east third filed as ground at its level,
+    // and a beach rising 1 in 20 from its south shore.
+    for (const layer of [layers.count, layers.water]) fill(layer, nx, 0, 60, 0, 80, 6);
+    for (const layer of [layers.top, layers.solid, layers.waterZ]) fill(layer, nx, 0, 60, 0, 80, level);
+    fill(layers.ground, nx, 0, 60, 0, 80, NaN);
+    for (const layer of [layers.top, layers.solid, layers.ground]) fill(layer, nx, 0, 60, 80, nx, level + 0.05);
+    for (let r = 60; r < 100; r++) for (const layer of [layers.top, layers.solid, layers.ground]) fill(layer, nx, r, r + 1, 0, nx, level + 0.05 * CELL * (r - 59));
+    const result = compose(layers, CELL, CELL, 1, 1, { removeClutter: false });
+    expect([at(result.water, nx, 30, 100), at(result.water, nx, 30, 40)]).toEqual([1, 1]);
+    expect([at(result.water, nx, 61, 40), at(result.water, nx, 64, 100)]).toEqual([0, 0]);
+    expect(result.counts.water_bodies).toBe(1);
+  });
+
+  it('takes boats and pilings with the clutter, not a breakwater', () => {
+    const nx = 200;
+    const layers = blank(100, nx);
+    const level = GROUND - 1;
+    for (const layer of [layers.count, layers.water]) fill(layer, nx, 0, 80, 0, nx, 6);
+    for (const layer of [layers.top, layers.solid, layers.waterZ]) fill(layer, nx, 0, 80, 0, nx, level);
+    fill(layers.ground, nx, 0, 80, 0, nx, NaN);
+    // A 10 x 3 m boat and a 1 m piling, standing alone, and a detached breakwater 90 m long.
+    const stand = (r0: number, r1: number, c0: number, c1: number, z: number) => {
+      for (const layer of [layers.top, layers.solid]) fill(layer, nx, r0, r1, c0, c1, z);
+      fill(layers.water, nx, r0, r1, c0, c1, 0);
+    };
+    stand(30, 36, 20, 40, level + 2);
+    stand(50, 52, 60, 62, level + 3);
+    stand(10, 14, 5, 185, level + 2);
+    // A mast on the boat, and what stays: a scrap filed as building and a house 12 m up.
+    stand(33, 34, 30, 31, level + 15);
+    stand(60, 66, 100, 110, level + 3);
+    fill(layers.building, nx, 60, 66, 100, 110, 5);
+    stand(60, 66, 140, 150, level + 12);
+    const kept = compose(layers, CELL, CELL, 1, 1, { removeClutter: false });
+    expect([at(kept.water, nx, 33, 30), at(kept.water, nx, 51, 61)]).toEqual([0, 0]);
+    const cleared = compose(layers, CELL, CELL, 1, 1, { removeClutter: true });
+    expect([at(cleared.water, nx, 33, 30), at(cleared.water, nx, 51, 61), at(cleared.water, nx, 12, 100)]).toEqual([1, 1, 0]);
+    expect([at(cleared.water, nx, 63, 105), at(cleared.water, nx, 63, 145)]).toEqual([0, 0]);
+    expect(at(cleared.heights, nx, 63, 145)).toBeCloseTo(at(kept.heights, nx, 63, 145), 6);
+    expect(cleared.counts.boat_cells).toBe(6 * 20 + 2 * 2);
+    expect(at(cleared.heights, nx, 33, 30)).toBeCloseTo(at(cleared.heights, nx, 60, 30), 6);
+  });
+});
+
 describe('mapped coastline', () => {
   it('moves the waterline on a beach to the map, but keeps a pier and a river', () => {
     const nx = 120;
@@ -442,14 +491,15 @@ describe('water layer', () => {
     fill(layers.solid, 80, 2, 6, 30, 40, GROUND);
     fill(layers.water, 80, 2, 6, 30, 40, 0);
     fill(layers.count, 80, 2, 6, 30, 40, 6);
-    const options = { baseMm: 2, waterDepthMm: 1, cutMinAreaM2: 5000 };
+    const options = { baseMm: 2, waterDepthMm: 1, cutMinAreaM2: 5000, removeClutter: false };
     const recessed = compose(city().layers, CELL, CELL, 1, 1, options);
     const result = compose(layers, CELL, CELL, 1, 1, { ...options, water: 'layer', waterLayerMm: 0.5 });
     expect(result.counts.cut_water_cells).toBeGreaterThan(500);
     expect([at(result.cut, 80, 4, 10), at(result.cut, 80, 4, 70)]).toEqual([1, 1]);
-    // The boat stays, where a cut away through the base would take it.
+    // The boat stays, unless clutter goes.
     expect(at(result.cut, 80, 4, 35)).toBe(0);
     expect(at(compose(layers, CELL, CELL, 1, 1, { ...options, water: 'cut', cutMinAreaM2: 100 }, undefined).cut, 80, 4, 35)).toBe(0);
+    expect(at(compose(layers, CELL, CELL, 1, 1, { ...options, removeClutter: true, water: 'layer' }).cut, 80, 4, 35)).toBe(1);
     // The water surface sits 0.25 mm below the bank rather than the recess's 1 mm, over a floor 0.5 mm down,
     // and the base goes under the floor or the water left recessed, whichever is lower.
     const drop = (r: ReturnType<typeof compose>, water: ArrayLike<number>) => at(r.heights, 80, 50, 5) - at(water, 80, 4, 10);

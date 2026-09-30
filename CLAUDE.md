@@ -262,7 +262,10 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   its level and takes in specks (`GROW_M`, `takeSpecks`, for San Francisco's
   2023 survey), a body whose edge is mostly unclassified water-level cells
   grows over those too (`SURFACE_M`, `UNFILED_SHARE`, for New York's
-  harbour), and cut water takes its bank's height for `BANK_RINGS` rings,
+  harbour) and over dead flat ground at its level (`LEVEL_M`, a tile of
+  Lake Michigan filed as ground), without clutter small pieces standing
+  alone in water go as boats (`clearBoats`, never mostly building or tall),
+  and cut water takes its bank's height for `BANK_RINGS` rings,
   then the TIN is clipped along it (the add-on drops cut cells to the bottom
   before meshing). The app defaults to natural crowns (gaps closed, a 3 x 3
   mean over canopy) and keeps what's under 2 m. Slivers (wires, jibs,

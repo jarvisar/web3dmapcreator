@@ -160,7 +160,7 @@ export interface ModelSettings {
     detailMm: number;
     /** Crowns as scanned with speckle softened, rounded into smooth masses, or off with the ground or roof under them in their place. */
     trees: TreeStyle;
-    /** Keep cars, fences, benches and whatever else stands under 2 m. Off flattens them. Poles, crane jibs and wires go either way. */
+    /** Keep cars, fences, benches and whatever else stands under 2 m, and boats. Off flattens them and turns boats into water. Poles, crane jibs and wires go either way. */
     keepClutter: boolean;
     /** How far recessed water sits below its lowest bank. A water layer sits 0.25 mm below, like map models'. */
     waterDepthMm: number;

@@ -744,7 +744,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
         label="Keep cars and clutter"
         checked={lidar.keepClutter}
         onChange={(keepClutter) => patchSettings('lidarModel', { keepClutter })}
-        help="Keeps cars, fences, benches and anything else under 2 m. They're small bumps at most scales. Off flattens them. Poles, crane jibs and wires too thin to print go either way."
+        help="Keeps cars, fences, benches and anything else under 2 m, and boats standing in the water. They're small bumps at most scales. Off flattens them and turns boats, buoys and pilings into water. Poles, crane jibs and wires too thin to print go either way."
       />
       <SelectField
         label="Water"
