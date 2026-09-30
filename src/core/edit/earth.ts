@@ -15,7 +15,7 @@
 
 import { ClipSet, difference, differenceSet, dropSmall, intersection, multiBounds, offsetPolygons, ringBounds, union, type Box } from '../geometry/polygon';
 import type { PrismSolid } from '../geometry/solid';
-import type { EditContext, EditWater } from '../pipeline/generate';
+import { GROUND_SPECK_MM2, type EditContext, type EditWater } from '../pipeline/generate';
 import type { ModelSettings } from '../settings';
 import type { MultiPolygon, Polygon } from '../types';
 
@@ -165,7 +165,7 @@ export class EarthModel {
       let ground = ctx.terrain.ground;
       if (keptBox !== null || input.filled.size > 0) {
         const open = wet.flatMap((body) => body.polygons);
-        ground = dropSmall(open.length ? difference(this.crop, union(open)) : this.crop, 0.01);
+        ground = dropSmall(open.length ? difference(this.crop, union(open)) : this.crop, GROUND_SPECK_MM2);
       }
       const drape = hf.flat ? 0 : hf.step;
       const lattice = hf.flat ? undefined : hf.lattice;

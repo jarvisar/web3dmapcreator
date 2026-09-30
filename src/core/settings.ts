@@ -63,6 +63,12 @@ export interface ModelSettings {
     /** Water at least this large is levelled from its shores (and cut through with 'through'); smaller water is a surface sheet. */
     cutMinAreaM2: number;
     skipPonds: boolean;
+    /** Fill piers, breakwaters and islands narrower than `skipThinMm` with water, so they don't leave a slot in it. */
+    skipThinGround: boolean;
+    skipThinMm: number;
+    /** Widen what's left narrower than `widenThinMm` into the water around it. */
+    widenThinGround: boolean;
+    widenThinMm: number;
   };
   land: {
     enabled: boolean;
@@ -189,6 +195,11 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     thicknessMm: 1,
     cutMinAreaM2: 5000,
     skipPonds: false,
+    // 0.42 mm is a line from a 0.4 mm nozzle.
+    skipThinGround: false,
+    skipThinMm: 0.42,
+    widenThinGround: false,
+    widenThinMm: 0.42,
   },
   land: {
     enabled: true,
@@ -492,7 +503,7 @@ type SettingsRanges = {
 const RANGES: SettingsRanges = {
   scale: { mmPerMetre: [0.001, 2], fitMm: [20, 2000] },
   terrain: { exaggeration: [0, 10], smoothing: [0, 4, true], resolution: [16, 1024, true], baseThicknessMm: [0.1, 20] },
-  water: { thicknessMm: [0.1, 5], cutMinAreaM2: [0, 1e6, true] },
+  water: { thicknessMm: [0.1, 5], cutMinAreaM2: [0, 1e6, true], skipThinMm: [0.05, 3], widenThinMm: [0.05, 3] },
   land: { riseMm: [0.02, 3], embedMm: [0.02, 1], beachWidthMm: [0.1, 5] },
   roads: { thicknessMm: [0.05, 5], minWidthMm: [0.05, 5], maxWidthMm: [0.1, 5], gapMm: [0, 2] },
   bridges: {

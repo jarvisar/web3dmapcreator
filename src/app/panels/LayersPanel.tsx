@@ -151,6 +151,40 @@ function WaterOptions({ water }: { water: ModelSettings['water'] }) {
         onChange={(skipPonds) => patchSettings('water', { skipPonds })}
         help="Leave out mapped ponds, fountains, basins and small unnamed water entirely. Otherwise they sit just below their lowest bank, at the water thickness."
       />
+      <CheckField
+        label="Skip thin ground in water"
+        checked={water.skipThinGround}
+        onChange={(skipThinGround) => patchSettings('water', { skipThinGround })}
+        help="Fill piers, breakwaters and islands narrower than this with water. Ground thinner than a nozzle line doesn't print and leaves a hole in the water. Only ground with water on both sides counts, so a quay along the shore stays."
+      />
+      <NumberField
+        label="Skip narrower than"
+        value={water.skipThinMm}
+        onChange={(skipThinMm) => patchSettings('water', { skipThinMm })}
+        {...modelFieldRange('water', 'skipThinMm')}
+        step={0.01}
+        decimals={2}
+        unit="mm"
+        disabled={!water.skipThinGround}
+        help="0.42 mm is one line from a 0.4 mm nozzle, about 6 m at the default scale."
+      />
+      <CheckField
+        label="Widen thin ground in water"
+        checked={water.widenThinGround}
+        onChange={(widenThinGround) => patchSettings('water', { widenThinGround })}
+        help="Widen piers, breakwaters and islands narrower than this into the water around them, so they print. With skipping on too, anything under the skip width goes and the rest is widened."
+      />
+      <NumberField
+        label="Widen to"
+        value={water.widenThinMm}
+        onChange={(widenThinMm) => patchSettings('water', { widenThinMm })}
+        {...modelFieldRange('water', 'widenThinMm')}
+        step={0.01}
+        decimals={2}
+        unit="mm"
+        disabled={!water.widenThinGround}
+        help="0.42 mm is one line from a 0.4 mm nozzle."
+      />
     </>
   );
 }

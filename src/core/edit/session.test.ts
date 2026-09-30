@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { filamentUse, preparePlates } from '../export/common';
 import { Projection } from '../geo/projection';
-import { bufferLines, difference, intersection, multiArea, pointInMulti, pointInPolygon, polygonArea } from '../geometry/polygon';
+import { bufferLines, difference, intersection, multiArea, offsetPolygons, pointInMulti, pointInPolygon, polygonArea } from '../geometry/polygon';
 import type { PrismSolid, Solid } from '../geometry/solid';
 import { edgeReport } from '../geometry/validate';
 import { generateModel, type ModelSpec } from '../pipeline/generate';
@@ -368,6 +368,31 @@ describe('EditSession', () => {
     expect(back.parts.map((p) => [p.id, p.part])).toEqual(expect.arrayContaining([['roads', null], ['layer:L', null]]));
   });
 
+  it('keeps the crack filled between a road given a colour or height of its own and the one beside it', async () => {
+    const data = town();
+    // 7 m apart, their ribbons leave a 0.035 mm crack, which comes filled.
+    data.features.segment!.push(
+      feature('north', { type: 'LineString', coordinates: [at(-100, 257), at(100, 257)] }, { subtype: 'road', class: 'residential' }),
+      feature('south', { type: 'LineString', coordinates: [at(-100, 250), at(100, 250)] }, { subtype: 'road', class: 'residential' }),
+    );
+    const { session, spec, projection } = await setUp({ data });
+    const footprint = (model: ModelSpec) =>
+      model.layers.filter((l) => ['roads', 'rail', 'paths'].includes(l.id) || l.id.startsWith('layer:')).flatMap((l) => l.solids.flatMap((s) => (s.kind === 'prism' ? [s.polygon] : [])));
+    const generated = footprint(spec);
+    const [cx, cy] = projection.toModel(...at(-50, 253.5));
+    expect(pointInMulti(cx, cy, generated)).toBe(true);
+    let version = 0;
+    for (const edit of [{ layer: 'L' }, { heightMm: 0.8 }]) {
+      const edits = { ...emptyEdits(), layers: [{ id: 'L', name: 'L', hex: '#FF0000', line: 'PLA Basic' as const }], objects: { 'r:north': edit } };
+      await session.update(edits, ++version);
+      const edited = await session.edited(edits, DEFAULT_PALETTE);
+      // Only hairlines where tiles were split and joined again.
+      expect(offsetPolygons(difference(generated, footprint(edited)), -0.0005)).toEqual([]);
+      // And no grass or water where the crack was.
+      expect(edited.layers.some((l) => l.solids.some((s) => s.key?.startsWith('lf:')))).toBe(false);
+    }
+  });
+
   it('removes a road from the model', async () => {
     const { session, spec } = await setUp();
     const edits = { ...emptyEdits(), objects: { 'r:trail': { removed: true } } };
@@ -655,6 +680,29 @@ describe('Edits in and over water', () => {
     const pond = spec.edit!.bodies.filter((b) => b.key === 'w:pond').map((b) => b.polygon);
     expect(multiArea(difference(pond, solidsIn(edited, 'land-green').map((s) => s.polygon)))).toBeLessThan(1e-4);
     await expectClosed(edited);
+  });
+
+  it('leaves no hole through the model under a mooring or a hut in the water', async () => {
+    const data = town();
+    // 1 x 1.5 m (0.0074 mm²) mapped as a pier, and a 1.4 m square hut: both
+    // under the 0.01 mm² of ground that used to be dropped, with nothing
+    // else under them.
+    data.features.infrastructure = [feature('mooring', { type: 'Polygon', coordinates: rect(-300, -20, -299, -18.5) }, { subtype: 'pier', class: 'pier' })];
+    data.features.building!.push(feature('hut', { type: 'Polygon', coordinates: rect(-200, -20, -198.6, -18.6) }, { height: 4 }));
+    for (const supports of [true, false]) {
+      const { session, spec, projection } = await setUp({ data, supports });
+      const through = (model: ModelSpec) => offsetPolygons(difference([model.crop], solidsIn(model, 'terrain').map((s) => s.polygon)), -0.0005);
+      expect(through(spec)).toEqual([]);
+      // The mooring is too small to print as ground, so the water covers it.
+      const [mx, my] = projection.toModel(...at(-299.5, -19.25));
+      expect(covers(solidsIn(spec, 'water'), mx, my)).toBe(true);
+      const [hx, hy] = projection.toModel(...at(-199.3, -19.3));
+      expect(covers(solidsIn(spec, 'buildings'), hx, hy)).toBe(true);
+      // And the same once the edits rebuild the water.
+      const edits = { ...emptyEdits(), objects: { 'r:cross': { removed: true } } };
+      await session.update(edits, 1);
+      expect(through(await session.edited(edits, DEFAULT_PALETTE))).toEqual([]);
+    }
   });
 
   it('gives the water back whole where a road in it goes, with no ground left over', async () => {

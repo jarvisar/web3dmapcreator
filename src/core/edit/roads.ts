@@ -2,9 +2,10 @@
 // streets are usually one polygon, so a removed or widened street can't be
 // cut out of it on its own. Once a road is edited the groups are split into
 // square tiles, and a tile any edited road reaches is rebuilt from the road
-// pieces by the same bufferRoads the pipeline uses, with the tile as the
-// crop. Other tiles keep the generated polygons, cut to the tile. Tile edges
-// fall on whole Clipper units, so neighbours meet exactly.
+// pieces by the same bufferRoads the pipeline uses, laid a millimetre past
+// the tile and cut to it. Other tiles keep the generated polygons, cut to
+// the tile. Tile edges fall on whole Clipper units, so neighbours meet
+// exactly.
 //
 // A road with its own height or layer owns its ground: the plain groups
 // give way to it, and the taller of two such roads wins where they cross.
@@ -12,7 +13,7 @@
 // with supports off it's built down through the water (pipeline/wading.ts).
 
 import type { Rect64 } from 'clipper2-ts';
-import { bufferLines, ClipSet, difference, dropSmall, intersection, SCALE, separateTouching, splitToTiles, union, type Box } from '../geometry/polygon';
+import { ClipSet, clipToUnits, difference, dropSmall, SCALE, separateTouching, splitToTiles, union, type Box } from '../geometry/polygon';
 import { Progress } from '../pipeline/context';
 import { bufferRoads, type RoadGroup, type RoadPiece } from '../pipeline/roads';
 import type { ModelSettings } from '../settings';
@@ -39,6 +40,8 @@ export interface RoadBucket {
 // Ribbons reach this far past their centreline beyond half their width
 // (gap strips, rounding), so a tile looks at pieces this much past its edges.
 const REACH_MM = 1;
+// Tiles are laid this far past their edges and cut to them after.
+const TILE_MARGIN_MM = 1;
 const MAX_WIDTH_MM = 12;
 
 export function tileSizeMm(cropBox: Box): number {
@@ -186,16 +189,24 @@ export class RoadTiles extends TileGrid {
   /** The tile rebuilt from the pieces, with each road's style. */
   async tile(tile: number, styleOf: (key: string) => RoadStyle | undefined): Promise<RoadBucket[]> {
     const rect = this.units(tile);
-    const cropLocal = this.crop.polygonsWithinRect(rect);
-    if (!cropLocal.length) return [];
+    if (!this.crop.polygonsWithinRect(rect).length) return [];
+    // Laid a little past the tile and cut to it at the end. Cut first, the
+    // corner of a motorway entering the model just above a tile edge was
+    // 0.0197 mm² in the tile, under bufferRoads' 0.02 mm² specks, and went
+    // whenever that tile was rebuilt.
+    const margin = Math.round(TILE_MARGIN_MM * SCALE);
+    const wide = this.crop.polygonsWithinRect({ left: rect.left - margin, top: rect.top - margin, right: rect.right + margin, bottom: rect.bottom + margin });
     const thickness = this.settings.roads.thicknessMm;
     const plain: RoadPiece[] = [];
+    // Everything there in the pipeline's order, which the crack strips depend on.
+    const all: RoadPiece[] = [];
     const special = new Map<string, { part: string; thickness: number; pieces: RoadPiece[] }>();
     for (const i of this.near.get(tile) ?? []) {
       const piece = this.pieces[i];
       const style = styleOf(`r:${piece.sourceId}`);
       if (style?.removed) continue;
       const sized = style?.widthMm !== undefined ? { ...piece, widthMm: style.widthMm } : piece;
+      all.push(sized);
       const height = style?.heightMm ?? thickness;
       if (!style?.layer && Math.abs(height - thickness) < 1e-9) {
         plain.push(sized);
@@ -209,26 +220,35 @@ export class RoadTiles extends TileGrid {
     }
 
     const out: RoadBucket[] = [];
-    // Taller roads own their ground where two meet.
+    const ctx = { settings: this.settings, cropSet: wide, progress: new Progress(), stats: {} };
+    const add = (part: string, thickness: number, polygons: MultiPolygon) => {
+      const kept = clipToUnits(polygons, rect);
+      if (kept.length) out.push({ part, thickness, polygons: kept });
+    };
+    // Taller roads own their ground where two meet. Each bucket is buffered
+    // like the pipeline does, cracks between its own lines filled.
     const ordered = [...special.values()].sort((a, b) => b.thickness - a.thickness || a.part.localeCompare(b.part));
     let owned: MultiPolygon = [];
     for (const bucket of ordered) {
-      const ribbons = bufferLines(bucket.pieces.map((p) => ({ points: p.points, width: p.widthMm })), 'round');
-      let polygons = intersection(ribbons, cropLocal);
+      let polygons = (await bufferRoads(bucket.pieces, ctx)).footprint;
       if (owned.length) polygons = difference(polygons, owned);
       polygons = separateTouching(dropSmall(polygons, 0.02));
       if (!polygons.length) continue;
       owned = union(owned, polygons);
-      out.push({ part: bucket.part, thickness: bucket.thickness, polygons });
+      add(bucket.part, bucket.thickness, polygons);
     }
 
-    if (plain.length) {
-      const ribbons = await bufferRoads(plain, { settings: this.settings, cropSet: cropLocal, progress: new Progress(), stats: {} });
+    // The plain groups keep what's left of every road there buffered
+    // together, so cracks filled between an edited road and its neighbours
+    // stay filled, in the plain colour. Buffered without the edited roads,
+    // giving one a colour of its own opened those cracks again, as bare
+    // ground or water.
+    if (all.length) {
+      const ribbons = await bufferRoads(all, ctx);
       for (const group of GROUPS) {
         let polygons = ribbons[group];
         if (owned.length) polygons = difference(polygons, owned);
-        polygons = separateTouching(dropSmall(polygons, 0.02));
-        if (polygons.length) out.push({ part: ROAD_PARTS[group], thickness, polygons });
+        add(ROAD_PARTS[group], thickness, separateTouching(dropSmall(polygons, 0.02)));
       }
     }
     return out;

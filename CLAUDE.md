@@ -96,6 +96,22 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   ground. Either way nothing may stand on the water alone: the water part
   can be deleted in the slicer. A pier counts by its whole footprint, not
   its middle point, or one on a bank stood on air over the water.
+- The terrain only drops ground pieces under `GROUND_SPECK_MM2` (1e-6 mm²).
+  Nothing else covers a dropped piece, and at 0.01 mm² they were pinholes
+  through the model under road tips and huts in the water. Mapped piers
+  under 0.01 mm² in cut water (moorings) are left out of `decks` instead,
+  so the water covers them.
+- Thin ground in water (`thinGround.ts`, `water.skipThinGround` and
+  `widenThinGround`, off by default) is ground with water on both sides
+  that a closing of the water less the mapped decks fills, so a quay
+  along the shore never counts. It's settled in `solveWater` before the
+  grid is flattened. Filled islands join the body they share the most
+  shore with, and bridges are split on the water as mapped (`mappedCut`)
+  so a path along a filled breakwater isn't a bridge. Widened ground joins
+  `decks`, so bodies keep their outlines. Widening skips specks under the
+  width every way (moorings grew into triangles) and slivers under 0.02 mm
+  (a pier's outline and the lake's disagreeing grew into 0.4 mm strips
+  beside Chicago's piers). With both off the output is unchanged.
 - Parts overlap where they reach into the terrain (`land.embedMm`, 0.04 mm)
   and where water sheets sink into it. Slicers give an overlap to the part
   listed later, so 3MF writers list parts by `OVERLAP_RANK` (`writeOrder`):
@@ -364,11 +380,16 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   an export during a slow update (Download right after an undo) read half
   of the undone edit.
 - Road edits rebuild square tiles (`roads.ts`, 12 to 30 mm on whole Clipper
-  units) from the pieces near them with `bufferRoads`, the tile as the
-  crop. Other tiles keep the generated polygons, split into every tile at
-  once (`splitToTiles`): clipping the city-wide road polygon tile by tile
-  took over 2 s per edit in San Francisco. A road with its own height or
-  layer owns its ground, the taller one where two cross.
+  units) from the pieces near them with `bufferRoads`, laid 1 mm past the
+  tile and cut to it at the end. Cut first, a motorway's corner poking
+  into a tile was under `bufferRoads`' 0.02 mm² specks and went. Other
+  tiles keep the generated polygons, split into every tile at once
+  (`splitToTiles`): clipping the city-wide road polygon tile by tile took
+  over 2 s per edit in San Francisco. A road with its own height or layer
+  owns its ground, the taller one where two cross, and the plain groups
+  keep what's left of every road there buffered together, in the
+  pipeline's order. Buffered without the edited road, a colour edit
+  opened the cracks filled between it and its neighbours again.
 - Land fill (`land.ts`) lays the land cover again around ground a removed
   road, building or body of water left, from the land regions before
   clearing (`ctx.land`) and what clears them now, opened like the land

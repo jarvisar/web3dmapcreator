@@ -6,7 +6,7 @@
 // options file, so `scripts/generate.ts --options <file>` rebuilds it.
 //
 //   npx tsx scripts/fuzz-edits.ts --preset "Chicago - The Loop (small)" [--steps 40] [--seed 1]
-//     [--check-every 5] [--trees] [--bridges] [--no-supports] [--through] [--shape circle] [--rotation 30] [--lidar-only [--lidar-water cut|layer]]
+//     [--check-every 5] [--trees] [--bridges] [--no-supports] [--through] [--skip-thin] [--widen-thin] [--shape circle] [--rotation 30] [--lidar-only [--lidar-water cut|layer]]
 //
 // --selftest exports without the last step's edits, which every check has to
 // catch, to show the checks still catch something.
@@ -139,6 +139,8 @@ async function main() {
   if (flag('bridges')) settings.bridges.enabled = true;
   if (flag('no-supports')) settings.supports = false;
   if (flag('through')) settings.water.mode = 'through';
+  if (flag('skip-thin')) settings.water.skipThinGround = true;
+  if (flag('widen-thin')) settings.water.widenThinGround = true;
   if (flag('lidar-only')) settings.modelSource = 'lidar';
   const lidarWater = arg('lidar-water');
   if (lidarWater === 'cut' || lidarWater === 'layer') settings.lidarModel.waterMode = lidarWater;

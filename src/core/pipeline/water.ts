@@ -17,6 +17,7 @@ import {
   clipToBox,
   densifyRing,
   differenceSet,
+  dropSmall,
   intersection,
   multiArea,
   polygonArea,
@@ -29,6 +30,7 @@ import type { MultiPolygon, Polygon, Vec2 } from '../types';
 import { isPrintableWater, isUntypedWater, recessedWaterKind } from './classify';
 import { count, type Context } from './context';
 import { primaryName, projectPolygons, type SourceFeature } from './source';
+import { settleThinGround } from './thinGround';
 
 /** Cut water and basins sit this far below their bank: one layer of bank shows. */
 export const WATER_DROP_MM = 0.25;
@@ -41,6 +43,10 @@ const UNTYPED_BASIN_MAX_M2 = 5000;
 const MAXIMUM_SAMPLES = 2 ** 18;
 // Cut bodies overlapping by less than this only share an edge.
 const OVERLAP_MM2 = 0.01;
+// Mapped piers smaller than this in the water, moorings and pilings, are left
+// out. Kept, they were a pillar of ground too thin to print, and before the
+// terrain kept every piece of ground, a hole through the model.
+const DECK_SPECK_MM2 = 0.01;
 
 export type WaterKind = 'cut' | 'sheet' | 'basin';
 
@@ -64,6 +70,13 @@ export interface WaterResult {
   sheets: MultiPolygon;
   /** Every water footprint, for clearing land cover. */
   all: MultiPolygon;
+  /**
+   * Ground kept in the water whatever the supports: mapped piers, quays and
+   * dams in cut water, and thin ground widened (thinGround.ts).
+   */
+  decks: MultiPolygon;
+  /** Cut water before thin islands were filled, so a path along a breakwater isn't taken for a bridge. */
+  mappedCut: MultiPolygon;
 }
 
 function sourceAreaM2(polygons: Polygon[], ctx: Context): number {
@@ -96,7 +109,8 @@ function medianLevel(hf: HeightField, polygon: Polygon): number {
   return hf.percentileOver(samples, 0.5);
 }
 
-export async function solveWater(features: SourceFeature[], ctx: Context): Promise<WaterResult> {
+/** `mappedDecks` are mapped piers and the like, projected. */
+export async function solveWater(features: SourceFeature[], ctx: Context, mappedDecks: Polygon[] = []): Promise<WaterResult> {
   const { settings, heightfield: hf } = ctx;
   const water = settings.water;
   const cutBodies: WaterBody[] = [];
@@ -168,17 +182,28 @@ export async function solveWater(features: SourceFeature[], ctx: Context): Promi
   await ctx.progress.checkpoint(0.9);
 
   raiseCutWaterToShore(hf, bodies, ctx.crop);
-  const levelled = mergeConnectedCut(bodies, areaScale);
+  let levelled = mergeConnectedCut(bodies, areaScale);
+  const mappedCut = union(levelled.filter((b) => b.kind === 'cut').map((b) => b.polygon));
+  let decks = mappedDecks.length && mappedCut.length ? dropSmall(intersection(clipToBox(mappedDecks, ctx.cropBox), mappedCut), DECK_SPECK_MM2) : [];
+  let filled = false;
+  if (water.skipThinGround || water.widenThinGround) {
+    const thin = settleThinGround(levelled, decks, water, areaScale);
+    filled = thin.bodies !== levelled;
+    levelled = thin.bodies;
+    decks = thin.decks;
+    ctx.stats.water_thin_ground_skipped = thin.skipped;
+    ctx.stats.water_thin_ground_widened = thin.widened;
+  }
   flattenUnderWater(hf, levelled);
 
-  const cut = union(levelled.filter((b) => b.kind === 'cut').map((b) => b.polygon));
+  const cut = filled ? union(levelled.filter((b) => b.kind === 'cut').map((b) => b.polygon)) : mappedCut;
   const basins = union(levelled.filter((b) => b.kind === 'basin').map((b) => b.polygon));
   const sheets = union(levelled.filter((b) => b.kind === 'sheet').map((b) => b.polygon));
   ctx.stats.water_bodies = levelled.length;
   ctx.stats.water_cut_bodies = levelled.filter((b) => b.kind === 'cut').length;
   ctx.stats.water_basins = levelled.filter((b) => b.kind === 'basin').length;
   ctx.stats.water_cut_area_mm2 = Math.round(multiArea(cut));
-  return { bodies: levelled, cut, basins, sheets, all: union(cut, basins, sheets) };
+  return { bodies: levelled, cut, basins, sheets, all: union(cut, basins, sheets), decks, mappedCut };
 }
 
 /**

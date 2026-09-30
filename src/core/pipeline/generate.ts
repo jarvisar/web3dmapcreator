@@ -14,7 +14,6 @@ import {
   intersection,
   multiArea,
   multiBounds,
-  clipToBox,
   offsetPolygons,
   ringBounds,
   union,
@@ -73,8 +72,8 @@ export interface EditContext {
   /**
    * What stands in cut water and basins, by what it is, which the water is
    * cut around. The ground under it is kept with supports on, and only under
-   * mapped piers and the like with them off. Roads include airport paving,
-   * which is also on its own.
+   * mapped piers and the like (`decks`, widened thin ground too) with them
+   * off. Roads include airport paving, which is also on its own.
    */
   kept: { roads: MultiPolygon; buildings: MultiPolygon; piers: MultiPolygon; decks: MultiPolygon; airport: MultiPolygon };
   /** The terrain as built: ground draped on the grid, and flat floors under water. */
@@ -118,6 +117,13 @@ export interface GenerateInput {
   lidar?: PreparedLidar | null;
   progress?: Progress;
 }
+
+/**
+ * Ground smaller than this is a speck of rounding. Anything bigger is kept,
+ * since nothing else covers it: dropped under 0.01 mm², it left holes through
+ * the model under road tips in the water.
+ */
+export const GROUND_SPECK_MM2 = 1e-6;
 
 export const LAND_ROLES: Record<SurfaceCategory, MaterialRole> = {
   paved: 'paved',
@@ -194,7 +200,13 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
 
   // -------------------------------------------------------------------- water
   progress.begin('water', 'Solving water levels', 0.35, 0.08);
-  const water = await solveWater(features('water'), ctx);
+  const mappedDecks: Polygon[] = [];
+  for (const type of ['infrastructure', 'land', 'land_use'] as SourceType[]) {
+    for (const feature of features(type)) {
+      if (isWaterDeck(type, feature)) mappedDecks.push(...projectPolygons(feature.geometry, projection));
+    }
+  }
+  const water = await solveWater(features('water'), ctx, mappedDecks);
 
   // -------------------------------------------------------------------- roads
   progress.begin('roads', 'Laying out roads', 0.43, 0.12);
@@ -207,11 +219,11 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     const collected = await collectRoadPieces(features('segment'), ctx);
     let groundPieces: RoadPiece[] = collected.pieces;
     let decks: RoadPiece[] = [];
-    if (settings.bridges.enabled) ({ ground: groundPieces, decks } = splitDecks(collected.pieces, ctx, water.cut));
+    if (settings.bridges.enabled) ({ ground: groundPieces, decks } = splitDecks(collected.pieces, ctx, water.mappedCut));
     let ribbons = await bufferRoads(groundPieces, ctx);
     groundRoads = groundPieces;
     if (decks.length) {
-      const bridges = await buildBridges(decks, ctx, { groundRoads: ribbons.footprint, cutWater: water.cut });
+      const bridges = await buildBridges(decks, ctx, { groundRoads: ribbons.footprint, cutWater: water.mappedCut });
       bridgeSolids = bridges.solids;
       pierGround = bridges.pierGround;
       deckPieces = bridges.decks;
@@ -234,7 +246,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   // What stands in cut water and basins. The water is cut around all of it.
   // With supports on it stands on ground kept under it, and with them off
   // it's built down through the water itself (wading.ts). Mapped piers,
-  // quays and dams are ground either way.
+  // quays and dams are ground either way, and so is thin ground widened.
   const noGround = union(water.cut, water.basins);
   const supportsOn = settings.supports;
   const structures: MultiPolygon[] = [];
@@ -245,13 +257,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   // reaching into a river, or standing in a pond, stood on air.
   const pierFootprints = bridgeSolids.flatMap((solid) => (solid.role === 'pier' ? [solid.polygon] : []));
   if (pierFootprints.length && noGround.length) structures.push((kept.piers = intersection(pierFootprints, noGround)));
-  const mappedDecks: Polygon[] = [];
-  for (const type of ['infrastructure', 'land', 'land_use'] as SourceType[]) {
-    for (const feature of features(type)) {
-      if (isWaterDeck(type, feature)) mappedDecks.push(...projectPolygons(feature.geometry, projection));
-    }
-  }
-  if (mappedDecks.length) structures.push((kept.decks = intersection(clipToBox(mappedDecks, cropBox), water.cut)));
+  if (water.decks.length) structures.push((kept.decks = water.decks));
 
   // ---------------------------------------------------------------- buildings
   progress.begin('buildings', 'Building footprints and roofs', 0.55, 0.2);
@@ -315,7 +321,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     settled.push({ polygons, floor: supportsOn ? polygons : differenceSet([body.polygon], groundSet), bottom: waterBottom(body, settings) });
   }
 
-  const ground = dropSmall(difference(ctx.cropSet, union(cutOpen, basinOpen)), 0.01);
+  const ground = dropSmall(difference(ctx.cropSet, union(cutOpen, basinOpen)), GROUND_SPECK_MM2);
   // Beaches slope the ground itself down to the water. Everything draped on
   // the grid is laid out by now, so what isn't beach can keep its ground.
   const beaches =
