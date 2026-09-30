@@ -248,7 +248,9 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   deliberate differences: removed trees are ordinary cells again, `inside`
   limits the base to the area shape, water grows into partly wet cells at
   its level and takes in specks (`GROW_M`, `takeSpecks`, for San Francisco's
-  2023 survey), and cut water takes its bank's height for `BANK_RINGS` rings,
+  2023 survey), a body whose edge is mostly unclassified water-level cells
+  grows over those too (`SURFACE_M`, `UNFILED_SHARE`, for New York's
+  harbour), and cut water takes its bank's height for `BANK_RINGS` rings,
   then the TIN is clipped along it (the add-on drops cut cells to the bottom
   before meshing). The app defaults to natural crowns (gaps closed, a 3 x 3
   mean over canopy) and keeps what's under 2 m. Slivers (wires, jibs,

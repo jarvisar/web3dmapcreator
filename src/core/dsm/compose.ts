@@ -41,6 +41,17 @@ const BANK_SHARE = 0.7;
 const GROW_M = 0.3;
 const SPECK_M2 = 10;
 const SPECK_M = 1;
+// A body whose edge is mostly (UNFILED_SHARE) cells with no water, ground,
+// building or vegetation returns, at most SURFACE_M over its level and with
+// no more than twice the returns of the water cells within SURFACE_REACH,
+// grows over those too: open water nobody classified. New York's survey
+// files a third of the harbour's returns as water and leaves the rest
+// unclassified, a flight line reading 0.2 m higher, so the harbour came out
+// as a web of land at the water's level. Boats and piers stand higher and
+// docks return more, and a river filed properly never qualifies.
+const SURFACE_M = 0.5;
+const SURFACE_REACH = 3;
+const UNFILED_SHARE = 0.5;
 // A large hole that isn't water, with this share of its shore on the ground,
 // is street in a tower's scan shadow. With less, it's a dark roof.
 const SHADOW_SHARE = 0.5;
@@ -783,11 +794,29 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
   // as land at the water level, and in 36 pieces once cut. Not onto raised
   // water, which in Philadelphia is bridge decks filed as water. Mapped
   // cells with no returns join too, never one the survey saw something in.
+  // Returns in the cells with water returns around each cell, where flight
+  // lines overlap as well as where they don't.
+  const wetReturns = new Float32Array(n);
+  const wetOnes = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (!layers.water[i]) continue;
+    wetReturns[i] = count[i];
+    wetOnes[i] = 1;
+  }
+  const localReturns = boxMean(wetReturns, nx, ny, SURFACE_REACH);
+  const localWet = boxMean(wetOnes, nx, ny, SURFACE_REACH);
+  const surface = (j: number, z: number) => {
+    const g = layers.ground[j];
+    const above = top[j] - z;
+    const usual = localWet[j] > 0 ? localReturns[j] / localWet[j] : 1;
+    return layers.water[j] === 0 && g !== g && !layers.building[j] && !layers.vegetation[j] && count[j] <= 2 * Math.max(1, usual) && above <= SURFACE_M && above >= -GROW_M;
+  };
   let grown = 0;
   const queue = new Int32Array(n);
+  const open = new Uint8Array(regions);
   let head = 0;
   let tail = 0;
-  for (let i = 0; i < n; i++) if (water[i]) queue[tail++] = i;
+  const grow = () => {
   while (head < tail) {
     const i = queue[head++];
     const r = region[i];
@@ -797,7 +826,7 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
       const j = d === 0 ? (x > 0 ? i - 1 : -1) : d === 1 ? (x + 1 < nx ? i + 1 : -1) : d === 2 ? i - nx : i + nx;
       if (j < 0 || j >= n || water[j]) continue;
       const empty = mapped !== undefined && mapped[j] === 1 && count[j] === 0;
-      if (!empty && !(layers.water[j] > 0 && Math.abs(top[j] - z) <= GROW_M)) continue;
+      if (!empty && !(layers.water[j] > 0 && Math.abs(top[j] - z) <= GROW_M) && !(open[r] && surface(j, z))) continue;
       if (z - ground[j] > RAISED_WATER_M) continue;
       water[j] = 1;
       region[j] = r;
@@ -806,6 +835,28 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
       queue[tail++] = j;
     }
   }
+  };
+  for (let i = 0; i < n; i++) if (water[i]) queue[tail++] = i;
+  grow();
+  // Bodies mostly bordered by cells that look like open water nobody
+  // classified grow over those too.
+  const edge = new Int32Array(regions);
+  const unfiled = new Int32Array(regions);
+  for (let i = 0; i < n; i++) {
+    if (!water[i]) continue;
+    const r = region[i];
+    const x = i % nx;
+    for (const j of [x > 0 ? i - 1 : -1, x + 1 < nx ? i + 1 : -1, i - nx, i + nx]) {
+      if (j < 0 || j >= n || water[j]) continue;
+      edge[r]++;
+      if (surface(j, levels[r])) unfiled[r]++;
+    }
+  }
+  head = 0;
+  tail = 0;
+  for (let r = 0; r < regions; r++) open[r] = unfiled[r] >= UNFILED_SHARE * edge[r] && edge[r] > 0 ? 1 : 0;
+  for (let i = 0; i < n; i++) if (water[i] && open[region[i]]) queue[tail++] = i;
+  grow();
   if (cells) grown += takeSpecks(water, region, levels, top, nx, ny, dx * dy);
 
   const level = new Float32Array(cells + grown);

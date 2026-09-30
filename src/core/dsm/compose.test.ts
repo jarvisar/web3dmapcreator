@@ -383,6 +383,39 @@ describe('mapped water', () => {
     expect(at(result.water, 120, 15, 90)).toBe(1);
   });
 
+  it('takes open water nobody classified where most of a body is like that, but not a boat', () => {
+    // A harbour one flight line filed as water, and the rest a third water and the rest unclassified
+    // a little higher, with a boat 1.5 m up and a pier 2.5 m up.
+    const nx = 100;
+    const layers = blank(80, nx);
+    const level = GROUND - 2;
+    const rng = new NumpyRandom(11);
+    for (let r = 0; r < 60; r++) {
+      for (let c = 0; c < nx; c++) {
+        const i = r * nx + c;
+        const filed = r < 10 || rng.random() < 0.35;
+        layers.count[i] = filed ? 2 : 1;
+        layers.water[i] = filed ? 2 : 0;
+        layers.top[i] = layers.solid[i] = filed ? level : level + 0.1 + 0.2 * rng.random();
+        layers.waterZ[i] = filed ? level : NaN;
+        layers.ground[i] = NaN;
+      }
+    }
+    fill(layers.top, nx, 20, 24, 30, 40, level + 1.5);
+    fill(layers.solid, nx, 20, 24, 30, 40, level + 1.5);
+    fill(layers.water, nx, 20, 24, 30, 40, 0);
+    fill(layers.top, nx, 40, 60, 70, 74, level + 2.5);
+    fill(layers.solid, nx, 40, 60, 70, 74, level + 2.5);
+    fill(layers.water, nx, 40, 60, 70, 74, 0);
+    fill(layers.count, nx, 40, 60, 70, 74, 6);
+    const result = compose(layers, CELL, CELL, 1, 1, { removeClutter: false });
+    let open = 0;
+    for (let r = 0; r < 60; r++) for (let c = 0; c < nx; c++) if (!((r >= 20 && r < 24 && c >= 30 && c < 40) || (c >= 70 && c < 74 && r >= 40))) open += at(result.water, nx, r, c);
+    expect(open).toBe(60 * nx - 4 * 10 - 20 * 4);
+    expect([at(result.water, nx, 22, 35), at(result.water, nx, 50, 72)]).toEqual([0, 0]);
+    expect(result.counts.water_bodies).toBe(1);
+  });
+
   it('leaves a dark roof over mapped water', () => {
     // A pier shed 12 m up whose roof returned nothing over 150 m², inside a harbour's outline.
     const nx = 100;
