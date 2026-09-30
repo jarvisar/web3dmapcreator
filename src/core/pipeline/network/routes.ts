@@ -182,16 +182,21 @@ export function weld(candidates: Candidate[], tolerance: number): Route[] {
   };
   const dot = (a: Vec2, b: Vec2) => a[0] * b[0] + a[1] * b[1];
   // The one option continuing `heading`, or null when none or several do.
-  const pick = <T>(heading: Vec2, options: [Vec2 | null, T][]): T | null => {
+  // Track runs through a switch on its straightest way, the other track
+  // leaving at a few degrees. Welded only when unambiguous, a yard came apart
+  // into pieces a switch long, and thinned piece by piece it printed as a
+  // ladder.
+  const pick = <T>(heading: Vec2, options: [Vec2 | null, T][], straightest = false): T | null => {
     const scored = options.filter((o): o is [Vec2, T] => o[0] !== null).map(([d, key]) => [dot(heading, d), key] as const);
     scored.sort((a, b) => b[0] - a[0]);
     if (!scored.length || scored[0][0] < continuation) return null;
-    if (scored.length > 1 && scored[1][0] >= continuation) return null;
+    if (!straightest && scored.length > 1 && scored[1][0] >= continuation) return null;
     return scored[0][1];
   };
 
   const routes: Route[] = [];
   for (const members of groups.values()) {
+    const straightest = candidates[members[0]].piece.roadClass === RAIL_CLASS;
     const at = new Map<number, End[]>();
     for (const i of members) {
       for (const tail of [false, true]) {
@@ -228,13 +233,13 @@ export function weld(candidates: Candidate[], tolerance: number): Route[] {
             if (direction && dot(heading, direction) >= reversal) next = unused[0];
           } else {
             const options = here.map((e) => [leaving(e), e] as [Vec2 | null, End]);
-            const best = pick(heading, options);
+            const best = pick(heading, options, straightest);
             const back = best && !used.has(best.source) ? leaving(best) : null;
             // Unambiguous from both sides: where a divided street merges into
             // one stem, the stem continues either carriageway.
             if (best && back) {
               const reverse: [Vec2 | null, End | 'chain'][] = [[[-heading[0], -heading[1]], 'chain'], ...options.filter((o) => o[1] !== best)];
-              if (pick<End | 'chain'>([-back[0], -back[1]], reverse) === 'chain') next = best;
+              if (pick<End | 'chain'>([-back[0], -back[1]], reverse, straightest) === 'chain') next = best;
             }
           }
           if (!next) break;

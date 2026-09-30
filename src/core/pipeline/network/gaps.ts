@@ -1,16 +1,21 @@
-// Ground too thin to print between roads can't print as a strip of its own:
-// the gore where a ramp leaves the motorway, a street beside a ramp it
-// doesn't quite double, the median of a divided road that isn't merged,
-// the hairlines between the tracks of a rail yard. It's filled, so the two
-// print as one wider road.
+// Cracks between ribbons of one colour. Two roads side by side with a hairline
+// of ground between them print with a groove the nozzle can't fill, so a
+// crack narrower than half the gap is filled from one centerline across to
+// the other, and so is enclosed ground nowhere that wide (a plaza criss-crossed
+// by paths, a mini roundabout's island).
 //
-// Between lines running side by side the fill is a strip from one centerline
-// across to the other, unioned with the roads. A strip starts where the gap
-// gets too thin and carries on until it's clearly printable again, so lines
-// hovering around the limit give one band instead of a row of rungs. Enclosed
-// ground is filled whole when no part of it is as wide as the gap: a plaza
-// criss-crossed by paths, a mini roundabout's island. Only lines alongside
-// each other count for the strips, so a street corner keeps its shape.
+// This used to fill everything up to the whole gap, between colours too. Four
+// ramps side by side printed as one block of road and a track beside a street
+// as a brown slab, a lot thicker than the roads looked with the tidy off. A
+// crack this narrow closes up in the print anyway, so the fill doesn't change
+// how wide anything looks. Wider grooves stay: lines of one rank too close to
+// print apart are thinned out before this (cull.ts), and the rest are real
+// roads that happen to run close.
+//
+// A strip starts where the crack gets too thin and carries on until it's
+// clearly open again, so lines hovering around the limit give one strip
+// instead of a row of rungs. Only lines alongside each other count, so a
+// street corner keeps its shape.
 
 import { offsetPolygons, ringArea } from '../../geometry/polygon';
 import type { MultiPolygon, Polygon, Ring, Vec2 } from '../../types';
@@ -19,18 +24,17 @@ import { SegmentIndex } from './lines';
 
 const PARALLEL_DEG = 28;
 const STEP_MM = 0.2;
+// Of the gap: cracks narrower than this are filled.
+const CRACK = 0.5;
 // A strip carries on until the gap is this much wider than the limit.
 const HYSTERESIS = 1.3;
 // Shorter strips are left out: a sliver of fill where two lines brush past.
 const MIN_STRIP_MM = 0.5;
-const GROUPS: RoadGroup[] = ['road', 'rail', 'path'];
 
-/**
- * Strips filling each too-thin gap. A strip between a street and a path or
- * track takes the path's or track's colour, so the street keeps its edge.
- */
-export function gapStrips(pieces: RoadPiece[], gap: number): Record<RoadGroup, Polygon[]> {
+/** Strips filling each crack between two lines of one group. */
+export function gapStrips(pieces: RoadPiece[], minimumGap: number): Record<RoadGroup, Polygon[]> {
   const strips: Record<RoadGroup, Polygon[]> = { road: [], rail: [], path: [] };
+  const gap = CRACK * minimumGap;
   if (!(gap > 0) || !pieces.length) return strips;
   const maxHalfWidth = pieces.reduce((m, p) => Math.max(m, p.widthMm / 2), 0);
   const index = new SegmentIndex(Math.max(HYSTERESIS * gap + 2 * maxHalfWidth, 0.1));
@@ -45,10 +49,7 @@ export function gapStrips(pieces: RoadPiece[], gap: number): Record<RoadGroup, P
     let other = -1;
     let length = 0;
     const flush = () => {
-      if (near.length >= 2 && length >= MIN_STRIP_MM) {
-        const group = GROUPS[Math.max(GROUPS.indexOf(piece.group), GROUPS.indexOf(pieces[other].group))];
-        strips[group].push([[...near, ...[...far].reverse()]]);
-      }
+      if (near.length >= 2 && length >= MIN_STRIP_MM) strips[piece.group].push([[...near, ...[...far].reverse()]]);
       near = [];
       far = [];
       other = -1;
@@ -69,7 +70,7 @@ export function gapStrips(pieces: RoadPiece[], gap: number): Record<RoadGroup, P
         index.near(x, y, (s) => {
           const j = index.owner[s];
           // Each pair once, from the piece with the lower index.
-          if (j <= i) return;
+          if (j <= i || pieces[j].group !== piece.group) return;
           const t = index.along(s, x, y);
           if ((t <= 0 && index.first[s]) || (t >= 1 && index.last[s])) return;
           const d = index.distance(s, x, y, t);
@@ -97,11 +98,12 @@ export function gapStrips(pieces: RoadPiece[], gap: number): Record<RoadGroup, P
 }
 
 /**
- * Ground enclosed by one group's ribbons that is nowhere as wide as the gap,
+ * Ground enclosed by one group's ribbons that is nowhere as wide as a crack,
  * filled. Each hole is tested on its own, and most (city blocks) are
  * dismissed by their area against their outline first.
  */
-export function fillThinHoles(polygons: MultiPolygon, gap: number): { polygons: MultiPolygon; filled: number } {
+export function fillThinHoles(polygons: MultiPolygon, minimumGap: number): { polygons: MultiPolygon; filled: number } {
+  const gap = CRACK * minimumGap;
   if (!(gap > 0)) return { polygons, filled: 0 };
   let filled = 0;
   const out = polygons.map((polygon): Polygon => {

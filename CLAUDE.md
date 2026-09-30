@@ -163,8 +163,11 @@ before bridges are split off):
   A line carrying straight on from another's end vertex read as doubling it
   and paired one-way streets end to end.
 - The cull only drops a line beside a strictly more important one (twin
-  decks excepted). Equal lines side by side, like rail yards, car parks and
-  plaza path grids, are left to the fill. `alongside` ignores a kept line
+  decks excepted), except that tracks thin tracks. Rail is welded through
+  switches along the straightest track (`weld`), so a yard thins to whole
+  tracks longest first. Welded only where unambiguous, tracks came apart a
+  switch long and thinned into ladders. Car parks and plaza path grids keep
+  their lines. `alongside` ignores a kept line
   past its ends, and cuts snap to a vertex within a sample, or a scrap of the
   doubled stretch is left pointing along the road.
 - End origins decide what may move. `met` ends (their partner was left out or
@@ -178,14 +181,16 @@ before bridges are split off):
   scraps passed every other rule and printed as slivers.
 - Decks and ground never double each other, deck ends never move, and decks
   only meet the ground where their lines meet.
-- `fillGaps` fills ground narrower than the gap between two lines alongside
-  each other with strips from centerline to centerline, in the same union as
-  the roads (`gaps.ts`). Strips run on to 1.3 times the gap and need 0.5 mm,
-  or lines near the limit gave rows of rungs. A strip between groups takes
-  the lesser group, so a street keeps its edge. Enclosed ground nowhere as
-  wide as the gap is filled per group (`fillThinHoles`). A closing of the
-  whole footprint was tried: round joins filleted every block corner, mitred
-  ones left zero-area slivers, and it cost seconds on large areas.
+- The tidy must never make roads read thicker than with it off. `fillGaps`
+  only fills cracks under half the gap between lines of one group, from
+  centerline to centerline in the same union as the roads (`gaps.ts`), and
+  enclosed ground nowhere that wide (`fillThinHoles`). Filling up to the
+  whole gap, across groups too, printed ramps side by side as one block and
+  a track beside a street as a slab of rail colour. Strips run on to 1.3
+  times the limit and need 0.5 mm, or lines near it gave rows of rungs.
+  The tidied footprint less the untidied one catches this: merged divided
+  roads add their median, nothing else should add much. A closing of the whole footprint was tried: round joins
+  filleted every block corner and it cost seconds on large areas.
 - Road polygons of one group touching at a single vertex are pulled apart
   by 0.2 µm (`separateTouching`), or their prisms share a wall edge.
 - Every step has its own switch and the tidy off gives the untidied network.

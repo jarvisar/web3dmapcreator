@@ -134,10 +134,26 @@ describe('tidyNetwork', () => {
     expect(length(kept(out, alley))).toBeCloseTo(20, 6);
   });
 
-  it('keeps the tracks of a rail yard, however close', () => {
-    const tracks = [0, 0.3, 0.6, 0.9, 1.2].map((y) => piece('rail', [[0, y], [20, y]], { width: 0.45 }));
+  it('thins a rail yard to whole tracks with ground between them', () => {
+    // Tracks 0.3 mm apart, closer than their own width.
+    const tracks = [0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8].map((y) => piece('rail', [[0, y], [20, y]], { width: 0.45 }));
     const out = tidy(tracks);
-    for (const track of tracks) expect(length(kept(out, track))).toBeCloseTo(20, 6);
+    const left = tracks.filter((track) => kept(out, track).length);
+    // Each kept track whole, never a ladder of pieces.
+    for (const track of left) expect(length(kept(out, track))).toBeCloseTo(20, 6);
+    expect(left.length).toBeGreaterThanOrEqual(2);
+    expect(left.length).toBeLessThanOrEqual(3);
+    const ys = left.map((track) => track.points[0][1]).sort((a, b) => a - b);
+    for (let k = 1; k < ys.length; k++) expect(ys[k] - ys[k - 1] - 0.45).toBeGreaterThanOrEqual(0.4 - 1e-9);
+  });
+
+  it('keeps a track through its switches when a siding leaves it', () => {
+    // A through track split at a switch, and a siding leaving at a few degrees.
+    const a = piece('rail', [[0, 0], [10, 0]], { width: 0.45 });
+    const b = piece('rail', [[10, 0], [20, 0]], { width: 0.45 });
+    const siding = piece('rail', [[10, 0], [15, 0.4], [20, 0.4]], { width: 0.45 });
+    const out = tidy([a, b, siding]);
+    expect(length(kept(out, a)) + length(kept(out, b))).toBeCloseTo(20, 6);
   });
 
   it('drops a footway beside a street and joins the part that turns into the park', () => {
@@ -251,18 +267,23 @@ describe('tidyNetwork', () => {
 });
 
 describe('gapStrips', () => {
-  it('fills ground too thin to print between two roads side by side', () => {
-    // 1 mm apart, 0.7 mm wide: 0.3 mm of ground between them.
-    const strips = gapStrips([piece('residential', [[0, 0], [10, 0]]), piece('residential', [[0, 1], [10, 1]])], 0.4);
+  it('fills a crack between two roads side by side', () => {
+    // 0.85 mm apart, 0.7 mm wide: 0.15 mm of ground between them.
+    const strips = gapStrips([piece('residential', [[0, 0], [10, 0]]), piece('residential', [[0, 0.85], [10, 0.85]])], 0.4);
     expect(strips.road).toHaveLength(1);
     const ys = strips.road[0][0].map(([, y]) => y);
     expect(Math.min(...ys)).toBeCloseTo(0, 6);
-    expect(Math.max(...ys)).toBeCloseTo(1, 6);
+    expect(Math.max(...ys)).toBeCloseTo(0.85, 6);
   });
 
-  it('carries a strip on while the gap stays close to the limit', () => {
-    // 0.35 mm of ground, then 0.45 mm: one strip the whole way, not a stub.
-    const strips = gapStrips([piece('residential', [[0, 0], [10, 0]]), piece('residential', [[0, 1.05], [5, 1.05], [5.2, 1.15], [10, 1.15]])], 0.4);
+  it('leaves a groove the nozzle can print, even under the minimum gap', () => {
+    // 0.3 mm of ground: two roads, not one block.
+    expect(gapStrips([piece('residential', [[0, 0], [10, 0]]), piece('residential', [[0, 1], [10, 1]])], 0.4).road).toHaveLength(0);
+  });
+
+  it('carries a strip on while the crack stays close to the limit', () => {
+    // 0.15 mm of ground, then 0.23 mm: one strip the whole way, not a stub.
+    const strips = gapStrips([piece('residential', [[0, 0], [10, 0]]), piece('residential', [[0, 0.85], [5, 0.85], [5.2, 0.93], [10, 0.93]])], 0.4);
     expect(strips.road).toHaveLength(1);
     const xs = strips.road[0][0].map(([x]) => x);
     expect(Math.min(...xs)).toBeLessThan(0.3);
@@ -274,9 +295,9 @@ describe('gapStrips', () => {
     expect(gapStrips([piece('residential', [[0, 0], [10, 0]]), piece('residential', [[5, -5], [5, 5]])], 0.4).road).toHaveLength(0);
   });
 
-  it('gives a gap between a street and a path to the path', () => {
-    const strips = gapStrips([piece('footway', [[0, 0.9], [10, 0.9]]), piece('residential', [[0, 0], [10, 0]])], 0.4);
-    expect(strips.path).toHaveLength(1);
+  it("doesn't fill between colours", () => {
+    const strips = gapStrips([piece('footway', [[0, 0.7], [10, 0.7]]), piece('residential', [[0, 0], [10, 0]])], 0.4);
+    expect(strips.path).toHaveLength(0);
     expect(strips.road).toHaveLength(0);
   });
 });
@@ -286,7 +307,7 @@ describe('fillThinHoles', () => {
   const hole = (x0: number, y0: number, x1: number, y1: number): Ring => [...square(x0, y0, x1, y1)].reverse();
 
   it('fills enclosed ground too thin to print anywhere, and keeps a block', () => {
-    const polygon: Polygon = [square(0, 0, 20, 10), hole(1, 1, 10, 1.3), hole(12, 2, 18, 8)];
+    const polygon: Polygon = [square(0, 0, 20, 10), hole(1, 1, 10, 1.15), hole(12, 2, 18, 8)];
     const { polygons, filled } = fillThinHoles([polygon], 0.4);
     expect(filled).toBe(1);
     expect(polygons[0]).toHaveLength(2);
@@ -355,7 +376,7 @@ describe('collectRoadPieces', () => {
   });
 
   it('prints two roads with a hairline between them as one', async () => {
-    const pieces = [piece('residential', [[-10, 0], [10, 0]]), piece('residential', [[-10, 1], [10, 1]])];
+    const pieces = [piece('residential', [[-10, 0], [10, 0]]), piece('residential', [[-10, 0.85], [10, 0.85]])];
     const filled = await bufferRoads(pieces, context());
     const apart = await bufferRoads(pieces, context((s) => (s.roads.fillGaps = false)));
     expect(filled.road).toHaveLength(1);
