@@ -2,7 +2,7 @@
 // a rendered SVG map: see svgmap/render.ts.
 
 import { create } from 'zustand';
-import { emptyEdits, type ModelEdits } from '../../core/edit/types';
+import { editCount, emptyEdits, hasEdits, type ModelEdits } from '../../core/edit/types';
 import type { LidarSummary, ProgressEvent, SurfaceSummary } from '../../core/engine/protocol';
 import {
   DEFAULT_AREA,
@@ -53,8 +53,8 @@ export type SectionKey =
   | 'cleanup'
   | 'data';
 export type LayerKey = 'terrain' | 'water' | 'land' | 'roads' | 'bridges' | 'buildings' | 'lidar' | 'trees' | 'rim';
-/** What a click does in the 3D editor: select, or add a shape. */
-export type EditTool = 'select' | 'text' | 'box' | 'cylinder' | 'pin' | 'path' | 'area';
+/** What a click does in the 3D editor: select, select several, or add a shape. */
+export type EditTool = 'select' | 'several' | 'text' | 'box' | 'cylinder' | 'pin' | 'path' | 'area';
 
 export interface EditHistory {
   past: ModelEdits[];
@@ -137,12 +137,20 @@ export interface UiState {
   tool: EditTool;
   /** Selected object keys (see core/edit/keys.ts). */
   selection: string[];
+  /** The worker hasn't sent back the model for the latest edits yet. */
+  editsPending: boolean;
+  /** One point of a selected path or area, tapped to delete it. */
+  activePoint: { shape: string; index: number } | null;
+  /** What the worker noted about added shapes, by key. */
+  editNotes: Record<string, string>;
 }
 
 export interface Toast {
   id: number;
   text: string;
   tone: 'info' | 'success' | 'error';
+  /** A button on it, like Undo. */
+  action?: { label: string; run: () => void };
 }
 
 export interface AppState {
@@ -184,12 +192,25 @@ export const DEFAULT_SECTIONS: Record<SectionKey, boolean> = {
   data: false,
 };
 
+let openedFromLink = 0;
+
+/** How many edits the share link the app was opened with brought, once. */
+export function takeLinkedEdits(): number {
+  const count = openedFromLink;
+  openedFromLink = 0;
+  return count;
+}
+
 function initialState(): AppState {
   const saved = loadSaved();
   // The app keeps its own area in the hash too. Only a different hash is a share link.
   const shared = typeof location !== 'undefined' && location.hash !== saved.hash ? readHash() : null;
   const output = shared?.output ?? saved.output ?? 'model';
   let svg = shared?.svg?.svg ?? saved.svg ?? defaultSvgSettings();
+  if (shared?.picks) svg = { ...svg, ...shared.picks };
+  // A link's edits replace what was here, which undo brings back.
+  const linkedEdits = shared?.edits && hasEdits(shared.edits) ? shared.edits : null;
+  openedFromLink = linkedEdits ? Math.max(1, editCount(linkedEdits)) : 0;
   let area = normalizeArea({
     ...(shared?.area ?? saved.area ?? DEFAULT_AREA),
     ...shared?.svg?.area,
@@ -207,8 +228,8 @@ function initialState(): AppState {
     settings: saved.settings ?? cloneSettings(DEFAULT_SETTINGS),
     palette: saved.palette ?? structuredClone(DEFAULT_PALETTE),
     exportSettings: saved.exportSettings ?? { ...DEFAULT_EXPORT },
-    edits: saved.edits ?? emptyEdits(),
-    editHistory: { past: [], future: [], coalesce: null },
+    edits: linkedEdits ?? saved.edits ?? emptyEdits(),
+    editHistory: { past: linkedEdits ? [saved.edits ?? emptyEdits()] : [], future: [], coalesce: null },
     svg,
     customFontName: null,
     customFontId: null,
@@ -231,6 +252,9 @@ function initialState(): AppState {
       editMode: false,
       tool: 'select',
       selection: [],
+      editsPending: false,
+      activePoint: null,
+      editNotes: {},
     },
     generation: {
       status: 'idle',
@@ -645,8 +669,12 @@ export function dismissGenerationError(): void {
 
 let nextToast = 1;
 
-export function toast(text: string, tone: Toast['tone'] = 'info'): void {
+export function toast(text: string, tone: Toast['tone'] = 'info', action?: Toast['action']): void {
   const id = nextToast++;
-  set((state) => ({ toasts: [...state.toasts.slice(-2), { id, text, tone }] }));
-  setTimeout(() => set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) })), tone === 'error' ? 5000 : 2800);
+  set((state) => ({ toasts: [...state.toasts.slice(-2), { id, text, tone, ...(action ? { action } : {}) }] }));
+  setTimeout(() => dismissToast(id), action ? 6000 : tone === 'error' ? 5000 : 2800);
+}
+
+export function dismissToast(id: number): void {
+  set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) }));
 }

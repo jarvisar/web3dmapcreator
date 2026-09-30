@@ -7,7 +7,7 @@ import { defaultRenderSettings } from './defaults';
 import { TILE_EXTENT, worldToLonLat } from './geo/mercator';
 import { computeLayout } from './layout/layout';
 import { planTiles, prepareArea } from './prepare';
-import { PICK_LAYERS, pickToWorld, sameLine, sanitizeLines, sanitizeRoutes, type LonLatLine, type PickLines, type SvgRoute } from './routes';
+import { MAX_PICKED_POINTS, PICK_LAYERS, pickToWorld, sameLine, sanitizeLines, sanitizeRoutes, type LonLatLine, type PickLines, type SvgRoute } from './routes';
 import type { OutputMode, RenderSettings } from './settings';
 import { toSvg } from './svg/writer';
 import { type HersheyFile, parseHershey } from './text/hershey';
@@ -105,6 +105,18 @@ describe('picked roads', () => {
 
   it('change nothing when there are none', () => {
     expect(toSvg(render('laser', { routes: [], hiddenLines: [] }))).toBe(toSvg(plain));
+    expect(plain.missingPicks).toBeUndefined();
+  });
+
+  it('say which picks nothing on the map matched', () => {
+    // A road across the harbour, well away from anything drawn.
+    const away: LonLatLine = [
+      [centre.lon + 0.03, centre.lat + 0.03],
+      [centre.lon + 0.031, centre.lat + 0.03],
+    ];
+    const result = render('laser', { routes: [route([lonLat, away])] });
+    expect(result.missingPicks).toEqual([away]);
+    expect(result.pick!.owners[line]).toBe(0);
   });
 });
 
@@ -118,6 +130,19 @@ describe('sanitizing picks', () => {
     ]);
     expect(routes).toEqual([{ id: 'a', name: 'Home', color: '#FF0000', width: 5, lines: [[[1, 2], [1.001, 2.001]]] }]);
     expect(sanitizeRoutes('routes')).toEqual([]);
+  });
+
+  it('keeps the picks to a total number of points', () => {
+    const line: LonLatLine = Array.from({ length: 1000 }, (_, i) => [i / 1e4, 0]);
+    const lines = sanitizeLines(Array.from({ length: 80 }, () => line));
+    expect(lines.length * 1000).toBeLessThanOrEqual(MAX_PICKED_POINTS);
+    expect(lines.length).toBe(Math.floor(MAX_PICKED_POINTS / 1000));
+    // Routes share one allowance.
+    const routes = sanitizeRoutes([
+      { id: 'a', color: '#FF0000', lines: Array.from({ length: 30 }, () => line) },
+      { id: 'b', color: '#00FF00', lines: Array.from({ length: 30 }, () => line) },
+    ]);
+    expect(routes.reduce((n, r) => n + r.lines.length, 0) * 1000).toBeLessThanOrEqual(MAX_PICKED_POINTS);
   });
 
   it('drops lines that are not lon/lat', () => {

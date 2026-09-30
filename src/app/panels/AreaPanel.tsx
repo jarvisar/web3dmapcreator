@@ -200,7 +200,17 @@ export function AreaPanel() {
   async function copyLink() {
     writeHashNow();
     const state = useApp.getState();
-    toast((await copyText(shareUrl(state.area, state.output, state.svg))) ? 'Share link copied' : 'Could not copy to the clipboard', 'info');
+    const { url, left } = shareUrl(state.area, state.output, state.svg, state.edits);
+    if (!(await copyText(url))) {
+      toast('Could not copy to the clipboard', 'error');
+      return;
+    }
+    if (left) {
+      const what = left === 'edits' ? 'your edits' : 'your picked roads';
+      toast(`Share link copied, without ${what}: there are too many for a link. Export options to share them.`, 'info');
+    } else {
+      toast('Share link copied', 'info');
+    }
   }
 
   return (

@@ -156,7 +156,7 @@ export function SvgPreview() {
   const routes = useApp((state) => state.svg.routes);
   const [selected, setSelected] = useState<number[]>([]);
   const [hoverLine, setHoverLine] = useState(-1);
-  const pressed = useRef<{ point: Point; moved: boolean; shift: boolean } | null>(null);
+  const pressed = useRef<{ point: Point; moved: boolean } | null>(null);
   const index = useMemo(() => (result?.pick ? new PickIndex(result.pick) : null), [result]);
   // Line numbers belong to one render.
   useEffect(() => {
@@ -224,7 +224,7 @@ export function SvgPreview() {
       return;
     }
     pointers.current.set(e.pointerId, stagePoint(e));
-    pressed.current = pointers.current.size === 1 ? { point: stagePoint(e), moved: false, shift: e.shiftKey || e.ctrlKey || e.metaKey } : null;
+    pressed.current = pointers.current.size === 1 ? { point: stagePoint(e), moved: false } : null;
     restart();
   };
   const onPointerMove = (e: React.PointerEvent) => {
@@ -253,15 +253,18 @@ export function SvgPreview() {
     if (!picking || !index || !press || press.moved || e.type === 'pointercancel') return;
     const at = pieceAt(press.point);
     if (!at) return;
+    // Picking is for several roads at once, so a click adds a road or drops it
+    // again, and a click beside the roads doesn't lose the others.
     const line = index.nearest(at.x, at.y, at.reach);
-    if (line < 0) {
-      if (!press.shift) setSelected([]);
-      return;
-    }
-    if (press.shift) setSelected((current) => (current.includes(line) ? current.filter((l) => l !== line) : [...current, line]));
-    else setSelected([line]);
+    if (line < 0) return;
+    setSelected((current) => (current.includes(line) ? current.filter((l) => l !== line) : [...current, line]));
   };
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (picking && e.key === 'Escape' && selected.length) {
+      setSelected([]);
+      e.preventDefault();
+      return;
+    }
     if (!box || size.w === 0) return;
     const step = box.w / 10;
     const pan: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
@@ -420,7 +423,9 @@ export function SvgPreview() {
       {result && (
         <div className="viewer-hint">
           {picking
-            ? 'Click a road to pick it · Shift-click adds · Drag to move'
+            ? coarse
+              ? 'Tap roads to pick them · Tap again to drop one'
+              : 'Click roads to pick them · Click again to drop one · Esc clears · Drag to move'
             : coarse
               ? 'Drag to move · Pinch to zoom'
               : 'Drag to move · Scroll to zoom · Double-click to fit'}

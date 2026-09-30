@@ -28,7 +28,7 @@ function feature(id: string, geometry: SourceFeature['geometry'], props: Record<
 }
 
 function town(): SourceData {
-  return {
+  const data: SourceData = {
     release: 'test',
     features: {
       water: [
@@ -53,6 +53,18 @@ function town(): SourceData {
       ],
     },
   };
+  return data;
+}
+
+/** The town with an arcade: upper floors mapped as a part raised over the ground floor. */
+function townWithArcade(): SourceData {
+  const data = town();
+  data.features.building!.push(feature('arcade', { type: 'Polygon', coordinates: rect(-400, -220, -340, -180) }, { height: 40, has_parts: true }));
+  data.features.building_part!.push(
+    feature('arcade-floor', { type: 'Polygon', coordinates: rect(-400, -220, -340, -180) }, { building_id: 'arcade', height: 15 }),
+    feature('arcade-upper', { type: 'Polygon', coordinates: rect(-400, -220, -340, -180) }, { building_id: 'arcade', min_height: 15, height: 40 }),
+  );
+  return data;
 }
 
 const area: AreaSpec = { center: [LON, LAT], widthM: 1500, heightM: 1000, rotationDeg: 0, shape: 'rectangle', cornerRadius: 0.1 };
@@ -60,11 +72,12 @@ const hills = { sample: (lon: number, lat: number) => 30 + 20 * Math.sin((lon - 
 const montserrat = readFileSync('public/fonts/Montserrat-SemiBold.ttf');
 const font = parseOutlineFont(montserrat.buffer.slice(montserrat.byteOffset, montserrat.byteOffset + montserrat.byteLength) as ArrayBuffer);
 
-async function setUp() {
+async function setUp(options: { data?: SourceData; groundRaisedParts?: boolean } = {}) {
   const settings = cloneSettings();
   settings.terrain.resolution = 96;
   settings.trees.enabled = true;
-  const spec = await generateModel({ area, settings, data: town(), elevation: hills });
+  if (options.groundRaisedParts !== undefined) settings.buildings.groundRaisedParts = options.groundRaisedParts;
+  const spec = await generateModel({ area, settings, data: options.data ?? town(), elevation: hills });
   const projection = new Projection(area.center, area.rotationDeg, spec.mmPerMetre);
   const session = new EditSession(spec, settings, projection, { load: async () => font });
   return { settings, spec, projection, session };
@@ -104,7 +117,9 @@ describe('sanitizeEdits', () => {
         { id: 'b', name: 'Bad colour', hex: 'red' },
       ],
       objects: {
-        'b:tower': { heightMm: 1000, layer: 'a', removed: true },
+        'b:tower': { heightM: 9000, layer: 'a', removed: true },
+        // A printed height from before building heights were kept in metres.
+        'b:shed': { heightMm: 12 },
         'r:main': { widthMm: 0.01, heightMm: 3, layer: 'missing' },
         'w:river': { widthMm: 2 },
         nonsense: { removed: true },
@@ -116,7 +131,8 @@ describe('sanitizeEdits', () => {
       ],
     });
     expect(edits.layers).toEqual([{ id: 'a', name: 'Route', hex: '#FF0000', line: 'PLA Matte' }]);
-    expect(edits.objects['b:tower']).toEqual({ removed: true, layer: 'a', heightMm: 150 });
+    expect(edits.objects['b:tower']).toEqual({ removed: true, layer: 'a', heightM: 5000 });
+    expect(edits.objects['b:shed']).toBeUndefined();
     expect(edits.objects['r:main']).toEqual({ heightMm: 3, widthMm: 0.2 });
     expect(edits.objects['w:river']).toBeUndefined();
     expect(edits.objects.nonsense).toBeUndefined();
@@ -175,8 +191,8 @@ describe('EditSession', () => {
 
   it('sends nothing for no edits, and nothing for removals or colours', async () => {
     const { session } = await setUp();
-    expect(await session.update(emptyEdits(), 1)).toEqual({ model: 0, version: 1, objects: [], parts: [], hidden: [], warnings: [] });
-    const edits: ModelEdits = { layers: [{ id: 'L', name: 'Home', hex: '#123456', line: 'PLA Basic' }], objects: { 'b:tower': { layer: 'L' }, 'b:shed': { removed: true } }, shapes: [] };
+    expect(await session.update(emptyEdits(), 1)).toEqual({ model: 0, version: 1, objects: [], parts: [], hidden: [], notes: {}, warnings: [] });
+    const edits: ModelEdits = { ...emptyEdits(), layers: [{ id: 'L', name: 'Home', hex: '#123456', line: 'PLA Basic' }], objects: { 'b:tower': { layer: 'L' }, 'b:shed': { removed: true } } };
     const update = await session.update(edits, 2);
     expect(update.objects).toEqual([]);
     expect(update.parts).toEqual([]);
@@ -185,20 +201,21 @@ describe('EditSession', () => {
   it('makes a building as tall as asked, and puts it back', async () => {
     const { session, spec } = await setUp();
     const base = spec.edit!.objects.get('b:tower')!.base!;
-    const update = await session.update({ ...emptyEdits(), objects: { 'b:tower': { heightMm: 12 } } }, 1);
+    const heightM = 12 / session.buildingScale;
+    const update = await session.update({ ...emptyEdits(), objects: { 'b:tower': { heightM } } }, 1);
     expect(update.objects).toHaveLength(1);
     const mesh = update.objects[0].mesh!;
     expect(maxZ(mesh.positions) + spec.baseZ).toBeCloseTo(base + 12, 3);
     expect(edgeReport(mesh.indices, mesh.positions.length / 3).open).toBe(0);
     // The same edit again sends nothing.
-    expect((await session.update({ ...emptyEdits(), objects: { 'b:tower': { heightMm: 12 } } }, 2)).objects).toEqual([]);
+    expect((await session.update({ ...emptyEdits(), objects: { 'b:tower': { heightM } } }, 2)).objects).toEqual([]);
     const back = await session.update(emptyEdits(), 3);
     expect(back.objects).toEqual([{ key: 'b:tower', part: 'buildings', mesh: null }]);
   });
 
   it('gives a part its own height inside its building', async () => {
     const { session, spec } = await setUp();
-    const update = await session.update({ ...emptyEdits(), objects: { 'b:block/podium': { heightMm: 5 } } }, 1);
+    const update = await session.update({ ...emptyEdits(), objects: { 'b:block/podium': { heightM: 5 / session.buildingScale } } }, 1);
     const mesh = update.objects[0].mesh!;
     const base = spec.edit!.objects.get('b:block')!.base!;
     const runs = mesh.objects!;
@@ -216,14 +233,14 @@ describe('EditSession', () => {
     const lines = roadLines(spec.edit!, -spec.baseZ, 0.4);
     expect(lines.keys).toContain('r:main');
     const layer = { id: 'L', name: 'Race', hex: '#FF0000', line: 'PLA Basic' as const };
-    const update = await session.update({ layers: [layer], objects: { 'r:main': { layer: 'L', widthMm: 2, heightMm: 1 } }, shapes: [] }, 1);
+    const update = await session.update({ ...emptyEdits(), layers: [layer], objects: { 'r:main': { layer: 'L', widthMm: 2, heightMm: 1 } } }, 1);
     const ids = update.parts.map((p) => p.id);
     expect(ids).toEqual(expect.arrayContaining(['roads', 'layer:L']));
     const race = update.parts.find((p) => p.id === 'layer:L')!.part!;
     expect(race.colour).toEqual({ hex: '#FF0000', line: 'PLA Basic', label: 'Race' });
     expect(edgeReport(race.indices, race.positions.length / 3).open).toBe(0);
 
-    const edited = await session.edited({ layers: [layer], objects: { 'r:main': { layer: 'L', widthMm: 2, heightMm: 1 } }, shapes: [] }, DEFAULT_PALETTE);
+    const edited = await session.edited({ ...emptyEdits(), layers: [layer], objects: { 'r:main': { layer: 'L', widthMm: 2, heightMm: 1 } } }, DEFAULT_PALETTE);
     const roads = edited.layers.find((l) => l.id === 'roads')!.solids as PrismSolid[];
     const racing = edited.layers.find((l) => l.id === 'layer:L')!.solids as PrismSolid[];
     // Main Street left the roads for its layer, at the new width.
@@ -276,8 +293,9 @@ describe('EditSession', () => {
   it('exports custom layers as their own parts, closed, in every section', async () => {
     const { session } = await setUp();
     const edits: ModelEdits = {
+      ...emptyEdits(),
       layers: [{ id: 'L', name: 'Home', hex: '#FF00FF', line: 'PLA Matte' }],
-      objects: { 'b:tower': { layer: 'L', heightMm: 8 }, 'b:shed': { removed: true }, 'w:pond': { removed: true } },
+      objects: { 'b:tower': { layer: 'L', heightM: 110 }, 'b:shed': { removed: true }, 'w:pond': { removed: true } },
       shapes: [shape({ id: 't', kind: 'text', text: 'HOME', layer: 'L', followGround: true }), shape({ id: 'b', layer: 'green' })],
     };
     const edited = await session.edited(edits, DEFAULT_PALETTE);
@@ -314,6 +332,71 @@ describe('EditSession', () => {
     const [lon, lat] = projection.modelToGeo(tree.anchor[0], tree.anchor[1]);
     const update = await session.update({ ...emptyEdits(), shapes: [shape({ at: [lon, lat], sizeMm: 6, depthMm: 6 })] }, 1);
     expect(update.hidden).toContain(tree.key);
+  });
+  it('keeps building heights in real metres, so they follow the scale', async () => {
+    const { session, spec } = await setUp();
+    const base = spec.edit!.objects.get('b:tower')!.base!;
+    const update = await session.update({ ...emptyEdits(), objects: { 'b:tower': { heightM: 100 } } }, 1);
+    const peak = maxZ(update.objects[0].mesh!.positions) + spec.baseZ;
+    // Buildings are 1.1 times as tall as the scale makes them by default.
+    expect(peak - base).toBeCloseTo(100 * spec.mmPerMetre * 1.1, 2);
+    expect(session.buildingScale).toBeCloseTo(spec.mmPerMetre * 1.1, 9);
+  });
+
+  it('lists the parts of a building, tallest first', async () => {
+    const { session } = await setUp({ data: townWithArcade() });
+    const parts = session.describe()['b:arcade'].parts!;
+    expect(parts.map((p) => p.sub)).toEqual(['arcade-upper', 'arcade-floor']);
+    expect(parts[0].heightMm).toBeGreaterThan(parts[1].heightMm);
+    expect(session.describe()['b:tower'].parts).toBeUndefined();
+  });
+
+  it('brings a raised part down to the ground when what held it up is removed', async () => {
+    const { session } = await setUp({ data: townWithArcade(), groundRaisedParts: false });
+    const upper = (edited: Awaited<ReturnType<EditSession['edited']>>) =>
+      edited.layers.flatMap((l) => l.solids).filter((s) => s.key === 'b:arcade' && s.sub === 'arcade-upper') as PrismSolid[];
+    // As generated, the upper floors stand on the ground floor.
+    const before = upper(await session.edited(emptyEdits(), DEFAULT_PALETTE));
+    expect(before.length).toBeGreaterThan(0);
+    expect(before.every((s) => typeof s.bottom === 'number')).toBe(true);
+    const edits = { ...emptyEdits(), objects: { 'b:arcade/arcade-floor': { removed: true } } };
+    const update = await session.update(edits, 1);
+    expect(update.objects.map((o) => o.key)).toEqual(['b:arcade']);
+    const after = upper(await session.edited(edits, DEFAULT_PALETTE));
+    expect(after.every((s) => typeof s.bottom === 'function')).toBe(true);
+    // A lower floor still holds it up.
+    const lowered = { ...emptyEdits(), objects: { 'b:arcade/arcade-floor': { heightM: 14.9 } } };
+    expect(upper(await session.edited(lowered, DEFAULT_PALETTE)).every((s) => typeof s.bottom === 'number')).toBe(true);
+    // Half as tall, it doesn't.
+    const halved = { ...emptyEdits(), objects: { 'b:arcade/arcade-floor': { heightM: 7 } } };
+    expect(upper(await session.edited(halved, DEFAULT_PALETTE)).every((s) => typeof s.bottom === 'function')).toBe(true);
+  });
+
+  it('sends nothing for a removed part that leaves nothing on air', async () => {
+    const { session } = await setUp({ data: townWithArcade() });
+    // By default raised parts reach the ground anyway.
+    const update = await session.update({ ...emptyEdits(), objects: { 'b:arcade/arcade-floor': { removed: true } } }, 1);
+    expect(update.objects).toEqual([]);
+  });
+
+  it('notes shapes too thin to print, or outside the model', async () => {
+    const { session } = await setUp();
+    const update = await session.update(
+      {
+        ...emptyEdits(),
+        shapes: [
+          shape({ id: 'tiny', kind: 'text', text: 'Main Street', sizeMm: 1 }),
+          shape({ id: 'big', kind: 'text', text: 'Main Street', sizeMm: 6 }),
+          shape({ id: 'blank', kind: 'text', text: ' ' }),
+          shape({ id: 'away', at: at(5000, 5000) }),
+          shape({ id: 'thin', kind: 'path', points: [at(-100, 300), at(100, 300)], sizeMm: 0.3 }),
+        ],
+      },
+      1,
+    );
+    expect(Object.keys(update.notes).sort()).toEqual(['s:away', 's:blank', 's:thin', 's:tiny']);
+    expect(update.notes['s:tiny']).toMatch(/thinner than/);
+    expect(update.notes['s:away']).toMatch(/outside the model/);
   });
 });
 

@@ -8,7 +8,7 @@ import { formatBytes } from '../lib/format';
 import { kindOf, objectOf } from '../../core/edit/keys';
 import type { ModelEdits } from '../../core/edit/types';
 import { fileBase, generationProblem } from './derived';
-import { flushEdits, nextEditVersion } from './editActions';
+import { flushEdits, nextEditVersion, setNotes } from './editActions';
 import { getEngine, onWorkerReplaced } from './engine';
 import { setModelParts, type EditData } from './model';
 import {
@@ -107,9 +107,10 @@ export async function generateModel(): Promise<void> {
       roads: result.roads ?? null,
       objects: result.objects ?? {},
       ground: result.ground ?? null,
-      frame: { center: area.center, rotationDeg: area.rotationDeg, mmPerMetre: result.mmPerMetre },
+      frame: { center: area.center, rotationDeg: area.rotationDeg, mmPerMetre: result.mmPerMetre, buildingMmPerMetre: result.buildingMmPerMetre ?? result.mmPerMetre },
     };
     setModelParts(result.parts, data, result.edit, result.modelId);
+    setNotes(result.edit?.notes ?? {});
     const meta = toMeta(result, key);
     const narrow = window.matchMedia(NARROW_QUERY).matches;
     useApp.setState((current) => ({
@@ -132,6 +133,9 @@ export async function generateModel(): Promise<void> {
         // What was selected may not be in this model.
         selection: current.ui.selection.filter((key) => selectable(key, data, current.edits)),
         editMode: current.ui.editMode && data.editable,
+        // The new model came with the edits applied.
+        editsPending: false,
+        activePoint: null,
       },
     }));
   } catch (error) {

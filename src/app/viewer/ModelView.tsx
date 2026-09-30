@@ -10,7 +10,7 @@ import {
   TriangleAlert,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Vector3 } from 'three';
 import { isPartKey, kindOf, objectOf, partKey } from '../../core/edit/keys';
 import type { AddedShape } from '../../core/edit/types';
@@ -23,10 +23,12 @@ import { formatCount, formatMm, formatRatio, formatSeconds, capitalise } from '.
 import { generateModel } from '../state/actions';
 import {
   addShape,
+  deletePoint,
   duplicateShapes,
   patchObjects,
   redoEdit,
   removeObjects,
+  setActivePoint,
   setEditMode,
   setSelection,
   setTool,
@@ -39,7 +41,7 @@ import {
 import { fileBase, generationProblem } from '../state/derived';
 import { currentEditState, getEditData, getModelParts, onEditUpdate } from '../state/model';
 import { setHiddenParts, setShowBed, toast, togglePartHidden, useApp, type EditTool } from '../state/store';
-import { describeKey } from './edit/describe';
+import { describeCounts, describeKey } from './edit/describe';
 import { EditToolbar, TOOLS } from './edit/EditToolbar';
 import { Inspector } from './edit/Inspector';
 import { EditController, type EditHandlers } from './editController';
@@ -49,22 +51,24 @@ type Panel = 'parts' | 'info' | 'warnings' | null;
 
 const TOOL_HINTS: Record<EditTool, string> = {
   select: 'Click to select · Shift-drag to select in a box · Delete removes · Ctrl+Z undoes',
+  several: 'Click things to add or drop them · Drag a box to add everything in it · Right-drag to pan',
   text: 'Click where the text goes. Esc to stop.',
   pin: 'Click the spot to mark. Esc to stop.',
   box: 'Click where the box goes. Esc to stop.',
   cylinder: 'Click where the cylinder goes. Esc to stop.',
-  path: 'Click to add points. Double-click or Enter to finish, Backspace takes the last point off, Esc cancels.',
-  area: 'Click around the area. Double-click or Enter to finish, Backspace takes the last point off, Esc cancels.',
+  path: 'Click along the road. Double-click or Enter to finish, Backspace takes the last point off, Esc cancels.',
+  area: 'Click around the outline. Double-click or Enter to finish, Backspace takes the last point off, Esc cancels.',
 };
 
 const TOUCH_HINTS: Record<EditTool, string> = {
   select: 'Tap to select · Drag to orbit · Pinch to zoom',
+  several: 'Tap things to add or drop them',
   text: 'Tap where the text goes.',
   pin: 'Tap the spot to mark.',
   box: 'Tap where the box goes.',
   cylinder: 'Tap where the cylinder goes.',
-  path: 'Tap to add points, then Finish.',
-  area: 'Tap around the area, then Finish.',
+  path: 'Tap along the road, then Finish.',
+  area: 'Tap around the outline, then Finish.',
 };
 
 // Its own component, so progress updates don't re-render the whole viewer.
@@ -100,6 +104,20 @@ function Banner() {
   );
 }
 
+/** True once `flag` has been true for `ms`, so something quick never flashes up. */
+function useDelayed(flag: boolean, ms: number): boolean {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (!flag) {
+      setShown(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShown(true), ms);
+    return () => clearTimeout(timer);
+  }, [flag, ms]);
+  return shown;
+}
+
 function isTyping(target: EventTarget | null): boolean {
   const element = target as HTMLElement | null;
   return Boolean(element?.closest?.('input, textarea, select, [contenteditable="true"]'));
@@ -123,6 +141,8 @@ export default function ModelView({ active }: { active: boolean }) {
   const editMode = useApp((state) => state.ui.editMode);
   const tool = useApp((state) => state.ui.tool);
   const selection = useApp((state) => state.ui.selection);
+  const activePoint = useApp((state) => state.ui.activePoint);
+  const updating = useDelayed(useApp((state) => state.ui.editsPending), 300);
   const edits = useApp((state) => state.edits);
   const dark = useMediaQuery(DARK_QUERY);
   const coarse = useMediaQuery(COARSE_QUERY);
@@ -192,8 +212,8 @@ export default function ModelView({ active }: { active: boolean }) {
     if (active) engineRef.current?.resize();
   }, [active]);
   useEffect(() => {
-    controllerRef.current?.setState({ enabled: editMode && active, tool, selection, edits, facts: editData.objects, projection });
-  }, [editMode, active, tool, selection, edits, editData, projection]);
+    controllerRef.current?.setState({ enabled: editMode && active, tool, selection, edits, facts: editData.objects, projection, activePoint });
+  }, [editMode, active, tool, selection, edits, editData, projection, activePoint]);
   useEffect(() => {
     if (!editMode) setHover(null);
     if (editMode) setPanel((open) => (open === 'info' ? null : open));
@@ -229,7 +249,8 @@ export default function ModelView({ active }: { active: boolean }) {
       switch (key) {
         case 'Escape':
           if (controller?.cancelDrawing()) break;
-          if (state.ui.tool !== 'select') setTool('select');
+          if (state.ui.activePoint) setActivePoint(null);
+          else if (state.ui.tool !== 'select') setTool('select');
           else if (keys.length) setSelection([]);
           else return;
           break;
@@ -239,7 +260,8 @@ export default function ModelView({ active }: { active: boolean }) {
         case 'Delete':
         case 'Backspace':
           if (controller?.undoPoint()) break;
-          if (keys.length) removeObjects(keys);
+          if (state.ui.activePoint) deletePoint(state.ui.activePoint.shape, state.ui.activePoint.index);
+          else if (keys.length) removeObjects(keys);
           break;
         case '[':
         case ']':
@@ -320,6 +342,14 @@ export default function ModelView({ active }: { active: boolean }) {
     engine.focusOn(min.clone().add(max).multiplyScalar(0.5), max.clone().sub(min).length() / 2);
   }
 
+  // Stable, since the parts list clears its highlight whenever this changes.
+  const preview = useCallback((key: string | null) => engineRef.current?.setHover(key), []);
+  const focusOn = useCallback((keys: string[]) => {
+    setSelection(keys);
+    // Once the selection is shown, so its bounds are known.
+    requestAnimationFrame(focusSelection);
+  }, []);
+
   function heightOf(key: string): number | null {
     const engine = engineRef.current;
     const ground = getEditData().objects[objectOf(key)]?.groundZ;
@@ -343,7 +373,7 @@ export default function ModelView({ active }: { active: boolean }) {
       boxSelect(keys, additive) {
         if (additive) setSelection([...new Set([...useApp.getState().ui.selection, ...keys])]);
         else setSelection(keys);
-        if (keys.length) toast(`Selected ${keys.length} ${keys.length === 1 ? 'thing' : 'things'}`);
+        if (keys.length) toast(`Selected ${describeCounts(keys)}`);
       },
       hover(target, x, y) {
         const key = target?.key ?? null;
@@ -352,7 +382,7 @@ export default function ModelView({ active }: { active: boolean }) {
       },
       place(tool, target) {
         const p = projectionRef.current;
-        if (!p || tool === 'select' || tool === 'path' || tool === 'area') return;
+        if (!p || tool === 'select' || tool === 'several' || tool === 'path' || tool === 'area') return;
         const [lon, lat] = p.modelToGeo(target.point.x, target.point.y);
         const ground = target.ground ?? target.point.z;
         // Put on a roof or a bridge, it stands on it.
@@ -370,8 +400,12 @@ export default function ModelView({ active }: { active: boolean }) {
       },
       drawing: setDrawing,
       dragHeight(key, heightMm, done) {
-        if (kindOf(key) === 'shape') updateShape(key.slice(2), { heightMm }, `drag-height:${key}`);
-        else patchObjects([key], { heightMm }, `drag-height:${key}`);
+        if (kindOf(key) === 'shape') {
+          updateShape(key.slice(2), { heightMm }, `drag-height:${key}`);
+        } else {
+          const scale = getEditData().frame?.buildingMmPerMetre;
+          if (scale) patchObjects([key], { heightM: heightMm / scale }, `drag-height:${key}`);
+        }
         if (done) settleEdits();
       },
       moveShape(id, dx, dy, done) {
@@ -404,15 +438,10 @@ export default function ModelView({ active }: { active: boolean }) {
         if (done) settleEdits();
       },
       deleteVertex(id, index) {
-        const shape = useApp.getState().edits.shapes.find((s) => s.id === id);
-        if (!shape) return;
-        const minimum = shape.kind === 'area' ? 3 : 2;
-        if (shape.points.length <= minimum) {
-          toast(`A ${shape.kind} needs at least ${minimum} points.`);
-          return;
-        }
-        const points = shape.points.filter((_, i) => i !== index);
-        updateShape(id, { points, at: points[0] });
+        deletePoint(id, index);
+      },
+      activatePoint(id, index) {
+        setActivePoint({ shape: id, index });
       },
     };
   }
@@ -460,10 +489,15 @@ export default function ModelView({ active }: { active: boolean }) {
   const editing = editMode && result !== null;
   const drawingLine = editing && drawing > 0 && (tool === 'path' || tool === 'area');
   const hint = editing ? (coarse ? TOUCH_HINTS : TOOL_HINTS)[tool] : null;
+  // Said by screen readers, since the selection is made on the canvas.
+  const announced = !editing || !selection.length ? '' : selection.length === 1 ? `Selected ${describeKey(selection[0], editData, edits).title}` : `Selected ${describeCounts(selection)}`;
 
   return (
     <div className={`viewer${lost ? ' is-lost' : ''}${editing ? ' is-editing' : ''}`} aria-hidden={!active} inert={!active}>
       <div ref={hostRef} className="viewer-host" role="img" aria-label="3D preview of the generated model" />
+      <div className="sr-only" aria-live="polite">
+        {announced}
+      </div>
 
       {result && size && (
         <div className="viewer-overlay viewer-top-left">
@@ -486,6 +520,12 @@ export default function ModelView({ active }: { active: boolean }) {
                   <li key={i}>{warning}</li>
                 ))}
               </ul>
+            </div>
+          )}
+          {editing && updating && (
+            <div className="chip floating edit-busy" role="status">
+              <span className="spinner" aria-hidden="true" />
+              Updating the model
             </div>
           )}
           {editing && <EditToolbar />}
@@ -517,7 +557,7 @@ export default function ModelView({ active }: { active: boolean }) {
       {result && (
         <div className="viewer-overlay viewer-top-right">
           <div className="toolbar floating" role="toolbar" aria-label="View">
-            <ToolButton label={editMode ? 'Stop editing' : 'Edit the model'} pressed={editMode} onClick={() => setEditMode(!editMode)}>
+            <ToolButton label={editMode ? 'Stop editing' : 'Edit the model (beta)'} pressed={editMode} onClick={() => setEditMode(!editMode)}>
               <Pencil size={15} aria-hidden="true" />
             </ToolButton>
             <ToolButton label="Reset view" onClick={() => engineRef.current?.resetView()}>
@@ -621,6 +661,8 @@ export default function ModelView({ active }: { active: boolean }) {
               heightOf={heightOf}
               streetOf={(key) => engineRef.current?.roads?.connected(key) ?? [key]}
               focus={focusSelection}
+              preview={preview}
+              focusOn={focusOn}
             />
           )}
         </div>

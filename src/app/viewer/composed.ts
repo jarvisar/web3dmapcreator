@@ -82,7 +82,8 @@ export class ComposedMesh {
   /** Rebuilds the index for what's shown. Returns false when nothing changed. */
   update(style: EntryStyle): boolean {
     const styles = this.entries.map(style);
-    const signature = styles.join('\u0001');
+    // join() writes null as '', the part's own colour, so hidden needs a mark of its own.
+    const signature = styles.map((s) => s ?? '\u0002').join('\u0001');
     if (signature === this.lastSignature && this.geometry.index) return false;
     this.lastSignature = signature;
     const indices = this.source.indices;

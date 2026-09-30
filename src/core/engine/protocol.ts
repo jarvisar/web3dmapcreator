@@ -75,6 +75,8 @@ export interface GenerateResult {
   editable?: boolean;
   /** Edit updates for this model carry this. */
   modelId?: number;
+  /** Printed mm per real metre of building height, which building height edits are kept in. */
+  buildingMmPerMetre?: number;
 }
 
 export interface SurfaceSummary {

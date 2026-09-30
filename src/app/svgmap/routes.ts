@@ -2,7 +2,7 @@
 // A road is in one place at a time, so assigning lines takes them out of
 // wherever they were first.
 
-import { MAX_ROUTES, sameLine, type LonLatLine, type SvgRoute } from '../../core/svgmap/routes';
+import { MAX_PICKED_POINTS, MAX_ROUTES, pickedPoints, sameLine, type LonLatLine, type SvgRoute } from '../../core/svgmap/routes';
 import { patchSvg, toast, useApp } from '../state/store';
 
 const ROUTE_COLOURS = ['#E4002B', '#0057B8', '#FF8200', '#7A3E9D', '#009A44', '#E0A800', '#00A3AD', '#D62598'];
@@ -34,13 +34,25 @@ export function deleteRoute(id: string): void {
 }
 
 /** Puts lines in a route, leaves them out ('hidden'), or back to normal (null). */
-export function assignLines(lines: LonLatLine[], target: string | 'hidden' | null): void {
-  if (!lines.length) return;
+export function assignLines(lines: LonLatLine[], target: string | 'hidden' | null): boolean {
+  if (!lines.length) return true;
   const others = (stored: LonLatLine[]) => stored.filter((line) => !lines.some((picked) => sameLine(line, picked)));
-  patchSvg((svg) => ({
-    routes: svg.routes.map((route) => ({ ...route, lines: [...others(route.lines), ...(route.id === target ? lines : [])] })),
-    hiddenLines: [...others(svg.hiddenLines), ...(target === 'hidden' ? lines : [])],
-  }));
+  const svg = useApp.getState().svg;
+  const routes = svg.routes.map((route) => ({ ...route, lines: [...others(route.lines), ...(route.id === target ? lines : [])] }));
+  const hiddenLines = [...others(svg.hiddenLines), ...(target === 'hidden' ? lines : [])];
+  if (pickedPoints(routes, hiddenLines) > MAX_PICKED_POINTS) {
+    toast('That is more road than one map can keep picked. Put fewer roads in routes, or take some out of them first.', 'error');
+    return false;
+  }
+  patchSvg({ routes, hiddenLines });
+  return true;
+}
+
+/** Takes these picked lines out of every route and the roads left out. */
+export function dropPicks(lines: LonLatLine[]): void {
+  const gone = new Set(lines.map((line) => JSON.stringify(line)));
+  const keep = (stored: LonLatLine[]) => stored.filter((line) => !gone.has(JSON.stringify(line)));
+  patchSvg((svg) => ({ routes: svg.routes.map((route) => ({ ...route, lines: keep(route.lines) })), hiddenLines: keep(svg.hiddenLines) }));
 }
 
 /** Every road back to normal. */

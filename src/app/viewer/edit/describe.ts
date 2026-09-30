@@ -38,18 +38,18 @@ export const SHAPE_NAMES: Record<AddedShape['kind'], string> = {
   box: 'Box',
   cylinder: 'Cylinder',
   pin: 'Map pin',
-  path: 'Drawn path',
-  area: 'Drawn area',
+  path: 'Drawn road',
+  area: 'Drawn outline',
 };
 
 export const KIND_NAMES: Record<ObjectKind, [string, string]> = {
-  building: ['Building', 'buildings'],
-  road: ['Road', 'roads'],
-  bridge: ['Bridge', 'bridges'],
-  water: ['Water', 'bodies of water'],
-  tree: ['Tree', 'trees'],
-  rock: ['Rock', 'rocks'],
-  shape: ['Shape', 'shapes'],
+  building: ['building', 'buildings'],
+  road: ['road', 'roads'],
+  bridge: ['bridge', 'bridges'],
+  water: ['body of water', 'bodies of water'],
+  tree: ['tree', 'trees'],
+  rock: ['rock', 'rocks'],
+  shape: ['shape', 'shapes'],
 };
 
 function titleCase(text: string): string {
@@ -103,7 +103,7 @@ export function describeCounts(keys: string[]): string {
     const kind = kindOf(key) ?? 'building';
     counts.set(kind, (counts.get(kind) ?? 0) + 1);
   }
-  const parts = [...counts].map(([kind, n]) => (n === 1 ? `1 ${KIND_NAMES[kind][0].toLowerCase()}` : `${n} ${KIND_NAMES[kind][1]}`));
+  const parts = [...counts].map(([kind, n]) => (n === 1 ? `1 ${KIND_NAMES[kind][0]}` : `${n} ${KIND_NAMES[kind][1]}`));
   if (parts.length <= 1) return parts[0] ?? '';
   return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 }

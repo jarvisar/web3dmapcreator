@@ -109,6 +109,7 @@ async function startSession(id: number, spec: ModelSpec, request: GenerateReques
     session = new EditSession(spec, request.settings, projection, { load: (font) => fonts.load(font, null) }, id);
     result.editable = true;
     result.objects = session.describe();
+    result.buildingMmPerMetre = session.buildingScale;
     if (spec.edit.roads.length) result.roads = roadLines(spec.edit, -spec.baseZ, request.settings.roads.thicknessMm);
     result.ground = groundGrid(spec.edit, -spec.baseZ) ?? undefined;
     const transfers = [...(result.roads ? roadTransfers(result.roads) : []), ...(result.ground ? [result.ground.values.buffer] : [])];

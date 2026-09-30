@@ -1,10 +1,15 @@
 // Edits made to a generated model in the viewer. They're keyed by the map
 // features things were built from (see keys.ts), not by triangles, so they
 // survive regenerating with other settings and apply to the next model of
-// the same area. Sizes are printed millimetres. Added shapes are placed in
-// lon/lat so they stay put when the area or scale changes.
+// the same area. Sizes are printed millimetres, apart from building heights,
+// which are real metres so an edited building keeps up with a new scale.
+// Added shapes are placed in lon/lat so they stay put when the area or scale
+// changes.
 
 import type { LonLat } from '../types';
+
+/** Saved edits of another version are read as far as they still make sense. */
+export const EDITS_VERSION = 2;
 
 export type FilamentLine = 'PLA Basic' | 'PLA Matte';
 
@@ -21,7 +26,9 @@ export interface ObjectEdit {
   removed?: boolean;
   /** Custom layer id. */
   layer?: string;
-  /** Buildings: printed height above the ground. Roads: thickness above the ground. */
+  /** Buildings: real height above the ground, in metres. */
+  heightM?: number;
+  /** Roads: printed thickness above the ground. */
   heightMm?: number;
   /** Roads: printed width. */
   widthMm?: number;
@@ -54,13 +61,14 @@ export interface AddedShape {
 }
 
 export interface ModelEdits {
+  version: number;
   layers: EditLayer[];
   objects: Record<string, ObjectEdit>;
   shapes: AddedShape[];
 }
 
 export function emptyEdits(): ModelEdits {
-  return { layers: [], objects: {}, shapes: [] };
+  return { version: EDITS_VERSION, layers: [], objects: {}, shapes: [] };
 }
 
 export function hasEdits(edits: ModelEdits): boolean {
@@ -76,7 +84,9 @@ export const SHAPE_KINDS: readonly ShapeKind[] = ['box', 'cylinder', 'pin', 'tex
 
 /** Limits every number is held to, from the UI, saved state and imports alike. */
 export const EDIT_LIMITS = {
-  heightMm: [0.1, 150],
+  heightM: [0.5, 5000],
+  /** A building's printed height, where the inspector shows it in mm. */
+  buildingHeightMm: [0.2, 300],
   roadHeightMm: [0.1, 20],
   widthMm: [0.2, 12],
   sizeMm: [0.5, 300],
@@ -136,9 +146,12 @@ export function sanitizeEdits(raw: unknown): ModelEdits {
       const edit: ObjectEdit = {};
       if (value.removed === true) edit.removed = true;
       if (typeof value.layer === 'string' && layerIds.has(value.layer)) edit.layer = value.layer;
-      const road = key.startsWith('r:');
-      if (finite(value.heightMm)) edit.heightMm = clamp(value.heightMm, road ? EDIT_LIMITS.roadHeightMm : EDIT_LIMITS.heightMm);
-      if (finite(value.widthMm) && road) edit.widthMm = clamp(value.widthMm, EDIT_LIMITS.widthMm);
+      // Older edits held a building's printed height, which can't be told in metres without the scale it was set at.
+      if (key.startsWith('b:') && finite(value.heightM)) edit.heightM = clamp(value.heightM, EDIT_LIMITS.heightM);
+      if (key.startsWith('r:')) {
+        if (finite(value.heightMm)) edit.heightMm = clamp(value.heightMm, EDIT_LIMITS.roadHeightMm);
+        if (finite(value.widthMm)) edit.widthMm = clamp(value.widthMm, EDIT_LIMITS.widthMm);
+      }
       if (Object.keys(edit).length) out.objects[key] = edit;
     }
   }

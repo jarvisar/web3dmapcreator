@@ -1,5 +1,7 @@
 // Saved state in localStorage, merged onto the defaults on load so settings
-// added later start at their default value.
+// added later start at their default value. The model's edits and an SVG
+// map's picked roads can get big, so each has a key of its own: running out
+// of space for them shouldn't stop the settings from saving.
 
 import {
   COLOUR_GROUPS,
@@ -13,10 +15,13 @@ import {
 } from '../../core/settings';
 import type { AreaSpec, ExportSettings, ModelSettings, Palette } from '../../core/settings';
 import { sanitizeEdits, type ModelEdits } from '../../core/edit/types';
+import { sanitizeLines, sanitizeRoutes } from '../../core/svgmap/routes';
 import { type SvgSettings, defaultSvgSettings, mergeSettings } from '../svgmap/settings';
 import { matchingPreset } from './derived';
 
 export const STORAGE_KEY = 'jarvizar-city-model:v1';
+export const EDITS_KEY = 'jarvizar-city-model:edits';
+export const PICKS_KEY = 'jarvizar-city-model:picks';
 const KEY = STORAGE_KEY;
 
 export interface SavedState {
@@ -100,24 +105,31 @@ function readArea(saved: unknown): AreaSpec | undefined {
   return { ...merged, center: [lon, lat] };
 }
 
-export function loadSaved(): SavedState {
-  let raw: unknown;
+function readJson(key: string): unknown {
   try {
-    const text = localStorage.getItem(KEY);
-    raw = text ? JSON.parse(text) : null;
+    const text = localStorage.getItem(key);
+    return text ? JSON.parse(text) : null;
   } catch {
-    return {};
+    return null;
   }
+}
+
+export function loadSaved(): SavedState {
+  const raw = readJson(KEY);
   if (!isObject(raw)) return {};
   const ui = isObject(raw.ui) ? raw.ui : {};
+  const edits = readJson(EDITS_KEY);
+  const picks = readJson(PICKS_KEY);
+  let svg = isObject(raw.svg) ? mergeSettings(defaultSvgSettings(), raw.svg) : undefined;
+  if (svg && isObject(picks)) svg = { ...svg, routes: sanitizeRoutes(picks.routes), hiddenLines: sanitizeLines(picks.hiddenLines) };
   return {
     output: raw.output === 'svg' || raw.output === 'model' ? raw.output : undefined,
     area: readArea(raw.area),
     settings: readSettings(raw.settings),
     palette: readPalette(raw.palette, raw.palettePreset),
     exportSettings: readExport(raw.exportSettings),
-    edits: isObject(raw.edits) ? sanitizeEdits(raw.edits) : undefined,
-    svg: isObject(raw.svg) ? mergeSettings(defaultSvgSettings(), raw.svg) : undefined,
+    edits: isObject(edits) ? sanitizeEdits(edits) : undefined,
+    svg,
     placeName: typeof raw.placeName === 'string' ? raw.placeName : undefined,
     fileName: typeof raw.fileName === 'string' ? raw.fileName : null,
     sections: isObject(ui.sections) ? (ui.sections as Record<string, boolean>) : undefined,
@@ -137,9 +149,27 @@ let saving = true;
 export function clearSavedState(): void {
   saving = false;
   try {
-    localStorage.removeItem(KEY);
+    for (const key of [KEY, EDITS_KEY, PICKS_KEY]) localStorage.removeItem(key);
   } catch {
     // Storage is off, so nothing was saved either.
+  }
+}
+
+// What was last written under each key, so an unchanged edit list isn't
+// turned into JSON again every time the area moves.
+const written = new Map<string, unknown[]>();
+
+/** Writes a key, unless it was last written from the same values. False when the browser refused it. */
+function write(key: string, values: unknown[] | null, text: () => string): boolean {
+  const before = written.get(key);
+  if (values && before && before.every((value, i) => value === values[i])) return true;
+  try {
+    localStorage.setItem(key, text());
+    if (values) written.set(key, values);
+    return true;
+  } catch {
+    written.delete(key);
+    return false;
   }
 }
 
@@ -157,9 +187,10 @@ export function saveState(
     ui: { sections: object; basemap: string; showBed: boolean; sizeUnit: string; mapHintDismissed: boolean; previewLook: string };
   },
   hash: string,
-): void {
-  if (!saving) return;
+): boolean {
+  if (!saving) return true;
   const { sections, basemap, showBed, sizeUnit, mapHintDismissed, previewLook } = state.ui;
+  const { routes, hiddenLines, ...svg } = state.svg;
   const data = {
     hash,
     output: state.output,
@@ -168,15 +199,14 @@ export function saveState(
     palette: state.palette,
     palettePreset: matchingPreset(state.palette)?.key,
     exportSettings: state.exportSettings,
-    edits: state.edits,
-    svg: state.svg,
+    svg,
     placeName: state.placeName,
     fileName: state.fileName,
     ui: { sections, basemap, showBed, sizeUnit, mapHintDismissed, previewLook },
   };
-  try {
-    localStorage.setItem(KEY, JSON.stringify(data));
-  } catch {
-    // Private browsing or storage full: settings just are not remembered.
-  }
+  // Private browsing or storage full: what doesn't fit just isn't remembered.
+  let ok = write(KEY, null, () => JSON.stringify(data));
+  ok = write(EDITS_KEY, [state.edits], () => JSON.stringify(state.edits)) && ok;
+  ok = write(PICKS_KEY, [routes, hiddenLines], () => JSON.stringify({ routes, hiddenLines })) && ok;
+  return ok;
 }

@@ -7,7 +7,8 @@ import { PICK_LAYERS, pickToWorld, type LonLatLine, type PickLines, type SvgRout
 import { LAYER_NAMES } from '../../core/svgmap/settings';
 import { NumberInput } from '../components/NumberField';
 import { useApp } from '../state/store';
-import { addRoute, assignLines, clearPicks, deleteRoute, updateRoute } from './routes';
+import { useSvgRender } from './render';
+import { addRoute, assignLines, clearPicks, deleteRoute, dropPicks, updateRoute } from './routes';
 
 const CELL_MM = 3;
 // Ends this close meet.
@@ -180,12 +181,14 @@ export function PickOverlay({ index, selected, hover, unit, routes }: { index: P
 }
 
 const NEW = '__new';
+const NONE: LonLatLine[] = [];
 
 /** The card beside the preview while roads are being picked. */
 export function RouteCard({ index, selected, onSelect, onClose }: { index: PickIndex | null; selected: number[]; onSelect: (lines: number[]) => void; onClose: () => void }) {
   const routes = useApp((state) => state.svg.routes);
   const hiddenCount = useApp((state) => state.svg.hiddenLines.length);
   const mode = useApp((state) => state.svg.mode);
+  const missing = useSvgRender((state) => state.result?.missingPicks ?? NONE);
   const [target, setTarget] = useState('');
   const selectId = useId();
   useEffect(() => {
@@ -197,8 +200,7 @@ export function RouteCard({ index, selected, onSelect, onClose }: { index: PickI
   const allHidden = owners.length > 0 && owners.every((owner) => owner === -1);
   const lines = () => (index ? selected.map((line) => index.lonLat(line)) : []);
   const assign = (to: string | 'hidden' | null) => {
-    assignLines(lines(), to);
-    onSelect([]);
+    if (assignLines(lines(), to)) onSelect([]);
   };
   const layers = index ? new Set(selected.map((line) => LAYER_NAMES[PICK_LAYERS[index.pick.layers[line]]])) : new Set<string>();
 
@@ -213,8 +215,8 @@ export function RouteCard({ index, selected, onSelect, onClose }: { index: PickI
       <div className="inspector-body">
         {!selected.length ? (
           <p className="inspector-intro">
-            Click a road, path or railway to pick it, and Shift-click to pick more. Put them in a route to give them a colour and layer of their own, or
-            leave them out. Dragging still moves the map.
+            Click the roads, paths or railways a route follows, and click one again to drop it. Put them in a route to give them a colour and layer of
+            their own, or leave them out. Dragging still moves the map.
           </p>
         ) : (
           <>
@@ -284,6 +286,15 @@ export function RouteCard({ index, selected, onSelect, onClose }: { index: PickI
           </>
         )}
         <RouteList routes={routes} print={mode === 'print'} />
+        {missing.length > 0 && (
+          <p className="inspector-note">
+            {missing.length === 1 ? "1 picked road isn't" : `${missing.length} picked roads aren't`} on this map. They may be outside it, on a layer that's
+            off, or drawn differently at this scale.{' '}
+            <button type="button" className="link-btn" onClick={() => dropPicks(missing)}>
+              Drop {missing.length === 1 ? 'it' : 'them'}
+            </button>
+          </p>
+        )}
         {(hiddenCount > 0 || routes.some((r) => r.lines.length)) && (
           <div className="inspector-changes">
             <span>{hiddenCount ? `${hiddenCount} left out` : 'Nothing left out'}</span>
@@ -294,7 +305,7 @@ export function RouteCard({ index, selected, onSelect, onClose }: { index: PickI
         )}
       </div>
       <footer className="viewer-card-footer inspector-footer">
-        <span>Routes are drawn on top of the roads, each as its own layer. Share links leave picks out.</span>
+        <span>Routes are drawn on top of the roads, each as its own layer.</span>
       </footer>
     </section>
   );

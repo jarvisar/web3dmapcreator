@@ -1,7 +1,8 @@
-import { Copy, Crosshair, Eraser, Plus, RotateCcw, Route, Trash2, Undo2, X } from 'lucide-react';
-import { useEffect, useId, useState } from 'react';
-import { isPartKey, kindOf, objectOf, shapeKey } from '../../../core/edit/keys';
+import { Copy, Crosshair, Eraser, Plus, RotateCcw, Route, Search, Trash2, TriangleAlert, Undo2, X } from 'lucide-react';
+import { useEffect, useId, useMemo, useState } from 'react';
+import { isPartKey, kindOf, objectOf, partKey, shapeKey } from '../../../core/edit/keys';
 import { EDIT_LIMITS, editCount, type AddedShape, type EditLayer, type ModelEdits } from '../../../core/edit/types';
+import { Projection } from '../../../core/geo/projection';
 import { COLOUR_GROUPS } from '../../../core/settings';
 import { FONTS } from '../../../core/svgmap/text/fonts';
 import type { ColourGroup } from '../../../core/types';
@@ -12,7 +13,9 @@ import { formatNumber } from '../../lib/format';
 import {
   addLayer,
   clearEdits,
+  clearEditsFor,
   deleteLayer,
+  deletePoint,
   duplicateShapes,
   patchObjects,
   removeObjects,
@@ -26,12 +29,15 @@ import {
   updateShapes,
 } from '../../state/editActions';
 import { getEditData, type EditData } from '../../state/model';
-import { toast, useApp } from '../../state/store';
+import { useApp } from '../../state/store';
 import { FilamentPopover } from '../../panels/ColourPopover';
-import { describeCounts, describeKey } from './describe';
+import { describeCounts, describeKey, roadClassName } from './describe';
 
 const NEW_LAYER = '__new';
 const MIXED = '__mixed';
+const NOZZLE_MM = 0.4;
+// A tower can be mapped in dozens of parts.
+const PARTS_SHOWN = 6;
 
 export interface InspectorProps {
   /** How tall a building or part is now, as shown. */
@@ -39,6 +45,10 @@ export interface InspectorProps {
   /** The whole street a road is part of. */
   streetOf: (key: string) => string[];
   focus: () => void;
+  /** Highlights something in the view while the pointer is over its row, or nothing. */
+  preview: (key: string | null) => void;
+  /** Selects things and turns the view to them. */
+  focusOn: (keys: string[]) => void;
 }
 
 export function Inspector(props: InspectorProps) {
@@ -49,14 +59,14 @@ export function Inspector(props: InspectorProps) {
   const data = getEditData();
   return (
     <section className="viewer-card floating inspector" aria-label="Edit">
-      {selection.length ? <SelectionPanel keys={selection} edits={edits} data={data} {...props} /> : <Overview edits={edits} data={data} />}
+      {selection.length ? <SelectionPanel keys={selection} edits={edits} data={data} {...props} /> : <Overview edits={edits} data={data} focusOn={props.focusOn} />}
     </section>
   );
 }
 
 // ------------------------------------------------------------- selection
 
-function SelectionPanel({ keys, edits, data, heightOf, streetOf, focus }: InspectorProps & { keys: string[]; edits: ModelEdits; data: EditData }) {
+function SelectionPanel({ keys, edits, data, heightOf, streetOf, focus, preview }: InspectorProps & { keys: string[]; edits: ModelEdits; data: EditData }) {
   const single = keys.length === 1 ? describeKey(keys[0], data, edits) : null;
   const kinds = new Set(keys.map((key) => kindOf(key)));
   const coarse = useMediaQuery(COARSE_QUERY);
@@ -82,7 +92,7 @@ function SelectionPanel({ keys, edits, data, heightOf, streetOf, focus }: Inspec
         {shapes.length > 0 && objects.length === 0 ? (
           <ShapeControls keys={shapes} edits={edits} data={data} />
         ) : (
-          <ObjectControls keys={objects} kinds={kinds} edits={edits} data={data} heightOf={heightOf} streetOf={streetOf} />
+          <ObjectControls keys={objects} kinds={kinds} edits={edits} data={data} heightOf={heightOf} streetOf={streetOf} preview={preview} />
         )}
       </div>
       {!coarse && (
@@ -101,6 +111,7 @@ function ObjectControls({
   data,
   heightOf,
   streetOf,
+  preview,
 }: {
   keys: string[];
   kinds: Set<string | null>;
@@ -108,9 +119,9 @@ function ObjectControls({
   data: EditData;
   heightOf: InspectorProps['heightOf'];
   streetOf: InspectorProps['streetOf'];
+  preview: InspectorProps['preview'];
 }) {
   const settings = useApp((state) => state.settings);
-  const coarse = useMediaQuery(COARSE_QUERY);
   const allRemoved = keys.every((key) => edits.objects[key]?.removed);
   const layers = new Set(keys.map((key) => edits.objects[key]?.layer ?? ''));
   const layer = layers.size === 1 ? [...layers][0] : MIXED;
@@ -118,11 +129,11 @@ function ObjectControls({
   const only = (kind: string) => kinds.size === 1 && kinds.has(kind);
   const tag = keys.join(',');
   const water = kinds.has('water');
-  const mmPerMetre = data.frame?.mmPerMetre ?? 0.07;
+  const building = only('building') && keys.length === 1 ? keys[0] : null;
 
   return (
     <>
-      {only('building') && <BuildingHeight keys={keys} edits={edits} data={data} heightOf={heightOf} tag={tag} mmPerMetre={mmPerMetre} heightScale={settings.buildings.heightScale} />}
+      {only('building') && <BuildingHeight keys={keys} edits={edits} data={data} heightOf={heightOf} tag={tag} />}
       {only('road') && <RoadSize keys={keys} edits={edits} data={data} tag={tag} />}
       <LayerField
         label="Colour"
@@ -163,48 +174,89 @@ function ObjectControls({
           </button>
         )}
       </div>
-      {!coarse && only('building') && keys.length === 1 && !isPartKey(keys[0]) && (
-        <p className="inspector-hint">Alt-click a building to pick one of its parts.</p>
-      )}
+      {building && <BuildingParts key={building} buildingKey={building} data={data} preview={preview} />}
     </>
   );
 }
 
-function BuildingHeight({
-  keys,
-  edits,
-  data,
-  heightOf,
-  tag,
-  mmPerMetre,
-  heightScale,
-}: {
-  keys: string[];
-  edits: ModelEdits;
-  data: EditData;
-  heightOf: InspectorProps['heightOf'];
-  tag: string;
-  mmPerMetre: number;
-  heightScale: number;
-}) {
-  const heights = keys.map((key) => edits.objects[key]?.heightMm ?? heightOf(key) ?? data.objects[objectOf(key)]?.heightMm ?? null);
+/** A building's parts to pick one of, or, for a part, the way back to its building. */
+function BuildingParts({ buildingKey, data, preview }: { buildingKey: string; data: EditData; preview: InspectorProps['preview'] }) {
+  const object = objectOf(buildingKey);
+  const parts = data.objects[object]?.parts;
+  const [all, setAll] = useState(false);
+  // The highlight follows the pointer, so it goes with the list.
+  useEffect(() => () => preview(null), [preview]);
+  if (isPartKey(buildingKey)) {
+    return (
+      <p className="inspector-hint">
+        One part of a building.{' '}
+        <button type="button" className="link-btn" onClick={() => setSelection([object])}>
+          Select the whole building
+        </button>
+      </p>
+    );
+  }
+  if (!parts?.length) return null;
+  const shown = all || parts.length <= PARTS_SHOWN + 2 ? parts : parts.slice(0, PARTS_SHOWN);
+  return (
+    <div className="inspector-parts">
+      <div className="inspector-section-head">
+        <span>Parts</span>
+        {shown.length < parts.length && (
+          <button type="button" className="link-btn" onClick={() => setAll(true)}>
+            Show all {parts.length}
+          </button>
+        )}
+      </div>
+      <ul className="parts-pick-list">
+        {shown.map((part, i) => {
+          const key = partKey(object, part.sub);
+          return (
+            <li key={part.sub}>
+              <button
+                type="button"
+                className="parts-pick"
+                onClick={() => setSelection([key])}
+                onPointerEnter={() => preview(key)}
+                onPointerLeave={() => preview(null)}
+                onFocus={() => preview(key)}
+                onBlur={() => preview(null)}
+              >
+                <span>{i === 0 ? 'Tallest part' : `Part ${i + 1}`}</span>
+                <span className="parts-pick-height">{formatNumber(part.heightMm, 1)} mm</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function BuildingHeight({ keys, edits, data, heightOf, tag }: { keys: string[]; edits: ModelEdits; data: EditData; heightOf: InspectorProps['heightOf']; tag: string }) {
+  // Edits are kept in real metres, shown as printed.
+  const scale = data.frame?.buildingMmPerMetre ?? 0.077;
+  const heights = keys.map((key) => {
+    const metres = edits.objects[key]?.heightM;
+    return metres !== undefined ? metres * scale : (heightOf(key) ?? data.objects[objectOf(key)]?.heightMm ?? null);
+  });
   const known = heights.filter((h): h is number => h !== null);
   if (!known.length) return null;
   const same = known.every((h) => Math.abs(h - known[0]) < 0.005);
   const value = same ? known[0] : Math.max(...known);
-  const edited = keys.some((key) => edits.objects[key]?.heightMm !== undefined);
-  const metres = value / (mmPerMetre * heightScale);
+  const edited = keys.some((key) => edits.objects[key]?.heightM !== undefined);
+  const metres = value / scale;
   return (
     <NumberRow
       label={same ? 'Height' : 'Height (all)'}
       value={value}
-      min={EDIT_LIMITS.heightMm[0]}
-      max={EDIT_LIMITS.heightMm[1]}
+      min={EDIT_LIMITS.buildingHeightMm[0]}
+      max={EDIT_LIMITS.buildingHeightMm[1]}
       step={0.5}
       unit="mm"
-      hint={`About ${formatNumber(metres, metres < 20 ? 1 : 0)} m in real life${edited ? '' : ', as mapped'}`}
-      onChange={(heightMm) => patchObjects(keys, { heightMm }, `height:${tag}`)}
-      reset={edited ? () => patchObjects(keys, { heightMm: undefined }) : undefined}
+      hint={`About ${formatNumber(metres, metres < 20 ? 1 : 0)} m in real life${edited ? '' : ', as mapped'}. Drag the arrow on top to change it.`}
+      onChange={(mm) => patchObjects(keys, { heightM: mm / scale }, `height:${tag}`)}
+      reset={edited ? () => patchObjects(keys, { heightM: undefined }) : undefined}
     />
   );
 }
@@ -222,15 +274,17 @@ function RoadSize({ keys, edits, data, tag }: { keys: string[]; edits: ModelEdit
   const sameHeight = heights.every((h) => Math.abs(h - heights[0]) < 0.005);
   const widthEdited = keys.some((key) => edits.objects[key]?.widthMm !== undefined);
   const heightEdited = keys.some((key) => edits.objects[key]?.heightMm !== undefined);
+  const width = sameWidth ? widths[0] : Math.max(...widths);
   return (
     <>
       <NumberRow
         label={sameWidth ? 'Width' : 'Width (all)'}
-        value={sameWidth ? widths[0] : Math.max(...widths)}
+        value={width}
         min={EDIT_LIMITS.widthMm[0]}
         max={EDIT_LIMITS.widthMm[1]}
         step={0.1}
         unit="mm"
+        hint={Math.min(...widths) < NOZZLE_MM ? `Narrower than a ${NOZZLE_MM} mm nozzle prints well.` : undefined}
         onChange={(widthMm) => patchObjects(keys, { widthMm }, `width:${tag}`)}
         reset={widthEdited ? () => patchObjects(keys, { widthMm: undefined }) : undefined}
       />
@@ -262,6 +316,8 @@ const SIZE_LABELS: Record<AddedShape['kind'], string> = {
 
 function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdits; data: EditData }) {
   const coarse = useMediaQuery(COARSE_QUERY);
+  const notes = useApp((state) => state.ui.editNotes);
+  const activePoint = useApp((state) => state.ui.activePoint);
   const shapes = keys.map((key) => edits.shapes.find((s) => shapeKey(s.id) === key)).filter((s): s is AddedShape => Boolean(s));
   if (!shapes.length) return null;
   const ids = shapes.map((s) => s.id);
@@ -270,8 +326,17 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
   const heights = new Set(shapes.map((s) => s.heightMm));
   const frameRotation = data.frame?.rotationDeg ?? 0;
   const shape = shapes.length === 1 ? shapes[0] : null;
+  const note = shape ? notes[shapeKey(shape.id)] : undefined;
+  const drawn = shape?.kind === 'path' || shape?.kind === 'area';
+  const point = shape && drawn && activePoint?.shape === shape.id && activePoint.index < shape.points.length ? activePoint.index : null;
   return (
     <>
+      {note && (
+        <p className="inspector-warning" role="note">
+          <TriangleAlert size={13} aria-hidden="true" />
+          <span>{note}</span>
+        </p>
+      )}
       {shape?.kind === 'text' && <TextControls shape={shape} />}
       {shape && shape.kind !== 'area' && (
         <NumberRow
@@ -317,7 +382,7 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
           onChange={(liftMm) => updateShape(shape.id, { liftMm }, `lift:${shape.id}`)}
         />
       )}
-      {shape && shape.kind !== 'path' && shape.kind !== 'area' && (
+      {shape && !drawn && (
         <NumberRow
           label="Rotation"
           value={normaliseAngle(shape.rotationDeg - frameRotation)}
@@ -326,7 +391,7 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
           step={5}
           unit="°"
           decimals={1}
-          hint="From the model's up. [ and ] turn it by 15°."
+          hint={coarse ? "From the model's up." : "From the model's up. [ and ] turn it by 15°."}
           onChange={(turn) => updateShape(shape.id, { rotationDeg: (((turn + frameRotation) % 360) + 360) % 360 }, `rotate:${shape.id}`)}
         />
       )}
@@ -339,6 +404,17 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
         />
       )}
       <LayerField label="Colour" value={layers.size === 1 ? [...layers][0] : MIXED} groups onChange={(layer) => updateShapes(ids, { layer })} />
+      {shape && point !== null && (
+        <div className="inspector-point">
+          <span>
+            Point {point + 1} of {shape.points.length}
+          </span>
+          <button type="button" className="btn btn-sm" onClick={() => deletePoint(shape.id, point)} disabled={shape.points.length <= (shape.kind === 'area' ? 3 : 2)}>
+            <Trash2 size={14} aria-hidden="true" />
+            Delete point
+          </button>
+        </div>
+      )}
       <div className="inspector-actions">
         <button type="button" className="btn btn-sm" onClick={() => duplicateShapes(ids)} title="Duplicate (Ctrl+D)">
           <Copy size={14} aria-hidden="true" />
@@ -349,12 +425,18 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
           Delete
         </button>
       </div>
-      {shape && (shape.kind === 'path' || shape.kind === 'area') && (
+      {shape?.kind === 'area' && (
+        <p className="inspector-hint">A building in the Buildings colour, or keep it low in a colour like Parks or Paved for a park or a square.</p>
+      )}
+      {shape?.kind === 'path' && <p className="inspector-hint">A road in the Roads colour, or put it in a custom layer for a route of its own.</p>}
+      {shape && drawn && (
         <p className="inspector-hint">
-          {coarse ? 'Drag its points to reshape it, or a white dot to add a point.' : 'Drag its points to reshape it. Drag a white dot to add a point, and Alt-click a point to take it out.'}
+          {coarse
+            ? 'Drag a point to move it, or a white dot to add one. Tap a point to delete it.'
+            : 'Drag a point to move it, or a white dot to add one. Click a point, then Delete, to take it out.'}
         </p>
       )}
-      {shape && shape.kind !== 'path' && shape.kind !== 'area' && <p className="inspector-hint">Drag it to move it, or its arrow to change its height.</p>}
+      {shape && !drawn && <p className="inspector-hint">Drag it to move it, or its arrow to change its height.</p>}
     </>
   );
 }
@@ -570,42 +652,68 @@ function inModel(key: string, data: EditData): boolean {
   return objectOf(key) in data.objects;
 }
 
-function Overview({ edits, data }: { edits: ModelEdits; data: EditData }) {
+/** Added shapes with nothing of them on this model, like ones placed on another area. */
+function shapesOutside(edits: ModelEdits, data: EditData, bounds: readonly number[] | undefined): string[] {
+  if (!data.frame || !bounds) return [];
+  const projection = new Projection(data.frame.center, data.frame.rotationDeg, data.frame.mmPerMetre);
+  const inside = ([lon, lat]: [number, number]) => {
+    const [x, y] = projection.toModel(lon, lat);
+    return x >= bounds[0] && x <= bounds[3] && y >= bounds[1] && y <= bounds[4];
+  };
+  return edits.shapes.filter((shape) => !inside(shape.at) && !shape.points.some(inside)).map((shape) => shapeKey(shape.id));
+}
+
+function Overview({ edits, data, focusOn }: { edits: ModelEdits; data: EditData; focusOn: InspectorProps['focusOn'] }) {
   const coarse = useMediaQuery(COARSE_QUERY);
+  const bounds = useApp((state) => state.generation.result?.bounds);
   const changes = editCount(edits);
-  const removed = Object.values(edits.objects).filter((edit) => edit.removed).length;
-  const elsewhere = Object.keys(edits.objects).filter((key) => !inModel(key, data)).length;
+  const removed = Object.entries(edits.objects)
+    .filter(([key, edit]) => edit.removed && inModel(key, data))
+    .map(([key]) => key);
+  const elsewhere = [...Object.keys(edits.objects).filter((key) => !inModel(key, data)), ...shapesOutside(edits, data, bounds)];
   return (
     <>
       <header className="viewer-card-header">
-        <h3>Edit the model</h3>
+        <h3>
+          Edit the model <span className="beta-badge">Beta</span>
+        </h3>
       </header>
       <div className="inspector-body">
         {data.editable ? (
-          <p className="inspector-intro">
-            {coarse ? 'Tap a building, road, water or tree to change it.' : 'Click a building, road, water or tree to change it. Shift-click or Shift-drag to select more.'} The
-            tool buttons add text, pins and shapes, or draw your own paths and areas.
-          </p>
+          <>
+            <FindBox data={data} focusOn={focusOn} />
+            <p className="inspector-intro">
+              {coarse ? 'Tap a building, road, water or tree to change it.' : 'Click a building, road, water or tree to change it.'} The tool buttons add text, pins
+              and shapes, or draw your own roads and buildings.
+            </p>
+          </>
         ) : (
           <p className="inspector-intro">This model is one surface, so nothing in it can be picked out. You can still add text, pins and shapes with the tool buttons.</p>
         )}
         <Layers edits={edits} />
-        {elsewhere > 0 && (
+        {elsewhere.length > 0 && (
           <p className="inspector-note">
-            {elsewhere} {elsewhere === 1 ? 'change is' : 'changes are'} for things this model doesn't have, from another area or other settings.
+            {elsewhere.length} {elsewhere.length === 1 ? 'change is' : 'changes are'} for things this model doesn't have: another area, other settings, or map data
+            that has changed since.{' '}
+            <button type="button" className="link-btn" onClick={() => clearEditsFor(elsewhere)}>
+              Clear {elsewhere.length === 1 ? 'it' : 'them'}
+            </button>
           </p>
         )}
         <div className="inspector-changes">
-          <span>{changes ? `${changes} ${changes === 1 ? 'change' : 'changes'}${removed ? `, ${removed} removed` : ''}` : 'No changes yet'}</span>
+          <span>
+            {changes ? `${changes} ${changes === 1 ? 'change' : 'changes'}` : 'No changes yet'}
+            {removed.length > 0 && (
+              <>
+                {', '}
+                <button type="button" className="link-btn" onClick={() => setSelection(removed)} title="Select what was removed, to put it back">
+                  {removed.length} removed
+                </button>
+              </>
+            )}
+          </span>
           {(changes > 0 || edits.layers.length > 0) && (
-            <button
-              type="button"
-              className="link-btn is-danger"
-              onClick={() => {
-                clearEdits();
-                toast('Every edit was undone. Ctrl+Z brings them back.');
-              }}
-            >
+            <button type="button" className="link-btn is-danger" onClick={clearEdits}>
               <Eraser size={12} aria-hidden="true" /> Undo all
             </button>
           )}
@@ -615,6 +723,118 @@ function Overview({ edits, data }: { edits: ModelEdits; data: EditData }) {
         <span>Edits stay with this area when you change settings and generate again.</span>
       </footer>
     </>
+  );
+}
+
+interface Found {
+  label: string;
+  detail: string;
+  keys: string[];
+}
+
+const KIND_LABELS: Record<string, [string, string]> = {
+  building: ['Building', 'buildings'],
+  water: ['Water', 'bodies of water'],
+  bridge: ['Bridge', 'bridges'],
+};
+
+/** Everything in the model with a name, one entry per name and kind. */
+function namedThings(data: EditData): Found[] {
+  const groups = new Map<string, Found & { seen: Set<string> }>();
+  const add = (label: string, kind: string, detail: (count: number) => string, key: string) => {
+    const id = `${kind}\u0001${label}`;
+    let found = groups.get(id);
+    if (!found) groups.set(id, (found = { label, detail: '', keys: [], seen: new Set() }));
+    // Pieces of one road share its key.
+    if (found.seen.has(key)) return;
+    found.seen.add(key);
+    found.keys.push(key);
+    found.detail = detail(found.keys.length);
+  };
+  for (const [key, facts] of Object.entries(data.objects)) {
+    const names = KIND_LABELS[facts.kind];
+    if (!facts.name || !names) continue;
+    add(facts.name, facts.kind, (n) => (n === 1 ? names[0] : `${n} ${names[1]}`), key);
+  }
+  const lines = data.roads;
+  if (lines) {
+    lines.names.forEach((name, i) => {
+      if (name) add(name, 'road', () => roadClassName(lines.classes[i]), lines.keys[i]);
+    });
+  }
+  return [...groups.values()].map(({ label, detail, keys }) => ({ label, detail, keys }));
+}
+
+/** Finds named streets, buildings and water, to select them without hunting in the view. */
+function FindBox({ data, focusOn }: { data: EditData; focusOn: InspectorProps['focusOn'] }) {
+  const [query, setQuery] = useState('');
+  const id = useId();
+  const things = useMemo(() => namedThings(data), [data]);
+  const q = query.trim().toLowerCase();
+  const results = useMemo(() => {
+    if (q.length < 2) return [];
+    const scored: [number, Found][] = [];
+    for (const thing of things) {
+      const label = thing.label.toLowerCase();
+      const at = label.indexOf(q);
+      if (at < 0) continue;
+      // Names starting with it first, then ones with a word starting with it.
+      const rank = at === 0 ? 0 : label[at - 1] === ' ' ? 1 : 2;
+      scored.push([rank * 1000 + label.length, thing]);
+    }
+    return scored
+      .sort((a, b) => a[0] - b[0])
+      .slice(0, 8)
+      .map(([, thing]) => thing);
+  }, [q, things]);
+  if (!things.length) return null;
+  const pick = (thing: Found) => {
+    focusOn(thing.keys);
+    setQuery('');
+  };
+  return (
+    <div className="find-box">
+      <label className="sr-only" htmlFor={id}>
+        Find a street, building or water by name
+      </label>
+      <div className="find-input">
+        <Search size={13} aria-hidden="true" />
+        <input
+          id={id}
+          className="text-input"
+          type="search"
+          value={query}
+          placeholder="Find a street, building or water"
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && results[0]) pick(results[0]);
+            // Back to the model, where the shortcuts work again.
+            if (event.key === 'Escape') {
+              setQuery('');
+              event.currentTarget.blur();
+            }
+          }}
+        />
+      </div>
+      {q.length >= 2 && (
+        <ul className="find-results" aria-label="Matches">
+          {results.length ? (
+            results.map((thing) => (
+              <li key={`${thing.detail}${thing.label}`}>
+                <button type="button" className="find-result" onClick={() => pick(thing)}>
+                  <span className="find-name">{thing.label}</span>
+                  <span className="find-detail">{thing.detail}</span>
+                </button>
+              </li>
+            ))
+          ) : (
+            <li className="find-none">Nothing with that name in this model</li>
+          )}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -671,7 +891,7 @@ function LayerRow({ layer, count, edits }: { layer: EditLayer; count: number; ed
         onBlur={() => name.trim() && name !== layer.name && updateLayer(layer.id, { name: name.trim() })}
         onKeyDown={(event) => event.key === 'Enter' && (event.target as HTMLInputElement).blur()}
       />
-      <button type="button" className="link-btn layer-count" onClick={select} disabled={!count} title="Select what's in it">
+      <button type="button" className="link-btn layer-count" onClick={select} disabled={!count} title="Select what's in it" aria-label={`Select the ${count} things in ${layer.name}`}>
         {count}
       </button>
       <button type="button" className="icon-btn icon-btn-sm" aria-label={`Delete ${layer.name}`} title="Delete the layer. What's in it goes back to its own colour." onClick={() => deleteLayer(layer.id)}>

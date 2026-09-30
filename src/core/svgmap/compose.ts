@@ -23,7 +23,7 @@ import { weldPaths } from './lines/weld';
 import { hatchWith, orderForPlotting, outlines } from './plotter';
 import type { Prepared, PreparedLine, PreparedPolygon } from './prepare';
 import type { OutputGroup, OutputPath, PlotterStats, RenderResult } from './result';
-import { pickedLines, pickLines, routeGroupId } from './routes';
+import { pickedLines, pickLines, routeGroupId, type LonLatLine } from './routes';
 import {
   type ElementId,
   FILL_LAYERS,
@@ -141,7 +141,8 @@ export function compose(
 
   const acceptedLines = prepared.lines.filter((l) => layerOn[l.layer] && acceptLine(l, s.filters));
   // Roads picked in the preview: a route's index, or -1 when left out.
-  const picked = pickedLines(acceptedLines, s.routes ?? [], s.hiddenLines ?? [], prepared.transform);
+  const missingPicks: LonLatLine[] = [];
+  const picked = pickedLines(acceptedLines, s.routes ?? [], s.hiddenLines ?? [], prepared.transform, missingPicks);
   const drawnLines = picked.size ? acceptedLines.filter((l) => !picked.has(l)) : acceptedLines;
   let waterGaps: Paths64 = [];
   if (s.water.bridgeGap > 0 && layerOn.water) {
@@ -509,5 +510,6 @@ export function compose(
       generated: new Date().toISOString(),
     },
     pick: pickLines(acceptedLines, prepared.transform, picked),
+    ...(missingPicks.length ? { missingPicks } : {}),
   };
 }

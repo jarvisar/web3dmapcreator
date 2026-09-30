@@ -2,8 +2,10 @@
 // click is a press and release that barely moved. Handles take the drag
 // instead: the arrow on top of a selected building or shape sets its height,
 // a selected shape moves with the pointer, and a path's or area's points
-// move one by one (the dots between them add a point). Shift and drag selects
-// everything in a box.
+// move one by one (the dots between them add a point). Tapping a point picks
+// it, to delete it. Shift and drag selects everything in a box, and so does a
+// plain drag with the Select several tool, where a click adds or drops one
+// thing. On a touch screen a drag there still turns the view.
 
 import {
   BufferGeometry,
@@ -24,7 +26,7 @@ import {
 import type { Projection } from '../../core/geo/projection';
 import { kindOf } from '../../core/edit/keys';
 import type { ObjectFacts } from '../../core/edit/session';
-import type { AddedShape, ModelEdits } from '../../core/edit/types';
+import { emptyEdits, type AddedShape, type ModelEdits } from '../../core/edit/types';
 import type { EditTool } from '../state/store';
 import type { HoverTarget, PickTarget, ViewerEngine } from './ViewerEngine';
 
@@ -37,6 +39,8 @@ export interface EditHandlers {
   /** `part` picks one part of a building rather than the whole of it. */
   select(target: PickTarget | null, modifiers: { additive: boolean; part: boolean }): void;
   deleteVertex(id: string, index: number): void;
+  /** A point of a path or area was tapped. */
+  activatePoint(id: string, index: number): void;
   boxSelect(keys: string[], additive: boolean): void;
   hover(target: HoverTarget | null, clientX: number, clientY: number): void;
   place(tool: EditTool, target: PickTarget): void;
@@ -58,8 +62,9 @@ interface Handle {
 type Drag =
   | { kind: 'height'; key: string; anchor: Vector3; from: number; height: number; moved: boolean }
   | { kind: 'shape'; id: string; z: number; start: Vector3; moved: boolean; x: number; y: number; target: PickTarget }
-  | { kind: 'vertex'; id: string; index: number; insert: boolean; z: number; moved: boolean }
-  | { kind: 'box'; x: number; y: number; additive: boolean }
+  | { kind: 'vertex'; id: string; index: number; insert: boolean; z: number; moved: boolean; x: number; y: number; position: Vector3 }
+  /** `click`: a press that doesn't move is a click, with Select several. */
+  | { kind: 'box'; x: number; y: number; additive: boolean; click: boolean }
   /** A press already handled, kept from the orbit controls until release. */
   | { kind: 'consumed' };
 
@@ -70,10 +75,11 @@ export interface EditState {
   edits: ModelEdits;
   facts: Record<string, ObjectFacts>;
   projection: Projection | null;
+  activePoint: { shape: string; index: number } | null;
 }
 
 export class EditController {
-  private state: EditState = { enabled: false, tool: 'select', selection: [], edits: { layers: [], objects: {}, shapes: [] }, facts: {}, projection: null };
+  private state: EditState = { enabled: false, tool: 'select', selection: [], edits: emptyEdits(), facts: {}, projection: null, activePoint: null };
   private down: { x: number; y: number; shift: boolean; ctrl: boolean; alt: boolean; id: number } | null = null;
   private drag: Drag | null = null;
   private handles: Handle[] = [];
@@ -87,6 +93,7 @@ export class EditController {
   private readonly box: HTMLDivElement;
   private readonly handleMaterial = new MeshBasicMaterial({ color: ACCENT, depthTest: false, depthWrite: false, toneMapped: false });
   private readonly insertMaterial = new MeshBasicMaterial({ color: '#ffffff', depthTest: false, depthWrite: false, toneMapped: false });
+  private readonly activeMaterial = new MeshBasicMaterial({ color: '#f76707', depthTest: false, depthWrite: false, toneMapped: false });
   private readonly lineMaterial = new LineBasicMaterial({ color: ACCENT, depthTest: false, toneMapped: false });
 
   constructor(
@@ -164,6 +171,7 @@ export class EditController {
     this.engine.overlay.remove(this.gizmo, this.guide);
     this.handleMaterial.dispose();
     this.insertMaterial.dispose();
+    this.activeMaterial.dispose();
     this.lineMaterial.dispose();
     this.box.remove();
   }
@@ -178,6 +186,12 @@ export class EditController {
   private readonly onDown = (event: PointerEvent): void => {
     if (!this.state.enabled || event.button !== 0 || !this.isCanvas(event)) return;
     this.down = { x: event.clientX, y: event.clientY, shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey, alt: event.altKey, id: event.pointerId };
+    if (this.state.tool === 'several') {
+      if (event.pointerType === 'touch') return;
+      this.takeOver(event);
+      this.drag = { kind: 'box', x: event.clientX, y: event.clientY, additive: true, click: true };
+      return;
+    }
     if (this.state.tool !== 'select') return;
     const handle = this.handleAt(event.clientX, event.clientY);
     if (handle?.kind === 'vertex' && event.altKey) {
@@ -192,7 +206,7 @@ export class EditController {
     }
     if (event.shiftKey && event.pointerType === 'mouse') {
       this.takeOver(event);
-      this.drag = { kind: 'box', x: event.clientX, y: event.clientY, additive: true };
+      this.drag = { kind: 'box', x: event.clientX, y: event.clientY, additive: true, click: false };
       return;
     }
     // Pressing on a selected shape moves it.
@@ -226,6 +240,17 @@ export class EditController {
       this.engine.controls.enabled = true;
       if (drag.kind === 'shape' && !drag.moved) {
         this.handlers.select(drag.target, { additive: Boolean(down?.shift || down?.ctrl), part: Boolean(down?.alt) });
+      } else if (drag.kind === 'vertex' && !drag.moved) {
+        // A tap on a point picks it. One on a dot between points adds a point there.
+        if (drag.insert) {
+          this.handlers.moveVertex(drag.id, drag.index, drag.position, true, true);
+          this.handlers.activatePoint(drag.id, drag.index + 1);
+        } else {
+          this.handlers.activatePoint(drag.id, drag.index);
+        }
+      } else if (drag.kind === 'box' && drag.click && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) <= CLICK_PX) {
+        this.box.hidden = true;
+        this.click(event.clientX, event.clientY, { additive: true, part: Boolean(down?.alt) });
       } else {
         this.dragTo(drag, event.clientX, event.clientY, true);
       }
@@ -270,8 +295,10 @@ export class EditController {
   private click(x: number, y: number, modifiers: { additive: boolean; part: boolean }): void {
     const tool = this.state.tool;
     const target = this.engine.pickAt(x, y);
-    if (tool === 'select') {
-      this.handlers.select(target, modifiers);
+    if (tool === 'select' || tool === 'several') {
+      // With Select several a click beside everything keeps what's selected.
+      if (tool === 'several' && !target?.key) return;
+      this.handlers.select(target, tool === 'several' ? { ...modifiers, additive: true } : modifiers);
       return;
     }
     if (!target) return;
@@ -293,8 +320,9 @@ export class EditController {
     const at = this.pending;
     if (!at || this.drag) return;
     const tool = this.state.tool;
-    const target = tool === 'select' ? this.engine.hoverAt(at.x, at.y) : this.engine.pickAt(at.x, at.y);
-    if (tool === 'select') {
+    const selecting = tool === 'select' || tool === 'several';
+    const target = selecting ? this.engine.hoverAt(at.x, at.y) : this.engine.pickAt(at.x, at.y);
+    if (selecting) {
       this.engine.setHover(target?.key ?? null);
       this.handlers.hover(target, at.x, at.y);
       this.host.classList.toggle('is-over-handle', this.handleAt(at.x, at.y) !== null);
@@ -342,7 +370,17 @@ export class EditController {
       this.drag = { kind: 'height', key: handle.key, anchor: handle.position.clone(), from, height, moved: false };
       return;
     }
-    this.drag = { kind: 'vertex', id: handle.key.slice(2), index: handle.index, insert: handle.kind === 'insert', z: handle.position.z, moved: false };
+    this.drag = {
+      kind: 'vertex',
+      id: handle.key.slice(2),
+      index: handle.index,
+      insert: handle.kind === 'insert',
+      z: handle.position.z,
+      moved: false,
+      x: event.clientX,
+      y: event.clientY,
+      position: handle.position.clone(),
+    };
   }
 
   private dragTo(drag: Drag, x: number, y: number, done: boolean): void {
@@ -382,6 +420,7 @@ export class EditController {
         return;
       }
       case 'vertex': {
+        if (!drag.moved && Math.hypot(x - drag.x, y - drag.y) <= CLICK_PX) return;
         const point = this.engine.pointOnPlane(x, y, drag.z);
         if (!point) return;
         drag.moved = true;
@@ -464,7 +503,10 @@ export class EditController {
       group.renderOrder = 10;
       return group;
     }
-    const sphere = new Mesh(new SphereGeometry(handle.kind === 'vertex' ? 0.16 : 0.11, 12, 8), handle.kind === 'vertex' ? this.handleMaterial : this.insertMaterial);
+    const active = this.state.activePoint;
+    const picked = handle.kind === 'vertex' && active !== null && handle.key === `s:${active.shape}` && handle.index === active.index;
+    const material = picked ? this.activeMaterial : handle.kind === 'vertex' ? this.handleMaterial : this.insertMaterial;
+    const sphere = new Mesh(new SphereGeometry(picked ? 0.22 : handle.kind === 'vertex' ? 0.16 : 0.11, 12, 8), material);
     sphere.position.copy(handle.position);
     sphere.userData.handle = handle;
     sphere.renderOrder = 10;

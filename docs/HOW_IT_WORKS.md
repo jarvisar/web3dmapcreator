@@ -155,7 +155,7 @@ PrusaSlicer, Bambu Studio and OrcaSlicer give an overlap to the part listed late
 
 ## Editing
 
-Edits are a small document kept next to the settings (`src/core/edit/types.ts`), keyed by what they change: Overture IDs for buildings, building parts, road segments and water, and IDs of the app's own for trees and added shapes. Nothing in it points into the mesh, so edits carry over when the model is generated again with other settings. Changes for things a model doesn't have are kept and ignored.
+Edits are a small document kept next to the settings (`src/core/edit/types.ts`), keyed by what they change: Overture IDs for buildings, building parts, road segments and water, and IDs of the app's own for trees and added shapes. Nothing in it points into the mesh, so edits carry over when the model is generated again with other settings. Changes for things a model doesn't have are kept and ignored, and the editor offers to clear them. Sizes are printed millimetres except a building's height, which is real metres, so an edited building keeps its place in the skyline at another scale.
 
 The worker keeps the generated model and applies the edits to it afterwards (`src/core/edit/session.ts`). The 3D view only gets what changed: new geometry for a building with a new height or for an added shape, and whole road parts once a road is edited. It hides removed things and colours layers itself. An export applies the edits to the generated solids and meshes them like a generated model, so sections and every format work the same.
 
@@ -163,7 +163,9 @@ Roads were the awkward part. A city's streets come out of the pipeline as one un
 
 A removed road or building gives its ground back to the land cover it was cut out of, so a path taken out of a park is grass again (`src/core/edit/land.ts`). That's worked out per tile too, and cached, or every edit in a large city took seconds.
 
-Custom layers export as parts of their own, with their own filament. Added shapes run down to the model's base so a raised box never floats, and like buildings they're listed before the terrain, so the terrain wins where they overlap under the ground.
+Custom layers export as parts of their own, with their own filament. Added shapes run down to the model's base so a raised box never floats, and like buildings they're listed before the terrain, so the terrain wins where they overlap under the ground. A raised part of a building left on air when the part under it is removed or lowered is built down to the ground, like raised parts are by default.
+
+What the 3D view shows and what exports come from different code: the view hides and colours objects in the generated meshes (`src/app/viewer/shown.ts`), and the export rebuilds the solids. `scripts/fuzz-edits.ts` makes random edits on real areas and checks, colour by colour, that the two hold the same volume, along with every part being closed.
 
 ## Export
 

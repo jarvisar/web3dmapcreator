@@ -30,8 +30,8 @@ function fromBase64Url(value: string): string {
   return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
 }
 
-// Picked roads are lines of coordinates, far too long for a link. They stay
-// in saved state and options files.
+// Picked roads are lines of coordinates, which go in a p= of their own,
+// deflated (state/shareLink.ts).
 export function encodeSvgSettings(settings: SvgSettings): string {
   const { routes: _routes, hiddenLines: _hidden, ...rest } = settings;
   return toBase64Url(JSON.stringify(diff(rest, defaultSvgSettings()) ?? {}));

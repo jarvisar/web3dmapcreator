@@ -19,7 +19,10 @@
 // LiDAR only model), --water-layer (a LiDAR only model's water as a thin layer),
 // --no-map-water (a LiDAR only model's water from the survey alone), --surface-out
 // dir (write its grid layers as raw binaries), --reread (read its blocks again
-// instead of from their checkpoints, after changing how blocks are read).
+// instead of from their checkpoints, after changing how blocks are read),
+// --options path.json (an options file exported from the app with its map area:
+// the area, settings, colours, export options and 3D edits, which the other
+// flags override), --no-edits (leave the options file's edits out).
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -41,6 +44,12 @@ import { PRESET_GROUPS } from '../src/app/data/presets';
 import { meshLayers, partsBounds } from '../src/core/pipeline/mesh';
 import { buildPlates } from '../src/core/pipeline/plates';
 import { edgeReport } from '../src/core/geometry/validate';
+import { EditSession } from '../src/core/edit/session';
+import { editCount, hasEdits, type ModelEdits } from '../src/core/edit/types';
+import { Projection } from '../src/core/geo/projection';
+import type { ModelSpec } from '../src/core/pipeline/generate';
+import { FontLoader } from '../src/core/svgmap/text/loadFont';
+import { decodeOptions, type Options } from '../src/app/state/options';
 import {
   cloneSettings,
   DEFAULT_PALETTE,
@@ -50,6 +59,7 @@ import {
   type AreaSpec,
   type ExportFormat,
   type ModelSettings,
+  type Palette,
 } from '../src/core/settings';
 
 function arg(name: string): string | undefined {
@@ -84,13 +94,47 @@ function exactArea(text: string, shape: AreaShape): AreaSpec {
   return { center: [lon, lat], widthM, heightM, rotationDeg, shape, cornerRadius: 0.1 };
 }
 
+const options: Options | null = arg('options') ? decodeOptions(readFileSync(arg('options')!, 'utf8')) : null;
+const palette: Palette = options?.palette ?? DEFAULT_PALETTE;
+
+/** Export options from the flags, then the options file, then the defaults. */
+function exportChoices() {
+  const saved = options?.exportSettings;
+  const format = (arg('format') as ExportFormat) ?? saved?.format ?? 'bambu';
+  const printer = printerByKey(arg('printer') ?? saved?.printer ?? 'P1S');
+  const multiPlate = flag('multi-plate') || (saved?.multiPlate ?? false);
+  const width = Number(arg('section') ?? saved?.sectionWidthMm ?? 210);
+  const depth = Number(arg('section') ?? saved?.sectionHeightMm ?? 210);
+  return { format, printer, multiPlate, width, depth };
+}
+
+/** The model with the options file's edits applied, as the app exports it. */
+async function withEdits(spec: ModelSpec, settings: ModelSettings, area: AreaSpec): Promise<ModelSpec> {
+  const edits: ModelEdits | undefined = options?.map?.edits;
+  if (flag('no-edits') || !edits || !hasEdits(edits)) return spec;
+  if (!spec.edit) {
+    console.log('warning: this model cannot be edited, so the edits are left out');
+    return spec;
+  }
+  const fonts = new FontLoader(async (path) => {
+    const bytes = readFileSync(join('public', path));
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  });
+  const projection = new Projection(area.center, area.rotationDeg, spec.mmPerMetre);
+  const session = new EditSession(spec, settings, projection, { load: (id) => fonts.load(id, null) });
+  const edited = await session.edited(edits, palette);
+  const layers = edits.layers.length;
+  console.log(`edits: ${editCount(edits)} changes and ${layers} custom ${layers === 1 ? 'layer' : 'layers'} applied`);
+  return edited;
+}
+
 async function main() {
-  const shape = (arg('shape') as AreaShape) ?? 'rectangle';
+  const shape = (arg('shape') as AreaShape) ?? options?.map?.area.shape ?? 'rectangle';
   const boundsText = arg('bbox') ?? (arg('preset') ? presetBounds(arg('preset')!) : undefined);
-  if (!boundsText && !arg('area')) throw new Error('Pass --bbox w,s,e,n, --preset name or --area lon,lat,width,height');
-  const area = arg('area') ? exactArea(arg('area')!, shape) : areaFromBounds(parseBoundsText(boundsText!), shape);
+  if (!boundsText && !arg('area') && !options?.map) throw new Error('Pass --bbox w,s,e,n, --preset name, --area lon,lat,width,height or --options file.json');
+  const area = arg('area') ? exactArea(arg('area')!, shape) : boundsText ? areaFromBounds(parseBoundsText(boundsText), shape) : { ...options!.map!.area };
   if (arg('rotation')) area.rotationDeg = Number(arg('rotation'));
-  let settings: ModelSettings = cloneSettings();
+  let settings: ModelSettings = options ? options.settings : cloneSettings();
   if (arg('settings')) settings = merge(settings, JSON.parse(readFileSync(arg('settings')!, 'utf8')));
   if (arg('scale')) settings.scale.mmPerMetre = Number(arg('scale'));
   if (arg('fit')) {
@@ -163,7 +207,7 @@ async function main() {
 
   const generating = performance.now();
   const progress = new Progress((e) => log(e.label));
-  const spec = await generateModel({ area, settings, data, elevation: dem, lidar, progress });
+  const spec = await withEdits(await generateModel({ area, settings, data, elevation: dem, lidar, progress }), settings, area);
   const t2 = performance.now();
   const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ });
   const t3 = performance.now();
@@ -180,13 +224,11 @@ async function main() {
 
   const out = arg('out');
   if (out) {
-    const format = (arg('format') as ExportFormat) ?? 'bambu';
-    const printer = printerByKey(arg('printer') ?? 'P1S');
-    const section = Number(arg('section') ?? 210);
+    const { format, printer, multiPlate, width, depth } = exportChoices();
     const { plates, failed } = await buildPlates(spec, {
-      multiPlate: flag('multi-plate'),
-      sectionWidthMm: section,
-      sectionHeightMm: section,
+      multiPlate,
+      sectionWidthMm: width,
+      sectionHeightMm: depth,
       bedWidth: printer.width,
       bedDepth: printer.depth,
       maxPlates: format === 'bambu' ? BAMBU_MAX_PLATES : undefined,
@@ -195,10 +237,10 @@ async function main() {
     const result = exportPlates(plates, {
       format,
       printer: printer.key,
-      palette: DEFAULT_PALETTE,
-      multiPlate: flag('multi-plate'),
-      sectionWidthMm: section,
-      sectionHeightMm: section,
+      palette,
+      multiPlate,
+      sectionWidthMm: width,
+      sectionHeightMm: depth,
       fileBase: 'model',
     }, credits);
     mkdirSync(dirname(out), { recursive: true });
@@ -248,7 +290,11 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
       writeFileSync(join(dir, 'grid.json'), JSON.stringify({ ...grid, requested: surface.requestedCellM, area }));
     }
     const progress = new Progress((e) => log(e.label));
-    const spec = await surfaceModel({ area, settings, surface, progress, runTile: pool ? (tile) => pool.tile(tile) : undefined, concurrency: pool?.concurrency ?? 1, mapWater });
+    const spec = await withEdits(
+      await surfaceModel({ area, settings, surface, progress, runTile: pool ? (tile) => pool.tile(tile) : undefined, concurrency: pool?.concurrency ?? 1, mapWater }),
+      settings,
+      area,
+    );
     const t2 = performance.now();
     const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ });
     const t3 = performance.now();
@@ -264,19 +310,17 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
     for (const w of spec.warnings) console.log(`warning: ${w}`);
     const out = arg('out');
     if (out) {
-      const format = (arg('format') as ExportFormat) ?? 'bambu';
-      const printer = printerByKey(arg('printer') ?? 'P1S');
-      const section = Number(arg('section') ?? 210);
+      const { format, printer, multiPlate, width, depth } = exportChoices();
       const { plates, failed } = await buildPlates(spec, {
-        multiPlate: flag('multi-plate'),
-        sectionWidthMm: section,
-        sectionHeightMm: section,
+        multiPlate,
+        sectionWidthMm: width,
+        sectionHeightMm: depth,
         bedWidth: printer.width,
         bedDepth: printer.depth,
         maxPlates: format === 'bambu' ? BAMBU_MAX_PLATES : undefined,
       });
       const credits = [...new Set(surface.surveys.map((s) => `LiDAR: ${s.attribution}`))];
-      const result = exportPlates(plates, { format, printer: printer.key, palette: DEFAULT_PALETTE, multiPlate: flag('multi-plate'), sectionWidthMm: section, sectionHeightMm: section, fileBase: 'model' }, credits, Boolean(mapWater?.length));
+      const result = exportPlates(plates, { format, printer: printer.key, palette, multiPlate, sectionWidthMm: width, sectionHeightMm: depth, fileBase: 'model' }, credits, Boolean(mapWater?.length));
       mkdirSync(dirname(out), { recursive: true });
       writeFileSync(out, new Uint8Array(await result.data.arrayBuffer()));
       console.log(`wrote ${out} (${(result.data.size / 1e6).toFixed(1)} MB, ${result.plates} plate(s))`);

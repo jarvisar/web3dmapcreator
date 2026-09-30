@@ -43,8 +43,8 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/worker/engine.worker.ts` | Downloads, generates, meshes and exports off the main thread |
 | `src/worker/svg.worker.ts` | Renders SVG maps, separate so a preview updates while a model generates |
 | `src/core/svgmap/` | SVG maps: tile fetch/decode/stitch, piece layout (`layout/`), line cleanup (`lines/`), fills and hatching, titles (`text/`), SVG writer, `service.ts` (the render with its caches) |
-| `src/app/` | React UI: state (zustand), MapLibre area editor, panels, three.js viewer. The model editor is `viewer/editController.ts` (pointer tools), `picker.ts`, `highlight.ts`, `viewer/edit/` (toolbar, inspector) and `state/editActions.ts` (edits, undo). `src/app/svgmap/` has the SVG sections, preview, render client, route picker, piece fitting and share encoding |
-| `scripts/` | `generate.ts` (CLI end to end), `fetch-area.ts`, `bench-synthetic.ts`, `check-bambu.ts`, `shot.mjs`, `e2e.mjs` and `e2e-mobile.mjs` (browser runs in the installed Edge) |
+| `src/app/` | React UI: state (zustand), MapLibre area editor, panels, three.js viewer. The model editor is `viewer/editController.ts` (pointer tools), `picker.ts`, `highlight.ts`, `shown.ts` (what the view hides and colours), `viewer/edit/` (toolbar, inspector) and `state/editActions.ts` (edits, undo). `src/app/svgmap/` has the SVG sections, preview, render client, route picker, piece fitting and share encoding |
+| `scripts/` | `generate.ts` (CLI end to end, `--options` for an exported options file with its edits), `fetch-area.ts`, `bench-synthetic.ts`, `check-bambu.ts`, `fuzz-edits.ts` (random edits, exports checked), `shot.mjs`, `e2e.mjs`, `e2e-mobile.mjs` and `e2e-edit.mjs` (browser runs in the installed Edge) |
 
 ## Pipeline rules worth preserving
 
@@ -338,7 +338,10 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   `r:<segment>`, `br:<segment>` (bridge decks), `w:<water>`, `t:<tree>`,
   `k:<rock>`, `s:<shape>` (`keys.ts`). They carry over when the model is
   generated again with other settings, and edits for things a model lacks
-  are kept and ignored. Generation tags solids with `key`/`sub` and fills
+  are kept and ignored. Sizes are printed mm, apart from building heights
+  (`heightM`, real metres times `buildingScale`), which have to follow a
+  new scale. The document has a `version`: bump it and read older ones
+  as far as they still make sense when a field changes meaning. Generation tags solids with `key`/`sub` and fills
   `ctx.objects`, and the mesher records each object's triangle runs for
   picking. Without edits an export uses the generated spec as it is, so
   exports stay byte-identical. Check that on the Loop and Clearwater after
@@ -365,7 +368,22 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   shape never takes an overlap from the terrain. Shapes run down to
   `spec.baseZ`, so nothing added floats.
 - A height edit scales everything above the building's ground
-  (`heights.ts`). A part's own height beats its building's.
+  (`heights.ts`). A part's own height beats its building's. A raised part
+  left on air by a removed or lowered part is built down to the ground
+  (`settle`), the way `groundRaisedParts` builds them. Group edits by
+  building once per update (`reshaped`): scanning every edit per building
+  took five minutes with a box around San Francisco.
+- The view and the export are separate code, so they can disagree. The
+  view hides and colours by `shown.ts`, and `ComposedMesh` only rebuilds
+  its index when the styles change, with hidden marked apart from the
+  part's own colour (`''`). Joined as plain strings the two matched, and
+  removed buildings stayed on screen. `scripts/fuzz-edits.ts` holds the
+  export to `shown.ts` volume by volume, and `e2e-edit.mjs` checks the
+  view changes when something is removed.
+- Edits and SVG picks are saved under keys of their own
+  (`persist.ts`), so running out of space for them doesn't stop the
+  settings saving, and a failed save is shown once. Share links carry them
+  deflated (`e=`, `p=`, `shareLink.ts`) up to `MAX_LINK_EXTRA`.
 
 SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.md`):
 
@@ -413,9 +431,11 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
   bar once read.
 - Routes (`routes.ts`): OpenFreeMap has no ids or names on road lines, so
   picks are kept as lon/lat lines and matched to the prepared lines before
-  the line cleanup, which then never thins a route. Share links leave
-  `routes` and `hiddenLines` out. Options files keep them, sanitized rather
-  than checked.
+  the line cleanup, which then never thins a route. Picks nothing matched
+  come back as `missingPicks`. The `s=` part of a share link leaves
+  `routes` and `hiddenLines` out, and `p=` carries them. Options files
+  keep them only with the map area, sanitized rather than checked, and all
+  picks together are held to `MAX_PICKED_POINTS`.
 
 ## Verification
 
@@ -427,8 +447,11 @@ npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --out out/loop
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar   # point cache in out/lidar-cache
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar-only --out out/loop-surface.3mf   # --water-layer or --cut-water, --no-map-water
 npx tsx scripts/check-bambu.ts   # round trip through installed Bambu Studio (isolated data dir)
+npx tsx scripts/fuzz-edits.ts --preset "Chicago - The Loop (small)" --steps 40   # random edits, exports checked against the view
+npx tsx scripts/generate.ts --options out/fuzz/<failed step>.json --out out/repro.3mf   # an options file, edits and all
 $env:NETWORK=1; npx vitest run src/core/svgmap/e2e.test.ts   # SVG maps from live tiles ($env:SVG_OUT to keep them)
 node scripts/e2e.mjs http://localhost:4173/ out/e2e-svg --svg --all-formats   # SVG map in Edge
+node scripts/e2e-edit.mjs http://localhost:4173/ out/e2e-edit   # the editor in Edge, --phone and --svg too
 npm run build                # site into build/ (not dist/, which holds old add-on archives)
 ```
 

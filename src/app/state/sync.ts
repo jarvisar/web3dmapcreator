@@ -3,10 +3,26 @@
 import { sameArea } from '../lib/area';
 import { saveState } from './persist';
 import { formatAreaHash, parseHash } from './shareLink';
-import { setArea, setOutput, useApp } from './store';
+import { editCount, hasEdits } from '../../core/edit/types';
+import { commitEdits, undoEdit } from './editActions';
+import { patchSvg, setArea, setOutput, takeLinkedEdits, toast, useApp } from './store';
 
 let started = false;
 let written = '';
+let warned = false;
+
+function linkedEdits(count: number): void {
+  toast(`Opened with ${count} ${count === 1 ? 'edit' : 'edits'} from the link.`, 'info', { label: 'Undo', run: undoEdit });
+}
+
+function save(): void {
+  if (saveState(useApp.getState(), written)) {
+    warned = false;
+  } else if (!warned) {
+    warned = true;
+    toast("This browser didn't save your latest changes. Its storage may be full or turned off. Export options to keep them.", 'error');
+  }
+}
 
 export function writeHashNow(): void {
   const state = useApp.getState();
@@ -41,14 +57,14 @@ export function startSync(): void {
       state.ui.previewLook !== previous.ui.previewLook
     ) {
       clearTimeout(saveTimer);
-      saveTimer = window.setTimeout(() => saveState(useApp.getState(), written), 300);
+      saveTimer = window.setTimeout(save, 300);
     }
     if (state.area !== previous.area || state.output !== previous.output) {
       clearTimeout(hashTimer);
       hashTimer = window.setTimeout(() => {
         writeHashNow();
         // The saved copy has to know this hash, or a reload reads it as a share link.
-        saveState(useApp.getState(), written);
+        save();
       }, 400);
     }
   });
@@ -57,7 +73,7 @@ export function startSync(): void {
   // still waiting, so save that one to recognise it after a reload.
   const flush = () => {
     clearTimeout(saveTimer);
-    saveState(useApp.getState(), written);
+    save();
   };
   window.addEventListener('pagehide', flush);
   // Phones can discard a background tab without a pagehide.
@@ -69,14 +85,21 @@ export function startSync(): void {
   window.addEventListener('hashchange', () => {
     const shared = parseHash(location.hash);
     if (shared.svg) useApp.setState({ svg: shared.svg.svg });
+    if (shared.picks) patchSvg(shared.picks);
+    if (shared.edits && hasEdits(shared.edits)) {
+      commitEdits(shared.edits);
+      linkedEdits(Math.max(1, editCount(shared.edits)));
+    }
     if (shared.output) setOutput(shared.output);
     const area = shared.area ?? useApp.getState().area;
     const next = { ...area, ...shared.svg?.area, ...(shared.svg?.shape ? { shape: shared.svg.shape } : {}) };
     // New SVG settings can mean a new piece, and so a new map window.
     if (shared.svg || !sameArea(next, useApp.getState().area)) setArea(next, { focus: 'always', placeName: '' });
     // Drop the settings from the address bar once they're in.
-    if (shared.svg) writeHashNow();
+    if (shared.svg || shared.edits || shared.picks) writeHashNow();
   });
 
+  const linked = takeLinkedEdits();
+  if (linked) linkedEdits(linked);
   writeHashNow();
 }

@@ -803,6 +803,23 @@
   color: #ff8a80;
 }
 
+.toast-action {
+  margin: -3px -6px -3px 4px;
+  padding: 3px 8px;
+  border: 1px solid rgb(255 255 255 / 0.35);
+  border-radius: var(--radius);
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-weight: bold;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.toast-action:hover {
+  background: rgb(255 255 255 / 0.12);
+}
+
 /* Disclosure triangle, pointing right when closed */
 
 .disclosure {

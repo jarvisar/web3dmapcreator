@@ -261,6 +261,152 @@
   color: var(--text-2);
 }
 
+.beta-badge {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 9.5px;
+  font-weight: bold;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+
+.edit-busy {
+  gap: 6px;
+  height: 24px;
+  color: var(--text-2);
+}
+
+.inspector-warning {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius);
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.inspector-warning svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.inspector-point {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0 4px 8px;
+  border-left: 3px solid #f76707;
+  color: var(--text-2);
+}
+
+.parts-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+}
+
+.parts-pick {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.parts-pick:hover,
+.parts-pick:focus-visible {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.parts-pick-height {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.find-box {
+  position: relative;
+}
+
+.find-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-3);
+}
+
+.find-input .text-input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+}
+
+.find-results {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 4px;
+  list-style: none;
+}
+
+.find-result {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.find-result:hover,
+.find-result:focus-visible {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.find-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.find-detail,
+.find-none {
+  flex: none;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.find-none {
+  padding: 4px 6px;
+}
+
 /* Finish, undo a point or cancel while drawing, for anyone without Enter or double-click. */
 .draw-bar {
   align-items: center;
@@ -283,7 +429,11 @@
   .edit-tools {
     order: -1;
     flex-direction: row;
+    flex-wrap: wrap;
     margin-top: 0;
+  }
+  .edit-tools .toolbar .tool-btn {
+    width: 34px;
   }
   .draw-bar {
     order: -2;

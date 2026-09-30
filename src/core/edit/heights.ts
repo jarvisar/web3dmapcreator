@@ -33,6 +33,14 @@ export function solidPeak(solid: Solid): number {
   return peak;
 }
 
+export function lowestTop(solid: PrismSolid): number {
+  return topRange(solid.top, solid.polygon)[0];
+}
+
+export function lowestBottom(solid: PrismSolid): number {
+  return topRange(solid.bottom, solid.polygon)[0];
+}
+
 export function peakOf(solids: readonly Solid[]): number {
   let peak = -Infinity;
   for (const solid of solids) peak = Math.max(peak, solidPeak(solid));

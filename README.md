@@ -25,15 +25,16 @@ Open the 3MF in Bambu Studio with `File > Open Project`. Every part already has 
 
 ### Editing a Model
 
-Press the pencil at the top right of the 3D view to change the model before downloading it. Click a building, road, path, tree or body of water to select it. `Shift`-click adds to the selection, `Shift`-drag selects everything in a box and `Alt`-click picks one part of a building. `Whole street` selects the rest of a road with the same name.
+Press the pencil at the top right of the 3D view to change the model before downloading it. The editor is new, so it's marked as a beta for now. Click a building, road, path, tree or body of water to select it, or type a name into the search box. `Shift`-click adds to the selection and `Shift`-drag selects everything in a box. The `Select several` tool does both without a key, and on a phone a tap there adds or drops one thing. `Whole street` selects the rest of a road with the same name, and a building mapped in parts lists them to pick one.
 
 - Remove things, or leave water out of the export. A removed road or building gives its ground back to the park or plaza it was cut out of.
-- Drag the arrow on top of a building or shape to change its height, or type one in.
+- Drag the arrow on top of a building or shape to change its height, or type one in. A building's height is kept in real metres, so it keeps up when you change the scale.
 - Make roads and paths wider or taller.
 - Put anything in a custom layer to give it a colour of its own. Each layer is exported as its own part with its own filament, so a racetrack or a favourite route can print in a different colour.
-- Add text, map pins, boxes and cylinders, or draw your own paths and areas. Drag the points of a path or area to reshape it.
+- Add text, map pins, boxes and cylinders, or draw your own roads and buildings. A drawn line starts out as a road and a drawn outline as a building, and either can take any colour. Everything added stands on the ground and is solid down to the base.
+- Drag the points of a drawn road or outline to reshape it. Tap or click a point, then `Delete point`, to take it out.
 
-Edits follow the map features, not the mesh, so they stay when you change settings and generate again. They're saved in the browser, and in exported options when the map area is included. `Ctrl+Z` undoes, and Help lists the other keys.
+Edits follow the map features, not the mesh, so they stay when you change settings and generate again. They're saved in the browser, in exported options when the map area is included, and in a copied share link unless there are too many for one. `Ctrl+Z` undoes, and Help lists the other keys.
 
 ### SVG Maps
 
@@ -43,7 +44,7 @@ Pick the piece under `Size`: a plaque, a sheet of paper, a coaster or your own s
 
 Click `Generate SVG` to open the preview, which keeps up with the settings while it's open, then `Download .svg`. `Output` switches between a laser (fills engrave, lines score and the edge cuts, one colour per layer), a pen plotter (everything is a stroke, one numbered layer per pen) and print (coloured themes). The file is sized in millimetres, so check the imported size in your laser software.
 
-To draw a route in a colour of its own, click the route button over the preview and pick the roads, paths or railways it follows. Each route is its own layer in the SVG, and picked roads can be left out instead. Picks are saved with the settings but not in share links.
+To draw a route in a colour of its own, click the route button over the preview and click the roads, paths or railways it follows. Each click adds a road or drops it again. Each route is its own layer in the SVG, and picked roads can be left out instead. Picks go in a copied share link too, unless there are too many.
 
 Two lines closer together than the laser beam burn as one dark band, so `Line cleanup` merges them, like sidewalks next to roads. Set `Line spacing` to about your beam width, or 1.5 to 2 times your pen width. See [SVG maps](docs/SVG_MAPS.md) for more.
 
@@ -62,7 +63,7 @@ The water comes from the survey, with Overture's water outlines used for smooth 
 - Optional LiDAR buildings, rebuilt from their scanned roofs with setbacks, towers, domes and spires, from USGS 3DEP, IGN France, NRCan, swisstopo and Open LiDAR Data
 - LiDAR only models: the whole area from a survey as one single-colour solid, with water recessed, as a thin layer in its own colour, or cut away
 - Optional bridges on piers, trees and a border rim
-- An editor in the 3D view: remove, raise or recolour buildings, widen roads, leave water out, and add text, pins and shapes. Custom layers export as parts of their own
+- An editor in the 3D view: remove, raise or recolour buildings, widen roads, leave water out, add text and pins, and draw your own roads and buildings. Custom layers export as parts of their own
 - Crop to a rectangle, rounded rectangle, circle or hexagon, rotated to follow the street grid
 - Fixed print scale, or fit the model to a size
 - Large models split into sections, one per plate
@@ -107,7 +108,8 @@ Pushing to `main` deploys the site with GitHub Actions. Set `Settings > Pages > 
 - LiDAR downloads are big: 150 to 450 MB per km² depending on the survey. The `Chicago - The Loop (small)` preset reads about 790 MB and takes about 4 minutes the first time, the `Paris - Eiffel Tower` preset about 2.2 GB and 15 minutes. Point data is cached in the browser up to 1 GB, and measured buildings are reused for a day.
 - A LiDAR only model shows the city the year it was surveyed. Glass, dark roofs and water return few points, and those spots are filled in from around them. It's 2.5D, so skybridges and elevated tracks are solid down to the ground, and with the water in a layer or cut away, bridges are solid walls down to the base.
 - Edits are tied to Overture's IDs. Most carry over from one monthly Overture release to the next, but a road or building that was redrawn gets a new ID and its edit stops applying.
-- Only added paths and areas can be reshaped point by point. Generated buildings, roads and terrain can be raised, widened or removed, but not reshaped. A LiDAR only model is one surface, so only added shapes can be edited on it.
+- Only drawn roads and outlines can be reshaped point by point. Generated buildings, roads and terrain can be raised, widened or removed, but not reshaped. A LiDAR only model is one surface, so only added shapes can be edited on it.
+- In a big city the first road edit takes about a second, since the roads are cut into tiles then. The editor shows `Updating the model` while it works.
 - The model is made of separate overlapping parts, one per colour. Slicers join them, but other tools may report them as intersecting.
 - The Bambu Studio project is tested in Bambu Studio 2.8. It hasn't been tested in OrcaSlicer.
 - SVG maps are drawn from OpenFreeMap's vector tiles, not the Overture data the models use, so the two can differ a little.

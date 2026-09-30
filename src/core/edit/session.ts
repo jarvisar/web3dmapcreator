@@ -4,7 +4,19 @@
 // edited (see roads.ts). Removed objects and colours it works out from the
 // edits itself. Exports mesh the edited model from scratch.
 
-import { boxesOverlap, clipToUnits, difference, multiBounds, pointInMulti, ringBounds, union, type Box } from '../geometry/polygon';
+import {
+  boxesOverlap,
+  clipToUnits,
+  difference,
+  intersection,
+  multiArea,
+  multiBounds,
+  offsetPolygons,
+  pointInMulti,
+  ringBounds,
+  union,
+  type Box,
+} from '../geometry/polygon';
 import { interiorPoints } from '../terrain/heightfield';
 import type { Layer, PrismSolid, Solid } from '../geometry/solid';
 import type { Projection } from '../geo/projection';
@@ -14,11 +26,11 @@ import type { ModelSettings, Palette, SurfaceCategory } from '../settings';
 import { bareLand, LandTiles, openFill, type LandFill } from './land';
 import type { LoadedFont } from '../svgmap/text/outline';
 import type { ColourGroup, MaterialRole, MeshPart, MultiPolygon, PartColour, PartObjects } from '../types';
-import { heightFactor, scaleSolid } from './heights';
-import { kindOf, objectOf, partKey, shapeKey } from './keys';
+import { heightFactor, lowestBottom, lowestTop, scaleSolid, solidPeak } from './heights';
+import { isPartKey, kindOf, objectOf, partKey, shapeKey } from './keys';
 import { ROAD_PARTS, RoadTiles, TileGrid, type RoadBucket, type RoadStyle } from './roads';
 import { shapeFootprint } from './shapes';
-import type { AddedShape, EditLayer, ModelEdits, ObjectEdit } from './types';
+import { EDIT_LIMITS, type AddedShape, type EditLayer, type ModelEdits, type ObjectEdit } from './types';
 
 export interface MeshData {
   positions: Float32Array;
@@ -53,6 +65,8 @@ export interface EditUpdate {
   parts: PartUpdate[];
   /** Objects other edits hide, like trees under a shape or a widened road. */
   hidden: string[];
+  /** Things worth knowing about an added shape, by key: too thin to print, outside the model. */
+  notes: Record<string, string>;
   warnings: string[];
 }
 
@@ -73,7 +87,18 @@ export interface ObjectFacts {
   /** Its ground level in the viewer's coordinates, which heights count from. */
   groundZ?: number;
   measured?: boolean;
+  /** A building's parts, tallest first, when it has more than one. */
+  parts?: { sub: string; heightMm: number }[];
 }
+
+// A raised part clearing what's under it by less than a 0.2 mm layer rests on
+// it, as buildings.ts has it.
+const CLEARANCE_MM = 0.2;
+// Features thinner than a 0.4 mm nozzle prints are what a shape's note warns
+// about. The probe is a little narrower, so a single-line font's 0.4 mm
+// strokes pass.
+const NOZZLE_MM = 0.4;
+const PROBE_MM = 0.36;
 
 /** Where added shapes show in the viewer. They export in their layer's part. */
 export const SHAPES_PART = 'shapes';
@@ -135,6 +160,7 @@ export class EditSession {
   private readonly sentParts = new Map<string, string>();
   /** Built shape footprints, by the shape's geometry. */
   private readonly footprints = new Map<string, { signature: string; polygons: MultiPolygon }>();
+  private readonly notes = new Map<string, { signature: string; note: string | null }>();
   private readonly grounds: Ground[] = [];
   /** Road edits and land fills are worked out in the same tiles. */
   private readonly grid: TileGrid;
@@ -185,34 +211,74 @@ export class EditSession {
       if (info.measured) entry.measured = true;
       const placed = this.objects.get(key);
       if (placed && info.base !== undefined) {
-        let peak = -Infinity;
-        for (const p of placed) for (const s of p.solids) peak = Math.max(peak, peakOfSolid(s));
-        if (Number.isFinite(peak)) entry.heightMm = Math.round((peak - info.base) * 100) / 100;
+        const peaks = new Map<string, number>();
+        for (const p of placed) for (const s of p.solids) peaks.set(s.sub ?? '', Math.max(peaks.get(s.sub ?? '') ?? -Infinity, peakOfSolid(s)));
+        const round = (mm: number) => Math.round(mm * 100) / 100;
+        const peak = Math.max(...peaks.values());
+        if (Number.isFinite(peak)) entry.heightMm = round(peak - info.base);
         entry.groundZ = info.base + this.zShift;
+        if (info.kind === 'building' && peaks.size > 1) {
+          entry.parts = [...peaks].map(([sub, top]) => ({ sub, heightMm: round(top - info.base!) })).sort((a, b) => b.heightMm - a.heightMm);
+        }
       }
       out[key] = entry;
     }
     return out;
   }
 
+  /** Printed mm per real metre of a building's height, as this model was generated. */
+  get buildingScale(): number {
+    const scale = this.settings.buildings.heightScale;
+    return this.projection.mm(1) * (scale > 0 && Number.isFinite(scale) ? scale : 1);
+  }
+
   // ------------------------------------------------------------ geometry
 
-  /** Every solid of an object with its height edits applied. */
-  private editedSolids(key: string, edits: ModelEdits): { layer: Layer; solid: Solid }[] {
+  /** A building edit's height as printed, from its real one. */
+  private printedHeight(edit: ObjectEdit | undefined): number | undefined {
+    if (edit?.heightM === undefined) return undefined;
+    const [low, high] = EDIT_LIMITS.buildingHeightMm;
+    return Math.min(high, Math.max(low, edit.heightM * this.buildingScale));
+  }
+
+  /**
+   * Buildings whose geometry the edits change, with the edits that do: a
+   * height of their own or of a part, or a part removed. Grouped once, since
+   * a box around a whole city can give every building a height.
+   */
+  private reshaped(edits: ModelEdits): Map<string, [string, ObjectEdit][]> {
+    const out = new Map<string, [string, ObjectEdit][]>();
+    for (const [key, edit] of Object.entries(edits.objects)) {
+      if (kindOf(key) !== 'building') continue;
+      if (edit.heightM === undefined && !(isPartKey(key) && edit.removed)) continue;
+      const object = objectOf(key);
+      if (!this.objects.has(object)) continue;
+      const list = out.get(object);
+      if (list) list.push([key, edit]);
+      else out.set(object, [[key, edit]]);
+    }
+    return out;
+  }
+
+  /**
+   * Every solid of an object with its height edits applied, in the order the
+   * model has them. A solid the edits leave alone is the same object.
+   */
+  private editedSolids(key: string, edits: ModelEdits, own: [string, ObjectEdit][]): { layer: Layer; solid: Solid }[] {
     const placed = this.objects.get(key) ?? [];
     const out: { layer: Layer; solid: Solid }[] = [];
     const base = this.ctx.objects.get(key)?.base;
-    const whole = edits.objects[key];
     const all = placed.flatMap((p) => p.solids);
-    const wholeFactor = base !== undefined && whole?.heightMm !== undefined ? heightFactor(all, base, whole.heightMm) : 1;
+    const wholeHeight = this.printedHeight(edits.objects[key]);
+    const wholeFactor = base !== undefined && wholeHeight !== undefined ? heightFactor(all, base, wholeHeight) : 1;
     // A part with a height of its own takes it, whatever the building's.
     const partFactors = new Map<string, number>();
     if (base !== undefined) {
       const subs = new Set(all.map((s) => s.sub ?? ''));
       for (const sub of subs) {
-        const edit = sub ? edits.objects[partKey(key, sub)] : undefined;
-        if (edit?.heightMm === undefined) continue;
-        partFactors.set(sub, heightFactor(all.filter((s) => (s.sub ?? '') === sub), base, edit.heightMm));
+        const height = sub ? this.printedHeight(edits.objects[partKey(key, sub)]) : undefined;
+        if (height === undefined) continue;
+        partFactors.set(sub, heightFactor(all.filter((s) => (s.sub ?? '') === sub), base, height));
       }
     }
     for (const { layer, solids } of placed) {
@@ -221,7 +287,42 @@ export class EditSession {
         out.push({ layer, solid: base !== undefined && factor !== 1 ? scaleSolid(solid, base, factor) : solid });
       }
     }
-    return out;
+    return own.some(([k]) => isPartKey(k)) ? this.settle(key, out, edits) : out;
+  }
+
+  /**
+   * A raised part (an arcade's upper floors, a tower on a podium) left on air
+   * once what held it up is removed or lowered is built down to the ground,
+   * the way raised parts are built by default. A whole building's height
+   * scales every part alike, so only part edits can do this.
+   */
+  private settle(key: string, list: { layer: Layer; solid: Solid }[], edits: ModelEdits): { layer: Layer; solid: Solid }[] {
+    const removed = (solid: Solid) => Boolean(solid.sub && edits.objects[partKey(key, solid.sub)]?.removed);
+    const standing = list.filter(({ solid }) => solid.kind === 'prism' && !removed(solid)).map(({ solid }) => solid as PrismSolid);
+    const boxes = new Map(standing.map((s) => [s, ringBounds(s.polygon[0])]));
+    return list.map((entry) => {
+      const solid = entry.solid;
+      if (solid.kind !== 'prism' || typeof solid.bottom !== 'number' || removed(solid)) return entry;
+      const bottom = solid.bottom;
+      if (bottom - highestGround(this.ctx, [solid.polygon]) < CLEARANCE_MM) return entry;
+      const box = boxes.get(solid)!;
+      const held = standing.some((other) => {
+        if (other === solid || solidPeak(other) < bottom - CLEARANCE_MM || lowestBottom(other) >= bottom) return false;
+        if (!boxesOverlap(box, boxes.get(other)!)) return false;
+        return multiArea(intersection([solid.polygon], [other.polygon])) >= 0.01;
+      });
+      return held ? entry : { layer: entry.layer, solid: this.grounded(solid) };
+    });
+  }
+
+  private grounded(solid: PrismSolid): PrismSolid {
+    const hf = this.ctx.heightfield;
+    const embed = this.settings.land.embedMm;
+    // Where the hill rises over the part's top, the underside stays under it.
+    const ceiling = lowestTop(solid) - 0.05;
+    const bottom = (x: number, y: number) => Math.min(this.ctx.heightAt(x, y) - embed, ceiling);
+    const draped = hf !== undefined && !hf.flat;
+    return { ...solid, bottom, drape: draped ? hf.step : 0, lattice: draped ? hf.lattice : undefined };
   }
 
   private async mesh(layerId: string, role: MaterialRole, solids: Solid[]): Promise<MeshData | null> {
@@ -387,39 +488,39 @@ export class EditSession {
     const objects: ObjectMesh[] = [];
     const parts: PartUpdate[] = [];
 
-    // Objects whose height was edited get new geometry.
+    // Buildings the edits reshape get new geometry. A removed part alone
+    // needs none, the viewer hides it, unless it left another part on air.
     const wanted = new Map<string, string>();
-    for (const [key, edit] of Object.entries(edits.objects)) {
-      if (edit.heightMm === undefined || kindOf(key) !== 'building') continue;
-      const object = objectOf(key);
-      if (!this.objects.has(object)) continue;
-      wanted.set(object, '');
-    }
-    for (const object of wanted.keys()) {
-      const signature = Object.entries(edits.objects)
-        .filter(([key, edit]) => objectOf(key) === object && edit.heightMm !== undefined)
-        .map(([key, edit]) => `${key}=${edit.heightMm}`)
+    for (const [object, own] of this.reshaped(edits)) {
+      const signature = own
+        .map(([key, edit]) => `${key}=${edit.heightM ?? ''}${edit.removed ? ':removed' : ''}`)
         .sort()
         .join(';');
+      if (this.sentObjects.get(object) === signature) {
+        wanted.set(object, signature);
+        continue;
+      }
+      const originals = this.objects.get(object)!.flatMap((p) => p.solids);
+      const edited = this.editedSolids(object, edits, own);
+      if (edited.every(({ solid }, i) => solid === originals[i])) continue;
       wanted.set(object, signature);
-    }
-    for (const [key, signature] of wanted) {
-      if (this.sentObjects.get(key) === signature) continue;
-      const edited = this.editedSolids(key, edits);
       const partId = edited[0]?.layer.id ?? 'buildings';
-      objects.push({ key, part: partId, mesh: await this.mesh(partId, edited[0]?.layer.role ?? 'building', edited.map((e) => e.solid)) });
-      this.sentObjects.set(key, signature);
+      objects.push({ key: object, part: partId, mesh: await this.mesh(partId, edited[0]?.layer.role ?? 'building', edited.map((e) => e.solid)) });
+      this.sentObjects.set(object, signature);
     }
 
     // Shapes.
     const shapeKeys = new Set<string>();
     const shapeFootprints: MultiPolygon[] = [];
+    const notes: Record<string, string> = {};
     for (const shape of edits.shapes) {
       const key = shapeKey(shape.id);
       shapeKeys.add(key);
       const signature = JSON.stringify([shape.kind, shape.at, shape.points, shape.rotationDeg, shape.sizeMm, shape.depthMm, shape.heightMm, shape.liftMm, shape.followGround, shape.text, shape.font]);
       const solids = await this.shapeSolids(shape, warnings);
       for (const solid of solids) shapeFootprints.push([solid.polygon]);
+      const note = this.noteFor(shape, solids);
+      if (note) notes[key] = note;
       if (this.sentObjects.get(key) === signature) continue;
       objects.push({ key, part: SHAPES_PART, mesh: await this.mesh(SHAPES_PART, 'building', solids) });
       this.sentObjects.set(key, signature);
@@ -468,7 +569,32 @@ export class EditSession {
       this.sentObjects.delete(key);
     }
 
-    return { model: this.id, version, objects, parts, hidden: this.hiddenTrees(shapeFootprints, this.tiles), warnings };
+    return { model: this.id, version, objects, parts, hidden: this.hiddenTrees(shapeFootprints, this.tiles), notes, warnings };
+  }
+
+  /** What's worth knowing about a shape as built: nothing to print, or bits too thin to. */
+  private noteFor(shape: AddedShape, solids: PrismSolid[]): string | null {
+    if (shape.kind === 'text' && !shape.text.trim()) return 'Type the text it should show.';
+    if (!solids.length) return "It's outside the model, so it won't print.";
+    const signature = JSON.stringify([shape.kind, shape.at, shape.points, shape.rotationDeg, shape.sizeMm, shape.depthMm, shape.text, shape.font]);
+    const cached = this.notes.get(shape.id);
+    if (cached?.signature === signature) return cached.note;
+    let note: string | null = null;
+    if (shape.kind === 'path' && shape.sizeMm < NOZZLE_MM) {
+      note = `It's narrower than a ${NOZZLE_MM} mm nozzle prints well.`;
+    } else {
+      const polygons = solids.map((s) => s.polygon);
+      const area = multiArea(polygons);
+      const opened = offsetPolygons(offsetPolygons(polygons, -PROBE_MM / 2, 'round'), PROBE_MM / 2, 'round');
+      if (area > 0 && multiArea(opened) < area * 0.9) {
+        note =
+          shape.kind === 'text'
+            ? `Some strokes are thinner than a ${NOZZLE_MM} mm nozzle prints well. Make the letters bigger or pick a bolder font.`
+            : `Parts of it are thinner than a ${NOZZLE_MM} mm nozzle prints well.`;
+      }
+    }
+    this.notes.set(shape.id, { signature, note });
+    return note;
   }
 
   // --------------------------------------------------------------- land
@@ -648,15 +774,12 @@ export class EditSession {
       return layer && layerIds.has(layer) ? layer : undefined;
     };
 
-    // Solids with new heights, by object.
+    // Solids of reshaped buildings, by the solid they replace.
     const scaled = new Map<Solid, Solid>();
-    for (const [key, edit] of Object.entries(edits.objects)) {
-      if (edit.heightMm === undefined || kindOf(key) !== 'building') continue;
-      const object = objectOf(key);
-      if (!this.objects.has(object) || scaled.has(this.objects.get(object)![0].solids[0])) continue;
+    for (const [object, own] of this.reshaped(edits)) {
       const originals = this.objects.get(object)!.flatMap((p) => p.solids);
-      const edited = this.editedSolids(object, edits).map((e) => e.solid);
-      originals.forEach((solid, i) => scaled.set(solid, edited[i]));
+      const edited = this.editedSolids(object, edits, own).map((e) => e.solid);
+      originals.forEach((solid, i) => edited[i] !== solid && scaled.set(solid, edited[i]));
     }
 
     // The viewer's tiles when they're for these edits, or tiles of its own.

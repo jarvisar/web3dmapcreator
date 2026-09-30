@@ -1,5 +1,5 @@
 import { Check, CircleAlert, Info } from 'lucide-react';
-import { useApp } from '../state/store';
+import { dismissToast, useApp } from '../state/store';
 
 export function Toasts() {
   const toasts = useApp((state) => state.toasts);
@@ -15,6 +15,18 @@ export function Toasts() {
             <Info size={16} aria-hidden="true" />
           )}
           <span>{item.text}</span>
+          {item.action && (
+            <button
+              type="button"
+              className="toast-action"
+              onClick={() => {
+                item.action!.run();
+                dismissToast(item.id);
+              }}
+            >
+              {item.action.label}
+            </button>
+          )}
         </div>
       ))}
     </div>

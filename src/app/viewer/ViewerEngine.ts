@@ -36,7 +36,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { groundAt } from '../../core/edit/ground';
 import { isPartKey, kindOf, objectOf } from '../../core/edit/keys';
 import { FILL_PREFIX, type ObjectMesh } from '../../core/edit/session';
-import type { ModelEdits } from '../../core/edit/types';
+import { emptyEdits, type ModelEdits } from '../../core/edit/types';
 import type { EditUpdate } from '../../core/engine/protocol';
 import type { Palette, Printer } from '../../core/settings';
 import { OVERLAP_RANK, ROLE_GROUP } from '../../core/types';
@@ -46,6 +46,9 @@ import { ComposedMesh, type ComposedSource, type Entry } from './composed';
 import { extractTriangles, overlayMaterial, setOverlay, type Soup } from './highlight';
 import { Picker } from './picker';
 import { RoadIndex } from './roads';
+import { entryColour, SHAPES_PART } from './shown';
+
+export { SHAPES_PART };
 
 type Bounds = [number, number, number, number, number, number];
 
@@ -98,7 +101,6 @@ const DARK_THEME: Theme = {
 
 const SELECT_COLOUR = '#2f7cf6';
 const ROAD_PARTS: Record<string, number> = { roads: 0, rail: 1, paths: 2 };
-export const SHAPES_PART = 'shapes';
 
 interface Tween {
   fromTarget: Vector3;
@@ -217,7 +219,7 @@ export class ViewerEngine {
   private objectMeshes = new Map<string, ObjectMesh>();
   private replaced = new Map<string, MeshPart>();
   private implicitHidden = new Set<string>();
-  private edits: ModelEdits = { layers: [], objects: {}, shapes: [] };
+  private edits: ModelEdits = emptyEdits();
   private data: EditData = { editable: false, roads: null, objects: {}, ground: null, frame: null };
   roads: RoadIndex | null = null;
   private selection: string[] = [];
@@ -771,38 +773,13 @@ export class ViewerEngine {
     if (view.override) view.override.mesh.visible = visible;
   }
 
-  /** A custom layer an entry is in, from its own edit or its object's. */
-  private layerOf(entry: Entry): string | null {
-    const layers = this.edits.layers;
-    if (entry.key.startsWith('s:')) {
-      const shape = this.edits.shapes.find((s) => `s:${s.id}` === entry.key);
-      if (!shape) return null;
-      return layers.some((l) => l.id === shape.layer) ? shape.layer : null;
-    }
-    const own = entry.sub ? this.edits.objects[`${entry.key}/${entry.sub}`]?.layer : undefined;
-    const layer = own ?? this.edits.objects[entry.key]?.layer;
-    return layer && layers.some((l) => l.id === layer) ? layer : null;
-  }
-
   private entryVisible(view: PartView, composed: ComposedMesh, entry: Entry): boolean {
     return this.entryStyle(view, composed, entry) !== null;
   }
 
   private entryStyle(view: PartView, composed: ComposedMesh, entry: Entry): string | null {
-    const { key, sub } = entry;
-    if (composed === view.base && view.overrideKeys.has(key)) return null;
-    if (this.implicitHidden.has(key)) return null;
-    const edit = this.edits.objects[key];
-    if (edit?.removed) return null;
-    if (sub && this.edits.objects[`${key}/${sub}`]?.removed) return null;
-    const layer = this.layerOf(entry);
-    if (layer) return this.hiddenParts.has(`layer:${layer}`) ? null : `layer:${layer}`;
-    if (key.startsWith('s:')) {
-      if (this.hiddenParts.has(SHAPES_PART)) return null;
-      const shape = this.edits.shapes.find((s) => `s:${s.id}` === key);
-      return shape ? `group:${shape.layer}` : null;
-    }
-    return '';
+    const context = { edits: this.edits, hiddenParts: this.hiddenParts, implicitHidden: this.implicitHidden };
+    return entryColour(entry, context, composed === view.base && view.overrideKeys.has(entry.key));
   }
 
   private restyle(): void {
@@ -931,7 +908,7 @@ export class ViewerEngine {
   }
 
   private moveCamera(position: Vector3, target: Vector3, animate: boolean): void {
-    if (!animate) {
+    if (!animate || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       this.tween = null;
       this.camera.position.copy(position);
       this.controls.target.copy(target);

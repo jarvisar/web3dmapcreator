@@ -59,11 +59,20 @@ npx tsx scripts/bench-synthetic.ts 3
 # Round-trip sample projects through the installed Bambu Studio
 npx tsx scripts/check-bambu.ts
 
+# An options file exported from the app, edits and all, as the app would export it
+npx tsx scripts/generate.ts --options city-model-options.json --out out/options.3mf
+
+# Random edits on a real area, checking exports are closed and match the 3D view
+npx tsx scripts/fuzz-edits.ts --preset "Chicago - The Loop (small)" --steps 40 --seed 1
+
 # Screenshot the running site, or run a full generate and download in Edge
 node scripts/shot.mjs http://localhost:5173/ out/shot.png
 node scripts/e2e.mjs http://localhost:5173/ out/e2e
 node scripts/e2e.mjs http://localhost:5173/ out/e2e-svg --svg --all-formats
 node scripts/e2e-mobile.mjs http://localhost:5173/ out/e2e-mobile
+node scripts/e2e-edit.mjs http://localhost:5173/ out/e2e-edit
+node scripts/e2e-edit.mjs http://localhost:5173/ out/e2e-edit-phone --phone
+node scripts/e2e-edit.mjs http://localhost:5173/ out/e2e-edit-svg --svg
 ```
 
 `generate.ts` takes `--shape`, `--rotation`, `--scale`, `--fit`, `--format`, `--printer`, `--multi-plate`, `--section`, `--bridges`, `--trees`, `--flat`, `--cut-water` (large water through the base), `--lidar` and `--settings file.json` (merged onto the defaults). The `out/` folder is ignored.
@@ -73,6 +82,12 @@ With `--lidar`, point data and batch results are kept in `out/lidar-cache` (or `
 `--lidar-only` builds a LiDAR only model instead, with its blocks checkpointed in the same folder and up to eight threads. `--detail mm` sets its cell size, `--water-layer` prints its water as a thin layer, `--cut-water` cuts it away, `--no-map-water` leaves out Overture's water outlines, and `--surface-out folder` writes the grid's layers as raw binaries with a `grid.json`, for looking at them in something else.
 
 `check-bambu.ts` gives Bambu Studio its own data folder, so your own settings, presets and recent files are never touched.
+
+`--options` takes an options file exported with its map area: the area, settings, colours, export options and the 3D editor's edits. Other flags override it, and `--no-edits` leaves the edits out. It's the quickest way to rebuild what someone downloaded.
+
+`fuzz-edits.ts` makes random edits (removals, heights, road widths, layers, shapes with odd sizes and points) and every few steps exports in one plate and in sections. It checks every part is closed and finite, no building part floats, and the export has the same volume per colour as the 3D view would show. A failing step is saved as an options file for `generate.ts --options`. `--selftest` exports the step before's edits, which the checks have to catch. It takes `--trees`, `--bridges`, `--shape`, `--rotation` and `--lidar-only` like `generate.ts`.
+
+`e2e-edit.mjs` goes through the editor like a person would, then opens every export format to check the custom layer is in it. `--phone` does it at phone size with taps, and `--svg` picks roads for an SVG route.
 
 ## Tests
 

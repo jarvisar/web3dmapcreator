@@ -61,7 +61,7 @@ describe('options files', () => {
     const raw = JSON.parse(encodeOptions(options()));
     expect(() => decodeOptions(JSON.stringify({ ...raw, version: 2 }))).toThrow(/version/);
     expect(() => decodeOptions(JSON.stringify({ ...raw, settings: null }))).toThrow(/settings/);
-    expect(() => decodeOptions(' '.repeat(MAX_OPTIONS_BYTES + 1))).toThrow(/1 MB/);
+    expect(() => decodeOptions(' '.repeat(MAX_OPTIONS_BYTES + 1))).toThrow(/8 MB/);
   });
 
   it.each([

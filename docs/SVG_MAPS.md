@@ -46,7 +46,7 @@ A road is never removed in favour of a less important one. The preview shows how
 
 Roads picked in the preview go into routes, each drawn in its own colour on its own layer, or are left out. OpenFreeMap merges ways with the same tags and has no names on road lines, so a pick is saved as the line's shape in longitude and latitude, not an ID. Each render matches it back to the lines lying along it: at least 70% of a line within 4 m of the pick, or 0.25 mm printed if that's more. That happens before the line cleanup, so a route's lines only join each other and the cleanup never thins them out (`src/core/svgmap/routes.ts`).
 
-Share links leave picks out, since a long route is a lot of coordinates for a URL. Saved settings and exported options keep them.
+Picks are kept in the browser under a key of their own, in exported options when the map area goes too, and deflated in a copied share link (`p=`) unless that would make it longer than about 6,000 characters. Picks nothing on the map matched are listed on the route card, to drop them. They're usually off the map, on a layer that's off, or drawn too differently at another scale.
 
 ## Titles
 

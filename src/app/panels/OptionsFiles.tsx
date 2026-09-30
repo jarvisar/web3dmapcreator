@@ -4,7 +4,7 @@ import { hasEdits } from '../../core/edit/types';
 import { CheckField } from '../components/Fields';
 import { CUSTOM_FONT_ID } from '../../core/svgmap/text/fonts';
 import { downloadBlob } from '../lib/browser';
-import { decodeOptions, encodeOptions, MAX_OPTIONS_BYTES, type Options } from '../state/options';
+import { decodeOptions, encodeOptions, MAX_OPTIONS_BYTES, OPTIONS_TOO_BIG, type Options } from '../state/options';
 import { applyOptions, toast, useApp } from '../state/store';
 
 const usesCustomFont = ({ svg }: Options) => svg.label.font === CUSTOM_FONT_ID || svg.label.subtitleFont === CUSTOM_FONT_ID;
@@ -18,7 +18,7 @@ export function OptionsFiles() {
     if (!file) return;
     setReading(true);
     try {
-      if (file.size > MAX_OPTIONS_BYTES) throw new Error('Options files must be smaller than 1 MB.');
+      if (file.size > MAX_OPTIONS_BYTES) throw new Error(OPTIONS_TOO_BIG);
       const options = decodeOptions(await file.text());
       applyOptions(options, includeArea);
       const message = options.map && includeArea ? 'Options and map area imported' : 'Options imported';

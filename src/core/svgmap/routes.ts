@@ -26,6 +26,8 @@ export interface SvgRoute {
 
 export const MAX_ROUTES = 12;
 export const MAX_PICKED_LINES = 4000;
+/** Points of all picked lines together, which keeps saved settings and option files a sensible size. */
+export const MAX_PICKED_POINTS = 50_000;
 const MAX_POINTS = 2000;
 
 // A prepared line belongs to a pick when most of it lies this close to it.
@@ -39,6 +41,8 @@ export const PICK_LAYERS: LineLayerId[] = ['roads', 'paths', 'railways', 'racewa
 
 interface Segment {
   owner: number;
+  /** The pick it's part of. */
+  pick: number;
   ax: number;
   ay: number;
   bx: number;
@@ -68,16 +72,26 @@ export function toLonLat(path: Path, transform: Pick<MapTransform, 'zoom' | 'toW
 
 /**
  * The prepared lines lying along picked geometry: the route's index for each,
- * or -1 for a line left out.
+ * or -1 for a line left out. Picks nothing matched go in `missing`: off the
+ * map, on a layer that's off, or drawn too differently at this scale.
  */
-export function pickedLines(lines: PreparedLine[], routes: SvgRoute[], hidden: LonLatLine[], transform: MapTransform): Map<PreparedLine, number> {
+export function pickedLines(
+  lines: PreparedLine[],
+  routes: SvgRoute[],
+  hidden: LonLatLine[],
+  transform: MapTransform,
+  missing: LonLatLine[] = [],
+): Map<PreparedLine, number> {
   const out = new Map<PreparedLine, number>();
   if (!routes.some((r) => r.lines.length) && !hidden.length) return out;
   const tolerance = Math.max(TOLERANCE_MIN_MM, TOLERANCE_M / transform.metresPerMm);
   const grid = new Map<number, Segment[]>();
-  const add = (path: Path, owner: number) => {
+  const picks: LonLatLine[] = [];
+  const add = (line: LonLatLine, owner: number) => {
+    const path = toCanvas(line, transform);
+    const pick = picks.push(line) - 1;
     for (let i = 1; i < path.length; i++) {
-      const s: Segment = { owner, ax: path[i - 1][0], ay: path[i - 1][1], bx: path[i][0], by: path[i][1] };
+      const s: Segment = { owner, pick, ax: path[i - 1][0], ay: path[i - 1][1], bx: path[i][0], by: path[i][1] };
       const x0 = Math.floor((Math.min(s.ax, s.bx) - tolerance) / CELL_MM);
       const x1 = Math.floor((Math.max(s.ax, s.bx) + tolerance) / CELL_MM);
       const y0 = Math.floor((Math.min(s.ay, s.by) - tolerance) / CELL_MM);
@@ -92,28 +106,33 @@ export function pickedLines(lines: PreparedLine[], routes: SvgRoute[], hidden: L
       }
     }
   };
-  routes.forEach((route, i) => route.lines.forEach((line) => add(toCanvas(line, transform), i)));
-  for (const line of hidden) add(toCanvas(line, transform), -1);
+  routes.forEach((route, i) => route.lines.forEach((line) => add(line, i)));
+  for (const line of hidden) add(line, -1);
 
   const votes = new Map<number, number>();
+  const found = new Uint8Array(picks.length);
+  const nearest: Segment[] = [];
   for (const line of lines) {
     if (!PICK_LAYERS.includes(line.layer)) continue;
     const samples = sample(line.path, 1);
     if (!samples.length) continue;
     votes.clear();
+    nearest.length = 0;
     for (const [x, y] of samples) {
       const cell = grid.get(cellKey(Math.floor(x / CELL_MM), Math.floor(y / CELL_MM)));
       if (!cell) continue;
-      let best = -2;
+      let best: Segment | null = null;
       let bestDistance = tolerance;
       for (const s of cell) {
         const d = segmentDistance(x, y, s);
         if (d <= bestDistance) {
           bestDistance = d;
-          best = s.owner;
+          best = s;
         }
       }
-      if (best !== -2) votes.set(best, (votes.get(best) ?? 0) + 1);
+      if (!best) continue;
+      votes.set(best.owner, (votes.get(best.owner) ?? 0) + 1);
+      nearest.push(best);
     }
     let owner = -2;
     let most = 0;
@@ -123,8 +142,12 @@ export function pickedLines(lines: PreparedLine[], routes: SvgRoute[], hidden: L
         owner = candidate;
       }
     }
-    if (owner !== -2 && most >= SHARE * samples.length) out.set(line, owner);
+    if (owner !== -2 && most >= SHARE * samples.length) {
+      out.set(line, owner);
+      for (const s of nearest) if (s.owner === owner) found[s.pick] = 1;
+    }
   }
+  picks.forEach((pick, i) => found[i] || missing.push(pick));
   return out;
 }
 
@@ -205,7 +228,7 @@ export function sameLine(a: LonLatLine, b: LonLatLine): boolean {
     let near = 0;
     for (const [px, py] of samples) {
       for (let i = 1; i < y.length; i++) {
-        const s: Segment = { owner: 0, ax: y[i - 1][0], ay: y[i - 1][1], bx: y[i][0], by: y[i][1] };
+        const s: Segment = { owner: 0, pick: 0, ax: y[i - 1][0], ay: y[i - 1][1], bx: y[i][0], by: y[i][1] };
         if (segmentDistance(px, py, s) <= TOLERANCE_M) {
           near++;
           break;
@@ -241,15 +264,25 @@ function lonLatLine(value: unknown): LonLatLine | null {
   return out;
 }
 
-export function sanitizeLines(value: unknown): LonLatLine[] {
+export function sanitizeLines(value: unknown, budget = { points: MAX_PICKED_POINTS }): LonLatLine[] {
   if (!Array.isArray(value)) return [];
   const out: LonLatLine[] = [];
   for (const item of value) {
     if (out.length >= MAX_PICKED_LINES) break;
     const line = lonLatLine(item);
-    if (line) out.push(line);
+    if (!line) continue;
+    if (line.length > budget.points) break;
+    budget.points -= line.length;
+    out.push(line);
   }
   return out;
+}
+
+export function pickedPoints(routes: readonly SvgRoute[], hidden: readonly LonLatLine[]): number {
+  let total = 0;
+  for (const route of routes) for (const line of route.lines) total += line.length;
+  for (const line of hidden) total += line.length;
+  return total;
 }
 
 /** Routes with anything unknown or out of range dropped or clamped. */
@@ -257,6 +290,7 @@ export function sanitizeRoutes(value: unknown): SvgRoute[] {
   if (!Array.isArray(value)) return [];
   const out: SvgRoute[] = [];
   const ids = new Set<string>();
+  const budget = { points: MAX_PICKED_POINTS };
   for (const item of value) {
     if (out.length >= MAX_ROUTES) break;
     if (typeof item !== 'object' || item === null) continue;
@@ -270,7 +304,7 @@ export function sanitizeRoutes(value: unknown): SvgRoute[] {
       name: (typeof r.name === 'string' ? r.name.slice(0, 60).trim() : '') || 'Route',
       color: r.color.toUpperCase(),
       width,
-      lines: sanitizeLines(r.lines),
+      lines: sanitizeLines(r.lines, budget),
     });
   }
   return out;

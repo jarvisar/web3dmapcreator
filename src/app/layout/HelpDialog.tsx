@@ -37,13 +37,14 @@ const MODEL_TIPS = [
 ];
 
 const EDIT_TIPS = [
-  'Press the pencil at the top right of the 3D view to change the model before you download it. Click a building, road, path, tree or body of water to select it. Shift-click adds to the selection, Shift-drag selects everything in a box, and Alt-click picks one part of a building.',
-  'Drag the arrow on a selected building or shape to change its height. Roads and paths can be made wider or taller, and Whole street picks up every connected piece with the same name.',
+  'Press the pencil at the top right of the 3D view to change the model before you download it. Click a building, road, path, tree or body of water to select it, or find it by name in the search box. Shift-click adds to the selection and Shift-drag selects everything in a box. The Select several tool does both without a key, and on a touch screen a tap there adds or drops one thing.',
+  'Drag the arrow on a selected building or shape to change its height. Roads and paths can be made wider or taller, and Whole street picks up every connected piece with the same name. A building mapped in parts lists them, to pick one.',
   'A new layer gives whatever you put in it a colour of its own. Each layer is exported as its own part with its own filament, so a racetrack or a favourite route can print in a different colour.',
   "Removing a road or building gives the ground back to the park or plaza it was cut out of. Water you leave out isn't exported, and the hollow it sat in stays empty.",
-  'The tools on the left add text, map pins, boxes and cylinders, or draw your own paths and areas. Drag a selected shape to move it, drag the points of a path or area to reshape it, and Alt-click a point to delete it.',
-  'Edits follow the map features, not the mesh, so they stay when you change settings and generate again.',
-  'Keys while editing: V, T, P, B, C, L and A pick the tools. Delete removes the selection, F looks at it, [ and ] turn shapes and the arrow keys nudge them (with Shift for bigger steps). Ctrl+D duplicates, Ctrl+Z undoes and Ctrl+Shift+Z redoes. Enter finishes a path or area and Esc stops drawing.',
+  'The tools on the left add text, map pins, boxes and cylinders, or draw your own roads and buildings. A drawn line starts out as a road and a drawn outline as a building. Drag a selected shape to move it and the points of a drawn one to reshape it. Tap or click a point, then Delete point, to take it out.',
+  'Everything you add stands on the ground under it and is solid down to the base, so nothing floats. Letters thinner than the nozzle prints well get a warning.',
+  'Edits follow the map features, not the mesh, so they stay when you change settings and generate again. A copied share link carries them too, unless there are too many.',
+  'Keys while editing: V, M, T, P, B, C, L and A pick the tools. Delete removes the selection, F looks at it, [ and ] turn shapes and the arrow keys nudge them (with Shift for bigger steps). Ctrl+D duplicates, Ctrl+Z undoes and Ctrl+Shift+Z redoes. Enter finishes a road or outline and Esc stops drawing.',
 ];
 
 const SVG_TIPS = [
@@ -53,7 +54,7 @@ const SVG_TIPS = [
   'The preview shows how much of the road network the cleanup kept. Below 97% a warning appears, since streets were removed and not just doubled lines.',
   'With Fixed scale, the default, the box on the map takes its size from the piece and the scale (0.05 mm per metre to start, 1:20,000), and keeps that scale while you try other places or piece sizes. Pick Fit the area to size the box yourself.',
   'The wood preview is only a rough idea of how the fills burn. Test your settings on scrap.',
-  'To draw a route in its own colour, press the route button over the preview and click the roads, paths or railways it follows. Along the road picks up the rest of the street. Each route is its own layer in the SVG. Picks are saved in this browser and in saved settings, but not in share links.',
+  'To draw a route in its own colour, press the route button over the preview and click the roads, paths or railways it follows. Each click adds a road or drops it again, and Along the road picks up the rest of the street. Each route is its own layer in the SVG.',
 ];
 
 function StoredData() {

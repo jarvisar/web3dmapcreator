@@ -99,6 +99,19 @@ function sections(width: number, depth: number, maxW: number, maxH: number, bedW
   });
 }
 
+// What the editor adds: a custom layer in a colour the palette doesn't have,
+// with water of its own, and a shape in one of the model's colours.
+function edited(parts: MeshPart[]): MeshPart[] {
+  const colour = { hex: '#FF00FF', line: 'PLA Matte' as const, label: 'Race' };
+  const route = part('layer:race', 'Race', 'building', box(-60, -2, 1.85, 120, 2, 1.2));
+  const lake = part('layer:race:water', 'Race (water)', 'water', box(-70, 20, 1.2, 10, 10, 0.6));
+  const added = part('added-green', 'Added (Parks)', 'building', box(30, 30, 1.85, 6, 6, 3));
+  route.colour = colour;
+  lake.colour = colour;
+  added.colour = { ...DEFAULT_PALETTE.green, label: 'Parks' };
+  return [...parts, route, lake, added];
+}
+
 interface Fixture {
   name: string;
   plates: Plate[];
@@ -114,6 +127,7 @@ function fixtures(): Fixture[] {
     { name: 'sections-a1-mini', plates: sections(330, 160, 170, 170, 180, 180), printer: 'A1M', palette: DEFAULT_PALETTE },
     { name: 'single-h2d', plates: [plate('Map', city(-160, -145, 160, 145), [-160, -145, 160, 145])], printer: 'H2D', palette: classic },
     { name: 'mk4-bed-p1s-presets', plates: [plate('Map', city(-100, -80, 100, 80), [-100, -80, 100, 80])], printer: 'MK4', palette: DEFAULT_PALETTE },
+    { name: 'edited-p1s', plates: [plate('Map', edited(city(-75, -55, 75, 55)), [-75, -55, 75, 55])], printer: 'P1S', palette: DEFAULT_PALETTE },
   ];
 }
 

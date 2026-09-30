@@ -14,7 +14,7 @@ export interface EditData {
   objects: Record<string, ObjectFacts>;
   ground: GroundGrid | null;
   /** How the model was projected, to put shapes where a click lands. */
-  frame: { center: LonLat; rotationDeg: number; mmPerMetre: number } | null;
+  frame: { center: LonLat; rotationDeg: number; mmPerMetre: number; buildingMmPerMetre: number } | null;
 }
 
 const EMPTY: EditData = { editable: false, roads: null, objects: {}, ground: null, frame: null };
@@ -24,6 +24,7 @@ let data: EditData = EMPTY;
 const objectMeshes = new Map<string, ObjectMesh>();
 const replacedParts = new Map<string, MeshPart | null>();
 let hidden: string[] = [];
+let notes: Record<string, string> = {};
 let version = 0;
 let model = -1;
 const listeners = new Set<(update: EditUpdate) => void>();
@@ -34,6 +35,7 @@ export function setModelParts(next: MeshPart[], nextData: EditData = EMPTY, init
   objectMeshes.clear();
   replacedParts.clear();
   hidden = [];
+  notes = {};
   version = 0;
   model = modelId;
   if (initial) record(initial);
@@ -62,14 +64,16 @@ function record(update: EditUpdate) {
     else replacedParts.delete(id);
   }
   hidden = update.hidden;
+  notes = update.notes;
   version = update.version;
 }
 
 /** Geometry for edits from the worker. Older versions, and other models' updates, are ignored. */
-export function applyEditUpdate(update: EditUpdate): void {
-  if (update.model !== model || update.version < version) return;
+export function applyEditUpdate(update: EditUpdate): boolean {
+  if (update.model !== model || update.version < version) return false;
   record(update);
   for (const listener of listeners) listener(update);
+  return true;
 }
 
 /** Everything the worker sent since the model was generated, as one update. */
@@ -80,6 +84,7 @@ export function currentEditState(): EditUpdate {
     objects: [...objectMeshes.values()],
     parts: [...replacedParts].map(([id, part]) => ({ id, part })),
     hidden,
+    notes,
     warnings: [],
   };
 }

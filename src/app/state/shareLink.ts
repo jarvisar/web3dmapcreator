@@ -2,12 +2,41 @@
 // #a=<lon>,<lat>,<widthM>,<heightM>,<rotationDeg>,<shape>
 // A rounded area adds its corner radius as a seventh value. An SVG map adds
 // o=svg, and a copied link s=<settings> (see svgmap/share.ts). Links from
-// the old SVGmap site only have s=.
+// the old SVGmap site only have s=. A copied link also carries the model's
+// edits (e=) or the SVG map's picked roads (p=), deflated, unless that would
+// make it too long to paste anywhere.
 
+import { deflateSync, inflateSync, strFromU8, strToU8 } from 'fflate';
+import { hasEdits, sanitizeEdits, type ModelEdits } from '../../core/edit/types';
 import type { AreaShape, AreaSpec } from '../../core/settings';
+import { sanitizeLines, sanitizeRoutes, type LonLatLine, type SvgRoute } from '../../core/svgmap/routes';
 import { SHAPES } from '../lib/area';
 import { type SharedSvg, decodeSvgSettings, encodeSvgSettings } from '../svgmap/share';
 import type { SvgSettings } from '../svgmap/settings';
+
+/** Longest e= or p= a link gets. Chat apps and mail cut longer links off. */
+export const MAX_LINK_EXTRA = 6000;
+
+export interface SharedPicks {
+  routes: SvgRoute[];
+  hiddenLines: LonLatLine[];
+}
+
+function pack(value: unknown): string {
+  const bytes = deflateSync(strToU8(JSON.stringify(value)), { level: 9 });
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function unpack(value: string): unknown {
+  try {
+    const binary = atob(value.replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(strFromU8(inflateSync(Uint8Array.from(binary, (c) => c.charCodeAt(0)))));
+  } catch {
+    return null;
+  }
+}
 
 export type Output = 'model' | 'svg';
 
@@ -51,6 +80,8 @@ export interface SharedLink {
   area: AreaSpec | null;
   output: Output | null;
   svg: SharedSvg | null;
+  edits: ModelEdits | null;
+  picks: SharedPicks | null;
 }
 
 export function parseHash(hash: string): SharedLink {
@@ -63,18 +94,46 @@ export function parseHash(hash: string): SharedLink {
     // model mode, and the recipient's saved mode would change its size.
     output: o === 'svg' || o === 'model' ? o : svg ? 'svg' : params.get('a') ? 'model' : null,
     svg,
+    edits: params.get('e') ? readEdits(unpack(params.get('e')!)) : null,
+    picks: params.get('p') ? readPicks(unpack(params.get('p')!)) : null,
   };
 }
 
+function readEdits(value: unknown): ModelEdits | null {
+  return value ? sanitizeEdits(value) : null;
+}
+
+function readPicks(value: unknown): SharedPicks | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const picks = value as Record<string, unknown>;
+  return { routes: sanitizeRoutes(picks.routes), hiddenLines: sanitizeLines(picks.hiddenLines) };
+}
+
 export function readHash(): SharedLink {
-  if (typeof location === 'undefined') return { area: null, output: null, svg: null };
+  if (typeof location === 'undefined') return { area: null, output: null, svg: null, edits: null, picks: null };
   return parseHash(location.hash);
 }
 
-export function shareUrl(area: AreaSpec, output: Output, svg: SvgSettings): string {
+/**
+ * The link to copy, and what it had to leave out for length: the model's
+ * edits or the SVG map's picked roads.
+ */
+export function shareUrl(area: AreaSpec, output: Output, svg: SvgSettings, edits?: ModelEdits): { url: string; left: 'edits' | 'picks' | null } {
   const url = new URL(location.href);
   let hash = formatAreaHash(area, output).slice(1);
-  if (output === 'svg') hash += `&s=${encodeSvgSettings(svg)}`;
+  let left: 'edits' | 'picks' | null = null;
+  if (output === 'svg') {
+    hash += `&s=${encodeSvgSettings(svg)}`;
+    if (svg.routes.some((route) => route.lines.length) || svg.hiddenLines.length) {
+      const packed = pack({ routes: svg.routes, hiddenLines: svg.hiddenLines });
+      if (packed.length <= MAX_LINK_EXTRA) hash += `&p=${packed}`;
+      else left = 'picks';
+    }
+  } else if (edits && hasEdits(edits)) {
+    const packed = pack(edits);
+    if (packed.length <= MAX_LINK_EXTRA) hash += `&e=${packed}`;
+    else left = 'edits';
+  }
   url.hash = hash;
-  return url.toString();
+  return { url: url.toString(), left };
 }

@@ -4,8 +4,9 @@ import { normalizeArea } from '../lib/area';
 import { defaultSvgSettings, isObject, mergeSettings, type SvgSettings } from '../svgmap/settings';
 import { readExport, readPalette } from './persist';
 
-export const MAX_OPTIONS_BYTES = 1024 * 1024;
+export const MAX_OPTIONS_BYTES = 8 * 1024 * 1024;
 const FORMAT = 'jarvizar-city-model-options';
+export const OPTIONS_TOO_BIG = `Options files must be smaller than ${MAX_OPTIONS_BYTES / 1024 / 1024} MB.`;
 const SVG_CHOICES: Record<string, readonly (string | number)[]> = {
   'border.style': ['double', 'single', 'none'],
   'label.style': ['box', 'band'],
@@ -34,7 +35,9 @@ export interface SavedMap {
 }
 
 export function encodeOptions({ output, settings, palette, exportSettings, svg }: Options, map?: SavedMap): string {
-  return JSON.stringify({ format: FORMAT, version: 1, output, settings, palette, exportSettings, svg, map }, null, 2) + '\n';
+  // Picked roads belong to the area, like the model's edits.
+  const kept = map ? svg : { ...svg, routes: svg.routes.map((route) => ({ ...route, lines: [] })), hiddenLines: [] };
+  return JSON.stringify({ format: FORMAT, version: 1, output, settings, palette, exportSettings, svg: kept, map }, null, 2) + '\n';
 }
 
 // Missing fields get defaults and unknown fields are ignored. Reject damaged
@@ -58,7 +61,7 @@ function checkValues(given: unknown, clean: unknown, path: string): void {
 }
 
 export function decodeOptions(text: string): Options {
-  if (new TextEncoder().encode(text).byteLength > MAX_OPTIONS_BYTES) throw new Error('Options files must be smaller than 1 MB.');
+  if (new TextEncoder().encode(text).byteLength > MAX_OPTIONS_BYTES) throw new Error(OPTIONS_TOO_BIG);
   let raw: unknown;
   try {
     raw = JSON.parse(text.replace(/^\uFEFF/, ''));

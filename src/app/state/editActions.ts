@@ -7,6 +7,7 @@ import { kindOf, objectOf, shapeKey } from '../../core/edit/keys';
 import { editCount, emptyEdits, MAX_LAYERS, type AddedShape, type EditLayer, type ModelEdits, type ObjectEdit } from '../../core/edit/types';
 import { FILAMENTS } from '../../core/settings';
 import { getEngine } from './engine';
+import { describeCounts } from '../viewer/edit/describe';
 import { applyEditUpdate, getEditData } from './model';
 import { toast, useApp, type EditTool } from './store';
 
@@ -75,6 +76,7 @@ export function clearEdits(): void {
   if (!editCount(edits) && !edits.layers.length) return;
   commitEdits(emptyEdits());
   setSelection([]);
+  toast('Every edit was undone.', 'info', { label: 'Undo', run: undoEdit });
 }
 
 // ------------------------------------------------------------- selection
@@ -82,8 +84,38 @@ export function clearEdits(): void {
 export function setSelection(selection: string[]): void {
   set((state) => {
     const same = selection.length === state.ui.selection.length && selection.every((key, i) => key === state.ui.selection[i]);
-    return same ? {} : { ui: { ...state.ui, selection } };
+    return same ? {} : { ui: { ...state.ui, selection, activePoint: null } };
   });
+}
+
+/** A point of a path or area to act on, or null for none. */
+export function setActivePoint(activePoint: { shape: string; index: number } | null): void {
+  set((state) => ({ ui: { ...state.ui, activePoint } }));
+}
+
+/** Deletes a point of a drawn path or area, if it has enough left. */
+export function deletePoint(shape: string, index: number): void {
+  const found = get().edits.shapes.find((s) => s.id === shape);
+  if (!found) return;
+  const minimum = found.kind === 'area' ? 3 : 2;
+  if (found.points.length <= minimum) {
+    toast(`A ${found.kind === 'area' ? 'drawn area' : 'drawn path'} needs at least ${minimum} points.`);
+    return;
+  }
+  const points = found.points.filter((_, i) => i !== index);
+  updateShape(shape, { points, at: points[0] });
+  setActivePoint(null);
+}
+
+/** Drops edits for things this model doesn't have, from another area or other settings. */
+export function clearEditsFor(keys: string[]): void {
+  if (!keys.length) return;
+  const edits = get().edits;
+  const gone = new Set(keys);
+  const objects = Object.fromEntries(Object.entries(edits.objects).filter(([key]) => !gone.has(key)));
+  const shapes = edits.shapes.filter((shape) => !gone.has(shapeKey(shape.id)));
+  commitEdits({ ...edits, objects, shapes });
+  toast(`Cleared ${keys.length} ${keys.length === 1 ? 'change' : 'changes'}.`, 'info', { label: 'Undo', run: undoEdit });
 }
 
 export function toggleSelected(keys: string[]): void {
@@ -102,7 +134,7 @@ export function setEditMode(editMode: boolean): void {
 }
 
 export function setTool(tool: EditTool): void {
-  set((state) => ({ ui: { ...state.ui, tool, editMode: true } }));
+  set((state) => ({ ui: { ...state.ui, tool, editMode: true, activePoint: null } }));
 }
 
 // --------------------------------------------------------------- objects
@@ -141,6 +173,7 @@ export function removeObjects(keys: string[]): void {
   for (const key of others) objects[key] = { ...objects[key], removed: true };
   commitEdits({ ...edits, objects, shapes: edits.shapes.filter((s) => !shapes.has(shapeKey(s.id))) });
   setSelection([]);
+  if (keys.length) toast(`Removed ${describeCounts(keys)}`, 'info', { label: 'Undo', run: undoEdit });
 }
 
 export function restoreObjects(keys: string[]): void {
@@ -198,7 +231,7 @@ export function deleteLayer(id: string): void {
     if (Object.keys(rest).length) objects[key] = rest;
   }
   const shapes = edits.shapes.map((shape) => (shape.layer === id ? { ...shape, layer: 'buildings' } : shape));
-  commitEdits({ layers: edits.layers.filter((layer) => layer.id !== id), objects, shapes });
+  commitEdits({ ...edits, layers: edits.layers.filter((layer) => layer.id !== id), objects, shapes });
 }
 
 // ---------------------------------------------------------------- shapes
@@ -248,9 +281,13 @@ export function duplicateShapes(ids: string[]): void {
   setSelection(copies.map((shape) => shapeKey(shape.id)));
 }
 
-/** Shape defaults, sized for the model's scale where it matters. */
+/**
+ * Shape defaults. A drawn line starts out as a road, in the roads' colour and
+ * at their height, and a drawn outline as a building with a flat roof.
+ */
 export function shapeDefaults(kind: AddedShape['kind']): Omit<AddedShape, 'id' | 'at' | 'points'> {
-  const common = { kind, layer: firstLayer(), rotationDeg: 0, liftMm: 0, text: '', font: 'montserrat' };
+  const fallback = kind === 'path' ? 'roads' : 'buildings';
+  const common = { kind, layer: firstLayer(fallback), rotationDeg: 0, liftMm: 0, text: '', font: 'montserrat' };
   switch (kind) {
     case 'text':
       return { ...common, sizeMm: 5, depthMm: 5, heightMm: 1.2, followGround: true, text: get().placeName || 'Label' };
@@ -260,16 +297,18 @@ export function shapeDefaults(kind: AddedShape['kind']): Omit<AddedShape, 'id' |
       return { ...common, sizeMm: 6, depthMm: 6, heightMm: 6, followGround: false };
     case 'pin':
       return { ...common, sizeMm: 7, depthMm: 7, heightMm: 2.5, followGround: false };
-    case 'path':
-      return { ...common, sizeMm: 1.2, depthMm: 1.2, heightMm: 0.9, followGround: true };
+    case 'path': {
+      const roads = get().settings.roads;
+      return { ...common, sizeMm: 0.7, depthMm: 0.7, heightMm: roads.thicknessMm, followGround: true };
+    }
     case 'area':
-      return { ...common, sizeMm: 10, depthMm: 10, heightMm: 0.6, followGround: true };
+      return { ...common, sizeMm: 10, depthMm: 10, heightMm: 4, followGround: false };
   }
 }
 
-/** A new shape goes in the first custom layer, or the buildings' colour. */
-function firstLayer(): string {
-  return get().edits.layers[0]?.id ?? 'buildings';
+/** A new shape goes in the first custom layer, or a colour of the model. */
+function firstLayer(fallback: string): string {
+  return get().edits.layers[0]?.id ?? fallback;
 }
 
 // ------------------------------------------------------------------ sync
@@ -277,6 +316,15 @@ function firstLayer(): string {
 let editVersion = 0;
 let timer = 0;
 let started = false;
+let latestSent = 0;
+
+function setPending(editsPending: boolean): void {
+  set((state) => (state.ui.editsPending === editsPending ? {} : { ui: { ...state.ui, editsPending } }));
+}
+
+export function setNotes(editNotes: Record<string, string>): void {
+  set((state) => ({ ui: { ...state.ui, editNotes } }));
+}
 
 /** The version the next request to the worker will carry. */
 export function nextEditVersion(): number {
@@ -289,15 +337,20 @@ function send(): void {
   const result = state.generation.result;
   if (!result?.exportable || !getEditData().editable) return;
   const version = nextEditVersion();
+  latestSent = version;
+  setPending(true);
   getEngine()
     .edit({ edits: structuredClone(state.edits), version, baseUrl: document.baseURI })
     .then((update) => {
-      applyEditUpdate(update);
+      if (applyEditUpdate(update)) setNotes(update.notes);
       for (const warning of update.warnings) toast(warning, 'error');
     })
     .catch((error: unknown) => {
       if (error instanceof CancelledError) return;
       toast(error instanceof Error ? error.message : 'The edit could not be applied.', 'error');
+    })
+    .finally(() => {
+      if (version === latestSent) setPending(false);
     });
 }
 
