@@ -23,10 +23,11 @@ import type { AreaSpec } from '../settings';
 import type { GeoBounds, LonLat, MultiPolygon } from '../types';
 import { blockExtent, blocks, gridProblem, gridSpec, type Block, type GridSpec } from './grid';
 import { emptyLayers, type SurfaceLayers } from './layers';
-import { BlockRaster, occupiedCell, ProbeSink, type BlockLayers, type GridOrigin } from './raster';
+import { BlockRaster, MARGIN, occupiedCell, ProbeSink, type BlockLayers, type GridOrigin } from './raster';
 
 // Raised when what a block stores changes, so old checkpoints aren't read.
-const VERSION = 3;
+// 5 leaves floating returns out (BlockRaster). 4 was a draft of that.
+const VERSION = 5;
 // The same for saved density probes.
 const PROBE_VERSION = 2;
 // A block counts as covered once this share of it is inside a survey.
@@ -65,6 +66,8 @@ export interface SurfaceOutcome {
   layers?: BlockLayers;
   probe?: { cell: number; density: number } | null;
   points: number;
+  /** Floating returns left out of the layers. */
+  noise?: number;
 }
 
 export interface SurfaceRunner {
@@ -95,6 +98,8 @@ export interface PreparedSurface {
   /** Share of cells with a return. */
   coverage: number;
   points: number;
+  /** Floating returns left out (BlockRaster). */
+  noise: number;
   surveys: SurfaceSurvey[];
   failures: Failure[];
   downloadedBytes: number;
@@ -142,7 +147,8 @@ export async function readSurfaceBlock(job: SurfaceJob, fetcher: Fetcher, progre
   if (survey.format === 'EPT') await readEpt(fetcher, survey.url, job.query, options);
   else await readCopc(fetcher, survey.tiles ?? [], job.query, options);
   if (sink instanceof ProbeSink) return { probe: occupiedCell(sink, x1 - x0, y1 - y0, job.probe!), points: sink.count };
-  return { layers: sink.layers(), points: sink.kept };
+  const layers = sink.layers();
+  return { layers, points: sink.kept, noise: sink.noise };
 }
 
 // ------------------------------------------------------------ checkpoints
@@ -153,12 +159,13 @@ const COUNTS = ['count', 'vegetation', 'water', 'building'] as const;
 interface Checkpoint {
   layers: BlockLayers;
   points: number;
+  noise: number;
   /** Each survey read, with its returns. */
   sources: [string, number][];
 }
 
-export function encodeBlock(layers: BlockLayers, points: number, sources: [string, number][]): ArrayBuffer {
-  const head = new TextEncoder().encode(JSON.stringify({ rows: layers.rows, columns: layers.columns, points, sources }));
+export function encodeBlock(layers: BlockLayers, points: number, sources: [string, number][], noise = 0): ArrayBuffer {
+  const head = new TextEncoder().encode(JSON.stringify({ rows: layers.rows, columns: layers.columns, points, sources, noise }));
   const size = layers.count.length;
   const at = 4 + Math.ceil(head.length / 4) * 4;
   const buffer = new ArrayBuffer(at + size * (4 * 4 + 2 * 4));
@@ -181,7 +188,7 @@ export function decodeBlock(packed: ArrayBuffer): Checkpoint | null {
   try {
     const buffer = inflateSync(new Uint8Array(packed)).buffer as ArrayBuffer;
     const length = new DataView(buffer).getUint32(0, true);
-    const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, length))) as { rows: [number, number]; columns: [number, number]; points: number; sources: [string, number][] };
+    const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, length))) as { rows: [number, number]; columns: [number, number]; points: number; sources: [string, number][]; noise?: number };
     const size = (head.rows[1] - head.rows[0]) * (head.columns[1] - head.columns[0]);
     let offset = 4 + Math.ceil(length / 4) * 4;
     if (buffer.byteLength !== offset + size * 24) return null;
@@ -194,7 +201,7 @@ export function decodeBlock(packed: ArrayBuffer): Checkpoint | null {
       layers[name] = new Uint16Array(buffer.slice(offset, offset + 2 * size));
       offset += 2 * size;
     }
-    return { layers, points: head.points, sources: head.sources };
+    return { layers, points: head.points, sources: head.sources, noise: head.noise ?? 0 };
   } catch {
     return null;
   }
@@ -339,13 +346,14 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     used.set(url, entry);
   };
   let points = 0;
+  let noise = 0;
   let reusedBlocks = 0;
   let done = 0;
   const resolutionM = Math.max(0.1, grid.cell / 2);
   const identity = [VERSION, area.center, area.rotationDeg, area.widthM, area.heightM, grid.cell];
 
   const readBlock = async (block: Block) => {
-    const extent = blockExtent(grid, block, grid.dx);
+    const extent = blockExtent(grid, block, MARGIN * grid.dx);
     const blockBox = boxShape(...extent);
     const surveys = order.filter((r) => intersection(blockBox, r.coverage).length);
     const key = `surface-block:${digest([identity, block.rows, block.columns, surveys.map((r) => r.candidate.url)])}`;
@@ -353,10 +361,12 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     const checkpoint = saved ? decodeBlock(saved) : null;
     let piece: BlockLayers;
     let blockPoints = 0;
+    let blockNoise = 0;
     let sources: [string, number][] = [];
     if (checkpoint) {
       piece = checkpoint.layers;
       blockPoints = checkpoint.points;
+      blockNoise = checkpoint.noise;
       sources = checkpoint.sources;
       reusedBlocks++;
       for (const [url, count] of sources) note(url, count);
@@ -403,14 +413,16 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
           claimedCount++;
         }
         blockPoints += outcome.points;
+        blockNoise += outcome.noise ?? 0;
         sources.push([survey.candidate.url, outcome.points]);
         note(survey.candidate.url, outcome.points);
         if (claimedCount >= COVERED * size) break;
       }
       // A failed read is tried again next time rather than kept with a hole.
-      if (!failed) save(key, encodeBlock(piece, blockPoints, sources));
+      if (!failed) save(key, encodeBlock(piece, blockPoints, sources, blockNoise));
     }
     points += blockPoints;
+    noise += blockNoise;
     const [r0, r1] = block.rows;
     const [c0, c1] = block.columns;
     const width = c1 - c0;
@@ -443,6 +455,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     densityM2,
     coverage: covered / layers.count.length,
     points,
+    noise,
     surveys: [...used.values()],
     failures,
     downloadedBytes: fetcher.downloaded + (runner.downloaded?.() ?? 0),

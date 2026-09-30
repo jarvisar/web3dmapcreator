@@ -460,6 +460,7 @@ function surfaceStats(stats: ModelStats, prepared: PreparedSurface, mapBytes: nu
   add('Grid', `${stats.lidar_model_grid} cells of ${prepared.grid.cell.toFixed(2)} m`);
   add('Area with LiDAR returns', `${Math.round(prepared.coverage * 100)}%`);
   add('LiDAR returns', prepared.points);
+  add('Floating returns left out', prepared.noise);
   add('Rivers, lakes and sea', n('lidar_model_water_bodies'));
   add('Tree canopy cells', n('lidar_model_tree_cells'));
   add('Surface triangles', n('lidar_model_surface_triangles'));

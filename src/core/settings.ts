@@ -30,6 +30,8 @@ export type LidarRoofMode = 'envelope' | 'heights';
 export type WaterMode = 'layer' | 'through';
 /** LiDAR only water: recessed in the one solid, a thin layer of its own on a terrain floor, or cut away through the base. */
 export type LidarWaterMode = 'recess' | 'layer' | 'cut';
+/** Tree canopy in a LiDAR Only model: as scanned, rounded into domes, or left out. */
+export type TreeStyle = 'natural' | 'rounded' | 'off';
 /** 'map' builds a multicolour model from map data, 'lidar' the whole model from a LiDAR survey alone. */
 export type ModelSource = 'map' | 'lidar';
 
@@ -154,10 +156,10 @@ export interface ModelSettings {
   lidarModel: {
     /** Printed size of one grid cell. Cells grow where the survey is too sparse or the area too large. */
     detailMm: number;
-    /** Round tree canopy into smooth masses. Off puts the ground or roof under it in its place. */
-    keepTrees: boolean;
-    /** Flatten anything under 2 m (cars, fences, benches), and poles, crane jibs and wires too thin to print. */
-    removeClutter: boolean;
+    /** Crowns as scanned with speckle softened, rounded into smooth masses, or off with the ground or roof under them in their place. */
+    trees: TreeStyle;
+    /** Keep cars, fences, benches and whatever else stands under 2 m. Off flattens them. Poles, crane jibs and wires go either way. */
+    keepClutter: boolean;
     /** How far water sits below its lowest bank. */
     waterDepthMm: number;
     waterMode: LidarWaterMode;
@@ -247,7 +249,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     avoidRoads: true,
   },
   lidar: { enabled: false, roofMode: 'envelope', preferLidar: true, minFootprintMm2: 0.7, rockSurfaces: false },
-  lidarModel: { detailMm: 0.05, keepTrees: true, removeClutter: true, waterDepthMm: 0.6, waterMode: 'recess', mapWater: true, heightScale: 1 },
+  lidarModel: { detailMm: 0.05, trees: 'natural', keepClutter: true, waterDepthMm: 0.6, waterMode: 'recess', mapWater: true, heightScale: 1 },
   supports: true,
   rim: { enabled: false, heightMm: 1.5, widthMm: 2 },
 };
@@ -566,6 +568,11 @@ export function sanitizeSettings(settings: unknown): ModelSettings {
   if (waterMode === 'recess' || waterMode === 'layer' || waterMode === 'cut') out.lidarModel.waterMode = waterMode;
   // Saved before the water modes, when cutting was a checkbox.
   else if (lidarModel.cutWater === true) out.lidarModel.waterMode = 'cut';
+  const trees = lidarModel.trees;
+  if (trees === 'natural' || trees === 'rounded' || trees === 'off') out.lidarModel.trees = trees;
+  // Saved when trees were rounded or left out. Rounded was the only way to
+  // keep them then, but the new default is closer to what was asked for.
+  else if (lidarModel.keepTrees === false) out.lidarModel.trees = 'off';
   // The priority must name every surface category once.
   const land = isObject(source.land) ? source.land : {};
   const all = DEFAULT_SETTINGS.land.priority;

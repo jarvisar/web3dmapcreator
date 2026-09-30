@@ -92,10 +92,17 @@ describe('water settings', () => {
 
 describe('LiDAR only settings', () => {
   it('keep the model source and clamp its numbers', () => {
-    const lidar = sanitizeSettings({ ...cloneSettings(), modelSource: 'lidar', lidarModel: { detailMm: 0, keepTrees: false, removeClutter: 'no', waterDepthMm: 9, heightScale: 2 } });
+    const lidar = sanitizeSettings({ ...cloneSettings(), modelSource: 'lidar', lidarModel: { detailMm: 0, keepClutter: 'no', waterDepthMm: 9, heightScale: 2 } });
     expect(lidar.modelSource).toBe('lidar');
-    expect(lidar.lidarModel).toEqual({ ...DEFAULT_SETTINGS.lidarModel, detailMm: 0.02, keepTrees: false, waterDepthMm: 3, heightScale: 2 });
+    expect(lidar.lidarModel).toEqual({ ...DEFAULT_SETTINGS.lidarModel, detailMm: 0.02, waterDepthMm: 3, heightScale: 2 });
     expect(sanitizeSettings({ modelSource: 'point cloud' }).modelSource).toBe('map');
+  });
+
+  it('keep the tree style, and take trees left out from before the styles', () => {
+    expect(sanitizeSettings({ lidarModel: { trees: 'rounded', keepClutter: false } }).lidarModel).toEqual({ ...DEFAULT_SETTINGS.lidarModel, trees: 'rounded', keepClutter: false });
+    expect(sanitizeSettings({ lidarModel: { keepTrees: false } }).lidarModel.trees).toBe('off');
+    expect(sanitizeSettings({ lidarModel: { keepTrees: true, removeClutter: true } }).lidarModel).toEqual(DEFAULT_SETTINGS.lidarModel);
+    expect(sanitizeSettings({ lidarModel: { trees: 'domes' } }).lidarModel.trees).toBe('natural');
   });
 
   it('keep the water mode, and take a saved cut from before the modes', () => {

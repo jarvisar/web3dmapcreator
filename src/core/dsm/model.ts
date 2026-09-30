@@ -24,10 +24,11 @@ import { fairFaces, windowMax, windowMin } from './filters';
 import { meshSurface, straightenWalls, type HeightGrid, type TileJob, type TileResult } from './mesh';
 import type { PreparedSurface } from './prepare';
 
-// The mesh may move the surface by one grid cell, and merges an edge while
-// its quadric cost stays under this many cells squared, which straightens a
-// wall drawn in one-cell stairs.
-const DEVIATION_CELLS = 1;
+// The mesh may move the surface by half a grid cell, and merges an edge
+// while its quadric cost stays under this many cells squared, which
+// straightens a wall drawn in one-cell stairs. At a whole cell, rooftop plant
+// came out as pyramids and crowns lost their texture.
+const DEVIATION_CELLS = 0.5;
 const THRESHOLD_CELLS2 = 16;
 const MIN_GAP_CELLS = 0.02;
 const CLUTTER_M = 2;
@@ -275,8 +276,8 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
     mmPerMetre,
     mmPerMetre,
     {
-      keepTrees: lidar.keepTrees,
-      removeClutter: lidar.removeClutter,
+      trees: lidar.trees,
+      removeClutter: !lidar.keepClutter,
       clutterHeightM: CLUTTER_M,
       waterDepthMm: lidar.waterDepthMm,
       heightScale: lidar.heightScale,

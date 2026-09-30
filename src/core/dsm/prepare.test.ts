@@ -19,7 +19,7 @@ describe('BlockRaster', () => {
 
   it('keeps the second highest return, ground and class counts per cell', () => {
     const raster = new BlockRaster(grid, { rows: [0, 10], columns: [0, 10] });
-    // Cell (row 2, column 3): ground, two roof returns and a bird. Cell (5, 5): a tree over ground.
+    // Cell (row 2, column 3): ground, two roof returns and a bird 50 m up, which floats. Cell (5, 5): a tree over ground.
     const points: [number, number, number, number, number][] = [
       [3.0, 2.0, 10.0, 2, 1],
       [3.1, 2.1, 30.0, 6, 1],
@@ -33,8 +33,9 @@ describe('BlockRaster', () => {
     for (const [x, y, z, cls, single] of points) raster.push(x, y, z, cls, single);
     const layers = raster.layers();
     const at = (row: number, column: number) => row * 10 + column;
-    expect(layers.top[at(2, 3)]).toBeCloseTo(30.2, 4);
-    expect(layers.count[at(2, 3)]).toBe(4);
+    expect(layers.top[at(2, 3)]).toBeCloseTo(30, 4);
+    expect(layers.count[at(2, 3)]).toBe(3);
+    expect(raster.noise).toBe(1);
     expect(layers.ground[at(2, 3)]).toBeCloseTo(10);
     expect(layers.building[at(2, 3)]).toBe(2);
     // The tree cell's solid top leaves out the canopy returns.
@@ -42,6 +43,93 @@ describe('BlockRaster', () => {
     expect(layers.top[at(5, 5)]).toBeCloseTo(19);
     expect(layers.solid[at(5, 5)]).toBeCloseTo(10);
     expect(layers.top[at(0, 0)]).toBeNaN();
+  });
+
+  it('leaves out haze over a well-sampled surface but keeps a spire and a high deck', () => {
+    const raster = new BlockRaster(grid, { rows: [0, 20], columns: [0, 20] });
+    const at = (row: number, column: number) => row * 20 + column;
+    const rng = new NumpyRandom(3);
+    const put = (row: number, column: number, z: number, cls = 1, single = 1) => raster.push(column + rng.random() * 0.8 - 0.4, row + rng.random() * 0.8 - 0.4, z, cls, single);
+    for (let row = 0; row < 20; row++) {
+      for (let column = 0; column < 20; column++) {
+        const roof = row >= 10 && column >= 10;
+        const deck = row < 4 && column >= 10;
+        for (let k = 0; k < 20; k++) put(row, column, roof ? 30 + 0.01 * k : deck ? 50 : 10, roof ? 6 : deck ? 17 : 2);
+        // The deck is 40 m up, and a few returns reach the ground under it.
+        if (deck) for (let k = 0; k < 3; k++) put(row, column, 10, 2);
+      }
+    }
+    // Two unclassified returns 400 m up over the street in most cells of a patch, fourteen in one.
+    for (let row = 4; row < 9; row++) {
+      for (let column = 2; column < 7; column++) {
+        const n = row === 6 && column === 4 ? 14 : 2;
+        for (let k = 0; k < n; k++) put(row, column, 400 + k, 1, 0);
+      }
+    }
+    // A spire on the roof, hit every 8 m of its 60 m.
+    for (let z = 38; z <= 90; z += 8) put(15, 15, z);
+    // The roof's edge in a street cell, with haze over it.
+    for (let k = 0; k < 2; k++) put(12, 9, 30, 6);
+    for (let k = 0; k < 2; k++) put(12, 9, 400 + k, 1, 0);
+    const layers = raster.layers();
+    expect(layers.top[at(5, 3)]).toBeCloseTo(10);
+    expect(layers.count[at(5, 3)]).toBe(20);
+    expect(layers.vegetation[at(5, 3)]).toBe(0);
+    expect(layers.top[at(6, 4)]).toBeCloseTo(10);
+    expect(layers.count[at(6, 4)]).toBe(20);
+    expect(layers.top[at(15, 15)]).toBeCloseTo(78);
+    expect(layers.top[at(2, 12)]).toBeCloseTo(50);
+    expect(layers.top[at(12, 9)]).toBeCloseTo(30);
+    expect(raster.noise).toBe(24 * 2 + 14 + 2);
+  });
+
+  it('leaves out haze over a pond that returned nothing but keeps a dark roof', () => {
+    const raster = new BlockRaster(grid, { rows: [0, 30], columns: [0, 30] });
+    const at = (row: number, column: number) => row * 30 + column;
+    const rng = new NumpyRandom(5);
+    const put = (row: number, column: number, z: number, cls = 1) => raster.push(column + rng.random() * 0.8 - 0.4, row + rng.random() * 0.8 - 0.4, z, cls, 1);
+    const pond = (row: number, column: number) => row >= 3 && row < 11 && column >= 3 && column < 11;
+    const roof = (row: number, column: number) => row >= 15 && row < 25 && column >= 15 && column < 25;
+    for (let row = 0; row < 30; row++) {
+      for (let column = 0; column < 30; column++) {
+        if (pond(row, column)) {
+          // A sheet of haze 600 m up in every other cell.
+          if ((row + column) % 2) for (let k = 0; k < 2; k++) put(row, column, 600 + row + k);
+        } else if (roof(row, column)) {
+          // Dark: three returns a cell, and its walls hit every 5 m.
+          for (let k = 0; k < 3; k++) put(row, column, 50, 6);
+          if (row === 15 || column === 15) for (let z = 15; z < 50; z += 5) put(row, column, z, 1);
+        } else for (let k = 0; k < 20; k++) put(row, column, 10, 2);
+      }
+    }
+    const layers = raster.layers();
+    for (let row = 3; row < 11; row++) for (let column = 3; column < 11; column++) expect(layers.top[at(row, column)]).toBeNaN();
+    expect(layers.top[at(20, 20)]).toBeCloseTo(50);
+    expect(layers.top[at(24, 24)]).toBeCloseTo(50);
+    expect(raster.noise).toBe(32 * 2);
+  });
+
+  it('keeps a glass roof, most of whose returns are floors under it, and a ledge under a taller roof', () => {
+    const raster = new BlockRaster(grid, { rows: [0, 30], columns: [0, 30] });
+    const at = (row: number, column: number) => row * 30 + column;
+    const rng = new NumpyRandom(7);
+    const put = (row: number, column: number, z: number, cls = 1) => raster.push(column + rng.random() * 0.8 - 0.4, row + rng.random() * 0.8 - 0.4, z, cls, 1);
+    for (let row = 0; row < 30; row++) {
+      for (let column = 0; column < 30; column++) {
+        if (row >= 10 && row < 20 && column >= 10 && column < 20) {
+          for (let k = 0; k < 8; k++) put(row, column, 100 + 0.02 * k, 6);
+          for (let k = 0; k < 20; k++) put(row, column, 20 + k, 1);
+        } else {
+          for (let k = 0; k < 40; k++) put(row, column, 10, 2);
+          // A ledge 12 m under the roof along one side.
+          if (column === 9 && row >= 10 && row < 20) for (let k = 0; k < 2; k++) put(row, column, 88);
+        }
+      }
+    }
+    const layers = raster.layers();
+    for (let row = 10; row < 20; row++) for (let column = 10; column < 20; column++) expect(layers.top[at(row, column)]).toBeCloseTo(100, 0);
+    expect(layers.top[at(15, 9)]).toBeCloseTo(88);
+    expect(raster.noise).toBe(0);
   });
 
   it('never counts a return in two blocks', () => {

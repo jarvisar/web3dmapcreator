@@ -250,7 +250,9 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   its level and takes in specks (`GROW_M`, `takeSpecks`, for San Francisco's
   2023 survey), and cut water takes its bank's height for `BANK_RINGS` rings,
   then the TIN is clipped along it (the add-on drops cut cells to the bottom
-  before meshing).
+  before meshing). The app defaults to natural crowns (gaps closed, a 3 x 3
+  mean over canopy) and keeps what's under 2 m. Slivers (wires, jibs,
+  poles) go whatever the settings. `DEFAULT_COMPOSE` stays the add-on's.
 - The density probe (`occupiedCell`) counts land as 2 m squares with a
   return that isn't water. The add-on counts any return, which grew the
   Chicago lakefront's cells to 2.08 m. Probe results are saved under
@@ -258,12 +260,20 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
 - Blocks are counted into cells as they're read (`BlockRaster`), never held as
   points, and checkpointed in the LiDAR cache under `VERSION`. Raise it when
   what a block stores changes. A block with a failed read isn't saved.
+- `BlockRaster` keeps each cell's 24 highest returns (and `MARGIN` cells past
+  the block) and leaves out floating ones, like the haze 250 to 900 m over
+  Houston: layers between 30 m gaps over an open band, too few for a
+  surface, with no surface beside them or up to 30 m over them, and not a
+  tight surface shared with three neighbours (glass roofs). Sparse patches
+  over nothing (a pond) float when everything around is 30 m lower. Check
+  changes on the regression areas' raw tops, not only Houston: glass towers,
+  stepped roof edges and ledges are what drafts took by mistake.
 - Surveys: whole-area coverage first, then `rankOrder`. A cell belongs to the
   first survey whose outline holds it, returns or not.
 - The mesher prices collapses by memoryless quadrics against the current
   faces (the add-on's, so stair walls straighten), and also checks every
-  collapse against the grid (`GridBound`): no grid point further than one
-  cell from the surface (two beside a wall), square to it. Don't drop that check. Without it
+  collapse against the grid (`GridBound`): no grid point further than half a
+  cell from the surface (a cell beside a wall), square to it. Don't drop that check. Without it
   vertices drift until penthouses are pyramids, the reason roof caps moved to
   Delatin. Tiles are simplified in workers with edge points pinned, then the
   seams get their own pass.

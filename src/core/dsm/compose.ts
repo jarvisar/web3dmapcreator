@@ -7,7 +7,7 @@
 // Grids are float32 here where the add-on works in float64. That moves
 // heights by around 1e-5 m and can flip a threshold on a few cells.
 
-import type { LidarWaterMode } from '../settings';
+import type { LidarWaterMode, TreeStyle } from '../settings';
 import type { SurfaceLayers } from './layers';
 import {
   BoxSums,
@@ -110,9 +110,12 @@ const MAPPED_SHARE = 0.5;
 export const MAP_EDGE_M = 3;
 
 export interface ComposeSettings {
-  /** Smoothed domes, or taken down to what stands under them. */
-  keepTrees: boolean;
-  /** Flatten anything lower than `clutterHeightM` above the ground (cars, fences, benches). */
+  /** Crowns as scanned (lightly smoothed), smoothed domes, or taken down to what stands under them. */
+  trees: TreeStyle;
+  /**
+   * Flatten anything lower than `clutterHeightM` above the ground (cars,
+   * fences, benches). Poles, crane jibs and wires go either way.
+   */
   removeClutter: boolean;
   clutterHeightM: number;
   waterDepthMm: number;
@@ -131,8 +134,9 @@ export interface ComposeSettings {
   cutMinAreaM2: number;
 }
 
+// The add-on's settings. The app's own defaults are in settings.ts.
 export const DEFAULT_COMPOSE: ComposeSettings = {
-  keepTrees: true,
+  trees: 'rounded',
   removeClutter: true,
   clutterHeightM: 2,
   waterDepthMm: 0.6,
@@ -207,8 +211,11 @@ export function compose(
   }
 
   let skirt: Uint8Array;
-  if (s.keepTrees) {
+  if (s.trees === 'rounded') {
     skirt = domes(surface, ground, canopy, water, s.clutterHeightM, nx, ny);
+  } else if (s.trees === 'natural') {
+    skirt = new Uint8Array(n);
+    naturalCrowns(surface, ground, canopy, nx, ny);
   } else {
     // Taken down to what stands under them, these are ordinary cells again.
     // The add-on kept them out of the cleanup below and meshed them as finely
@@ -225,7 +232,7 @@ export function compose(
 
   const keep = new Uint8Array(n);
   for (let i = 0; i < n; i++) keep[i] = water[i] | canopy[i] | skirt[i];
-  const narrowed = narrow(surface, nx, ny, ground, keep, s.removeClutter, dx, surface);
+  const narrowed = narrow(surface, nx, ny, ground, keep, true, dx, surface);
   counts.pit_cells = narrowed.pits;
   counts.sliver_cells = narrowed.slivers;
   evenOut(surface, nx, ny, keep, EVEN_M, surface);
@@ -892,6 +899,27 @@ function treeMask(layers: SurfaceLayers, surface: Float32Array, ground: Float32A
     for (let i = 0; i < n; i++) if (core[i] && likely[i]) canopy[i] = 1;
   }
   return canopy;
+}
+
+// Crowns as the survey saw them: gaps a cell or two across closed (the
+// laser went through to a branch or the lawn), then a 3 x 3 mean over canopy
+// cells only, which softens speckle and leaves the crown's edge where it is.
+function naturalCrowns(surface: Float32Array, ground: Float32Array, canopy: Uint8Array, nx: number, ny: number): void {
+  const n = nx * ny;
+  if (!canopy.includes(1)) return;
+  const closed = windowMin(windowMax(surface, nx, ny, 1), nx, ny, 1);
+  const z = new Float32Array(n);
+  for (let i = 0; i < n; i++) z[i] = canopy[i] ? Math.max(surface[i], closed[i]) : 0;
+  const sums = new BoxSums(z, nx, ny, 1);
+  const cells = new BoxSums(canopy, nx, ny, 1);
+  for (let y = 0; y < ny; y++) {
+    const total = sums.row(y);
+    const count = cells.row(y);
+    for (let x = 0; x < nx; x++) {
+      const i = y * nx + x;
+      if (canopy[i]) surface[i] = Math.max(total[x] / count[x], ground[i] + TREE_MIN_M / 2);
+    }
+  }
 }
 
 // Kept trees become domes: gaps inside a crown closed, then crown and what

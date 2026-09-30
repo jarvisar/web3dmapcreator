@@ -40,7 +40,7 @@ function prepared(area: AreaSpec): PreparedSurface {
       else layers.ground[k] = z;
     }
   }
-  return { layers, grid, requestedCellM: 1, densityM2: 10, coverage: 1, points: 0, surveys: [], failures: [], downloadedBytes: 0, blocks: 1, reusedBlocks: 0 };
+  return { layers, grid, requestedCellM: 1, densityM2: 10, coverage: 1, points: 0, noise: 0, surveys: [], failures: [], downloadedBytes: 0, blocks: 1, reusedBlocks: 0 };
 }
 
 function lidarSettings(patch: (s: ModelSettings) => void = () => undefined): ModelSettings {

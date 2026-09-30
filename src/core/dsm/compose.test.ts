@@ -93,6 +93,28 @@ describe('compose', () => {
     expect(Math.abs(at(h, 80, 65, 20) - street)).toBeLessThanOrEqual(0.05);
     const kept = composeCity({ removeClutter: false }).result.heights;
     expect(at(kept, 80, 10, 59) - at(kept, 80, 50, 5)).toBeGreaterThan(1);
+    // The lamp post goes either way.
+    expect(Math.abs(at(kept, 80, 65, 20) - at(kept, 80, 50, 5))).toBeLessThanOrEqual(0.05);
+  });
+
+  it('natural trees keep the crown as scanned, speckle softened, without a skirt', () => {
+    const { result, crown } = composeCity({ trees: 'natural' });
+    const h = result.heights;
+    const street = at(h, 80, 50, 5);
+    const { layers } = city();
+    let most = 0;
+    let fine = 0;
+    for (let i = 0; i < crown.length; i++) {
+      if (!crown[i] || !(result.detail[i] < 1)) continue;
+      // Within the scan's spread of its 3 x 3 mean, not domed.
+      most = Math.max(most, Math.abs(h[i] - street - (layers.top[i] - GROUND)));
+      fine++;
+    }
+    expect(most).toBeLessThan(4);
+    expect(most).toBeGreaterThan(0.1);
+    expect(fine).toBeGreaterThan(0.8 * cells(crown));
+    // Just past the crown's edge is street.
+    expect(at(h, 80, 60, 68)).toBeCloseTo(street, 5);
   });
 
   it('river is flat and recessed', () => {
@@ -116,7 +138,7 @@ describe('compose', () => {
     expect(at(h, 80, 60, 60)).toBeGreaterThan(at(h, 80, 60, 65) + 1);
     expect(at(h, 80, 60, 68)).toBeGreaterThan(street);
     for (let i = 0; i < crown.length; i++) if (crown[i]) expect(result.detail[i]).toBeLessThan(1);
-    const removed = composeCity({ keepTrees: false }).result.heights;
+    const removed = composeCity({ trees: 'off' }).result.heights;
     expect(Math.abs(at(removed, 80, 60, 60) - at(removed, 80, 50, 5))).toBeLessThanOrEqual(0.05);
   });
 
@@ -128,11 +150,11 @@ describe('compose', () => {
       return { layers, crown };
     };
     const { layers, crown } = withBench();
-    const result = compose(layers, CELL, CELL, 1, 1, { keepTrees: false });
+    const result = compose(layers, CELL, CELL, 1, 1, { trees: 'off' });
     const h = result.heights;
     expect(Math.abs(at(h, 80, 60, 60) - at(h, 80, 50, 5))).toBeLessThanOrEqual(0.05);
     for (let i = 0; i < crown.length; i++) if (crown[i]) expect(result.detail[i]).toBe(1);
-    const kept = compose(withBench().layers, CELL, CELL, 1, 1, { keepTrees: false, removeClutter: false });
+    const kept = compose(withBench().layers, CELL, CELL, 1, 1, { trees: 'off', removeClutter: false });
     expect(at(kept.heights, 80, 60, 60) - at(kept.heights, 80, 50, 5)).toBeCloseTo(1.5, 1);
   });
 

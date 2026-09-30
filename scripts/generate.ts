@@ -17,13 +17,14 @@
 // printed cell size), --cut-water (cut large water through the base, or away in a
 // LiDAR only model), --water-layer (a LiDAR only model's water as a thin layer),
 // --no-map-water (a LiDAR only model's water from the survey alone), --surface-out
-// dir (write its grid layers as raw binaries).
+// dir (write its grid layers as raw binaries), --reread (read its blocks again
+// instead of from their checkpoints, after changing how blocks are read).
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { cellSize } from '../src/core/dsm/grid';
 import { surfaceModel } from '../src/core/dsm/model';
-import { prepareSurface } from '../src/core/dsm/prepare';
+import { prepareSurface, setSurfaceStore } from '../src/core/dsm/prepare';
 import { fetchDem } from '../src/core/data/dem';
 import { fetchOverture } from '../src/core/data/overture';
 import { exportPlates } from '../src/core/export';
@@ -215,6 +216,7 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
   };
   const cacheDir = arg('lidar-cache') ?? 'out/lidar-cache';
   setUpLidar(cacheDir);
+  if (flag('reread')) setSurfaceStore(null);
   const scale = effectiveScale(area, settings.scale);
   const threads = Number(arg('lidar-threads') ?? surfacePoolSize());
   const pool = threads > 1 ? threadPool(threads, cacheDir) : null;
@@ -230,7 +232,7 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
     const mapWater = await water;
     const t1 = performance.now();
     const { grid } = surface;
-    console.log(`lidar: ${grid.nx} x ${grid.ny} cells of ${grid.cell} m (asked ${surface.requestedCellM} m), ${Math.round(surface.coverage * 100)}% with returns, ${surface.points.toLocaleString('en-US')} returns, ${(surface.downloadedBytes / 1e6).toFixed(1)} MB in ${((t1 - t0) / 1000).toFixed(1)} s, ${surface.reusedBlocks} of ${surface.blocks} blocks reused`);
+    console.log(`lidar: ${grid.nx} x ${grid.ny} cells of ${grid.cell} m (asked ${surface.requestedCellM} m), ${Math.round(surface.coverage * 100)}% with returns, ${surface.points.toLocaleString('en-US')} returns (${surface.noise.toLocaleString('en-US')} floating left out), ${(surface.downloadedBytes / 1e6).toFixed(1)} MB in ${((t1 - t0) / 1000).toFixed(1)} s, ${surface.reusedBlocks} of ${surface.blocks} blocks reused`);
     for (const s of surface.surveys) console.log(`  ${s.provider} ${s.name} (${s.year ?? 'year unknown'}): ${s.points.toLocaleString('en-US')} returns in ${s.blocks} blocks`);
     for (const failure of surface.failures) console.log(`  failed: ${failure.source}: ${failure.reason}`);
     if (arg('surface-out')) {

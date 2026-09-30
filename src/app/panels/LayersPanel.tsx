@@ -2,7 +2,7 @@ import { ArrowDown, ArrowUp } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cellSize } from '../../core/dsm/grid';
 import { effectiveScale } from '../../core/geo/area';
-import { modelFieldRange, type AreaSpec, type LidarRoofMode, type LidarWaterMode, type ModelSettings, type SurfaceCategory, type WaterMode } from '../../core/settings';
+import { modelFieldRange, type AreaSpec, type LidarRoofMode, type LidarWaterMode, type ModelSettings, type SurfaceCategory, type TreeStyle, type WaterMode } from '../../core/settings';
 import type { ColourGroup } from '../../core/types';
 import { LayerDisclosure } from '../components/LayerDisclosure';
 import { CheckField, SelectField } from '../components/Fields';
@@ -724,17 +724,21 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
         help="Printed size of one grid cell. Smaller keeps finer detail but reads more of the survey and takes longer. Large areas get larger cells, and so do surveys too sparse to fill them."
         hint={cell !== null ? `${formatNumber(cell, 2)} m cells${grown ? ', larger for this area' : ''}` : undefined}
       />
+      <SelectField
+        label="Trees"
+        value={lidar.trees}
+        onChange={(trees) => patchSettings('lidarModel', { trees: trees as TreeStyle })}
+        help="Natural keeps each crown as the survey saw it, with the speckle softened. Rounded smooths canopy into masses that print cleanly. Off puts the ground or roof under the trees in their place."
+      >
+        <option value="natural">Natural</option>
+        <option value="rounded">Rounded</option>
+        <option value="off">Off</option>
+      </SelectField>
       <CheckField
-        label="Keep trees"
-        checked={lidar.keepTrees}
-        onChange={(keepTrees) => patchSettings('lidarModel', { keepTrees })}
-        help="Rounds tree canopy into smooth masses. Off puts the ground or roof under the trees in their place."
-      />
-      <CheckField
-        label="Remove cars and clutter"
-        checked={lidar.removeClutter}
-        onChange={(removeClutter) => patchSettings('lidarModel', { removeClutter })}
-        help="Flattens anything lower than 2 m above the ground, such as cars, fences and benches, which print as specks. Also removes poles, crane jibs and wires too thin to print."
+        label="Keep cars and clutter"
+        checked={lidar.keepClutter}
+        onChange={(keepClutter) => patchSettings('lidarModel', { keepClutter })}
+        help="Keeps cars, fences, benches and anything else under 2 m. They're small bumps at most scales. Off flattens them. Poles, crane jibs and wires too thin to print go either way."
       />
       <SelectField
         label="Water"
