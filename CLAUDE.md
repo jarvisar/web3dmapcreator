@@ -163,11 +163,11 @@ before bridges are split off):
   A line carrying straight on from another's end vertex read as doubling it
   and paired one-way streets end to end.
 - The cull only drops a line beside a strictly more important one (twin
-  decks excepted), except that tracks thin tracks. Rail is welded through
-  switches along the straightest track (`weld`), so a yard thins to whole
-  tracks longest first. Welded only where unambiguous, tracks came apart a
-  switch long and thinned into ladders. Car parks and plaza path grids keep
-  their lines. `alongside` ignores a kept line
+  decks excepted). Rail yards, car parks and plaza path grids keep their
+  lines. Thinning a yard to every few tracks was tried (welding through
+  switches along the straightest track, so they didn't thin into ladders),
+  but the untidied yard reads fine: the tracks are distinct enough for the
+  slicer. `alongside` ignores a kept line
   past its ends, and cuts snap to a vertex within a sample, or a scrap of the
   doubled stretch is left pointing along the road.
 - End origins decide what may move. `met` ends (their partner was left out or
@@ -182,7 +182,8 @@ before bridges are split off):
 - Decks and ground never double each other, deck ends never move, and decks
   only meet the ground where their lines meet.
 - The tidy must never make roads read thicker than with it off. `fillGaps`
-  only fills cracks under half the gap between lines of one group, from
+  only fills cracks under half the gap between lines of one group, never
+  rail (filled, a yard printed as one band), from
   centerline to centerline in the same union as the roads (`gaps.ts`), and
   enclosed ground nowhere that wide (`fillThinHoles`). Filling up to the
   whole gap, across groups too, printed ramps side by side as one block and

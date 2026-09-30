@@ -152,7 +152,7 @@ export async function bufferRoads(
   const buffer = async (group: RoadGroup, fraction: number) => {
     const lines = pieces.filter((p) => p.group === group).map((p) => ({ points: p.points, width: p.widthMm }));
     let ribbons = bufferLines(lines, 'round', strips?.[group]);
-    if (strips) {
+    if (strips && group !== 'rail') {
       const filled = fillThinHoles(ribbons, roads.gapMm);
       ribbons = filled.polygons;
       holes += filled.filled;

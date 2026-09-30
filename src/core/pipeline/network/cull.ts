@@ -5,16 +5,13 @@
 //
 // Routes go in order of importance, longest first within a rank, and each is
 // judged against what's already kept. A line only loses to one strictly more
-// important, except that tracks thin tracks: a yard's tracks sit closer than
-// their own width, and whole tracks with ground between them read better than
-// a solid band. Rail is welded through switches along the straightest track
-// for this (routes.ts), or the yard thinned switch by switch into a ladder.
-// Other lines of one rank side by side (carriageways, car park aisles) are
-// left to divided.ts. "Close" is edge to edge: two ribbons nearer than the
-// gap leave a strip of ground too thin to print between them.
+// important. Lines of one rank side by side (both carriageways of a divided
+// street, the tracks of a rail yard, the aisles of a car park) stay, apart
+// from what divided.ts merges: thinning them to every other line broke them
+// into ladders, and yards read fine as they are. "Close" is edge to edge: two ribbons nearer than the gap
+// leave a strip of ground too thin to print between them.
 
 import { densifyLine } from '../../geometry/polygon';
-import { RAIL_CLASS } from '../linework';
 import { intervals, pointAt, SegmentIndex, slice, cumulative } from './lines';
 import type { Candidate, EndOrigin, Part, Route } from './routes';
 
@@ -49,25 +46,21 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
   const keptHalfWidth: number[] = [];
   const keptRank: number[] = [];
   const keptDeck: boolean[] = [];
-  const keptRail: boolean[] = [];
   const keptRoute: number[] = [];
   const pieceCum = candidates.map((c) => cumulative(c.points));
   const parts: Part[] = [];
 
   // Decks only ever double decks, and a twin deck goes whole, so of two
-  // bridge carriageways one is kept. Tracks thin each other too: a yard's
-  // tracks are closer than their own width, and every few whole tracks with
-  // ground between read better than one solid band.
-  const beats = (o: number, deck: boolean, rank: number, rail: boolean) =>
-    keptDeck[o] === deck && (deck ? keptRank[o] <= rank : keptRank[o] < rank || (rail && keptRail[o]));
+  // bridge carriageways one is kept.
+  const beats = (o: number, deck: boolean, rank: number) => keptDeck[o] === deck && (deck ? keptRank[o] <= rank : keptRank[o] < rank);
 
   // Beside a kept line, not past its end: the stem of a divided street through
   // an intersection starts where the kept carriageway stops, and measured to
   // its end it would read as doubled by the line it continues.
-  const alongside = (x: number, y: number, ux: number, uy: number, halfWidth: number, deck: boolean, rank: number, rail: boolean) =>
+  const alongside = (x: number, y: number, ux: number, uy: number, halfWidth: number, deck: boolean, rank: number) =>
     kept.near(x, y, (s) => {
       const o = kept.owner[s];
-      if (!beats(o, deck, rank, rail)) return false;
+      if (!beats(o, deck, rank)) return false;
       const t = kept.along(s, x, y);
       if ((t <= 0 && kept.first[s]) || (t >= 1 && kept.last[s])) return false;
       if (kept.distance(s, x, y, t) > gap + halfWidth + keptHalfWidth[o]) return false;
@@ -75,19 +68,17 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
     });
 
   // Inside the ribbon of a line that beats this one.
-  const covered = (x: number, y: number, deck: boolean, rank: number, rail: boolean, self = -1) =>
+  const covered = (x: number, y: number, deck: boolean, rank: number, self = -1) =>
     kept.near(x, y, (s) => {
       const o = kept.owner[s];
-      return beats(o, deck, rank, rail) && keptRoute[o] !== self && kept.distance(s, x, y) <= keptHalfWidth[o];
+      return beats(o, deck, rank) && keptRoute[o] !== self && kept.distance(s, x, y) <= keptHalfWidth[o];
     });
 
-  const clear = (x: number, y: number, halfWidth: number, deck: boolean, rank: number, rail: boolean, self: number) =>
+  const clear = (x: number, y: number, halfWidth: number, deck: boolean, rank: number, self: number) =>
     !kept.near(x, y, (s) => {
       const o = kept.owner[s];
-      return beats(o, deck, rank, rail) && keptRoute[o] !== self && kept.distance(s, x, y) <= gap + halfWidth + keptHalfWidth[o];
+      return beats(o, deck, rank) && keptRoute[o] !== self && kept.distance(s, x, y) <= gap + halfWidth + keptHalfWidth[o];
     });
-
-  const isRail = (route: Route) => candidates[route.members[0].source].piece.roadClass === RAIL_CLASS;
 
   const sample = (route: Route) => {
     const count = Math.max(1, Math.ceil(route.length / STEP));
@@ -128,7 +119,6 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
       keptHalfWidth.push(c.halfWidth);
       keptRank.push(c.rank);
       keptDeck.push(c.deck);
-      keptRail.push(c.piece.roadClass === RAIL_CLASS);
       keptRoute.push(id);
       kept.add(points, keptHalfWidth.length - 1, [head, tail]);
     }
@@ -177,7 +167,7 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
       const at = s + direction * travelled;
       if (at < 0 || at > route.length) break;
       const [x, y] = pointAt(route.points, route.cum, at);
-      if (covered(x, y, route.deck, route.rank, isRail(route), id)) return at;
+      if (covered(x, y, route.deck, route.rank, id)) return at;
     }
     return s;
   };
@@ -188,7 +178,7 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
   for (let id = 0; id < order.length; id++) {
     const route = order[id];
     const { step, samples, halfWidths } = sample(route);
-    const flags = samples.map((p, k) => alongside(p.x, p.y, p.ux, p.uy, halfWidths[k], route.deck, route.rank, isRail(route)));
+    const flags = samples.map((p, k) => alongside(p.x, p.y, p.ux, p.uy, halfWidths[k], route.deck, route.rank));
     const shadowed = flags.filter(Boolean).length * step;
     if (route.deck) {
       // Whole or nothing: a footbridge can't keep one end in the air.
@@ -213,7 +203,7 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
         let c0 = -1;
         let c1 = -1;
         for (let k = k0; k < k1; k++) {
-          if (!covered(samples[k].x, samples[k].y, route.deck, route.rank, isRail(route))) continue;
+          if (!covered(samples[k].x, samples[k].y, route.deck, route.rank)) continue;
           if (c0 < 0) c0 = k;
           c1 = k;
         }
@@ -229,14 +219,14 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
   for (const id of losing) {
     const route = order[id];
     const { step, samples, halfWidths } = sample(route);
-    const flags = samples.map((p, k) => alongside(p.x, p.y, p.ux, p.uy, halfWidths[k], false, route.rank, isRail(route)));
+    const flags = samples.map((p, k) => alongside(p.x, p.y, p.ux, p.uy, halfWidths[k], false, route.rank));
     let any = false;
     for (const [k0, k1] of runs(flags, false)) {
       const a = k0 * step;
       const b = k1 * step;
       if (b - a < stub) continue;
       let visible = 0;
-      for (let k = k0; k < k1; k++) if (clear(samples[k].x, samples[k].y, halfWidths[k], false, route.rank, isRail(route), id)) visible += step;
+      for (let k = k0; k < k1; k++) if (clear(samples[k].x, samples[k].y, halfWidths[k], false, route.rank, id)) visible += step;
       if (visible < stub) continue;
       const start = a > EPSILON ? follow(id, route, a, -1, halfWidths[k0]) : a;
       const end = b < route.length - EPSILON ? follow(id, route, b, 1, halfWidths[k1 - 1]) : b;

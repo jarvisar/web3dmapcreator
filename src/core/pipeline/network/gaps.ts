@@ -42,6 +42,9 @@ export function gapStrips(pieces: RoadPiece[], minimumGap: number): Record<RoadG
   const cos = Math.cos((PARALLEL_DEG * Math.PI) / 180);
 
   pieces.forEach((piece, i) => {
+    // A yard's tracks sit this close and read fine as separate lines. Filled,
+    // the yard printed as one band.
+    if (piece.group === 'rail') return;
     const halfWidth = piece.widthMm / 2;
     // A run of samples all facing the same neighbour, and the points across from them.
     let near: Vec2[] = [];

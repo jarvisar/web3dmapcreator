@@ -325,7 +325,7 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
           checked={roads.removeDoubled}
           disabled={!roads.tidy}
           onChange={(removeDoubled) => patchSettings('roads', { removeDoubled })}
-          help="A path, track or service road running alongside a more important road, closer than the minimum gap, is left out, like footways mapped beside streets and trams running in them. Rail yards are thinned to whole tracks with ground between them."
+          help="A path, track or service road running alongside a more important road, closer than the minimum gap, is left out, like footways mapped beside streets and trams running in them."
         />
         <CheckField
           label="Merge divided roads"
@@ -353,7 +353,7 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
           checked={roads.fillGaps}
           disabled={!roads.tidy}
           onChange={(fillGaps) => patchSettings('roads', { fillGaps })}
-          help="A crack narrower than half the minimum gap between two roads or paths side by side is filled in, since it closes up in the print anyway, and so is enclosed ground that thin, like the gaps in a plaza criss-crossed by paths. Wider gaps stay, so roads don't print thicker than they're mapped."
+          help="A crack narrower than half the minimum gap between two roads or paths side by side is filled in, since it closes up in the print anyway, and so is enclosed ground that thin, like the gaps in a plaza criss-crossed by paths. Wider gaps stay, so roads don't print thicker than they're mapped. Rail yards are left as they are."
         />
         <NumberField
           label="Minimum gap"

@@ -134,26 +134,10 @@ describe('tidyNetwork', () => {
     expect(length(kept(out, alley))).toBeCloseTo(20, 6);
   });
 
-  it('thins a rail yard to whole tracks with ground between them', () => {
-    // Tracks 0.3 mm apart, closer than their own width.
-    const tracks = [0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8].map((y) => piece('rail', [[0, y], [20, y]], { width: 0.45 }));
+  it('keeps the tracks of a rail yard, however close', () => {
+    const tracks = [0, 0.3, 0.6, 0.9, 1.2].map((y) => piece('rail', [[0, y], [20, y]], { width: 0.45 }));
     const out = tidy(tracks);
-    const left = tracks.filter((track) => kept(out, track).length);
-    // Each kept track whole, never a ladder of pieces.
-    for (const track of left) expect(length(kept(out, track))).toBeCloseTo(20, 6);
-    expect(left.length).toBeGreaterThanOrEqual(2);
-    expect(left.length).toBeLessThanOrEqual(3);
-    const ys = left.map((track) => track.points[0][1]).sort((a, b) => a - b);
-    for (let k = 1; k < ys.length; k++) expect(ys[k] - ys[k - 1] - 0.45).toBeGreaterThanOrEqual(0.4 - 1e-9);
-  });
-
-  it('keeps a track through its switches when a siding leaves it', () => {
-    // A through track split at a switch, and a siding leaving at a few degrees.
-    const a = piece('rail', [[0, 0], [10, 0]], { width: 0.45 });
-    const b = piece('rail', [[10, 0], [20, 0]], { width: 0.45 });
-    const siding = piece('rail', [[10, 0], [15, 0.4], [20, 0.4]], { width: 0.45 });
-    const out = tidy([a, b, siding]);
-    expect(length(kept(out, a)) + length(kept(out, b))).toBeCloseTo(20, 6);
+    for (const track of tracks) expect(length(kept(out, track))).toBeCloseTo(20, 6);
   });
 
   it('drops a footway beside a street and joins the part that turns into the park', () => {
@@ -293,6 +277,11 @@ describe('gapStrips', () => {
   it('leaves printable gaps and crossing streets alone', () => {
     expect(gapStrips([piece('residential', [[0, 0], [10, 0]]), piece('residential', [[0, 1.2], [10, 1.2]])], 0.4).road).toHaveLength(0);
     expect(gapStrips([piece('residential', [[0, 0], [10, 0]]), piece('residential', [[5, -5], [5, 5]])], 0.4).road).toHaveLength(0);
+  });
+
+  it("doesn't fill between tracks", () => {
+    const strips = gapStrips([piece('rail', [[0, 0], [10, 0]], { width: 0.45 }), piece('rail', [[0, 0.55], [10, 0.55]], { width: 0.45 })], 0.4);
+    expect(strips.rail).toHaveLength(0);
   });
 
   it("doesn't fill between colours", () => {
