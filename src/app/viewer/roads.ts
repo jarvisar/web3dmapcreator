@@ -103,46 +103,73 @@ export class RoadIndex {
 
   /**
    * Every road joined to this one end to end with the same name, or the same
-   * class when it has none: a whole street, or a whole unnamed track.
+   * class when it has none: a whole street, or a whole unnamed track. It
+   * carries on across bridge decks, so a route over a river stays one street.
    */
   connected(key: string): string[] {
     const { starts, points, names, classes } = this.lines;
-    const first = this.piecesOf(key)[0];
-    if (first === undefined) return [];
-    const name = names[first];
-    const cls = classes[first];
-    const same = (piece: number) => (name ? names[piece] === name : !names[piece] && classes[piece] === cls);
+    const decks = this.lines.decks;
+    const count = this.lines.keys.length;
+    // Items are the pieces, then the decks.
+    const total = count + (decks?.keys.length ?? 0);
+    const keyOf = (item: number) => (item < count ? this.lines.keys[item] : decks!.keys[item - count]);
+    const nameOf = (item: number) => (item < count ? names[item] : decks!.names[item - count]);
+    const classOf = (item: number) => (item < count ? classes[item] : decks!.classes[item - count]);
+    const endsOf = (item: number): [number, number][] => {
+      if (item >= count) {
+        const e = (item - count) * 4;
+        return [
+          [decks!.ends[e], decks!.ends[e + 1]],
+          [decks!.ends[e + 2], decks!.ends[e + 3]],
+        ];
+      }
+      const a = starts[item] * 3;
+      const b = (starts[item + 1] - 1) * 3;
+      return [
+        [points[a], points[a + 1]],
+        [points[b], points[b + 1]],
+      ];
+    };
+    const byKey = new Map<string, number[]>();
+    for (let item = 0; item < total; item++) {
+      const list = byKey.get(keyOf(item));
+      if (list) list.push(item);
+      else byKey.set(keyOf(item), [item]);
+    }
+    const start = byKey.get(key);
+    if (!start) return [];
+    const name = nameOf(start[0]);
+    const cls = classOf(start[0]);
+    const same = (item: number) => (name ? nameOf(item) === name : !nameOf(item) && classOf(item) === cls);
+    const cell = ([x, y]: [number, number]) => [Math.round(x / JOIN_MM), Math.round(y / JOIN_MM)];
     const ends = new Map<number, number[]>();
-    const endKey = (p: number) => cellKey(Math.round(points[p * 3] / JOIN_MM), Math.round(points[p * 3 + 1] / JOIN_MM));
-    for (let piece = 0; piece < this.lines.keys.length; piece++) {
-      if (!same(piece)) continue;
-      for (const p of [starts[piece], starts[piece + 1] - 1]) {
-        const k = endKey(p);
+    for (let item = 0; item < total; item++) {
+      if (!same(item)) continue;
+      for (const end of endsOf(item)) {
+        const [cx, cy] = cell(end);
+        const k = cellKey(cx, cy);
         const list = ends.get(k);
-        if (list) list.push(piece);
-        else ends.set(k, [piece]);
+        if (list) list.push(item);
+        else ends.set(k, [item]);
       }
     }
     const found = new Set<string>([key]);
-    const stack = [...this.piecesOf(key)];
+    const stack = [...start];
     const visited = new Set<number>(stack);
     while (stack.length) {
-      const piece = stack.pop()!;
-      for (const p of [starts[piece], starts[piece + 1] - 1]) {
-        const [px, py] = [Math.round(points[p * 3] / JOIN_MM), Math.round(points[p * 3 + 1] / JOIN_MM)];
+      const item = stack.pop()!;
+      for (const end of endsOf(item)) {
+        const [px, py] = cell(end);
         for (let dx = -1; dx <= 1; dx++) {
           for (let dy = -1; dy <= 1; dy++) {
             for (const next of ends.get(cellKey(px + dx, py + dy)) ?? []) {
               if (visited.has(next)) continue;
-              visited.add(next);
-              found.add(this.lines.keys[next]);
-              for (const sibling of this.piecesOf(this.lines.keys[next])) {
-                if (!visited.has(sibling)) {
-                  visited.add(sibling);
-                  stack.push(sibling);
-                }
+              found.add(keyOf(next));
+              for (const sibling of byKey.get(keyOf(next))!) {
+                if (visited.has(sibling)) continue;
+                visited.add(sibling);
+                stack.push(sibling);
               }
-              stack.push(next);
             }
           }
         }

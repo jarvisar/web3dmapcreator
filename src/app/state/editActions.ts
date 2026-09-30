@@ -3,7 +3,7 @@
 // edits goes through commitEdits, so each one can be undone.
 
 import { CancelledError } from '../../core/engine/client';
-import { kindOf, objectOf, shapeKey } from '../../core/edit/keys';
+import { kindOf, objectOf, shapeKey, twinOf } from '../../core/edit/keys';
 import { editCount, emptyEdits, MAX_LAYERS, type AddedShape, type EditLayer, type ModelEdits, type ObjectEdit } from '../../core/edit/types';
 import { FILAMENTS } from '../../core/settings';
 import { getEngine } from './engine';
@@ -172,12 +172,32 @@ export function removeObjects(keys: string[]): void {
   const objects = { ...edits.objects };
   for (const key of others) objects[key] = { ...objects[key], removed: true };
   commitEdits({ ...edits, objects, shapes: edits.shapes.filter((s) => !shapes.has(shapeKey(s.id))) });
-  setSelection([]);
+  // Water stays selected, for the choice of keeping its hollow.
+  if (!others.length || others.some((key) => kindOf(key) !== 'water')) setSelection([]);
   if (keys.length) toast(`Removed ${describeCounts(keys)}`, 'info', { label: 'Undo', run: undoEdit });
 }
 
 export function restoreObjects(keys: string[]): void {
-  patchObjects(keys, { removed: undefined });
+  const edits = get().edits;
+  const objects = { ...edits.objects };
+  const put = (key: string, edit: ObjectEdit) => {
+    if (Object.keys(edit).length) objects[key] = edit;
+    else delete objects[key];
+  };
+  for (const key of keys) {
+    if (kindOf(key) === 'shape') continue;
+    const { removed: _removed, hollow: _hollow, ...rest } = objects[key] ?? {};
+    // A bridge goes with its road, so one put back on its own says so.
+    const twin = twinOf(key);
+    if (key.startsWith('br:') && twin && objects[twin]?.removed) put(key, { ...rest, removed: false });
+    else put(key, rest);
+    // A road put back takes its bridge back with it.
+    if (key.startsWith('r:') && twin && objects[twin]?.removed === false) {
+      const { removed: _kept, ...bridge } = objects[twin];
+      put(twin, bridge);
+    }
+  }
+  commitEdits({ ...edits, objects });
 }
 
 // ---------------------------------------------------------------- layers

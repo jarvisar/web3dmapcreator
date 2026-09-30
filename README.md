@@ -27,11 +27,11 @@ Open the 3MF in Bambu Studio with `File > Open Project`. Every part already has 
 
 Press the pencil at the top right of the 3D view to change the model before downloading it. The editor is new, so it's marked as a beta for now. Click a building, road, path, tree or body of water to select it, or type a name into the search box. `Shift`-click adds to the selection and `Shift`-drag selects everything in a box. The `Select several` tool does both without a key, and on a phone a tap there adds or drops one thing. `Whole street` selects the rest of a road with the same name, and a building mapped in parts lists them to pick one.
 
-- Remove things, or leave water out of the export. A removed road or building gives its ground back to the park or plaza it was cut out of.
+- Remove things. A removed road or building gives its ground back to the park or plaza it was cut out of. Water you leave out is filled with ground up to its banks, or check `Keep the hollow` to leave the recess for resin or paint.
 - Drag the arrow on top of a building or shape to change its height, or type one in. A building's height is kept in real metres, so it keeps up when you change the scale.
-- Make roads and paths wider or taller.
+- Make roads and paths wider or taller. A bridge on the road goes along with it, and a bridge on its own can be made wider or narrower too.
 - Put anything in a custom layer to give it a colour of its own. Each layer is exported as its own part with its own filament, so a racetrack or a favourite route can print in a different colour.
-- Add text, map pins, boxes and cylinders, or draw your own roads and buildings. A drawn line starts out as a road and a drawn outline as a building, and either can take any colour. Everything added stands on the ground and is solid down to the base.
+- Add text, map pins, boxes and cylinders, or draw your own roads and buildings. A drawn line starts out as a road and a drawn outline as a building, and either can take any colour. Everything added is built down to what it stands on: the ground, or a roof or bridge you raised it onto. In water it goes down through the water to the bottom.
 - Drag the points of a drawn road or outline to reshape it. Tap or click a point, then `Delete point`, to take it out.
 
 Edits follow the map features, not the mesh, so they stay when you change settings and generate again. They're saved in the browser, in exported options when the map area is included, and in a copied share link unless there are too many for one. `Ctrl+Z` undoes, and Help lists the other keys.
@@ -79,6 +79,7 @@ The water comes from the survey, with Overture's water outlines used for smooth 
 - Every colour is one filament. One AMS holds four, and the `4-Colour AMS` preset stays within that.
 - Water prints as a 1 mm layer on a floor of terrain, so its colour only comes in near the top. `Layers > Water > Large water` can cut it through the base instead, from the bed up.
 - Most of the model prints without supports. Bridges are the exception, so let the slicer add supports only where it finds them. Building parts mapped to start above the ground are built down to it unless you turn that off.
+- Roads, buildings and piers standing in water sit on a strip of ground by default. Turn off `Keep ground under structures in water` to build them down through the water in their own colour instead. Either way they still stand if you delete the water part in the slicer.
 - A model bigger than your bed can be split with `Multi-plate export`. The sections fit back together with no gaps or connectors.
 - For an SVG map, test your laser settings on scrap first. The wood preview is only a rough idea of how the fills burn.
 

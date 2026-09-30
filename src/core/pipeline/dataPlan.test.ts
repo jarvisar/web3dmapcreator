@@ -91,42 +91,42 @@ describe('dataPlan', () => {
       expect(keep(type, { subtype: 'forest', class: 'forest' }, small)).toBe(false);
     }
     expect(dataPlan(settings, bounds).types).toContain('land');
-    expect(dataPlan(settings, bounds).types).not.toContain('land_use');
     expect(dataPlan(settings, bounds).types).not.toContain('land_cover');
     settings.trees.forestScatter = true;
     expect(dataPlan(settings, bounds).keep('land_use', { subtype: 'forest', class: 'forest' }, small)).toBe(true);
     expect(dataPlan(settings, bounds).types).toEqual(expect.arrayContaining(['land', 'land_use', 'land_cover']));
   });
 
-  it('reads mapped piers for their ground with land cover off', () => {
+  it('reads mapped piers for their ground with land cover off, supports or not', () => {
     const settings = cloneSettings();
     settings.land.enabled = false;
     settings.trees.enabled = false;
-    expect(dataPlan(settings, bounds).types).toEqual(expect.arrayContaining(['land', 'land_use', 'infrastructure']));
-    expect(dataPlan(settings, bounds).types).not.toContain('land_cover');
-    expect(dataPlan(settings, bounds).keep('land_use', { subtype: 'pier', class: 'pier' }, small)).toBe(true);
-    settings.supports = false;
-    expect(dataPlan(settings, bounds).types).not.toContain('land');
+    for (const supports of [true, false]) {
+      settings.supports = supports;
+      expect(dataPlan(settings, bounds).types).toEqual(expect.arrayContaining(['land', 'land_use', 'infrastructure']));
+      expect(dataPlan(settings, bounds).types).not.toContain('land_cover');
+      expect(dataPlan(settings, bounds).keep('land_use', { subtype: 'pier', class: 'pier' }, small)).toBe(true);
+      expect(dataPlan(settings, bounds).keep('land_use', { subtype: 'park', class: 'park' }, small)).toBe(false);
+    }
   });
 
-  it('always reads water, and admits mapped rock for LiDAR independently of land surfaces', () => {
+  it('always reads water and mapped piers, and admits mapped rock for LiDAR independently of land surfaces', () => {
     const settings = cloneSettings();
     settings.roads.enabled = false;
     settings.buildings.enabled = false;
     settings.land.enabled = false;
     settings.trees.enabled = false;
-    settings.supports = false;
-    expect(dataPlan(settings, bounds).types).toEqual(['water']);
+    expect(dataPlan(settings, bounds).types).toEqual(['water', 'infrastructure', 'land', 'land_use']);
 
     settings.buildings.enabled = true;
     settings.lidar.enabled = true;
     settings.lidar.rockSurfaces = true;
     settings.lidar.roofMode = 'envelope';
     const plan = dataPlan(settings, bounds);
-    expect(plan.types).toEqual(['water', 'building', 'building_part', 'land']);
+    expect(plan.types).toEqual(['water', 'infrastructure', 'building', 'building_part', 'land', 'land_use']);
     expect(plan.keep('land', { class: 'bare_rock' }, regional)).toBe(true);
     settings.lidar.roofMode = 'heights';
-    expect(dataPlan(settings, bounds).types).not.toContain('land');
+    expect(dataPlan(settings, bounds).keep('land', { class: 'bare_rock' }, regional)).toBe(false);
     expect(dataPlan(settings, bounds).key).not.toBe(plan.key);
   });
 
@@ -161,7 +161,6 @@ describe('dataPlan', () => {
       (s, on) => { s.buildings.enabled = on; },
       (s, on) => { s.land.enabled = on; },
       (s, on) => { s.land.satelliteCover = on; },
-      (s, on) => { s.supports = on; },
       (s, on) => { s.trees.enabled = on; },
       (s, on) => { s.trees.mapped = on; },
       (s, on) => { s.trees.forestScatter = on; },

@@ -373,6 +373,6 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
   for (const failure of surface.failures.slice(0, 3)) warnings.push(`LiDAR from ${failure.source} could not be read: ${failure.reason}`);
   // Nothing in the surface can be picked out, but shapes can stand on it.
   const surfaceGrid: GroundGrid = { minX: x0, minY: y0, step: dx, stepY: dy, cols: nx, rows: ny, values: result.heights };
-  const edit: EditContext = { heightAt: (x, y) => groundAt(surfaceGrid, x, y), grid: surfaceGrid, roads: [], water: [], objects: new Map() };
+  const edit: EditContext = { heightAt: (x, y) => groundAt(surfaceGrid, x, y), grid: surfaceGrid, roads: [], bodies: [], noGround: [], kept: { roads: [], buildings: [], piers: [], decks: [], airport: [] }, decks: [], objects: new Map() };
   return { layers: layersOut, outline, crop: [crop], baseZ: 0, mmPerMetre, stats, warnings, edit };
 }

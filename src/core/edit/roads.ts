@@ -8,7 +8,8 @@
 //
 // A road with its own height or layer owns its ground: the plain groups
 // give way to it, and the taller of two such roads wins where they cross.
-// Nothing new is built over water without ground under it.
+// Over water a road gets ground kept under it like any other (earth.ts), or
+// with supports off it's built down through the water (pipeline/wading.ts).
 
 import type { Rect64 } from 'clipper2-ts';
 import { bufferLines, ClipSet, difference, dropSmall, intersection, SCALE, separateTouching, splitToTiles, union, type Box } from '../geometry/polygon';
@@ -99,19 +100,16 @@ export class RoadTiles extends TileGrid {
   /** The generated road polygons cut into tiles, made the first time a tile is asked for. */
   private baseTiles: Map<number, RoadBucket[]> | null = null;
   private readonly crop: ClipSet;
-  private readonly water: ClipSet;
 
   constructor(
     readonly pieces: RoadPiece[],
     private readonly base: Map<string, MultiPolygon>,
     crop: MultiPolygon,
-    water: MultiPolygon,
     cropBox: Box,
     private readonly settings: ModelSettings,
   ) {
     super(cropBox);
     this.crop = new ClipSet([crop]);
-    this.water = new ClipSet([water]);
     this.boxes = new Float64Array(pieces.length * 4);
     const reach = MAX_WIDTH_MM / 2 + settings.roads.gapMm + REACH_MM;
     pieces.forEach((piece, i) => {
@@ -199,15 +197,13 @@ export class RoadTiles extends TileGrid {
       else special.set(id, { part, thickness: height, pieces: [sized] });
     }
 
-    const water = this.water.polygonsWithinRect(rect);
-    const dry = (polygons: MultiPolygon) => (water.length && polygons.length ? difference(polygons, water) : polygons);
     const out: RoadBucket[] = [];
     // Taller roads own their ground where two meet.
     const ordered = [...special.values()].sort((a, b) => b.thickness - a.thickness || a.part.localeCompare(b.part));
     let owned: MultiPolygon = [];
     for (const bucket of ordered) {
       const ribbons = bufferLines(bucket.pieces.map((p) => ({ points: p.points, width: p.widthMm })), 'round');
-      let polygons = dry(intersection(ribbons, cropLocal));
+      let polygons = intersection(ribbons, cropLocal);
       if (owned.length) polygons = difference(polygons, owned);
       polygons = separateTouching(dropSmall(polygons, 0.02));
       if (!polygons.length) continue;
@@ -218,7 +214,7 @@ export class RoadTiles extends TileGrid {
     if (plain.length) {
       const ribbons = await bufferRoads(plain, { settings: this.settings, cropSet: cropLocal, progress: new Progress(), stats: {} });
       for (const group of GROUPS) {
-        let polygons = dry(ribbons[group]);
+        let polygons = ribbons[group];
         if (owned.length) polygons = difference(polygons, owned);
         polygons = separateTouching(dropSmall(polygons, 0.02));
         if (polygons.length) out.push({ part: ROAD_PARTS[group], thickness, polygons });

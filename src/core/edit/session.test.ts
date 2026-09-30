@@ -2,15 +2,16 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { filamentUse, preparePlates } from '../export/common';
 import { Projection } from '../geo/projection';
-import { multiArea, pointInMulti, polygonArea } from '../geometry/polygon';
-import type { PrismSolid } from '../geometry/solid';
+import { difference, intersection, multiArea, pointInMulti, pointInPolygon, polygonArea } from '../geometry/polygon';
+import type { PrismSolid, Solid } from '../geometry/solid';
 import { edgeReport } from '../geometry/validate';
-import { generateModel } from '../pipeline/generate';
+import { generateModel, type ModelSpec } from '../pipeline/generate';
 import { meshLayers } from '../pipeline/mesh';
 import { buildPlates } from '../pipeline/plates';
 import type { SourceData, SourceFeature } from '../pipeline/source';
 import { cloneSettings, DEFAULT_PALETTE, type AreaSpec } from '../settings';
 import { parseOutlineFont } from '../svgmap/text/loadFont';
+import { editOf } from './keys';
 import { roadLines } from './lines';
 import { EditSession } from './session';
 import { shapeFootprint } from './shapes';
@@ -72,11 +73,19 @@ const hills = { sample: (lon: number, lat: number) => 30 + 20 * Math.sin((lon - 
 const montserrat = readFileSync('public/fonts/Montserrat-SemiBold.ttf');
 const font = parseOutlineFont(montserrat.buffer.slice(montserrat.byteOffset, montserrat.byteOffset + montserrat.byteLength) as ArrayBuffer);
 
-async function setUp(options: { data?: SourceData; groundRaisedParts?: boolean } = {}) {
+async function setUp(options: { data?: SourceData; groundRaisedParts?: boolean; bridges?: boolean; supports?: boolean; through?: boolean } = {}) {
   const settings = cloneSettings();
   settings.terrain.resolution = 96;
   settings.trees.enabled = true;
   if (options.groundRaisedParts !== undefined) settings.buildings.groundRaisedParts = options.groundRaisedParts;
+  if (options.bridges) {
+    // Steep and high enough over the 100 m river for piers.
+    settings.bridges.enabled = true;
+    settings.bridges.maxGrade = 0.5;
+    settings.bridges.clearanceMm = 1.5;
+  }
+  if (options.supports === false) settings.supports = false;
+  if (options.through) settings.water.mode = 'through';
   const spec = await generateModel({ area, settings, data: options.data ?? town(), elevation: hills });
   const projection = new Projection(area.center, area.rotationDeg, spec.mmPerMetre);
   const session = new EditSession(spec, settings, projection, { load: async () => font });
@@ -106,6 +115,32 @@ function maxZ(positions: Float32Array): number {
   let z = -Infinity;
   for (let i = 2; i < positions.length; i += 3) z = Math.max(z, positions[i]);
   return z;
+}
+
+function solidsIn(model: ModelSpec, layer: string): PrismSolid[] {
+  return (model.layers.find((l) => l.id === layer)?.solids ?? []).filter((s): s is PrismSolid => s.kind === 'prism');
+}
+
+/** The terrain's ground, as opposed to the flat floors under water. */
+function groundOf(model: ModelSpec): PrismSolid[] {
+  return solidsIn(model, 'terrain').filter((s) => typeof s.top === 'function');
+}
+
+function covers(solids: Solid[], x: number, y: number): boolean {
+  return solids.some((s) => s.kind === 'prism' && pointInPolygon(x, y, s.polygon));
+}
+
+async function expectClosed(model: ModelSpec) {
+  for (const multiPlate of [false, true]) {
+    const { plates, failed } = await buildPlates(model, { multiPlate, sectionWidthMm: 60, sectionHeightMm: 60, bedWidth: 256, bedDepth: 256 });
+    expect(failed).toBe(0);
+    for (const plate of plates) {
+      for (const part of plate.parts) {
+        const report = edgeReport(part.indices, part.positions.length / 3);
+        expect({ part: part.id, open: report.open, repeated: report.repeated }).toEqual({ part: part.id, open: 0, repeated: 0 });
+      }
+    }
+  }
 }
 
 describe('sanitizeEdits', () => {
@@ -144,6 +179,31 @@ describe('sanitizeEdits', () => {
   it('gives an empty set for anything else', () => {
     expect(sanitizeEdits(null)).toEqual(emptyEdits());
     expect(sanitizeEdits('edits')).toEqual(emptyEdits());
+  });
+
+  it('keeps hollows for water left out, widths for bridges, and bridges kept on their own', () => {
+    const edits = sanitizeEdits({
+      objects: {
+        'w:lake': { removed: true, hollow: true },
+        'w:pond': { hollow: true },
+        'br:deck': { widthMm: 2, removed: false, heightMm: 3 },
+        'b:tower': { removed: false, heightM: 20 },
+      },
+    });
+    expect(edits.objects['w:lake']).toEqual({ removed: true, hollow: true });
+    expect(edits.objects['w:pond']).toBeUndefined();
+    expect(edits.objects['br:deck']).toEqual({ removed: false, widthMm: 2 });
+    expect(edits.objects['b:tower']).toEqual({ heightM: 20 });
+  });
+});
+
+describe('editOf', () => {
+  it("gives a bridge its road's removal, colour and width, unless it has its own", () => {
+    const edits: ModelEdits = { ...emptyEdits(), objects: { 'r:x': { removed: true, layer: 'L', widthMm: 2, heightMm: 3 }, 'br:y': { widthMm: 1 } } };
+    expect(editOf(edits, 'br:x')).toEqual({ removed: true, layer: 'L', widthMm: 2 });
+    expect(editOf({ ...edits, objects: { ...edits.objects, 'br:x': { removed: false, widthMm: 1 } } }, 'br:x')).toEqual({ removed: false, layer: 'L', widthMm: 1 });
+    expect(editOf(edits, 'br:y')).toEqual({ widthMm: 1 });
+    expect(editOf(edits, 'r:x')).toBe(edits.objects['r:x']);
   });
 });
 
@@ -399,6 +459,257 @@ describe('EditSession', () => {
     expect(update.notes['s:away']).toMatch(/outside the model/);
   });
 });
+
+describe('Edits in and over water', () => {
+  it('fills water left out with ground up to its banks, or keeps the hollow', async () => {
+    const { session, spec, projection } = await setUp();
+    const river = spec.edit!.bodies.find((b) => b.key === 'w:river')!;
+    const [x, y] = projection.toModel(...at(-400, -10));
+    expect(covers(groundOf(spec), x, y)).toBe(false);
+    const filled = { ...emptyEdits(), objects: { 'w:river': { removed: true } } };
+    const update = await session.update(filled, 1);
+    expect(update.parts.map((p) => p.id)).toEqual(['terrain']);
+    const edited = await session.edited(filled, DEFAULT_PALETTE);
+    const ground = groundOf(edited).filter((s) => pointInPolygon(x, y, s.polygon));
+    expect(ground).toHaveLength(1);
+    expect((ground[0].top as (x: number, y: number) => number)(x, y)).toBeCloseTo(river.bed, 3);
+    // No floor left under it either.
+    expect(solidsIn(edited, 'terrain').filter((s) => typeof s.top === 'number' && pointInPolygon(x, y, s.polygon))).toEqual([]);
+    await expectClosed(edited);
+
+    // The hollow is the recess the water sat in, so the terrain is as generated.
+    const hollow = { ...emptyEdits(), objects: { 'w:river': { removed: true, hollow: true } } };
+    const kept = await session.update(hollow, 2);
+    expect(kept.parts).toEqual([{ id: 'terrain', part: null }]);
+    const recess = await session.edited(hollow, DEFAULT_PALETTE);
+    const generated = spec.layers.find((l) => l.id === 'terrain')!.solids;
+    expect(recess.layers.find((l) => l.id === 'terrain')!.solids.every((s, i) => s === generated[i])).toBe(true);
+    expect(recess.layers.find((l) => l.id === 'water')!.solids.some((s) => s.key === 'w:river')).toBe(false);
+    expect((await session.update(emptyEdits(), 3)).parts).toEqual([]);
+  });
+
+  it('keeps a floor under a hollow in water that ran down to the base', async () => {
+    const { session, spec, projection } = await setUp({ through: true });
+    const river = spec.edit!.bodies.find((b) => b.key === 'w:river')!;
+    expect(river.floor).toBeNull();
+    const [x, y] = projection.toModel(...at(-400, -10));
+    const edits = { ...emptyEdits(), objects: { 'w:river': { removed: true, hollow: true } } };
+    const edited = await session.edited(edits, DEFAULT_PALETTE);
+    const floor = solidsIn(edited, 'terrain').filter((s) => pointInPolygon(x, y, s.polygon));
+    expect(floor).toHaveLength(1);
+    const top = floor[0].top as number;
+    expect(top).toBeLessThan(river.top);
+    expect(top - spec.baseZ).toBeGreaterThanOrEqual(0.6 - 1e-9);
+    await expectClosed(edited);
+  });
+
+  it('gives a pond left out in a park its grass back', async () => {
+    const { session, projection } = await setUp();
+    const [x, y] = projection.toModel(...at(320, 315));
+    const edits = { ...emptyEdits(), objects: { 'w:pond': { removed: true } } };
+    const update = await session.update(edits, 1);
+    expect(update.objects.find((o) => o.key === 'lf:green')?.mesh?.indices.length).toBeGreaterThan(0);
+    const edited = await session.edited(edits, DEFAULT_PALETTE);
+    expect(covers(solidsIn(edited, 'land-green').filter((s) => s.key === 'lf:green'), x, y)).toBe(true);
+    expect(covers(groundOf(edited), x, y)).toBe(true);
+    await expectClosed(edited);
+  });
+
+  it('takes away ground kept in the water for a road that goes, and only that', async () => {
+    const { session, spec, projection } = await setUp();
+    const [x, y] = projection.toModel(...at(5, -10));
+    expect(pointInMulti(x, y, spec.edit!.kept.roads)).toBe(true);
+    expect(covers(groundOf(spec), x, y)).toBe(true);
+    const edits = { ...emptyEdits(), objects: { 'r:cross': { removed: true } } };
+    const update = await session.update(edits, 1);
+    expect(update.parts.map((p) => p.id)).toEqual(expect.arrayContaining(['roads', 'terrain', 'water']));
+    const edited = await session.edited(edits, DEFAULT_PALETTE);
+    expect(covers(groundOf(edited), x, y)).toBe(false);
+    expect(covers(solidsIn(edited, 'water').filter((s) => s.key === 'w:river'), x, y)).toBe(true);
+    // Land stays land: only ground that was kept in the water went.
+    const land = (model: ModelSpec) => multiArea(difference(groundOf(model).map((s) => s.polygon), spec.edit!.noGround));
+    expect(land(edited)).toBeCloseTo(land(spec), 1);
+    await expectClosed(edited);
+    const back = await session.update(emptyEdits(), 2);
+    expect(back.parts.map((p) => [p.id, p.part])).toEqual(expect.arrayContaining([['terrain', null], ['water', null]]));
+  });
+
+  it('gives new road area over water ground under it', async () => {
+    const { session, spec, projection } = await setUp();
+    // 20 m east of the cross road's line, inside it once it's 4 mm (57 m) wide.
+    const [x, y] = projection.toModel(...at(25, -10));
+    expect(covers(groundOf(spec), x, y)).toBe(false);
+    const edits = { ...emptyEdits(), objects: { 'r:cross': { widthMm: 4 } } };
+    await session.update(edits, 1);
+    const edited = await session.edited(edits, DEFAULT_PALETTE);
+    expect(covers(solidsIn(edited, 'roads'), x, y)).toBe(true);
+    expect(covers(groundOf(edited), x, y)).toBe(true);
+    expect(covers(solidsIn(edited, 'water'), x, y)).toBe(false);
+    await expectClosed(edited);
+  });
+
+  it('builds roads down through the water with supports off, new road area too', async () => {
+    const { session, spec, projection } = await setUp({ supports: false });
+    const river = spec.edit!.bodies.find((b) => b.key === 'w:river')!;
+    const [x, y] = projection.toModel(...at(5, -10));
+    const down = (model: ModelSpec, px: number, py: number) =>
+      solidsIn(model, 'roads').filter((s) => pointInPolygon(px, py, s.polygon) && typeof s.bottom === 'number' && Math.abs(s.bottom - (river.floor! - 0.04)) < 1e-6);
+    // As generated: the road over the river reaches its floor, and there's no ground under it.
+    expect(down(spec, x, y)).toHaveLength(1);
+    expect(covers(groundOf(spec), x, y)).toBe(false);
+    expect(covers(solidsIn(spec, 'water'), x, y)).toBe(false);
+    expect(solidsIn(spec, 'terrain').some((s) => s.top === river.floor && pointInPolygon(x, y, s.polygon))).toBe(true);
+    // Widened, the new road area goes down too, and the water makes room.
+    const [wx, wy] = projection.toModel(...at(25, -10));
+    const wide = { ...emptyEdits(), objects: { 'r:cross': { widthMm: 4 } } };
+    const update = await session.update(wide, 1);
+    expect(update.parts.map((p) => p.id)).toEqual(expect.arrayContaining(['roads', 'water']));
+    expect(update.parts.map((p) => p.id)).not.toContain('terrain');
+    const widened = await session.edited(wide, DEFAULT_PALETTE);
+    expect(down(widened, wx, wy)).toHaveLength(1);
+    expect(covers(solidsIn(widened, 'water'), wx, wy)).toBe(false);
+    await expectClosed(widened);
+    // Removed, the water comes back over the floor it stood on.
+    const gone = { ...emptyEdits(), objects: { 'r:cross': { removed: true } } };
+    const removed = await session.edited(gone, DEFAULT_PALETTE);
+    expect(covers(solidsIn(removed, 'water'), x, y)).toBe(true);
+    expect(covers(groundOf(removed), x, y)).toBe(false);
+    await expectClosed(removed);
+  });
+
+  it('stands drawn roads over water on ground of their own, and text on the floor under the water', async () => {
+    const { session, spec, projection } = await setUp();
+    const river = spec.edit!.bodies.find((b) => b.key === 'w:river')!;
+    const path = shape({ id: 'p', kind: 'path', layer: 'roads', points: [at(-300, -150), at(-300, 150)], sizeMm: 1, heightMm: 0.6, followGround: true });
+    const label = shape({ id: 't', kind: 'text', text: 'RIVER', at: at(-600, -10), sizeMm: 3, heightMm: 1 });
+    const edits = { ...emptyEdits(), shapes: [path, label] };
+    const update = await session.update(edits, 1);
+    expect(update.parts.map((p) => p.id)).toEqual(expect.arrayContaining(['terrain', 'water']));
+    const edited = await session.edited(edits, DEFAULT_PALETTE);
+    const [px, py] = projection.toModel(...at(-300, -10));
+    expect(covers(groundOf(edited), px, py)).toBe(true);
+    expect(covers(solidsIn(edited, 'water'), px, py)).toBe(false);
+    // The text stands a millimetre over the water, and goes down through it
+    // to the floor, so it still stands with the water left out in the slicer.
+    const text = edited.layers.flatMap((l) => l.solids).filter((s): s is PrismSolid => s.key === 's:t' && s.kind === 'prism');
+    expect(text.length).toBeGreaterThan(0);
+    for (const solid of text) {
+      expect(solid.bottom).toBeCloseTo(river.floor! - 0.04, 6);
+      expect(solid.top).toBeCloseTo(river.top + 1, 6);
+    }
+    const water = solidsIn(edited, 'water').map((s) => s.polygon);
+    const letters = text.map((s) => s.polygon);
+    expect(multiArea(intersection(letters, water))).toBeLessThan(1e-3);
+    expect(solidsIn(edited, 'terrain').some((s) => s.top === river.floor && text.some((t) => pointInPolygon(...centre(t), s.polygon)))).toBe(true);
+    await expectClosed(edited);
+  });
+});
+
+describe('Shapes standing on things', () => {
+  it('stands on the ground, not down to the base', async () => {
+    const { session } = await setUp();
+    const edited = await session.edited({ ...emptyEdits(), shapes: [shape({})] }, DEFAULT_PALETTE);
+    const box = edited.layers.flatMap((l) => l.solids).filter((s): s is PrismSolid => s.key === 's:s1' && s.kind === 'prism');
+    expect(box.length).toBeGreaterThan(0);
+    expect(box.every((s) => typeof s.bottom === 'function')).toBe(true);
+  });
+
+  it('stands a raised shape on the roof under it, and builds what hangs over down to the ground', async () => {
+    const { session, spec, projection } = await setUp();
+    const facts = session.describe()['b:tower'];
+    const roof = spec.edit!.objects.get('b:tower')!.base! + facts.heightMm!;
+    const lift = facts.heightMm! + 3;
+    const onRoof = shape({ id: 'r', at: at(70, 170), sizeMm: 1, depthMm: 1, liftMm: lift });
+    // Half of it past the tower's east wall at 90 m.
+    const over = shape({ id: 'o', at: at(90, 170), sizeMm: 1.4, depthMm: 1, liftMm: lift });
+    const edits = { ...emptyEdits(), shapes: [onRoof, over] };
+    const edited = await session.edited(edits, DEFAULT_PALETTE);
+    const solids = (key: string) => edited.layers.flatMap((l) => l.solids).filter((s): s is PrismSolid => s.key === key && s.kind === 'prism');
+    for (const solid of solids('s:r')) expect(solid.bottom).toBeCloseTo(roof - 0.04, 3);
+    const pieces = solids('s:o');
+    const onTop = pieces.filter((s) => typeof s.bottom === 'number');
+    const down = pieces.filter((s) => typeof s.bottom === 'function');
+    expect(onTop.length).toBeGreaterThan(0);
+    expect(down.length).toBeGreaterThan(0);
+    for (const solid of onTop) expect(solid.bottom).toBeCloseTo(roof - 0.04, 3);
+    const [x, y] = projection.toModel(...at(92, 170));
+    expect(down.some((s) => pointInPolygon(x, y, s.polygon))).toBe(true);
+    await expectClosed(edited);
+    // Made lower, the tower still holds it up, at its new roof.
+    const lower = { ...edits, objects: { 'b:tower': { heightM: 15 } } };
+    const lowered = await session.edited(lower, DEFAULT_PALETTE);
+    const newRoof = spec.edit!.objects.get('b:tower')!.base! + 15 * session.buildingScale;
+    for (const solid of lowered.layers.flatMap((l) => l.solids).filter((s): s is PrismSolid => s.key === 's:r' && s.kind === 'prism')) {
+      expect(solid.bottom).toBeCloseTo(newRoof - 0.04, 3);
+    }
+    // Updates follow the building too.
+    await session.update(edits, 1);
+    const update = await session.update(lower, 2);
+    expect(update.objects.map((o) => o.key)).toEqual(expect.arrayContaining(['b:tower', 's:r', 's:o']));
+  });
+
+  it('notes a shape hidden inside a building', async () => {
+    const { session } = await setUp();
+    const update = await session.update({ ...emptyEdits(), shapes: [shape({ id: 'in', at: at(70, 170), sizeMm: 1, depthMm: 1, heightMm: 0.5 })] }, 1);
+    expect(update.notes['s:in']).toMatch(/inside a building/);
+  });
+});
+
+describe('Bridges', () => {
+  const deckArea = (model: ModelSpec, key = 'br:cross') => multiArea(solidsIn(model, 'bridges').filter((s) => s.key === key).map((s) => s.polygon));
+
+  it("widens a bridge with its road, or on its own, and cuts piers to a narrower deck", async () => {
+    const { session, spec } = await setUp({ bridges: true });
+    const facts = session.describe()['br:cross'];
+    expect(facts?.kind).toBe('bridge');
+    expect(facts.widthMm).toBeGreaterThan(0);
+    const before = deckArea(spec);
+    expect(before).toBeGreaterThan(0);
+    const wide = { ...emptyEdits(), objects: { 'r:cross': { widthMm: facts.widthMm! * 2 } } };
+    const update = await session.update(wide, 1);
+    expect(update.objects.find((o) => o.key === 'br:cross' && o.part === 'bridges')?.mesh?.indices.length).toBeGreaterThan(0);
+    const edited = await session.edited(wide, DEFAULT_PALETTE);
+    expect(deckArea(edited) / before).toBeGreaterThan(1.7);
+    await expectClosed(edited);
+
+    const narrow = { ...emptyEdits(), objects: { 'r:cross': { widthMm: facts.widthMm! * 2 }, 'br:cross': { widthMm: 0.3 } } };
+    const narrowed = await session.update(narrow, 2);
+    expect(narrowed.objects.map((o) => o.part)).toEqual(expect.arrayContaining(['bridges', 'piers']));
+    const thin = await session.edited(narrow, DEFAULT_PALETTE);
+    expect(deckArea(thin) / before).toBeLessThan(0.8);
+    const deck = solidsIn(thin, 'bridges').filter((s) => s.key === 'br:cross').map((s) => s.polygon);
+    for (const pier of solidsIn(thin, 'piers').filter((s) => s.key === 'br:cross')) {
+      expect(multiArea(difference([pier.polygon], deck))).toBeLessThan(1e-3);
+    }
+    await expectClosed(thin);
+  });
+
+  it('takes a bridge, its piers and the ground kept for them away with its road', async () => {
+    const { session, spec } = await setUp({ bridges: true });
+    const piers = solidsIn(spec, 'piers').filter((s) => s.key === 'br:cross');
+    expect(piers.length).toBeGreaterThan(0);
+    const wet = piers.find((p) => pointInMulti(...centre(p), spec.edit!.kept.piers))!;
+    expect(wet).toBeDefined();
+    const edits = { ...emptyEdits(), objects: { 'r:cross': { removed: true } } };
+    await session.update(edits, 1);
+    const edited = await session.edited(edits, DEFAULT_PALETTE);
+    expect(deckArea(edited)).toBe(0);
+    expect(solidsIn(edited, 'piers').some((s) => s.key === 'br:cross')).toBe(false);
+    expect(covers(groundOf(edited), ...centre(wet))).toBe(false);
+    expect(covers(solidsIn(edited, 'water'), ...centre(wet))).toBe(true);
+    await expectClosed(edited);
+    // Put back on its own, the bridge stays while the road is gone.
+    const kept = { ...emptyEdits(), objects: { 'r:cross': { removed: true }, 'br:cross': { removed: false } } };
+    const back = await session.edited(kept, DEFAULT_PALETTE);
+    expect(deckArea(back)).toBeCloseTo(deckArea(spec), 6);
+    expect(covers(groundOf(back), ...centre(wet))).toBe(true);
+  });
+});
+
+function centre(solid: PrismSolid): [number, number] {
+  const ring = solid.polygon[0];
+  return [ring.reduce((s, p) => s + p[0], 0) / ring.length, ring.reduce((s, p) => s + p[1], 0) / ring.length];
+}
 
 describe('shapeFootprint', () => {
   const projection = new Projection(area.center, 30, 0.07);

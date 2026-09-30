@@ -1,17 +1,19 @@
 // Random edits on a real area, checked for what someone printing it would run
 // into: every exported part closed and finite, in one plate and in sections,
-// no building part left standing on air, and the export the same as what the
-// viewer shows, colour by colour. A failing step's edits are written as an
+// no building part left standing on air, nothing in the water standing on
+// air with the water left out, and the export the same as what the viewer
+// shows, colour by colour. A failing step's edits are written as an
 // options file, so `scripts/generate.ts --options <file>` rebuilds it.
 //
 //   npx tsx scripts/fuzz-edits.ts --preset "Chicago - The Loop (small)" [--steps 40] [--seed 1]
-//     [--check-every 5] [--trees] [--bridges] [--shape circle] [--rotation 30] [--lidar-only]
+//     [--check-every 5] [--trees] [--bridges] [--no-supports] [--through] [--shape circle] [--rotation 30] [--lidar-only]
 //
 // --selftest exports without the last step's edits, which every check has to
 // catch, to show the checks still catch something.
 //
 // Overture and elevation downloads are kept in out/fuzz-cache, LiDAR in out/lidar-cache.
 
+import { normalizeArea } from '../src/app/lib/area';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PRESET_GROUPS } from '../src/app/data/presets';
@@ -29,9 +31,10 @@ import { EditSession, type EditUpdate, type ObjectMesh } from '../src/core/edit/
 import { emptyEdits, sanitizeEdits, SHAPE_KINDS, type AddedShape, type ModelEdits, type ObjectEdit } from '../src/core/edit/types';
 import { areaFromBounds, effectiveScale, parseBoundsText } from '../src/core/geo/area';
 import { Projection } from '../src/core/geo/projection';
-import { boxesOverlap, intersection, multiArea, ringBounds } from '../src/core/geometry/polygon';
+import { boxesOverlap, intersection, multiArea, pointInPolygon, ringBounds } from '../src/core/geometry/polygon';
 import type { PrismSolid } from '../src/core/geometry/solid';
 import { edgeReport, signedVolume } from '../src/core/geometry/validate';
+import { interiorPoints } from '../src/core/terrain/heightfield';
 import { Progress } from '../src/core/pipeline/context';
 import { dataPlan } from '../src/core/pipeline/dataPlan';
 import { dataBoundsFor, generateModel, type ModelSpec } from '../src/core/pipeline/generate';
@@ -132,6 +135,8 @@ async function main() {
   let settings = cloneSettings();
   if (flag('trees')) settings.trees.enabled = true;
   if (flag('bridges')) settings.bridges.enabled = true;
+  if (flag('no-supports')) settings.supports = false;
+  if (flag('through')) settings.water.mode = 'through';
   if (flag('lidar-only')) settings.modelSource = 'lidar';
   settings = sanitizeSettings(settings);
 
@@ -150,7 +155,10 @@ async function main() {
   const buildings = keysOf('building');
   const withParts = buildings.filter((key) => facts[key].parts?.length);
   const water = keysOf('water');
+  const bridges = keysOf('bridge');
   const trees = [...new Set(spec.layers.flatMap((l) => l.solids.map((s) => s.key ?? '')).filter((key) => key.startsWith('t:')))];
+  // Points in cut water and basins, to put shapes and roads in.
+  const wetPoints = spec.edit.bodies.filter((b) => b.kind !== 'sheet').flatMap((b) => interiorPoints(b.polygon, 2, 400));
   const lines = spec.edit.roads.length ? roadLines(spec.edit, -spec.baseZ, settings.roads.thicknessMm) : null;
   const roads = lines ? [...new Set(lines.keys)] : [];
   const streets = new Map<string, string[]>();
@@ -163,7 +171,9 @@ async function main() {
   const streetNames = [...streets.keys()];
   const box = ringBounds(spec.crop[0]);
   const fontIds = FONTS.map((f) => f.id).filter((id) => id !== 'custom');
-  console.log(`${buildings.length} buildings (${withParts.length} with parts), ${roads.length} roads, ${water.length} water, ${trees.length} trees`);
+  console.log(
+    `${buildings.length} buildings (${withParts.length} with parts), ${roads.length} roads, ${bridges.length} bridges, ${water.length} water, ${wetPoints.length} points in it, ${trees.length} trees`,
+  );
 
   // What the viewer has, as it would after each update.
   const generated = new Map((await meshLayers(spec.layers, { zShift: -spec.baseZ, objects: true })).parts.map((p) => [p.id, p]));
@@ -172,8 +182,9 @@ async function main() {
   let hidden = new Set<string>();
   const record = (update: EditUpdate) => {
     for (const object of update.objects) {
-      if (object.mesh) objectMeshes.set(object.key, object);
-      else objectMeshes.delete(object.key);
+      const id = `${object.part}|${object.key}`;
+      if (object.mesh) objectMeshes.set(id, object);
+      else objectMeshes.delete(id);
     }
     for (const { id, part } of update.parts) {
       if (part) replaced.set(id, part);
@@ -264,7 +275,22 @@ async function main() {
         return pool.length > 0 && (set(pick(pool), { layer: layerId() }), true);
       },
     ],
-    ['leave out water', 1, () => water.length > 0 && (set(pick(water), { removed: true }), true)],
+    ['leave out water', 2, () => water.length > 0 && (set(pick(water), chance(0.35) ? { removed: true, hollow: true } : { removed: true }), true)],
+    ['bridge width', 2, () => bridges.length > 0 && (set(pick(bridges), { widthMm: 0.2 + rand() * 6 }), true)],
+    ['remove bridge', 1, () => bridges.length > 0 && (set(pick(bridges), chance(0.5) ? { removed: true } : { removed: false }), true)],
+    [
+      'shape in water',
+      3,
+      () => {
+        if (!wetPoints.length) return false;
+        const [x, y] = pick(wetPoints);
+        const shape = newShape();
+        const at = projection.modelToGeo(x, y);
+        const points = shape.points.length ? shape.points.map(() => near(at, 15)) : [];
+        edits = { ...edits, shapes: [...edits.shapes, { ...shape, at: points[0] ?? at, points }] };
+        return true;
+      },
+    ],
     ['remove tree', 1, () => trees.length > 0 && (set(pick(trees), { removed: true }), true)],
     ['add shape', 4, () => ((edits = { ...edits, shapes: [...edits.shapes, newShape()] }), true)],
     [
@@ -337,7 +363,7 @@ async function main() {
     mkdirSync(outDir, { recursive: true });
     const file = join(outDir, `${slug}-seed${seed}-step${step}.json`);
     const options = { output: 'model' as const, settings, palette: DEFAULT_PALETTE, exportSettings: { ...DEFAULT_EXPORT }, svg: defaultSvgSettings() };
-    writeFileSync(file, encodeOptions(options, { area, placeName: presetName, fileName: null, edits }));
+    writeFileSync(file, encodeOptions(options, { area: normalizeArea(area), placeName: presetName, fileName: null, edits }));
     console.log(`  saved ${file}: npx tsx scripts/generate.ts --options ${file} --out out/fuzz/repro.3mf`);
   };
 
@@ -426,6 +452,44 @@ async function main() {
   const floatingBefore = floating(spec);
   if (floatingBefore.size) console.log(`  ${floatingBefore.size} building parts already float as generated, and aren't counted`);
 
+  // Whatever stands in cut water or a basin has to stand on something other
+  // than the water, since the water may be left out in the slicer: ground,
+  // a floor, another solid, or the base. Bridge decks span between piers.
+  const wetBoxes = spec.edit.bodies.filter((b) => b.kind !== 'sheet').map((b) => ({ polygon: b.polygon, box: ringBounds(b.polygon[0]) }));
+  const zOf = (z: PrismSolid['top'], x: number, y: number) => (typeof z === 'number' ? z : z(x, y));
+  const unheld = (model: ModelSpec): string[] => {
+    const out: string[] = [];
+    const holders: { solid: PrismSolid; box: ReturnType<typeof ringBounds> }[] = [];
+    const checked: { solid: PrismSolid; layer: string }[] = [];
+    for (const layer of model.layers) {
+      const role = layer.role;
+      for (const solid of layer.solids) {
+        if (solid.kind !== 'prism' || role === 'water') continue;
+        const box = ringBounds(solid.polygon[0]);
+        holders.push({ solid, box });
+        if (role === 'terrain' || role === 'bridge' || solid.role === 'water' || solid.role === 'bridge' || solid.role === 'terrain') continue;
+        if (!wetBoxes.some((w) => boxesOverlap(w.box, box))) continue;
+        checked.push({ solid, layer: layer.id });
+      }
+    }
+    for (const { solid, layer } of checked) {
+      // One point well inside the solid, in the water.
+      const inside = interiorPoints(solid.polygon, 0.3, 50).find(([x, y]) => wetBoxes.some((w) => pointInPolygon(x, y, w.polygon)));
+      if (!inside) continue;
+      const [x, y] = inside;
+      const bottom = zOf(solid.bottom, x, y);
+      if (bottom <= model.baseZ + 1e-6) continue;
+      const held = holders.some(({ solid: other, box }) => {
+        if (other === solid || x < box[0] || x > box[2] || y < box[1] || y > box[3] || !pointInPolygon(x, y, other.polygon)) return false;
+        return zOf(other.bottom, x, y) < bottom && zOf(other.top, x, y) >= bottom - 0.05;
+      });
+      if (!held) out.push(`${layer} ${solid.key ?? solid.role} at ${x.toFixed(2)}, ${y.toFixed(2)}`);
+    }
+    return out;
+  };
+  const unheldBefore = new Set(unheld(spec));
+  if (unheldBefore.size) console.log(`  ${unheldBefore.size} solids in water already stand on nothing but water as generated, and aren't counted`);
+
   const check = async (step: number): Promise<string[]> => {
     const found: string[] = [];
     const t = performance.now();
@@ -454,6 +518,7 @@ async function main() {
       }
     }
     for (const part of floating(edited)) if (!floatingBefore.has(part)) found.push(`${part} floats`);
+    for (const solid of unheld(edited)) if (!unheldBefore.has(solid)) found.push(`${solid} stands on nothing but water`);
     console.log(`  check after step ${step}, ${((performance.now() - t) / 1000).toFixed(1)} s: ${found.length ? `${found.length} problems` : 'ok'}`);
     return found;
   };

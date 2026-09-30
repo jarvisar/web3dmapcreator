@@ -3,6 +3,7 @@
 // Kept apart from the three.js code so scripts/fuzz-edits.ts can hold the
 // exports to the same rules.
 
+import { editOf } from '../../core/edit/keys';
 import type { ModelEdits } from '../../core/edit/types';
 import type { Entry } from './composed';
 
@@ -25,7 +26,7 @@ export function layerOf(entry: Entry, edits: ModelEdits): string | null {
     return layers.some((l) => l.id === shape.layer) ? shape.layer : null;
   }
   const own = entry.sub ? edits.objects[`${entry.key}/${entry.sub}`]?.layer : undefined;
-  const layer = own ?? edits.objects[entry.key]?.layer;
+  const layer = own ?? editOf(edits, entry.key)?.layer;
   return layer && layers.some((l) => l.id === layer) ? layer : null;
 }
 
@@ -38,7 +39,7 @@ export function entryColour(entry: Entry, ctx: ShownContext, overridden: boolean
   const { key, sub } = entry;
   const edits = ctx.edits;
   if (overridden || ctx.implicitHidden.has(key)) return null;
-  if (edits.objects[key]?.removed) return null;
+  if (editOf(edits, key)?.removed) return null;
   if (sub && edits.objects[`${key}/${sub}`]?.removed) return null;
   const layer = layerOf(entry, edits);
   if (layer) return ctx.hiddenParts.has(`layer:${layer}`) ? null : `layer:${layer}`;

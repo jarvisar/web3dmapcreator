@@ -38,7 +38,7 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/lidar/` | LiDAR: `sources/` discovery (USGS EPT, IGN, NRCan, swisstopo, Flai COPC), `read/` EPT/COPC/LAS reading with an injected LAZ decoder and projector, measurement (`measure.ts`, `envelope.ts`, ground, planes, terraces, selection), roof surfaces (`regularize.ts`, `delatin.ts`, `coarsen.ts`, `rim.ts`), `prepare.ts` batching and checkpoints |
 | `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges, `network/` tidy), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
-| `src/core/edit/` | Model editor: the edits document (`types.ts`, `keys.ts`), `EditSession` applying it to a generated model in the worker, road tiles, land fill, added shapes, road lines for picking |
+| `src/core/edit/` | Model editor: the edits document (`types.ts`, `keys.ts`), `EditSession` applying it to a generated model in the worker, road tiles, land fill, terrain and water after edits (`earth.ts`), added shapes and what they stand on (`stand.ts`), road lines for picking |
 | `src/core/engine/` | Worker protocol and main-thread client |
 | `src/worker/engine.worker.ts` | Downloads, generates, meshes and exports off the main thread |
 | `src/worker/svg.worker.ts` | Renders SVG maps, separate so a preview updates while a model generates |
@@ -87,8 +87,15 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   taper and ground lowered below the water so the sand met it were both
   tried, and on coarse grids with roads behind a beach the second left
   0.6 mm sand walls.
-- Ground is kept under roads, buildings and mapped piers over cut water
-  (`settings.supports`) by leaving it out of the cut, not with extra solids.
+- The water is cut around everything standing in cut water or a basin:
+  roads, buildings, piers and mapped piers, quays and dams (`kept` in the
+  edit context). With `settings.supports` the ground under them is left out
+  of the cut, not added as extra solids. Off, they're built down through
+  the water in their own material (`wading.ts`), to the floor or `baseZ`
+  where the water runs through, and only mapped piers and the like stay
+  ground. Either way nothing may stand on the water alone: the water part
+  can be deleted in the slicer. A pier counts by its whole footprint, not
+  its middle point, or one on a bank stood on air over the water.
 - Parts overlap where they reach into the terrain (`land.embedMm`, 0.04 mm)
   and where water sheets sink into it. Slicers give an overlap to the part
   listed later, so 3MF writers list parts by `OVERLAP_RANK` (`writeOrder`):
@@ -356,17 +363,36 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   crop. Other tiles keep the generated polygons, split into every tile at
   once (`splitToTiles`): clipping the city-wide road polygon tile by tile
   took over 2 s per edit in San Francisco. A road with its own height or
-  layer owns its ground, the taller one where two cross, and new road area
-  stays off water without ground under it.
-- Land fill (`land.ts`) gives ground a removed road or building left back
-  to the land regions from before clearing (`ctx.land`), per tile and
-  cached on what each tile had. The opening runs after the tiles are
-  joined, or every tile edge rounds the fill's corners.
+  layer owns its ground, the taller one where two cross.
+- Land fill (`land.ts`) gives ground a removed road, building or body of
+  water left back to the land regions from before clearing (`ctx.land`),
+  per tile and cached on what each tile had. The opening runs after the
+  tiles are joined, or every tile edge rounds the fill's corners.
+- Terrain and water after edits (`earth.ts`): water left out is filled with
+  ground on the grid (flattened to its bank for cut water), or with
+  `hollow` keeps its recess, a new floor where it ran to the base. What
+  stands in the water is recomputed from the edited roads, buildings,
+  piers and shapes, and the water re-cut around it. Only ground that was
+  kept in the water can go, never land, and water given back narrower than
+  0.4 mm stays ground. Both parts are sent whole (100 ms to mesh San
+  Francisco's terrain) when their inputs change, and exports use the same
+  solids.
+- A bridge deck is its road's segment (`br:x` and `r:x`), so `editOf` gives
+  it the road's removal, layer and width unless it has its own, and
+  `removed: false` keeps one whose road is removed. Decks are built again
+  from their centrelines at a new width (`DeckPiece`), and piers are cut
+  to a narrower deck.
 - Custom layers export as `layer:<id>` (building rank) and
   `layer:<id>:water` (water rank) with a `PartColour`. Shapes in a model
   colour export as `added-<group>` with building rank, so a water-coloured
-  shape never takes an overlap from the terrain. Shapes run down to
-  `spec.baseZ`, so nothing added floats.
+  shape never takes an overlap from the terrain. A shape is built down to
+  what it stands on and no further (`stand.ts`): a building, deck or shape
+  under its raised base, else the ground, and in water down through it to
+  the floor or base with the water cut around it. Running every shape to
+  the base cut a column through anything under it, and a column through a
+  building changes filament on every layer. Drawn roads, outlines, boxes
+  and cylinders get ground kept under them in water with supports on, like
+  the structures they stand for. Text and pins never do.
 - A height edit scales everything above the building's ground
   (`heights.ts`). A part's own height beats its building's. A raised part
   left on air by a removed or lowered part is built down to the ground
@@ -447,7 +473,7 @@ npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --out out/loop
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar   # point cache in out/lidar-cache
 npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar-only --out out/loop-surface.3mf   # --water-layer or --cut-water, --no-map-water
 npx tsx scripts/check-bambu.ts   # round trip through installed Bambu Studio (isolated data dir)
-npx tsx scripts/fuzz-edits.ts --preset "Chicago - The Loop (small)" --steps 40   # random edits, exports checked against the view
+npx tsx scripts/fuzz-edits.ts --preset "Chicago - The Loop (small)" --steps 40   # random edits, exports checked against the view (--bridges, --no-supports, --through)
 npx tsx scripts/generate.ts --options out/fuzz/<failed step>.json --out out/repro.3mf   # an options file, edits and all
 $env:NETWORK=1; npx vitest run src/core/svgmap/e2e.test.ts   # SVG maps from live tiles ($env:SVG_OUT to keep them)
 node scripts/e2e.mjs http://localhost:4173/ out/e2e-svg --svg --all-formats   # SVG map in Edge

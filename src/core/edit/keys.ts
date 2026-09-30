@@ -10,6 +10,8 @@
 //   k:<record id>              bare rock measured with LiDAR
 //   s:<shape id>               a shape added in the editor
 
+import type { ModelEdits, ObjectEdit } from './types';
+
 export type ObjectKind = 'building' | 'road' | 'bridge' | 'water' | 'tree' | 'rock' | 'shape';
 
 const PREFIXES: [string, ObjectKind][] = [
@@ -43,4 +45,29 @@ export function isPartKey(key: string): boolean {
 
 export function shapeKey(id: string): string {
   return `s:${id}`;
+}
+
+/**
+ * An object's edit as it applies. A bridge deck is its road's segment, so it
+ * goes, changes colour and widens with the road unless it has an edit of its
+ * own. The road's height stays with the road: a deck's thickness is set with
+ * the bridges.
+ */
+export function editOf(edits: ModelEdits, key: string): ObjectEdit | undefined {
+  const own = edits.objects[key];
+  if (!key.startsWith('br:')) return own;
+  const road = edits.objects[`r:${key.slice(3)}`];
+  if (!road) return own;
+  const inherited: ObjectEdit = {};
+  if (road.removed) inherited.removed = true;
+  if (road.layer) inherited.layer = road.layer;
+  if (road.widthMm !== undefined) inherited.widthMm = road.widthMm;
+  return own ? { ...inherited, ...own } : inherited;
+}
+
+/** The bridge deck of a road's segment, and the other way round. */
+export function twinOf(key: string): string | null {
+  if (key.startsWith('br:')) return `r:${key.slice(3)}`;
+  if (key.startsWith('r:')) return `br:${key.slice(2)}`;
+  return null;
 }

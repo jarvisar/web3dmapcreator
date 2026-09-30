@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Projection } from '../geo/projection';
 import { pointInPolygon } from '../geometry/polygon';
 import type { PrismSolid } from '../geometry/solid';
 import { edgeReport, signedVolume } from '../geometry/validate';
@@ -96,6 +97,50 @@ describe('generateModel', () => {
     const off = await build((s) => (s.supports = false));
     const volume = (r: typeof on) => signedVolume(r.meshed.parts.find((p) => p.id === 'terrain')!.positions, r.meshed.parts.find((p) => p.id === 'terrain')!.indices);
     expect(volume(on)).toBeGreaterThan(volume(off));
+  });
+
+  it('builds what stands in the water down through it with supports off, and keeps mapped piers as ground', async () => {
+    for (const mode of ['layer', 'through'] as const) {
+      const settings = cloneSettings();
+      settings.terrain.resolution = 96;
+      settings.supports = false;
+      settings.water.mode = mode;
+      const data = town();
+      // Half a building on the river bank, and a pier out into the river.
+      data.features.building!.push(feature({ type: 'Polygon', coordinates: rect(400, 20, 440, 60) }, { height: 12 }));
+      data.features.land_use!.push(feature({ type: 'Polygon', coordinates: rect(600, -50, 620, 40) }, { subtype: 'pier', class: 'pier' }));
+      const spec = await generateModel({ area, settings, data, elevation: hills });
+      const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ });
+      expect(meshed.failed).toBe(0);
+      for (const part of meshed.parts) {
+        const report = edgeReport(part.indices, part.positions.length / 3);
+        expect({ mode, part: part.id, open: report.open, repeated: report.repeated }).toEqual({ mode, part: part.id, open: 0, repeated: 0 });
+      }
+      const river = spec.edit!.bodies.find((b) => b.kind === 'cut')!;
+      const footing = mode === 'layer' ? river.floor! - settings.land.embedMm : spec.baseZ;
+      const solids = (id: string) => (spec.layers.find((l) => l.id === id)?.solids ?? []) as PrismSolid[];
+      const ground = solids('terrain').filter((s) => typeof s.top === 'function');
+      const water = solids('water');
+      const inside = (list: PrismSolid[], x: number, y: number) => list.filter((s) => pointInPolygon(x, y, s.polygon));
+      const projection = new Projection(area.center, area.rotationDeg, spec.mmPerMetre);
+      const model = (x: number, y: number) => projection.toModel(...at(x, y));
+      // The street over the river and the building in it go down to the floor, or the base.
+      for (const [x, y, layer] of [[5, -10, 'roads'], [420, 30, 'buildings']] as const) {
+        const [mx, my] = model(x, y);
+        const down = inside(solids(layer), mx, my);
+        expect(down.length).toBeGreaterThan(0);
+        for (const solid of down) expect(solid.bottom).toBeCloseTo(footing, 6);
+        expect(inside(ground, mx, my)).toEqual([]);
+        expect(inside(water, mx, my)).toEqual([]);
+      }
+      // The half on land stands on the ground as usual.
+      const [lx, ly] = model(420, 50);
+      expect(inside(solids('buildings'), lx, ly).every((s) => typeof s.bottom === 'function')).toBe(true);
+      // The pier is ground whatever the supports.
+      const [px, py] = model(610, -10);
+      expect(inside(ground, px, py)).toHaveLength(1);
+      expect(inside(water, px, py)).toEqual([]);
+    }
   });
 
   it('crops to a rotated hexagon and a circle', async () => {

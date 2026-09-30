@@ -22,6 +22,8 @@ export interface RoadLines {
   points: Float32Array;
   /** How far roads stand above the ground, unless edited. */
   thicknessMm: number;
+  /** Bridge decks, so a street can be followed across them: both ends (x, y, x, y) of each. */
+  decks?: { keys: string[]; names: string[]; classes: string[]; ends: Float32Array };
 }
 
 export const ROAD_GROUP_INDEX: Record<RoadGroup, number> = { road: 0, rail: 1, path: 2 };
@@ -46,5 +48,22 @@ export function roadLines(ctx: EditContext, zShift: number, thicknessMm: number)
     starts,
     points: Float32Array.from(coords),
     thicknessMm,
+    decks: deckEnds(ctx),
+  };
+}
+
+function deckEnds(ctx: EditContext): RoadLines['decks'] {
+  const decks = ctx.decks.filter((deck) => ctx.objects.has(deck.key) && deck.points.length >= 2);
+  const ends = new Float32Array(decks.length * 4);
+  decks.forEach((deck, i) => {
+    const a = deck.points[0];
+    const b = deck.points[deck.points.length - 1];
+    ends.set([a[0], a[1], b[0], b[1]], i * 4);
+  });
+  return {
+    keys: decks.map((deck) => deck.key),
+    names: decks.map((deck) => ctx.objects.get(deck.key)?.name ?? ''),
+    classes: decks.map((deck) => ctx.objects.get(deck.key)?.detail ?? ''),
+    ends,
   };
 }

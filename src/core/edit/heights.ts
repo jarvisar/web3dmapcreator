@@ -64,7 +64,8 @@ export function scaleSolid(solid: Solid, base: number, factor: number): Solid {
   const top: HeightFn | number = typeof oldTop === 'number' ? scale(oldTop) : (x, y) => scale(oldTop(x, y));
   let bottom = solid.bottom;
   if (typeof bottom === 'number') {
-    bottom = scale(bottom);
+    // An underside below the ground stands on a floor under water and stays there.
+    if (bottom > base) bottom = scale(bottom);
   } else {
     const ground = bottom;
     const ceiling = topRange(top, solid.polygon)[0] - MIN_THICKNESS_MM;

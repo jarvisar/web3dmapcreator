@@ -22,15 +22,17 @@ export interface EditLayer {
 }
 
 export interface ObjectEdit {
-  /** Left out of the model. */
+  /** Left out of the model. False keeps a bridge whose road is removed (keys.ts editOf). */
   removed?: boolean;
+  /** Water left out keeps its recess, rather than being filled with ground. */
+  hollow?: boolean;
   /** Custom layer id. */
   layer?: string;
   /** Buildings: real height above the ground, in metres. */
   heightM?: number;
   /** Roads: printed thickness above the ground. */
   heightMm?: number;
-  /** Roads: printed width. */
+  /** Roads and bridge decks: printed width. */
   widthMm?: number;
 }
 
@@ -145,13 +147,13 @@ export function sanitizeEdits(raw: unknown): ModelEdits {
       if (!isObject(value) || key.length > 300 || !/^[a-z]{1,2}:/.test(key)) continue;
       const edit: ObjectEdit = {};
       if (value.removed === true) edit.removed = true;
+      else if (value.removed === false && key.startsWith('br:')) edit.removed = false;
+      if (key.startsWith('w:') && edit.removed && value.hollow === true) edit.hollow = true;
       if (typeof value.layer === 'string' && layerIds.has(value.layer)) edit.layer = value.layer;
       // Older edits held a building's printed height, which can't be told in metres without the scale it was set at.
       if (key.startsWith('b:') && finite(value.heightM)) edit.heightM = clamp(value.heightM, EDIT_LIMITS.heightM);
-      if (key.startsWith('r:')) {
-        if (finite(value.heightMm)) edit.heightMm = clamp(value.heightMm, EDIT_LIMITS.roadHeightMm);
-        if (finite(value.widthMm)) edit.widthMm = clamp(value.widthMm, EDIT_LIMITS.widthMm);
-      }
+      if (key.startsWith('r:') && finite(value.heightMm)) edit.heightMm = clamp(value.heightMm, EDIT_LIMITS.roadHeightMm);
+      if ((key.startsWith('r:') || key.startsWith('br:')) && finite(value.widthMm)) edit.widthMm = clamp(value.widthMm, EDIT_LIMITS.widthMm);
       if (Object.keys(edit).length) out.objects[key] = edit;
     }
   }

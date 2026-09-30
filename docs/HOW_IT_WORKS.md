@@ -46,7 +46,7 @@ By default cut water and ponds are a 1 mm layer of water on a floor of terrain (
 
 A body's level is the median of the terrain inside it, because elevation data reports open water as a noisy plateau at its surface. Some data carries bathymetry instead, so cut water is never set below the low tenth of its connected shoreline. Only shore inside the area counts, so the sea running off the edge isn't dragged down to the seabed. Cut water mapped as several overlapping polygons, like a harbour and the river flowing into it, becomes one body at one level. The grid under cut water is flattened to the level and the shore around it is raised to at least that level. Cut water and ponds then sit 0.25 mm under the bank, so one printed layer of bank always shows, except under beaches with `Slope beaches into water` on (see below).
 
-With `Keep ground under structures over water` on, the terrain is kept under roads, buildings and mapped piers that stand over cut water or a basin, so nothing hangs over the water. Turning it off clips roads and buildings at the water's edge instead.
+The water is cut around roads, buildings and bridge piers that stand in cut water or a basin. With `Keep ground under structures in water` on, the terrain is kept under them, so they print on a strip of ground. Turned off, they're built down through the water in their own colour instead, to the floor of the recess or to the base when the water runs through the model (`pipeline/wading.ts`). Either way nothing is left on air if the water part is deleted in the slicer. Mapped piers, quays, breakwaters and dams are ground whatever the setting.
 
 ## Surfaces
 
@@ -74,7 +74,7 @@ Centerlines are buffered with round joins and unioned per group (roads, railways
 
 ## Bridges
 
-Bridges are off by default. When on, pieces flagged as bridges and unflagged roads crossing cut water become decks. Connected pieces are solved as one network, including a ramp that ends partway along another deck. Loose ends touch down on the road surface, except where the model's edge cut the bridge off. The deck climbs no steeper than 8% towards a height that clears whatever is under it by 0.4 mm. A network that never rises 0.2 mm above the road prints as a road, unless it crosses open water. Piers stand every 30 m inside the area, clear of the ends and of roads below, on ground kept for them in the water.
+Bridges are off by default. When on, pieces flagged as bridges and unflagged roads crossing cut water become decks. Connected pieces are solved as one network, including a ramp that ends partway along another deck. Loose ends touch down on the road surface, except where the model's edge cut the bridge off. The deck climbs no steeper than 8% towards a height that clears whatever is under it by 0.4 mm. A network that never rises 0.2 mm above the road prints as a road, unless it crosses open water. Piers stand every 30 m inside the area, clear of the ends and of roads below, in the water like anything else that stands in it.
 
 ## Buildings
 

@@ -36,7 +36,8 @@ function requirements(settings: ModelSettings): Requirements {
     airports: settings.roads.enabled && settings.roads.includeAirports,
     surfaces: settings.land.enabled,
     landCoverSurfaces: settings.land.enabled && settings.land.satelliteCover,
-    decks: settings.supports,
+    // Mapped piers, quays and dams are ground in cut water whatever the supports.
+    decks: true,
     mappedTrees: trees.enabled && trees.mapped,
     forestTrees,
     landCoverTrees: forestTrees && trees.landCoverScatter,

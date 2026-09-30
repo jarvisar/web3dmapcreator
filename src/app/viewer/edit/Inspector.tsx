@@ -1,6 +1,6 @@
 import { Copy, Crosshair, Eraser, Plus, RotateCcw, Route, Search, Trash2, TriangleAlert, Undo2, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
-import { isPartKey, kindOf, objectOf, partKey, shapeKey } from '../../../core/edit/keys';
+import { editOf, isPartKey, kindOf, objectOf, partKey, shapeKey, twinOf } from '../../../core/edit/keys';
 import { EDIT_LIMITS, editCount, type AddedShape, type EditLayer, type ModelEdits } from '../../../core/edit/types';
 import { Projection } from '../../../core/geo/projection';
 import { COLOUR_GROUPS } from '../../../core/settings';
@@ -121,20 +121,23 @@ function ObjectControls({
   streetOf: InspectorProps['streetOf'];
   preview: InspectorProps['preview'];
 }) {
-  const settings = useApp((state) => state.settings);
-  const allRemoved = keys.every((key) => edits.objects[key]?.removed);
-  const layers = new Set(keys.map((key) => edits.objects[key]?.layer ?? ''));
+  const allRemoved = keys.every((key) => editOf(edits, key)?.removed);
+  const layers = new Set(keys.map((key) => editOf(edits, key)?.layer ?? ''));
   const layer = layers.size === 1 ? [...layers][0] : MIXED;
   const edited = keys.some((key) => Object.keys(edits.objects).some((k) => k === key || objectOf(k) === key));
   const only = (kind: string) => kinds.size === 1 && kinds.has(kind);
+  const streets = [...kinds].every((kind) => kind === 'road' || kind === 'bridge');
   const tag = keys.join(',');
   const water = kinds.has('water');
   const building = only('building') && keys.length === 1 ? keys[0] : null;
+  const recessed = keys.filter((key) => kindOf(key) === 'water' && data.objects[key]?.recessed);
+  // A bridge on a selected road's segment goes, widens and changes colour with it.
+  const bridges = keys.filter((key) => kindOf(key) === 'road' && data.objects[twinOf(key)!] && !keys.includes(twinOf(key)!));
 
   return (
     <>
       {only('building') && <BuildingHeight keys={keys} edits={edits} data={data} heightOf={heightOf} tag={tag} />}
-      {only('road') && <RoadSize keys={keys} edits={edits} data={data} tag={tag} />}
+      {streets && <RoadSize keys={keys} edits={edits} data={data} tag={tag} />}
       <LayerField
         label="Colour"
         value={layer}
@@ -142,12 +145,15 @@ function ObjectControls({
         onChange={(value) => patchObjects(keys, { layer: value || undefined })}
         help="Put it in a custom layer of its own colour. Everything in a layer exports as one part with its own filament."
       />
-      {water && !allRemoved && (
-        <p className="inspector-note">
-          {settings.water.mode === 'through'
-            ? 'Leaving water out leaves a hole through the model where it was.'
-            : 'Leaving water out keeps the recess, so it can be filled with resin later.'}
-        </p>
+      {allRemoved && recessed.length > 0 && (
+        <>
+          <CheckRow
+            label="Keep the hollow"
+            checked={recessed.every((key) => edits.objects[key]?.hollow)}
+            onChange={(hollow) => patchObjects(recessed, { hollow: hollow || undefined })}
+          />
+          <p className="inspector-hint">Off, the ground is built up to its banks where the water was. On, the recess stays, to fill with resin or paint after printing.</p>
+        </>
       )}
       <div className="inspector-actions">
         {allRemoved ? (
@@ -161,7 +167,7 @@ function ObjectControls({
             {water && only('water') ? 'Leave out' : 'Remove'}
           </button>
         )}
-        {only('road') && (
+        {streets && (
           <button type="button" className="btn btn-sm" onClick={() => setSelection([...new Set(keys.flatMap(streetOf))])} title="Select every connected piece with the same name">
             <Route size={14} aria-hidden="true" />
             Whole street
@@ -174,6 +180,7 @@ function ObjectControls({
           </button>
         )}
       </div>
+      {bridges.length > 0 && <p className="inspector-hint">{keys.length === 1 ? 'Its bridge changes with it.' : 'Bridges on these roads change with them.'}</p>}
       {building && <BuildingParts key={building} buildingKey={building} data={data} preview={preview} />}
     </>
   );
@@ -261,20 +268,25 @@ function BuildingHeight({ keys, edits, data, heightOf, tag }: { keys: string[]; 
   );
 }
 
+/** Width for roads and bridge decks, height for roads. */
 function RoadSize({ keys, edits, data, tag }: { keys: string[]; edits: ModelEdits; data: EditData; tag: string }) {
   const lines = data.roads;
-  if (!lines) return null;
+  const roads = keys.filter((key) => kindOf(key) === 'road');
   const widthOf = (key: string) => {
-    const piece = lines.keys.indexOf(key);
-    return edits.objects[key]?.widthMm ?? (piece >= 0 ? lines.widths[piece] : 0.5);
+    const edited = editOf(edits, key)?.widthMm;
+    if (edited !== undefined) return edited;
+    if (kindOf(key) === 'bridge') return data.objects[key]?.widthMm ?? 0.5;
+    const piece = lines ? lines.keys.indexOf(key) : -1;
+    return piece >= 0 ? lines!.widths[piece] : 0.5;
   };
   const widths = keys.map(widthOf);
-  const heights = keys.map((key) => edits.objects[key]?.heightMm ?? lines.thicknessMm);
+  const heights = roads.map((key) => edits.objects[key]?.heightMm ?? lines?.thicknessMm ?? 0);
   const sameWidth = widths.every((w) => Math.abs(w - widths[0]) < 0.005);
   const sameHeight = heights.every((h) => Math.abs(h - heights[0]) < 0.005);
   const widthEdited = keys.some((key) => edits.objects[key]?.widthMm !== undefined);
-  const heightEdited = keys.some((key) => edits.objects[key]?.heightMm !== undefined);
+  const heightEdited = roads.some((key) => edits.objects[key]?.heightMm !== undefined);
   const width = sameWidth ? widths[0] : Math.max(...widths);
+  if (!widths.length) return null;
   return (
     <>
       <NumberRow
@@ -288,17 +300,19 @@ function RoadSize({ keys, edits, data, tag }: { keys: string[]; edits: ModelEdit
         onChange={(widthMm) => patchObjects(keys, { widthMm }, `width:${tag}`)}
         reset={widthEdited ? () => patchObjects(keys, { widthMm: undefined }) : undefined}
       />
-      <NumberRow
-        label={sameHeight ? 'Height' : 'Height (all)'}
-        value={sameHeight ? heights[0] : Math.max(...heights)}
-        min={EDIT_LIMITS.roadHeightMm[0]}
-        max={EDIT_LIMITS.roadHeightMm[1]}
-        step={0.1}
-        unit="mm"
-        hint="Above the ground. Raise a route to make it stand out."
-        onChange={(heightMm) => patchObjects(keys, { heightMm }, `road-height:${tag}`)}
-        reset={heightEdited ? () => patchObjects(keys, { heightMm: undefined }) : undefined}
-      />
+      {roads.length > 0 && lines && (
+        <NumberRow
+          label={sameHeight ? 'Height' : 'Height (all)'}
+          value={sameHeight ? heights[0] : Math.max(...heights)}
+          min={EDIT_LIMITS.roadHeightMm[0]}
+          max={EDIT_LIMITS.roadHeightMm[1]}
+          step={0.1}
+          unit="mm"
+          hint="Above the ground. Raise a route to make it stand out."
+          onChange={(heightMm) => patchObjects(roads, { heightMm }, `road-height:${tag}`)}
+          reset={heightEdited ? () => patchObjects(roads, { heightMm: undefined }) : undefined}
+        />
+      )}
     </>
   );
 }
@@ -318,6 +332,7 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
   const coarse = useMediaQuery(COARSE_QUERY);
   const notes = useApp((state) => state.ui.editNotes);
   const activePoint = useApp((state) => state.ui.activePoint);
+  const supports = useApp((state) => state.settings.supports);
   const shapes = keys.map((key) => edits.shapes.find((s) => shapeKey(s.id) === key)).filter((s): s is AddedShape => Boolean(s));
   if (!shapes.length) return null;
   const ids = shapes.map((s) => s.id);
@@ -367,7 +382,7 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
         max={EDIT_LIMITS.shapeHeightMm[1]}
         step={0.1}
         unit="mm"
-        hint={shape?.followGround ? 'Above the ground under it.' : 'Above the highest ground under it.'}
+        hint={shape?.followGround ? 'Above the ground or water under it.' : 'Above the highest ground or water under it.'}
         onChange={(heightMm) => updateShapes(ids, { heightMm }, `shape-height:${tag}`)}
       />
       {shape && (
@@ -378,7 +393,7 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
           max={EDIT_LIMITS.liftMm[1]}
           step={0.5}
           unit="mm"
-          hint="Stands it on a roof or a plinth. It's still solid down to the base."
+          hint="Stands it on a roof or a bridge. It's built down to whatever is under it, so it never floats."
           onChange={(liftMm) => updateShape(shape.id, { liftMm }, `lift:${shape.id}`)}
         />
       )}
@@ -426,9 +441,17 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
         </button>
       </div>
       {shape?.kind === 'area' && (
-        <p className="inspector-hint">A building in the Buildings colour, or keep it low in a colour like Parks or Paved for a park or a square.</p>
+        <p className="inspector-hint">
+          A building in the Buildings colour, or keep it low in a colour like Parks or Paved for a park or a square.
+          {supports ? " In water it stands on a strip of ground, like the model's own buildings." : " In water it's built down through it, like the model's own buildings."}
+        </p>
       )}
-      {shape?.kind === 'path' && <p className="inspector-hint">A road in the Roads colour, or put it in a custom layer for a route of its own.</p>}
+      {shape?.kind === 'path' && (
+        <p className="inspector-hint">
+          A road in the Roads colour, or put it in a custom layer for a route of its own.
+          {supports ? " In water it stands on a strip of ground, like the model's own roads." : " In water it's built down through it, like the model's own roads."}
+        </p>
+      )}
       {shape && drawn && (
         <p className="inspector-hint">
           {coarse

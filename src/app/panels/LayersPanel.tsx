@@ -1010,10 +1010,10 @@ export function LayersPanel() {
             {rimRow}
           </div>
           <CheckField
-            label="Keep ground under structures over water"
+            label="Keep ground under structures in water"
             checked={settings.supports}
             onChange={setSupports}
-            help="Keeps a strip of ground under roads, buildings and bridge piers that stand in water cut from the terrain, so they have something to print on."
+            help="Roads, buildings and bridge piers standing in water cut from the terrain sit on a strip of ground. Off, they're built down through the water in their own colour instead, to the bottom of it. Either way they still stand if you leave the water out in the slicer. Mapped piers, quays and dams are ground either way."
           />
         </>
       )}

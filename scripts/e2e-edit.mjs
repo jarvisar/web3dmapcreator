@@ -210,6 +210,44 @@ if (spot) {
   }
 }
 
+// Water left out is filled with ground up to its banks, or keeps its hollow.
+await clearSelection();
+// The Chicago River has no name in Overture, but these do.
+const waters = page.locator('.find-result').filter({ has: page.locator('.find-detail', { hasText: /water/i }) });
+for (const name of ['Ogden Slip', 'Monroe Harbor', 'Fountain']) {
+  await find.fill(name);
+  await wait(300);
+  if (await waters.count()) break;
+}
+if (await waters.count()) {
+  ok(`found water: ${(await waters.first().innerText()).replace(/s+/g, ' ')}`);
+  await waters.first().click();
+  await wait(1200);
+  await inspector.getByRole('button', { name: 'Look at the selection (F)' }).click();
+  await wait(1500);
+  await shot('water');
+  await inspector.getByRole('button', { name: 'Leave out', exact: true }).click();
+  await wait(1500);
+  const hollow = inspector.getByLabel('Keep the hollow');
+  if (await hollow.count()) {
+    ok('left the water out, and it stays selected with the hollow option');
+    await shot('water-filled');
+    await hollow.check();
+    await wait(1500);
+    if (await hollow.isChecked()) ok('kept the hollow');
+    else fail('the hollow option did not stay on');
+    await shot('water-hollow');
+    await inspector.getByRole('button', { name: 'Put back' }).click();
+    await wait(1200);
+    if (!(await hollow.count())) ok('put the water back');
+    else fail('the hollow option still shows after putting the water back');
+  } else {
+    fail('no Keep the hollow option after leaving the water out');
+  }
+} else {
+  fail('find by name found no water');
+}
+
 // Select several: each press adds one.
 await clearSelection();
 await tool('Select several');

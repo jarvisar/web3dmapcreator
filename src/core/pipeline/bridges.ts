@@ -12,7 +12,7 @@ import { EdgeIndex } from '../geometry/edgeindex';
 import { inOneTriangle } from '../geometry/lattice';
 import { bufferLines, clipLines, densifyLine, dropSmall, intersection, segmentDistance, union } from '../geometry/polygon';
 import { RasterMask } from '../geometry/raster';
-import type { PrismSolid } from '../geometry/solid';
+import type { HeightFn, PrismSolid } from '../geometry/solid';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
 import { count, describeObject, type Context } from './context';
 import { dedupe, polylineLength } from './linework';
@@ -80,12 +80,23 @@ interface Node {
   top: number;
 }
 
+/** A deck as it was laid out, so the editor can build it again at another width. */
+export interface DeckPiece {
+  key: string;
+  points: Vec2[];
+  widthMm: number;
+  top: HeightFn;
+  bottom: HeightFn;
+  drape: number;
+}
+
 export interface BridgeResult {
   solids: PrismSolid[];
   /** Pier footprints standing in cut water: ground is kept under them. */
   pierGround: MultiPolygon;
   /** Networks too low to read as bridges, returned to the ground roads. */
   demoted: RoadPiece[];
+  decks: DeckPiece[];
 }
 
 export async function buildBridges(
@@ -257,6 +268,7 @@ export async function buildBridges(
   const solids: PrismSolid[] = [];
   const pierFootprints: Polygon[] = [];
   const demoted: RoadPiece[] = [];
+  const deckPieces: DeckPiece[] = [];
   const spacing = b.pierSpacingM * mm;
   const exclusion = END_EXCLUSION_M * mm;
   let deckCount = 0;
@@ -279,6 +291,7 @@ export async function buildBridges(
       deckCount++;
     }
     if (ribbon.length) describeObject(ctx, key, { kind: 'bridge', name: piece.name, detail: piece.roadClass });
+    deckPieces.push({ key, points: piece.points, widthMm: piece.widthMm, top, bottom, drape: station });
 
     // Piers every spacing along the deck, clear of anchored ends and roads below.
     let travelled = spacing / 2;
@@ -293,7 +306,6 @@ export async function buildBridges(
       const deckBottom = n.top - b.deckThicknessMm;
       const base = n.ground;
       if (deckBottom - base < MINIMUM_PIER_HEIGHT_MM) continue;
-      if (n.wet && !settings.supports) continue;
       if (!crop.contains(n.x, n.y)) continue;
       const ux = (n.x - a.x) / (length || 1);
       const uy = (n.y - a.y) / (length || 1);
@@ -332,7 +344,7 @@ export async function buildBridges(
   ctx.stats.bridge_decks = deckCount;
   ctx.stats.bridge_piers = pierCount;
   ctx.stats.bridge_networks = components;
-  return { solids, pierGround: union(pierFootprints), demoted };
+  return { solids, pierGround: union(pierFootprints), demoted, decks: deckPieces };
 }
 
 /** Multi-source Dijkstra: min over sources of start(source) + rate * path length. */

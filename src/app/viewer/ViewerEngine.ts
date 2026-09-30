@@ -34,7 +34,7 @@ import {
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { groundAt } from '../../core/edit/ground';
-import { isPartKey, kindOf, objectOf } from '../../core/edit/keys';
+import { isPartKey, kindOf, objectOf, twinOf } from '../../core/edit/keys';
 import { FILL_PREFIX, type ObjectMesh } from '../../core/edit/session';
 import { emptyEdits, type ModelEdits } from '../../core/edit/types';
 import type { EditUpdate } from '../../core/engine/protocol';
@@ -216,6 +216,7 @@ export class ViewerEngine {
   private generated = new Map<string, MeshPart>();
   private readonly views = new Map<string, PartView>();
   private readonly slots: ({ view: PartView; composed: ComposedMesh } | null)[] = [null];
+  /** Object geometry the worker sent, by part and key. */
   private objectMeshes = new Map<string, ObjectMesh>();
   private replaced = new Map<string, MeshPart>();
   private implicitHidden = new Set<string>();
@@ -308,10 +309,9 @@ export class ViewerEngine {
   applyEditUpdate(update: EditUpdate): void {
     const touched = new Set<string>();
     for (const object of update.objects) {
-      const before = this.objectMeshes.get(object.key);
-      if (before) touched.add(before.part);
-      if (object.mesh) this.objectMeshes.set(object.key, object);
-      else this.objectMeshes.delete(object.key);
+      const id = `${object.part}|${object.key}`;
+      if (object.mesh) this.objectMeshes.set(id, object);
+      else this.objectMeshes.delete(id);
       touched.add(object.part);
     }
     const rebuilt = new Set<string>();
@@ -836,6 +836,8 @@ export class ViewerEngine {
     for (const key of keys) {
       if (kindOf(key) === 'road') {
         if (this.roads && !this.edits.objects[key]?.removed) roadPieces.push(...this.roads.piecesOf(key));
+        // A bridge on the road's segment goes with its edits, so it lights up too.
+        if (this.data.objects[twinOf(key)!]) objects.set(twinOf(key)!, null);
         continue;
       }
       const object = objectOf(key);
