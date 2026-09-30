@@ -3,9 +3,13 @@
 // instead: the arrow on top of a selected building or shape sets its height,
 // a selected shape moves with the pointer, and a path's or area's points
 // move one by one (the dots between them add a point). Tapping a point picks
-// it, to delete it. Shift and drag selects everything in a box, and so does a
-// plain drag with the Select several tool, where a click adds or drops one
-// thing. On a touch screen a drag there still turns the view.
+// it, to delete it. Shift and click adds to the selection, and Shift and drag
+// selects everything in a box. So does a plain drag with the Select several
+// tool, where a click adds or drops one thing. On a touch screen a drag there
+// still turns the view.
+//
+// A drag follows the pointer that started it. A second finger during one
+// puts it back and hands both fingers to the view, for a pinch.
 
 import {
   BufferGeometry,
@@ -34,6 +38,16 @@ const CLICK_PX = 5;
 const HANDLE_PX = 14;
 const HOVER_MS = 45;
 const ACCENT = '#2f7cf6';
+/** Handles are drawn this many times their distance from the camera, so they keep their size on screen. */
+const HANDLE_SCALE = 0.03;
+/** The arrow's head ends this far up, in handle units. */
+const ARROW_TIP = 1.425;
+/** Below this the arrow is its foot, over the middle of the top it's on, which a press there means to move. */
+const ARROW_GRAB_FROM = 0.45;
+/** The arrow is put away seen from within about 17 degrees of straight down. */
+const ARROW_MIN_SIN = 0.3;
+/** The ring round the arrow's foot, in handle units. */
+const RING_RADIUS = 0.24;
 
 export interface EditHandlers {
   /** `part` picks one part of a building rather than the whole of it. */
@@ -47,9 +61,15 @@ export interface EditHandlers {
   draw(tool: 'path' | 'area', points: Vector3[]): void;
   /** How far the tool's drawing has got, for the hint. */
   drawing(points: number): void;
-  dragHeight(key: string, heightMm: number, done: boolean): void;
-  moveShape(id: string, dx: number, dy: number, done: boolean): void;
-  moveVertex(id: string, index: number, point: Vector3, insert: boolean, done: boolean): void;
+  /** Finishing was asked for with fewer points than the shape needs. The drawing goes on. */
+  tooFewPoints(tool: 'path' | 'area', needed: number): void;
+  /** A drag of an arrow, a shape or a point starts. Its changes undo as one. */
+  dragStart(): void;
+  /** It ended, or was called off (`cancelled`) and what it changed goes back. */
+  dragEnd(cancelled: boolean): void;
+  dragHeight(key: string, heightMm: number): void;
+  moveShape(id: string, dx: number, dy: number): void;
+  moveVertex(id: string, index: number, point: Vector3, insert: boolean): void;
 }
 
 interface Handle {
@@ -59,14 +79,17 @@ interface Handle {
   position: Vector3;
 }
 
-type Drag =
+type DragKind =
   | { kind: 'height'; key: string; anchor: Vector3; from: number; height: number; moved: boolean }
   | { kind: 'shape'; id: string; z: number; start: Vector3; moved: boolean; x: number; y: number; target: PickTarget }
   | { kind: 'vertex'; id: string; index: number; insert: boolean; z: number; moved: boolean; x: number; y: number; position: Vector3 }
-  /** `click`: a press that doesn't move is a click, with Select several. */
+  /** `click`: a press that doesn't move is a click, with Select several or Shift. */
   | { kind: 'box'; x: number; y: number; additive: boolean; click: boolean }
   /** A press already handled, kept from the orbit controls until release. */
   | { kind: 'consumed' };
+
+/** A drag and the pointer it follows. */
+type Drag = DragKind & { pointer: number; touch: boolean; lastX: number; lastY: number };
 
 export interface EditState {
   enabled: boolean;
@@ -80,8 +103,12 @@ export interface EditState {
 
 export class EditController {
   private state: EditState = { enabled: false, tool: 'select', selection: [], edits: emptyEdits(), facts: {}, projection: null, activePoint: null };
-  private down: { x: number; y: number; shift: boolean; ctrl: boolean; alt: boolean; id: number } | null = null;
+  /** The press a click would come from. `multi`: another finger joined it, so it's a pinch. */
+  private down: { x: number; y: number; shift: boolean; ctrl: boolean; alt: boolean; id: number; multi: boolean } | null = null;
+  /** Pointers down on the canvas. */
+  private readonly pressed = new Set<number>();
   private drag: Drag | null = null;
+  private handingOver = false;
   private handles: Handle[] = [];
   private readonly gizmo = new Group();
   private readonly guide = new Group();
@@ -121,10 +148,12 @@ export class EditController {
     this.state = state;
     if (toolChanged) this.cancelDrawing();
     if (!state.enabled) {
+      if (this.drag) this.endDrag(false);
       this.engine.setHover(null);
       this.handlers.hover(null, 0, 0);
     }
     this.host.classList.toggle('is-placing', state.enabled && state.tool !== 'select');
+    if (!state.enabled || state.tool !== 'select') this.setCursor(null);
     // A drag in progress keeps its handles where they are.
     if (!this.drag) this.rebuild();
   }
@@ -134,7 +163,11 @@ export class EditController {
     const tool = this.state.tool;
     if ((tool !== 'path' && tool !== 'area') || !this.drawingPoints.length) return false;
     const needed = tool === 'path' ? 2 : 3;
-    if (this.drawingPoints.length >= needed) this.handlers.draw(tool, this.drawingPoints);
+    if (this.drawingPoints.length < needed) {
+      this.handlers.tooFewPoints(tool, needed);
+      return true;
+    }
+    this.handlers.draw(tool, this.drawingPoints);
     this.cancelDrawing();
     return true;
   }
@@ -154,6 +187,15 @@ export class EditController {
     this.handlers.drawing(0);
     this.updateGuide();
     return had;
+  }
+
+  /** Calls off a drag in progress, putting back what it changed. */
+  cancelDrag(): boolean {
+    if (!this.drag) return false;
+    this.endDrag(true);
+    // No click when the button comes up.
+    this.down = null;
+    return true;
   }
 
   dispose(): void {
@@ -184,19 +226,33 @@ export class EditController {
   };
 
   private readonly onDown = (event: PointerEvent): void => {
-    if (!this.state.enabled || event.button !== 0 || !this.isCanvas(event)) return;
-    this.down = { x: event.clientX, y: event.clientY, shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey, alt: event.altKey, id: event.pointerId };
+    if (this.handingOver || !this.state.enabled || !this.isCanvas(event)) return;
+    // A first pointer means no others are down, whatever release went missing.
+    if (event.isPrimary) {
+      this.pressed.clear();
+      if (this.drag) this.endDrag(false);
+    }
+    this.pressed.add(event.pointerId);
+    if (this.drag) {
+      if (this.drag.touch && event.pointerType === 'touch') this.pinchInstead();
+      return;
+    }
+    if (this.pressed.size > 1) {
+      // A second finger: a pinch or a pan, never a click.
+      if (this.down) this.down.multi = true;
+      return;
+    }
+    if (event.button !== 0) return;
+    this.down = { x: event.clientX, y: event.clientY, shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey, alt: event.altKey, id: event.pointerId, multi: false };
     if (this.state.tool === 'several') {
       if (event.pointerType === 'touch') return;
-      this.takeOver(event);
-      this.drag = { kind: 'box', x: event.clientX, y: event.clientY, additive: true, click: true };
+      this.begin(event, { kind: 'box', x: event.clientX, y: event.clientY, additive: true, click: true });
       return;
     }
     if (this.state.tool !== 'select') return;
     const handle = this.handleAt(event.clientX, event.clientY);
     if (handle?.kind === 'vertex' && event.altKey) {
-      this.takeOver(event);
-      this.drag = { kind: 'consumed' };
+      this.begin(event, { kind: 'consumed' });
       this.handlers.deleteVertex(handle.key.slice(2), handle.index);
       return;
     }
@@ -205,15 +261,22 @@ export class EditController {
       return;
     }
     if (event.shiftKey && event.pointerType === 'mouse') {
-      this.takeOver(event);
-      this.drag = { kind: 'box', x: event.clientX, y: event.clientY, additive: true, click: false };
+      this.begin(event, { kind: 'box', x: event.clientX, y: event.clientY, additive: true, click: true });
       return;
     }
-    // Pressing on a selected shape moves it.
+    // Pressing on a selected shape moves it, and so does pressing on its
+    // arrow's foot, which is drawn over whatever is behind.
     const target = this.engine.pickAt(event.clientX, event.clientY);
     if (target?.key && kindOf(target.key) === 'shape' && this.state.selection.includes(target.key)) {
-      this.takeOver(event);
-      this.drag = { kind: 'shape', id: target.key.slice(2), z: target.point.z, start: target.point.clone(), moved: false, x: event.clientX, y: event.clientY, target };
+      this.begin(event, { kind: 'shape', id: target.key.slice(2), z: target.point.z, start: target.point.clone(), moved: false, x: event.clientX, y: event.clientY, target });
+      return;
+    }
+    const foot = this.footAt(event.clientX, event.clientY);
+    if (foot) {
+      const z = foot.position.z;
+      const start = this.engine.pointOnPlane(event.clientX, event.clientY, z) ?? foot.position.clone();
+      const own = { key: foot.key, sub: '', part: '', point: foot.position.clone(), ground: null };
+      this.begin(event, { kind: 'shape', id: foot.key.slice(2), z, start, moved: false, x: event.clientX, y: event.clientY, target: own });
     }
   };
 
@@ -221,6 +284,10 @@ export class EditController {
     if (!this.state.enabled) return;
     const drag = this.drag;
     if (drag) {
+      // Only the pointer that started it moves it.
+      if (event.pointerId !== drag.pointer) return;
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
       this.dragTo(drag, event.clientX, event.clientY, false);
       return;
     }
@@ -232,41 +299,43 @@ export class EditController {
   };
 
   private readonly onUp = (event: PointerEvent): void => {
-    const down = this.down;
-    this.down = null;
+    this.pressed.delete(event.pointerId);
     const drag = this.drag;
     if (drag) {
-      this.drag = null;
-      this.engine.controls.enabled = true;
+      if (event.pointerId !== drag.pointer) return;
+      const down = this.down;
+      this.down = null;
       if (drag.kind === 'shape' && !drag.moved) {
         this.handlers.select(drag.target, { additive: Boolean(down?.shift || down?.ctrl), part: Boolean(down?.alt) });
       } else if (drag.kind === 'vertex' && !drag.moved) {
         // A tap on a point picks it. One on a dot between points adds a point there.
         if (drag.insert) {
-          this.handlers.moveVertex(drag.id, drag.index, drag.position, true, true);
+          this.handlers.moveVertex(drag.id, drag.index, drag.position, true);
           this.handlers.activatePoint(drag.id, drag.index + 1);
         } else {
           this.handlers.activatePoint(drag.id, drag.index);
         }
       } else if (drag.kind === 'box' && drag.click && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) <= CLICK_PX) {
-        this.box.hidden = true;
         this.click(event.clientX, event.clientY, { additive: true, part: Boolean(down?.alt) });
       } else {
         this.dragTo(drag, event.clientX, event.clientY, true);
       }
-      this.rebuild();
+      this.endDrag(false);
       return;
     }
-    if (!down || !this.state.enabled || down.id !== event.pointerId) return;
+    const down = this.down;
+    if (!down || down.id !== event.pointerId) return;
+    this.down = null;
+    if (down.multi || !this.state.enabled) return;
     if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > CLICK_PX) return;
     this.click(event.clientX, event.clientY, { additive: down.shift || down.ctrl, part: down.alt });
   };
 
-  private readonly onCancel = (): void => {
-    if (this.drag) this.engine.controls.enabled = true;
-    this.drag = null;
-    this.down = null;
-    this.box.hidden = true;
+  // The browser took the pointer, so the drag is called off rather than left half done.
+  private readonly onCancel = (event: PointerEvent): void => {
+    this.pressed.delete(event.pointerId);
+    if (this.down?.id === event.pointerId) this.down = null;
+    if (this.drag?.pointer === event.pointerId) this.endDrag(true);
   };
 
   private readonly onLeave = (): void => {
@@ -275,6 +344,7 @@ export class EditController {
     this.updateGuide();
     this.engine.setHover(null);
     this.handlers.hover(null, 0, 0);
+    this.setCursor(null);
   };
 
   private readonly onDoubleClick = (event: MouseEvent): void => {
@@ -287,9 +357,57 @@ export class EditController {
   }
 
   /** Takes the drag away from the orbit controls, which see this press next. */
-  private takeOver(event: PointerEvent): void {
+  private begin(event: PointerEvent, drag: DragKind): void {
     this.engine.controls.enabled = false;
     event.preventDefault();
+    // So the drag goes on over the panels on top of the view.
+    try {
+      this.engine.canvas.setPointerCapture(event.pointerId);
+    } catch {
+      // Not a pointer the browser knows as down.
+    }
+    this.drag = { ...drag, pointer: event.pointerId, touch: event.pointerType === 'touch', lastX: event.clientX, lastY: event.clientY };
+    if (drag.kind === 'height' || drag.kind === 'shape' || drag.kind === 'vertex') this.handlers.dragStart();
+  }
+
+  private endDrag(cancelled: boolean): void {
+    const drag = this.drag;
+    if (!drag) return;
+    this.drag = null;
+    this.engine.controls.enabled = true;
+    this.box.hidden = true;
+    const canvas = this.engine.canvas;
+    if (canvas.hasPointerCapture(drag.pointer)) canvas.releasePointerCapture(drag.pointer);
+    if (drag.kind === 'height' || drag.kind === 'shape' || drag.kind === 'vertex') this.handlers.dragEnd(cancelled);
+    this.rebuild();
+  }
+
+  /** A second finger on a touch drag: the drag is put back and the view gets both fingers. */
+  private pinchInstead(): void {
+    const drag = this.drag!;
+    this.endDrag(true);
+    if (this.down) this.down.multi = true;
+    // The controls never saw the first finger go down. They're told now,
+    // before this finger's press reaches them, so they see two.
+    this.handingOver = true;
+    try {
+      this.engine.canvas.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          pointerId: drag.pointer,
+          pointerType: 'touch',
+          isPrimary: true,
+          clientX: drag.lastX,
+          clientY: drag.lastY,
+          button: 0,
+          buttons: 1,
+          bubbles: true,
+          cancelable: true,
+          view: window,
+        }),
+      );
+    } finally {
+      this.handingOver = false;
+    }
   }
 
   private click(x: number, y: number, modifiers: { additive: boolean; part: boolean }): void {
@@ -327,13 +445,22 @@ export class EditController {
     if (selecting) {
       this.engine.setHover(target?.key ?? null);
       this.handlers.hover(target, at.x, at.y);
-      this.host.classList.toggle('is-over-handle', this.handleAt(at.x, at.y) !== null);
+      // Handles are only there with Select, and only then does pressing on a selected shape move it.
+      const handle = this.handleAt(at.x, at.y);
+      const onShape =
+        tool === 'select' && (Boolean(target?.key && kindOf(target.key) === 'shape' && this.state.selection.includes(target.key)) || this.footAt(at.x, at.y) !== null);
+      this.setCursor(handle?.kind === 'height' ? 'height' : handle || onShape ? 'move' : null);
     } else {
       this.engine.setHover(null);
       this.handlers.hover(null, at.x, at.y);
       this.cursor = target?.point ? target.point.clone() : null;
       this.updateGuide();
     }
+  }
+
+  private setCursor(cursor: 'height' | 'move' | null): void {
+    this.host.classList.toggle('is-over-height', cursor === 'height');
+    this.host.classList.toggle('is-over-move', cursor === 'move');
   }
 
   /** Where a click lands for drawing: on the ground, or on top of what's there. */
@@ -344,20 +471,65 @@ export class EditController {
   // -------------------------------------------------------------- handles
 
   private handleAt(x: number, y: number): Handle | null {
+    const rect = this.hostRect();
+    const px = x - rect.left;
+    const py = y - rect.top;
     let best: Handle | null = null;
     let bestDistance = HANDLE_PX;
     for (const handle of this.handles) {
-      const p = this.engine.project(handle.position);
-      if (p.behind) continue;
-      const d = Math.hypot(p.x - (x - this.hostRect().left), p.y - (y - this.hostRect().top));
-      // Points win over the arrow where they meet.
-      const bias = handle.kind === 'height' ? 2 : 0;
-      if (d + bias < bestDistance) {
+      let d: number;
+      if (handle.kind === 'height') {
+        const arrow = this.arrowOnScreen(handle.position);
+        if (!arrow) continue;
+        // Points win over the arrow where they meet.
+        d = arrowDistance(px, py, arrow) + 2;
+      } else {
+        const p = this.engine.project(handle.position);
+        if (p.behind) continue;
+        d = Math.hypot(p.x - px, p.y - py);
+      }
+      if (d < bestDistance) {
         best = handle;
-        bestDistance = d + bias;
+        bestDistance = d;
       }
     }
     return best;
+  }
+
+  /**
+   * Seen from nearly straight down the arrow is end on, over the middle of
+   * what it's on, and dragging along it would jump by metres a pixel. It's
+   * put away then, so a press there moves the shape.
+   */
+  private arrowShown(foot: Vector3): boolean {
+    const view = foot.clone().sub(this.engine.controls.object.position);
+    return Math.hypot(view.x, view.y) >= ARROW_MIN_SIN * view.length();
+  }
+
+  /** A selected shape's arrow when the point is on the ring at its foot. */
+  private footAt(x: number, y: number): Handle | null {
+    const handle = this.handles.find((h) => h.kind === 'height');
+    if (!handle || kindOf(handle.key) !== 'shape' || !this.arrowShown(handle.position)) return null;
+    const foot = handle.position;
+    const view = foot.clone().sub(this.engine.controls.object.position);
+    // Across the view, where the ring looks widest.
+    const across = new Vector3(-view.y, view.x, 0).setLength(view.length() * HANDLE_SCALE * RING_RADIUS);
+    const centre = this.engine.project(foot);
+    const edge = this.engine.project(foot.clone().add(across));
+    if (centre.behind) return null;
+    const rect = this.hostRect();
+    const reach = Math.hypot(edge.x - centre.x, edge.y - centre.y);
+    return Math.hypot(x - rect.left - centre.x, y - rect.top - centre.y) <= reach ? handle : null;
+  }
+
+  /** The shaft and head of the arrow on the canvas, which take a drag, or null when it's put away. */
+  private arrowOnScreen(foot: Vector3): { x0: number; y0: number; x1: number; y1: number } | null {
+    if (!this.arrowShown(foot)) return null;
+    const size = this.engine.controls.object.position.distanceTo(foot) * HANDLE_SCALE;
+    const a = this.engine.project(new Vector3(foot.x, foot.y, foot.z + size * ARROW_GRAB_FROM));
+    const b = this.engine.project(new Vector3(foot.x, foot.y, foot.z + size * ARROW_TIP));
+    if (a.behind || b.behind) return null;
+    return { x0: a.x, y0: a.y, x1: b.x, y1: b.y };
   }
 
   private hostRect(): DOMRect {
@@ -365,14 +537,13 @@ export class EditController {
   }
 
   private startHandle(handle: Handle, event: PointerEvent): void {
-    this.takeOver(event);
     if (handle.kind === 'height') {
       const height = this.heightOf(handle.key, handle.position.z);
       const from = this.engine.pointOnVertical(event.clientX, event.clientY, handle.position) ?? handle.position.z;
-      this.drag = { kind: 'height', key: handle.key, anchor: handle.position.clone(), from, height, moved: false };
+      this.begin(event, { kind: 'height', key: handle.key, anchor: handle.position.clone(), from, height, moved: false });
       return;
     }
-    this.drag = {
+    this.begin(event, {
       kind: 'vertex',
       id: handle.key.slice(2),
       index: handle.index,
@@ -382,7 +553,7 @@ export class EditController {
       x: event.clientX,
       y: event.clientY,
       position: handle.position.clone(),
-    };
+    });
   }
 
   private dragTo(drag: Drag, x: number, y: number, done: boolean): void {
@@ -410,7 +581,7 @@ export class EditController {
         drag.moved ||= Math.abs(z - drag.from) > 1e-3;
         if (!drag.moved) return;
         const height = Math.max(0.1, drag.height + (z - drag.from));
-        this.handlers.dragHeight(drag.key, Math.round(height * 100) / 100, done);
+        this.handlers.dragHeight(drag.key, Math.round(height * 100) / 100);
         return;
       }
       case 'shape': {
@@ -418,7 +589,7 @@ export class EditController {
         if (!point) return;
         drag.moved ||= Math.hypot(x - drag.x, y - drag.y) > CLICK_PX;
         if (!drag.moved) return;
-        this.handlers.moveShape(drag.id, point.x - drag.start.x, point.y - drag.start.y, done);
+        this.handlers.moveShape(drag.id, point.x - drag.start.x, point.y - drag.start.y);
         return;
       }
       case 'vertex': {
@@ -426,9 +597,9 @@ export class EditController {
         const point = this.engine.pointOnPlane(x, y, drag.z);
         if (!point) return;
         drag.moved = true;
-        this.handlers.moveVertex(drag.id, drag.index, point, drag.insert, done);
+        this.handlers.moveVertex(drag.id, drag.index, point, drag.insert);
         // An inserted point is an ordinary one once it's in.
-        if (drag.insert && !done) {
+        if (drag.insert) {
           drag.insert = false;
           drag.index += 1;
         }
@@ -463,6 +634,7 @@ export class EditController {
       this.engine.requestRender();
       return;
     }
+    // Null for something hidden or removed, which gets no handles.
     const bounds = this.engine.boundsOf(key);
     if (!bounds) {
       this.engine.requestRender();
@@ -500,7 +672,7 @@ export class EditController {
       const cone = new Mesh(new ConeGeometry(0.22, 0.45, 16), this.handleMaterial);
       cone.rotation.x = Math.PI / 2;
       cone.position.z = 1.2;
-      const base = new Mesh(new RingGeometry(0.14, 0.24, 20), this.handleMaterial);
+      const base = new Mesh(new RingGeometry(0.14, RING_RADIUS, 20), this.handleMaterial);
       group.add(shaft, cone, base);
       group.position.copy(handle.position);
       group.userData.handle = handle;
@@ -522,7 +694,9 @@ export class EditController {
     const camera = this.engine.controls.object;
     for (const child of this.gizmo.children) {
       const distance = camera.position.distanceTo(child.position);
-      child.scale.setScalar(distance * 0.03);
+      child.scale.setScalar(distance * HANDLE_SCALE);
+      const handle = child.userData.handle as Handle;
+      if (handle.kind === 'height') child.visible = this.arrowShown(handle.position);
     }
     const guide = this.guide.children;
     for (const child of guide) if (child.userData.scaled) child.scale.setScalar(camera.position.distanceTo(child.position) * 0.02);
@@ -570,4 +744,19 @@ export class EditController {
       group.remove(child);
     }
   }
+}
+
+/**
+ * Pixels from a point on the canvas to the arrow's shaft and head. Nothing
+ * below where the shaft starts counts, however close: that's the foot.
+ */
+function arrowDistance(x: number, y: number, s: { x0: number; y0: number; x1: number; y1: number }): number {
+  const dx = s.x1 - s.x0;
+  const dy = s.y1 - s.y0;
+  const length = dx * dx + dy * dy;
+  if (length < 1) return Infinity;
+  const t = ((x - s.x0) * dx + (y - s.y0) * dy) / length;
+  if (t < 0) return Infinity;
+  const along = Math.min(1, t);
+  return Math.hypot(x - (s.x0 + along * dx), y - (s.y0 + along * dy));
 }

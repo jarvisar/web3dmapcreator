@@ -24,7 +24,7 @@ import type { ModelEdits } from '../../core/edit/types';
 import type { RoadLines } from '../../core/engine/protocol';
 import { SHAPES_PART } from '../viewer/shown';
 import type { EditData } from './model';
-import type { ResultMeta } from './store';
+import type { ResultMeta, UiState } from './store';
 
 /** Colour groups the enabled layers can produce, in palette order. */
 export function usedGroups(settings: ModelSettings): ColourGroup[] {
@@ -58,6 +58,12 @@ export function matchingPreset(palette: Palette): PalettePreset | null {
       COLOUR_GROUPS.every(({ key }) => filamentKey(preset.palette[key]) === filamentKey(palette[key])),
     ) ?? null
   );
+}
+
+/** Printed width, depth and height of what the 3D view shows, or of the model as generated before it has. */
+export function modelSize(result: ResultMeta, shown: UiState['shownBounds']): { w: number; d: number; h: number } {
+  const b = shown && shown.version === result.version ? shown.bounds : result.bounds;
+  return { w: b[3] - b[0], d: b[4] - b[1], h: b[5] - b[2] };
 }
 
 export function resultGroups(result: ResultMeta): ColourGroup[] {

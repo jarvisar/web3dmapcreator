@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MAX_SECTIONS } from '../../core/export/sections';
 import { DEFAULT_AREA, DEFAULT_EXPORT, cloneSettings } from '../../core/settings';
 import { emptyEdits, type AddedShape, type ModelEdits } from '../../core/edit/types';
-import { bedFit, hiddenDownloadParts, usedGroups } from './derived';
+import { bedFit, hiddenDownloadParts, modelSize, usedGroups } from './derived';
 import type { RoadLines } from '../../core/engine/protocol';
 import type { ResultMeta } from './store';
 
@@ -75,5 +75,15 @@ describe('hidden parts and the download', () => {
 
   it('count only the model for one that could not be edited, which downloads without the edits', () => {
     expect(hiddenDownloadParts(result, edits, { ...data, editable: false }, ['terrain', 'buildings'])).toEqual({ hidden: 2, all: true });
+  });
+});
+
+describe('model size', () => {
+  it('uses what the view shows for this model, and the generated box otherwise', () => {
+    const result = { version: 3, bounds: [0, 0, 0, 100, 80, 20] } as ResultMeta;
+    expect(modelSize(result, null)).toEqual({ w: 100, d: 80, h: 20 });
+    expect(modelSize(result, { version: 3, bounds: [0, 0, 0, 100, 80, 250] })).toEqual({ w: 100, d: 80, h: 250 });
+    // From the model before, while the view catches up.
+    expect(modelSize(result, { version: 2, bounds: [0, 0, 0, 10, 10, 10] })).toEqual({ w: 100, d: 80, h: 20 });
   });
 });

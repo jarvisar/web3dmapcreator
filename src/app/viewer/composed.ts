@@ -51,6 +51,9 @@ export class ComposedMesh {
   /** Material keys in the order of the geometry's groups, caps then walls when ranked. */
   groupKeys: { colour: string; wall: boolean }[] = [];
   private lastSignature = '';
+  private shown: (string | null)[] = [];
+  private unkeyedShown: string | null = '';
+  private boxCache: Float32Array | null = null;
 
   constructor(
     readonly source: ComposedSource,
@@ -86,6 +89,8 @@ export class ComposedMesh {
    */
   update(style: EntryStyle, unkeyed: string | null = ''): boolean {
     const styles = this.entries.map(style);
+    this.shown = styles;
+    this.unkeyedShown = unkeyed;
     // join() writes null as '', the part's own colour, so hidden needs a mark of its own.
     const signature = [unkeyed, ...styles].map((s) => s ?? '\u0002').join('\u0001');
     if (signature === this.lastSignature && this.geometry.index) return false;
@@ -160,23 +165,59 @@ export class ComposedMesh {
 
   /** Centre of each entry's bounding box, for box selection. */
   entryCentres(): Float32Array {
+    const boxes = this.boxes();
     const out = new Float32Array(this.entries.length * 3);
-    const min = new Float32Array(this.entries.length * 3).fill(Infinity);
-    const max = new Float32Array(this.entries.length * 3).fill(-Infinity);
-    const objects = this.source.objects;
-    if (!objects) return out;
-    const p = this.source.positions;
-    for (let r = 0; r < objects.runs.length; r += 5) {
-      const e = objects.runs[r] * 3;
-      for (let v = objects.runs[r + 3]; v < objects.runs[r + 4]; v++) {
-        for (let k = 0; k < 3; k++) {
-          const value = p[v * 3 + k];
-          if (value < min[e + k]) min[e + k] = value;
-          if (value > max[e + k]) max[e + k] = value;
-        }
-      }
+    for (let e = 0; e < this.entries.length; e++) {
+      for (let k = 0; k < 3; k++) out[e * 3 + k] = (boxes[e * 6 + k] + boxes[e * 6 + 3 + k]) / 2;
     }
-    for (let i = 0; i < out.length; i++) out[i] = (min[i] + max[i]) / 2;
+    return out;
+  }
+
+  /** Box around what the last update() showed, as min x, y, z, max x, y, z, or null for nothing. */
+  shownBounds(): number[] | null {
+    const boxes = this.boxes();
+    const out = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    const add = (i: number) => {
+      for (let k = 0; k < 3; k++) {
+        out[k] = Math.min(out[k], boxes[i * 6 + k]);
+        out[3 + k] = Math.max(out[3 + k], boxes[i * 6 + 3 + k]);
+      }
+    };
+    this.shown.forEach((style, i) => style !== null && add(i));
+    if (this.unkeyedShown !== null) add(this.entries.length);
+    return out[0] <= out[3] ? out : null;
+  }
+
+  /** Per entry, then one for the triangles no object owns: min x, y, z, max x, y, z. */
+  private boxes(): Float32Array {
+    if (this.boxCache) return this.boxCache;
+    const count = this.entries.length + 1;
+    const out = new Float32Array(count * 6);
+    for (let i = 0; i < count; i++) out.set([Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity], i * 6);
+    const p = this.source.positions;
+    const grow = (box: number, from: number, to: number, indices: Uint32Array | null) => {
+      let x0 = out[box], y0 = out[box + 1], z0 = out[box + 2], x1 = out[box + 3], y1 = out[box + 4], z1 = out[box + 5];
+      for (let i = from; i < to; i++) {
+        const v = (indices ? indices[i] : i) * 3;
+        const x = p[v], y = p[v + 1], z = p[v + 2];
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+        if (z < z0) z0 = z;
+        if (z > z1) z1 = z;
+      }
+      out.set([x0, y0, z0, x1, y1, z1], box);
+    };
+    const objects = this.source.objects;
+    if (objects) {
+      for (let r = 0; r < objects.runs.length; r += 5) grow(objects.runs[r] * 6, objects.runs[r + 3], objects.runs[r + 4], null);
+    }
+    const unkeyed = this.entries.length * 6;
+    for (let r = 0; r < this.runs.length; r += 3) {
+      if (this.runs[r] < 0) grow(unkeyed, this.runs[r + 1] * 3, this.runs[r + 2] * 3, this.source.indices);
+    }
+    this.boxCache = out;
     return out;
   }
 

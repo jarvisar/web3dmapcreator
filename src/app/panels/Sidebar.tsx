@@ -1,5 +1,5 @@
 import { Box, PenTool } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { ConfirmButton } from '../components/ConfirmButton';
 import { Segmented } from '../components/Segmented';
 import { resetAllSettings, setHelpOpen, setOutput, toast, useApp } from '../state/store';
 import { CleanupPanel } from '../svgmap/CleanupPanel';
@@ -55,27 +55,18 @@ function OutputSwitch() {
 }
 
 function ResetAll() {
-  const [confirming, setConfirming] = useState(false);
-  const timer = useRef(0);
-  useEffect(() => () => window.clearTimeout(timer.current), []);
   return (
-    <button
-      type="button"
-      className={`link-btn${confirming ? ' is-danger' : ''}`}
-      onClick={() => {
-        if (!confirming) {
-          setConfirming(true);
-          timer.current = window.setTimeout(() => setConfirming(false), 4000);
-          return;
-        }
-        window.clearTimeout(timer.current);
-        setConfirming(false);
+    <ConfirmButton
+      className="link-btn"
+      confirmingClass="is-danger"
+      confirm="Click again to reset everything but the area and your edits"
+      onConfirm={() => {
         resetAllSettings();
         toast('Settings, colours and export options are back to their defaults', 'info');
       }}
     >
-      {confirming ? 'Click again to reset everything but the area and your edits' : 'Reset all settings'}
-    </button>
+      Reset all settings
+    </ConfirmButton>
   );
 }
 

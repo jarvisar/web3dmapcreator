@@ -145,6 +145,7 @@ if (svg) {
     });
   const card = page.locator('.route-card');
   await card.getByRole('button', { name: 'Undo all picks' }).click();
+  await card.getByRole('button', { name: /^Click again to undo/ }).click();
   await wait(600);
   if (await card.getByText(/are kept aside/).count()) ok('Undo all picks kept them aside');
   else fail('no kept-aside note after Undo all picks');
@@ -349,6 +350,7 @@ if (!phone) {
 
   const kept = inspector.getByText(/are kept aside/);
   await inspector.getByRole('button', { name: 'Undo all' }).click();
+  await inspector.getByRole('button', { name: /^Click again to undo/ }).click();
   await wait(1000);
   if ((await changes()) === 0 && (await kept.count())) ok('Undo all kept the edits aside');
   else fail(`after Undo all: ${await changes()} changes, ${await kept.count()} notes`);
@@ -359,6 +361,7 @@ if (!phone) {
 
   // Opened over other work in this tab, and taken back out with Undo.
   await inspector.getByRole('button', { name: 'Undo all' }).click();
+  await inspector.getByRole('button', { name: /^Click again to undo/ }).click();
   await wait(800);
   await removeBuilding('a building to remove');
   const mine = await changes();

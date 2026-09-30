@@ -249,8 +249,12 @@
   cursor: crosshair;
 }
 
-.viewer-host.is-over-handle .viewer-canvas {
+.viewer-host.is-over-height .viewer-canvas {
   cursor: ns-resize;
+}
+
+.viewer-host.is-over-move .viewer-canvas {
+  cursor: move;
 }
 
 .viewer.is-editing .viewer-edit-hint {

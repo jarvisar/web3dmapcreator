@@ -5,7 +5,7 @@ import { areaHint } from '../lib/area';
 import { PHONE_QUERY, useMediaQuery } from '../lib/browser';
 import { formatCount, formatInteger, formatMm, formatNumber } from '../lib/format';
 import { cancelGeneration, exportModel, generateModel } from '../state/actions';
-import { FORMAT_EXTENSIONS, filamentCount, generationProblem, hiddenDownloadParts, resultGroups } from '../state/derived';
+import { FORMAT_EXTENSIONS, filamentCount, generationProblem, hiddenDownloadParts, modelSize, resultGroups } from '../state/derived';
 import { getEditData } from '../state/model';
 import { dismissExportError, dismissGenerationError, dismissMapHint, setView, useApp } from '../state/store';
 import { downloadSvg, generateSvg, svgProblem, useSvgKey } from '../svgmap/actions';
@@ -83,18 +83,20 @@ function ModelActions() {
   const settings = useApp((state) => state.settings);
   const hidden = useApp((state) => state.ui.hiddenParts);
   const edits = useApp((state) => state.edits);
+  const shownBounds = useApp((state) => state.ui.shownBounds);
   const problem = generationProblem(area, settings);
   const running = status === 'running';
 
   let summary = '';
   let note = '';
   if (result) {
-    const [minX, minY, minZ, maxX, maxY, maxZ] = result.bounds;
+    // As shown, so a building made taller or a shape counts.
+    const { w, d, h } = modelSize(result, shownBounds);
     const unused = new Set(unusedLayers(edits));
     const colours = filamentCount(palette, resultGroups(result), edits.layers.filter((layer) => !unused.has(layer.id)));
     const changes = editCount(edits);
     summary = [
-      `${formatMm(maxX - minX)} × ${formatMm(maxY - minY)} × ${formatMm(maxZ - minZ)} mm`,
+      `${formatMm(w)} × ${formatMm(d)} × ${formatMm(h)} mm`,
       `${formatCount(result.triangles)} triangles`,
       `${colours} ${colours === 1 ? 'colour' : 'colours'}`,
       ...(changes ? [`${changes} ${changes === 1 ? 'edit' : 'edits'}`] : []),

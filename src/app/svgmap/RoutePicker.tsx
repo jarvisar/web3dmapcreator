@@ -5,6 +5,7 @@ import { useEffect, useId, useState } from 'react';
 import { worldToLonLat } from '../../core/svgmap/geo/mercator';
 import { PICK_LAYERS, pickToWorld, type LonLatLine, type PickLines, type SvgRoute } from '../../core/svgmap/routes';
 import { LAYER_NAMES } from '../../core/svgmap/settings';
+import { ConfirmButton } from '../components/ConfirmButton';
 import { NumberInput } from '../components/NumberField';
 import { useApp } from '../state/store';
 import { useSvgRender } from './render';
@@ -300,9 +301,9 @@ export function RouteCard({ index, selected, onSelect, onClose }: { index: PickI
         {(hiddenCount > 0 || routes.some((r) => r.lines.length)) && (
           <div className="inspector-changes">
             <span>{hiddenCount ? `${hiddenCount} left out` : 'Nothing left out'}</span>
-            <button type="button" className="link-btn is-danger" onClick={clearPicks}>
+            <ConfirmButton className="link-btn is-danger" confirm="Click again to undo every pick" onConfirm={clearPicks}>
               Undo all picks
-            </button>
+            </ConfirmButton>
           </div>
         )}
       </div>

@@ -48,4 +48,18 @@ describe('ComposedMesh', () => {
     expect(mesh.update(() => '', '')).toBe(true);
     expect(mesh.geometry.index!.count).toBe(9);
   });
+
+  it('gives the box around what is shown, for framing and the size', () => {
+    const mesh = composed();
+    mesh.update(() => '');
+    expect(mesh.shownBounds()).toEqual([0, 0, 0, 5, 1, 0]);
+    // The unowned triangle is the one from x 4 to 5.
+    mesh.update(() => '', null);
+    expect(mesh.shownBounds()).toEqual([0, 0, 0, 3, 1, 0]);
+    mesh.update((entry) => (entry.key === 'a' ? null : ''), null);
+    expect(mesh.shownBounds()).toEqual([2, 0, 0, 3, 1, 0]);
+    mesh.update(() => null, null);
+    expect(mesh.shownBounds()).toBeNull();
+    expect(Array.from(mesh.entryCentres())).toEqual([0.5, 0.5, 0, 2.5, 0.5, 0]);
+  });
 });

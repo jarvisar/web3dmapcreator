@@ -144,6 +144,8 @@ export interface UiState {
   activePoint: { shape: string; index: number } | null;
   /** What the worker noted about added shapes, by key. */
   editNotes: Record<string, string>;
+  /** The box around what the 3D view shows, edits and hidden parts included, and the model it's for. */
+  shownBounds: { version: number; bounds: ResultMeta['bounds'] } | null;
 }
 
 export interface Toast {
@@ -312,6 +314,7 @@ function initialState(): AppState {
       editsPending: false,
       activePoint: null,
       editNotes: {},
+      shownBounds: null,
     },
     generation: {
       status: 'idle',
@@ -715,6 +718,10 @@ export function togglePartHidden(id: string): void {
 
 export function setHiddenParts(hiddenParts: string[]): void {
   patchUi({ hiddenParts });
+}
+
+export function setShownBounds(version: number, bounds: ResultMeta['bounds'] | null): void {
+  patchUi({ shownBounds: bounds ? { version, bounds } : null });
 }
 
 // ------------------------------------------------------------ generation

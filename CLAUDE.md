@@ -434,6 +434,18 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   heights from drags (`buildingHeightRange` for buildings at the model's
   scale), 2000 points, 80 characters. Past them the inspector showed things
   the export clamped or dropped.
+- A drag follows the pointer that started it (`editController.ts`). A
+  second finger during a touch drag puts the drag back (`revertEdits`) and
+  hands both fingers to OrbitControls, with a synthetic `pointerdown` for
+  the first, which the controls never saw. Only the arrow's shaft and head
+  take a height drag, and seen from within about 17 degrees of straight
+  down the arrow is put away: end on it covered the middle of the shape,
+  and a pixel moved it by metres. OrbitControls sets an inline
+  `cursor: auto` when it connects, which `ViewerEngine` clears or no edit
+  cursor shows.
+- The size chip, the sidebar's size and Reset view go by what the view
+  shows (`ui.shownBounds`), so a raised tower counts. The bed stays under
+  the generated bounds.
 - Text notes say when its font didn't load (warned once per font, not per
   edit) and which characters the font has no glyph for. No bundled font
   has Hebrew or Arabic. `visualOrder` lays right-to-left text out for

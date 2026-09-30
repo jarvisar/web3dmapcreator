@@ -7,6 +7,7 @@ import { COLOUR_GROUPS } from '../../../core/settings';
 import { FONTS } from '../../../core/svgmap/text/fonts';
 import type { ColourGroup } from '../../../core/types';
 import { Checkbox } from '../../components/Checkbox';
+import { ConfirmButton } from '../../components/ConfirmButton';
 import { NumberInput } from '../../components/NumberField';
 import { COARSE_QUERY, useMediaQuery } from '../../lib/browser';
 import { formatNumber } from '../../lib/format';
@@ -461,7 +462,7 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
             : 'Drag a point to move it, or a white dot to add one. Click a point, then Delete, to take it out.'}
         </p>
       )}
-      {shape && !drawn && <p className="inspector-hint">Drag it to move it, or its arrow to change its height.</p>}
+      {shape && !drawn && <p className="inspector-hint">Drag it to move it, or its arrow to change its height. Looking straight down, there's no arrow.</p>}
     </>
   );
 }
@@ -751,9 +752,14 @@ function Overview({ edits, data, focusOn }: { edits: ModelEdits; data: EditData;
             )}
           </span>
           {(changes > 0 || edits.layers.length > 0) && (
-            <button type="button" className="link-btn is-danger" onClick={clearEdits}>
+            // Edits are one document for every area, so this reaches past this model.
+            <ConfirmButton
+              className="link-btn is-danger"
+              confirm={`Click again to undo ${changes ? `all ${changes} ${changes === 1 ? 'change' : 'changes'}` : 'your layers'}${elsewhere.length ? `, ${elsewhere.length} of them not on this model` : ''}`}
+              onConfirm={clearEdits}
+            >
               <Eraser size={12} aria-hidden="true" /> Undo all
-            </button>
+            </ConfirmButton>
           )}
         </div>
       </div>

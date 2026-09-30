@@ -78,6 +78,11 @@ export function followsGround(shape: Pick<AddedShape, 'followGround' | 'liftMm'>
   return shape.followGround && !(shape.liftMm > 0);
 }
 
+/** The model colour a shape takes without a layer of its own: a drawn road the roads', anything else the buildings'. */
+export function shapeGroup(kind: ShapeKind): string {
+  return kind === 'path' ? 'roads' : 'buildings';
+}
+
 export function emptyEdits(): ModelEdits {
   return { version: EDITS_VERSION, layers: [], objects: {}, shapes: [] };
 }
@@ -253,7 +258,7 @@ function sanitizeShape(item: unknown, layerIds: Set<string>): AddedShape | null 
   if (kind === 'area' && points.length < 3) return null;
   const centre = at ?? points[0];
   if (!centre) return null;
-  const layer = typeof item.layer === 'string' && (layerIds.has(item.layer) || COLOUR_GROUP_KEYS.has(item.layer)) ? item.layer : 'buildings';
+  const layer = typeof item.layer === 'string' && (layerIds.has(item.layer) || COLOUR_GROUP_KEYS.has(item.layer)) ? item.layer : shapeGroup(kind);
   const number = (value: unknown, fallback: number, range: readonly [number, number]) => clamp(finite(value) ? value : fallback, range);
   const rotation = finite(item.rotationDeg) ? ((item.rotationDeg % 360) + 360) % 360 : 0;
   return {
@@ -276,6 +281,11 @@ function sanitizeShape(item: unknown, layerIds: Set<string>): AddedShape | null 
 // The palette's groups, which a shape can take its colour from. Kept here as
 // strings so this module needs nothing from settings.
 const COLOUR_GROUP_KEYS = new Set(['terrain', 'buildings', 'roads', 'paved', 'water', 'green', 'forest', 'trees', 'sand', 'rock', 'rim']);
+
+/** A shape's layer if it still has it, a custom layer or a model colour, or else its kind's colour. */
+export function shapeLayerIn(shape: Pick<AddedShape, 'kind' | 'layer'>, layers: readonly EditLayer[]): string {
+  return COLOUR_GROUP_KEYS.has(shape.layer) || layers.some((layer) => layer.id === shape.layer) ? shape.layer : shapeGroup(shape.kind);
+}
 
 /** Layers nothing uses any more, for tidying up. */
 export function unusedLayers(edits: ModelEdits): string[] {

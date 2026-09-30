@@ -13,7 +13,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Vector3 } from 'three';
 import { isPartKey, kindOf, objectOf, partKey } from '../../core/edit/keys';
-import { buildingHeightRange, EDIT_LIMITS, type AddedShape } from '../../core/edit/types';
+import { buildingHeightRange, EDIT_LIMITS, type AddedShape, type ModelEdits } from '../../core/edit/types';
 import { Projection } from '../../core/geo/projection';
 import { printerByKey } from '../../core/settings';
 import { ROLE_GROUP, type ColourGroup } from '../../core/types';
@@ -28,19 +28,21 @@ import {
   patchObjects,
   redoEdit,
   removeObjects,
+  revertEdits,
   setActivePoint,
   setEditMode,
   setSelection,
   setTool,
   settleEdits,
   shapeDefaults,
+  shiftShape,
   toggleSelected,
   undoEdit,
   updateShape,
 } from '../state/editActions';
-import { fileBase, generationProblem, hiddenDownloadParts } from '../state/derived';
+import { fileBase, generationProblem, hiddenDownloadParts, modelSize } from '../state/derived';
 import { currentEditState, getEditData, getModelParts, onEditUpdate } from '../state/model';
-import { setHiddenParts, setShowBed, toast, togglePartHidden, useApp, type EditTool } from '../state/store';
+import { setHiddenParts, setShowBed, setShownBounds, toast, togglePartHidden, useApp, type EditTool } from '../state/store';
 import { describeCounts, describeKey } from './edit/describe';
 import { EditToolbar, TOOLS } from './edit/EditToolbar';
 import { Inspector } from './edit/Inspector';
@@ -155,13 +157,22 @@ export default function ModelView({ active }: { active: boolean }) {
   const projectionRef = useRef(projection);
   projectionRef.current = projection;
   const dragOrigins = useRef(new Map<string, AddedShape>());
+  /** The edits a drag started from, to put back if it's called off. */
+  const dragBefore = useRef<ModelEdits | null>(null);
+  const shownBounds = useApp((state) => state.ui.shownBounds);
+  // The size goes with the model it's for, so a new one never shows the last one's.
+  const versionRef = useRef(version);
+  versionRef.current = version;
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     let engine: ViewerEngine;
     try {
-      engine = new ViewerEngine(host, { onContextLost: setLost });
+      engine = new ViewerEngine(host, {
+        onContextLost: setLost,
+        onBounds: (bounds) => versionRef.current !== undefined && setShownBounds(versionRef.current, bounds),
+      });
     } catch {
       setLost(true);
       return;
@@ -173,11 +184,7 @@ export default function ModelView({ active }: { active: boolean }) {
     engine.setEdits(state.edits);
     engine.setHidden(state.ui.hiddenParts);
     engine.setBed(printerByKey(state.exportSettings.printer), state.ui.showBed);
-    const current = state.generation.result;
-    if (current) {
-      engine.setModel(getModelParts(), current.bounds, getEditData());
-      engine.applyEditUpdate(currentEditState());
-    }
+    // The model goes in from the effect on its version, which runs next.
     const controller = new EditController(engine, host, handlers());
     controllerRef.current = controller;
     const unsubscribe = onEditUpdate((update) => engine.applyEditUpdate(update));
@@ -194,16 +201,21 @@ export default function ModelView({ active }: { active: boolean }) {
   useEffect(() => {
     const engine = engineRef.current;
     const current = useApp.getState().generation.result;
-    if (current && engine) {
-      engine.setModel(getModelParts(), current.bounds, getEditData());
-      engine.applyEditUpdate(currentEditState());
-    }
+    if (current && engine) engine.setModel(getModelParts(), current.bounds, getEditData(), currentEditState());
     // A card from the last model (its warnings, say) may not apply to this one.
     setPanel(null);
   }, [version]);
 
   useEffect(() => engineRef.current?.setPalette(palette), [palette]);
-  useEffect(() => engineRef.current?.setHidden(hidden), [hidden]);
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.setHidden(hidden);
+    // What was hidden leaves the selection, or Delete would take away what can't be seen.
+    const selection = useApp.getState().ui.selection;
+    const gone = new Set(engine.hiddenByParts(selection));
+    if (gone.size) setSelection(selection.filter((key) => !gone.has(key)));
+  }, [hidden]);
   useEffect(() => engineRef.current?.setEdits(edits), [edits]);
   useEffect(() => engineRef.current?.setSelection(editMode ? selection : []), [selection, editMode]);
   useEffect(() => engineRef.current?.setBed(printerByKey(printerKey), showBed), [printerKey, showBed]);
@@ -248,7 +260,7 @@ export default function ModelView({ active }: { active: boolean }) {
       if (ctrl || event.altKey) return;
       switch (key) {
         case 'Escape':
-          if (controller?.cancelDrawing()) break;
+          if (controller?.cancelDrag() || controller?.cancelDrawing()) break;
           if (state.ui.activePoint) setActivePoint(null);
           else if (state.ui.tool !== 'select') setTool('select');
           else if (keys.length) setSelection([]);
@@ -307,14 +319,8 @@ export default function ModelView({ active }: { active: boolean }) {
     }
   }
 
-  /** Moves shapes by model mm, every point of a path or area with them. */
   function shifted(shape: AddedShape, dx: number, dy: number): Pick<AddedShape, 'at' | 'points'> {
-    const p = projectionRef.current!;
-    const move = ([lon, lat]: [number, number]): [number, number] => {
-      const [x, y] = p.toModel(lon, lat);
-      return p.modelToGeo(x + dx, y + dy);
-    };
-    return { at: move(shape.at), points: shape.points.map(move) };
+    return shiftShape(shape, dx, dy, projectionRef.current!);
   }
 
   function nudgeShapes(ids: string[], dx: number, dy: number) {
@@ -400,7 +406,22 @@ export default function ModelView({ active }: { active: boolean }) {
         setTool('select');
       },
       drawing: setDrawing,
-      dragHeight(key, heightMm, done) {
+      tooFewPoints(tool, needed) {
+        toast(`A drawn ${tool} needs at least ${needed} points.`);
+      },
+      dragStart() {
+        dragOrigins.current.clear();
+        dragBefore.current = useApp.getState().edits;
+        // Its changes are an undo step of their own, whatever was going on before.
+        settleEdits();
+      },
+      dragEnd(cancelled) {
+        dragOrigins.current.clear();
+        if (cancelled && dragBefore.current) revertEdits(dragBefore.current);
+        dragBefore.current = null;
+        settleEdits();
+      },
+      dragHeight(key, heightMm) {
         // Held to the limits here, or the inspector showed heights the export clamps.
         const clamp = ([low, high]: readonly [number, number]) => Math.min(high, Math.max(low, heightMm));
         if (kindOf(key) === 'shape') {
@@ -409,9 +430,8 @@ export default function ModelView({ active }: { active: boolean }) {
           const scale = getEditData().frame?.buildingMmPerMetre;
           if (scale) patchObjects([key], { heightM: clamp(buildingHeightRange(scale)) / scale }, `drag-height:${key}`);
         }
-        if (done) settleEdits();
       },
-      moveShape(id, dx, dy, done) {
+      moveShape(id, dx, dy) {
         const state = useApp.getState();
         const key = `s:${id}`;
         const ids = state.ui.selection.includes(key) ? state.ui.selection.filter((k) => kindOf(k) === 'shape').map((k) => k.slice(2)) : [id];
@@ -424,12 +444,8 @@ export default function ModelView({ active }: { active: boolean }) {
           }
           updateShape(shapeId, shifted(origin, dx, dy), `move:${ids.join(',')}`);
         }
-        if (done) {
-          dragOrigins.current.clear();
-          settleEdits();
-        }
       },
-      moveVertex(id, index, point, insert, done) {
+      moveVertex(id, index, point, insert) {
         const p = projectionRef.current;
         const shape = useApp.getState().edits.shapes.find((s) => s.id === id);
         if (!p || !shape) return;
@@ -438,7 +454,6 @@ export default function ModelView({ active }: { active: boolean }) {
         if (insert) points.splice(index + 1, 0, lonLat);
         else points[index] = lonLat;
         updateShape(id, { points, at: points[0] }, `vertex:${id}`);
-        if (done) settleEdits();
       },
       deleteVertex(id, index) {
         deletePoint(id, index);
@@ -459,9 +474,8 @@ export default function ModelView({ active }: { active: boolean }) {
     downloadBlob(blob, `${fileBase(state.placeName, state.fileName)}.png`);
   }
 
-  const size = result
-    ? { w: result.bounds[3] - result.bounds[0], d: result.bounds[4] - result.bounds[1], h: result.bounds[5] - result.bounds[2] }
-    : null;
+  // As shown, so a raised tower or a shape counts.
+  const size = result ? modelSize(result, shownBounds) : null;
   const stats = result ? Object.entries(result.stats).filter(([, value]) => value !== '' && value !== null) : [];
   const totalTime = result ? Object.values(result.timings).reduce((sum, value) => sum + value, 0) : 0;
   const allHidden = result ? hiddenDownloadParts(result, edits, getEditData(), hidden).all : false;

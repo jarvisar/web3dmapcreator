@@ -58,21 +58,24 @@ export function NumberInput({
     return rounded;
   }
 
-  function finish() {
+  /** Clamps and tidies what was typed. Returns the value it leaves stored. */
+  function finish(): number {
     // Untouched: keep the stored value rather than its rounded display.
-    if (text === formatNumber(shown, decimals)) return;
+    if (text === formatNumber(shown, decimals)) return value;
     const parsed = parseDecimal(text);
     if (parsed === null) {
       setText(formatNumber(shown, decimals));
-      return;
+      return value;
     }
     const committed = commit(parsed);
     setText(formatNumber(committed, decimals));
+    return committed / scale;
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === 'Enter') {
-      finish();
+      // Enter settles the value, so Escape after it has nothing to put back.
+      before.current = finish();
       return;
     }
     if (event.key === 'Escape') {

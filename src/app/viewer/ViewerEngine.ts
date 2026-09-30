@@ -50,10 +50,12 @@ import { entryColour, SHAPES_PART } from './shown';
 
 export { SHAPES_PART };
 
-type Bounds = [number, number, number, number, number, number];
+export type Bounds = [number, number, number, number, number, number];
 
 export interface ViewerCallbacks {
   onContextLost?: (lost: boolean) => void;
+  /** The box around what's shown changed: edits, or parts hidden. Null with nothing shown. */
+  onBounds?: (bounds: Bounds | null) => void;
 }
 
 /** What's under a point of the canvas. */
@@ -202,7 +204,10 @@ export class ViewerEngine {
   private readonly selectLineMaterial = overlayMaterial(SELECT_COLOUR, 0.95);
   private palette: Palette | null = null;
   private hiddenParts = new Set<string>();
+  /** As generated. The bed stays put under these whatever the edits do. */
   private bounds: Bounds | null = null;
+  /** What's shown now, edits included, for framing, clipping and the light. */
+  private shown: Bounds | null = null;
   private printer: Printer | null = null;
   private showBed = true;
   private theme: Theme = LIGHT_THEME;
@@ -259,6 +264,8 @@ export class ViewerEngine {
     controls.maxPolarAngle = Math.PI * 0.49;
     controls.addEventListener('change', this.requestRender);
     controls.addEventListener('start', this.stopTween);
+    // Connecting sets an inline `cursor: auto`, which beats the editor's cursors.
+    renderer.domElement.style.cursor = '';
     this.controls = controls;
 
     this.hemi = new HemisphereLight(0xffffff, 0x8b95a7, 1.25);
@@ -284,7 +291,8 @@ export class ViewerEngine {
 
   // -------------------------------------------------------------- public
 
-  setModel(parts: MeshPart[], bounds: Bounds, data?: EditData): void {
+  /** A new model, with the geometry its edits had so far, so the first view frames them too. */
+  setModel(parts: MeshPart[], bounds: Bounds, data?: EditData, edits?: EditUpdate): void {
     const previous = this.bounds;
     this.clearModel();
     this.generated = new Map(parts.map((part) => [part.id, part]));
@@ -292,6 +300,8 @@ export class ViewerEngine {
     this.roads = this.data.roads ? new RoadIndex(this.data.roads) : null;
     for (const part of parts) this.buildView(part.id);
     this.bounds = bounds;
+    if (edits) this.applyEditUpdate(edits);
+    else this.restyle();
     this.updateLight();
     this.updateBed();
     this.updateClipping();
@@ -301,7 +311,6 @@ export class ViewerEngine {
       Math.abs(previous[3] - previous[0] - (bounds[3] - bounds[0])) < 0.1 * (bounds[3] - bounds[0]) &&
       Math.abs(previous[4] - previous[1] - (bounds[4] - bounds[1])) < 0.1 * (bounds[4] - bounds[1]);
     if (!similar) this.resetView(false);
-    this.restyle();
     this.renderer.shadowMap.needsUpdate = true;
     this.requestRender();
   }
@@ -358,6 +367,8 @@ export class ViewerEngine {
     this.refreshHighlights();
     this.renderer.shadowMap.needsUpdate = true;
     this.requestRender();
+    // Handles on something now hidden go with it.
+    for (const listener of this.geometryListeners) listener();
   }
 
   setSelection(keys: string[]): void {
@@ -552,7 +563,8 @@ export class ViewerEngine {
     const d = direction.dot(w);
     const e = w.z;
     const denominator = 1 - b * b;
-    if (denominator < 1e-6) return null;
+    // A ray within about 6 degrees of the line: a pixel moves it by metres.
+    if (denominator < 0.01) return null;
     const s = (e - b * d) / denominator;
     return anchor.z + s;
   }
@@ -591,6 +603,41 @@ export class ViewerEngine {
       }
     }
     return [...found];
+  }
+
+  /**
+   * Keys among these that only hidden parts hold: something of them would
+   * show with every part shown, and nothing does now. Removed things aren't
+   * among them.
+   */
+  hiddenByParts(keys: string[]): string[] {
+    if (!this.hiddenParts.size || !keys.length) return [];
+    const now = new Set<string>();
+    const unhidden = new Set<string>();
+    const wanted = new Set(keys.map(objectOf));
+    const context = { edits: this.edits, hiddenParts: this.hiddenParts, implicitHidden: this.implicitHidden };
+    const allShown = { ...context, hiddenParts: new Set<string>() };
+    for (const view of this.views.values()) {
+      for (const composed of [view.base, view.override]) {
+        if (!composed) continue;
+        for (const entry of composed.entries) {
+          if (!wanted.has(entry.key)) continue;
+          const overridden = composed === view.base && view.overrideKeys.has(entry.key);
+          const ids = entry.sub ? [entry.key, `${entry.key}/${entry.sub}`] : [entry.key];
+          if (entryColour(entry, context, overridden, view.id) !== null) for (const id of ids) now.add(id);
+          if (entryColour(entry, allShown, overridden, view.id) !== null) for (const id of ids) unhidden.add(id);
+        }
+      }
+    }
+    const roads = this.roads;
+    return keys.filter((key) => {
+      if (kindOf(key) === 'road') {
+        if (!roads || this.edits.objects[key]?.removed) return false;
+        const pieces = roads.piecesOf(key);
+        return pieces.length > 0 && !pieces.some((piece) => this.roadShown(piece));
+      }
+      return unhidden.has(key) && !now.has(key);
+    });
   }
 
   /** Bounding box of an object as shown, for gizmos. */
@@ -789,6 +836,33 @@ export class ViewerEngine {
         composed.update((entry) => this.entryStyle(view, composed, entry), unkeyed);
       }
     }
+    this.updateShown();
+  }
+
+  /** The box around what's shown, after the edits or hidden parts changed it. */
+  private updateShown(): void {
+    let box: Bounds | null = null;
+    for (const view of this.views.values()) {
+      for (const composed of [view.base, view.override]) {
+        const b = composed?.shownBounds();
+        if (!b) continue;
+        box = box ? (box.map((v, i) => (i < 3 ? Math.min(v, b[i]) : Math.max(v, b[i]))) as Bounds) : (b as Bounds);
+      }
+    }
+    const previous = this.shown;
+    if (box === previous || (box && previous && box.every((v, i) => Math.abs(v - previous[i]) < 1e-4))) return;
+    this.shown = box;
+    this.updateLight();
+    this.updateClipping();
+    this.callbacks.onBounds?.(box);
+  }
+
+  /** The generated model and whatever edits added, which may stand taller or reach further. */
+  private extent(): Bounds | null {
+    const b = this.bounds;
+    const s = this.shown;
+    if (!b || !s) return b;
+    return b.map((v, i) => (i < 3 ? Math.min(v, s[i]) : Math.max(v, s[i]))) as Bounds;
   }
 
   /** The part a road piece is drawn in now: its custom layer's, or its group's. */
@@ -898,12 +972,13 @@ export class ViewerEngine {
     this.replaced.clear();
     this.implicitHidden.clear();
     this.centres.clear();
+    this.shown = null;
     setOverlay(this.hoverGroup, []);
     setOverlay(this.selectionGroup, []);
   }
 
   private framing(top = false): { center: Vector3; distance: number } | null {
-    const b = this.bounds;
+    const b = this.extent();
     if (!b) return null;
     const center = new Vector3((b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2);
     const vFov = (this.camera.fov * Math.PI) / 180;
@@ -971,7 +1046,7 @@ export class ViewerEngine {
   };
 
   private updateClipping(): void {
-    const b = this.bounds;
+    const b = this.extent();
     if (!b) return;
     const size = Math.max(b[3] - b[0], b[4] - b[1], b[5] - b[2], 10);
     this.camera.near = Math.max(0.05, size / 500);
@@ -982,7 +1057,7 @@ export class ViewerEngine {
   }
 
   private updateLight(): void {
-    const b = this.bounds;
+    const b = this.extent();
     if (!b) return;
     const center = new Vector3((b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2);
     const bedSize = this.printer ? Math.hypot(this.printer.width, this.printer.depth) / 2 : 0;

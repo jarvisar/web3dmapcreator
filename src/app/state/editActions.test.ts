@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildingHeightRange, EDIT_LIMITS, emptyEdits, MAX_SHAPES, MAX_TEXT_LENGTH, sanitizeEdits, type AddedShape, type ModelEdits } from '../../core/edit/types';
+import { Projection } from '../../core/geo/projection';
 import type { SvgRoute } from '../../core/svgmap/routes';
 import { clearPicks, deleteRoute } from '../svgmap/routes';
 import {
@@ -18,6 +19,7 @@ import {
   removeObjects,
   restoreBackup,
   restoreObjects,
+  revertEdits,
   setActivePoint,
   setSelection,
   settleEdits,
@@ -25,8 +27,9 @@ import {
   takeInLink,
   undoEdit,
 } from './editActions';
+import { setModelParts } from './model';
 import { BACKUP_KEY, readBackup } from './persist';
-import { bringIn, patchSvg, useApp } from './store';
+import { bringIn, patchSvg, useApp, type ResultMeta } from './store';
 
 function shape(id: string, patch: Partial<AddedShape> = {}): AddedShape {
   return {
@@ -157,12 +160,105 @@ describe('removing and clearing', () => {
     const id = addLayer('Race')!;
     patchObjects(['r:1'], { layer: id, widthMm: 2 });
     patchObjects(['b:1'], { layer: id });
-    commitEdits({ ...edits(), shapes: [shape('a', { layer: id })] });
+    commitEdits({ ...edits(), shapes: [shape('a', { layer: id }), shape('b', { kind: 'area', layer: id })] });
     deleteLayer(id);
     expect(edits().layers).toEqual([]);
     expect(edits().objects).toEqual({ 'r:1': { widthMm: 2 } });
-    expect(edits().shapes[0].layer).toBe('buildings');
+    // A drawn route goes back to the roads' colour, an outline to the buildings'.
+    expect(edits().shapes.map((s) => s.layer)).toEqual(['roads', 'buildings']);
     expect(edits().version).toBe(emptyEdits().version);
+  });
+
+  it('puts a deleted layer back, with what was in it, from the toast', () => {
+    const id = addLayer('Race')!;
+    patchObjects(['r:1'], { layer: id });
+    commitEdits({ ...edits(), shapes: [shape('a', { layer: id })] });
+    const before = edits();
+    deleteLayer(id);
+    expect(lastToast().text).toBe('Deleted Race.');
+    lastToast().action!.run();
+    expect(edits()).toBe(before);
+  });
+
+  it('has its toast Undo take back its own change, not whatever came after it', () => {
+    commitEdits({ ...emptyEdits(), shapes: [shape('a'), shape('b')] });
+    removeObjects(['b:1', 's:a']);
+    const removed = lastToast();
+    patchObjects(['b:2'], { heightM: 30 });
+    removed.action!.run();
+    expect(edits().objects['b:1']).toBeUndefined();
+    expect(edits().shapes.map((s) => s.id).sort()).toEqual(['a', 'b']);
+    expect(edits().objects['b:2']).toEqual({ heightM: 30 });
+    // Undone already, it does nothing more.
+    const steps = useApp.getState().editHistory.past.length;
+    removed.action!.run();
+    expect(useApp.getState().editHistory.past).toHaveLength(steps);
+  });
+
+  it('brings a deleted layer back after other changes, and leaves what went in another layer since', () => {
+    const id = addLayer('Race')!;
+    const other = addLayer('Other')!;
+    patchObjects(['r:1', 'r:2'], { layer: id });
+    deleteLayer(id);
+    const deleted = lastToast();
+    patchObjects(['r:2'], { layer: other });
+    deleted.action!.run();
+    expect(edits().layers.map((l) => l.id)).toEqual([id, other]);
+    expect(edits().objects['r:1']).toEqual({ layer: id });
+    expect(edits().objects['r:2']).toEqual({ layer: other });
+  });
+
+  it('puts cleared changes back after other changes too', () => {
+    commitEdits({ ...emptyEdits(), objects: { 'b:1': { removed: true } }, shapes: [shape('a')] });
+    clearEditsFor(['b:1', 's:a']);
+    const cleared = lastToast();
+    patchObjects(['b:2'], { heightM: 30 });
+    cleared.action!.run();
+    expect(Object.keys(edits().objects).sort()).toEqual(['b:1', 'b:2']);
+    expect(edits().shapes.map((s) => s.id)).toEqual(['a']);
+  });
+
+  it('keeps what came after Undo all when that is undone', () => {
+    commitEdits({ ...emptyEdits(), objects: { 'b:1': { removed: true } } });
+    clearEdits();
+    const undo = lastToast();
+    patchObjects(['b:2'], { heightM: 30 });
+    undo.action!.run();
+    expect(Object.keys(edits().objects).sort()).toEqual(['b:1', 'b:2']);
+  });
+
+  it('puts a shape back in its own colour when its layer went while it was deleted', () => {
+    const id = addLayer('Race')!;
+    commitEdits({ ...edits(), shapes: [shape('a', { layer: id })] });
+    removeObjects(['s:a']);
+    const removed = lastToast();
+    deleteLayer(id);
+    removed.action!.run();
+    expect(edits().shapes[0].layer).toBe('roads');
+  });
+});
+
+describe('drags', () => {
+  beforeEach(() => reset());
+
+  it('puts back what a drag called off changed, with nothing left to redo', () => {
+    patchObjects(['b:1'], { heightM: 10 });
+    const before = edits();
+    patchObjects(['b:1'], { heightM: 20 }, 'drag-height:b:1');
+    patchObjects(['b:1'], { heightM: 30 }, 'drag-height:b:1');
+    revertEdits(before);
+    expect(edits()).toBe(before);
+    expect(useApp.getState().editHistory.future).toEqual([]);
+    expect(useApp.getState().editHistory.past).toHaveLength(1);
+  });
+
+  it("won't put back a drag once something else changed the edits", () => {
+    const before = edits();
+    patchObjects(['b:1'], { heightM: 20 }, 'drag-height:b:1');
+    settleEdits();
+    patchObjects(['b:2'], { heightM: 5 });
+    revertEdits(before);
+    expect(edits().objects['b:2']).toEqual({ heightM: 5 });
   });
 });
 
@@ -303,6 +399,31 @@ describe('limits', () => {
   it('starts text no longer than the limit', () => {
     useApp.setState({ placeName: 'A'.repeat(200) });
     expect(shapeDefaults('text').text).toHaveLength(MAX_TEXT_LENGTH);
+  });
+
+  it('starts new shapes in a model colour, not the first custom layer', () => {
+    addLayer('Route');
+    expect(shapeDefaults('text').layer).toBe('buildings');
+    expect(shapeDefaults('path').layer).toBe('roads');
+  });
+
+  it('puts a copy beside its original, and inside the model near its edge', () => {
+    const frame = { center: [-87.63, 41.88] as [number, number], rotationDeg: 0, mmPerMetre: 0.07, buildingMmPerMetre: 0.07 };
+    setModelParts([], { editable: true, roads: null, objects: {}, ground: null, frame });
+    useApp.setState((state) => ({ generation: { ...state.generation, result: { bounds: [-100, -100, 0, 100, 100, 20] } as ResultMeta } }));
+    const projection = new Projection(frame.center, 0, 0.07);
+    const at = (x: number, y: number) => projection.modelToGeo(x, y);
+    commitEdits({ ...emptyEdits(), shapes: [shape('mid', { kind: 'box', at: at(0, 0), points: [] }), shape('edge', { kind: 'box', at: at(98, -98), points: [] })] });
+    duplicateShapes(['mid']);
+    duplicateShapes(['edge']);
+    const [, , mid, edge] = edits().shapes.map((s) => projection.toModel(...s.at));
+    expect(mid[0]).toBeCloseTo(5, 3);
+    expect(mid[1]).toBeCloseTo(-5, 3);
+    expect(edge[0]).toBeCloseTo(93, 3);
+    expect(edge[1]).toBeCloseTo(-93, 3);
+    expect(useApp.getState().ui.selection).toEqual([`s:${edits().shapes[3].id}`]);
+    useApp.setState((state) => ({ generation: { ...state.generation, result: null } }));
+    setModelParts([]);
   });
 
   it('holds building heights to what both limits allow at the scale', () => {

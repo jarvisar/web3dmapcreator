@@ -4,16 +4,76 @@
 
 import { CancelledError } from '../../core/engine/client';
 import { kindOf, objectOf, shapeKey, twinOf } from '../../core/edit/keys';
-import { editCount, emptyEdits, hasEdits, MAX_LAYERS, MAX_SHAPES, MAX_TEXT_LENGTH, type AddedShape, type EditLayer, type ModelEdits, type ObjectEdit } from '../../core/edit/types';
+import {
+  editCount,
+  emptyEdits,
+  hasEdits,
+  MAX_LAYERS,
+  MAX_SHAPES,
+  MAX_TEXT_LENGTH,
+  mergeEdits,
+  shapeGroup,
+  shapeLayerIn,
+  type AddedShape,
+  type EditLayer,
+  type ModelEdits,
+  type ObjectEdit,
+} from '../../core/edit/types';
+import { Projection } from '../../core/geo/projection';
 import { FILAMENTS } from '../../core/settings';
 import { getEngine } from './engine';
 import { describeCounts } from '../viewer/edit/describe';
 import { applyEditUpdate, getEditData } from './model';
 import { hasPicks, writeBackup, type Backup } from './persist';
-import { HISTORY_LIMIT, keepReplaced, patchSvg, toast, useApp, type Brought, type EditTool } from './store';
+import { HISTORY_LIMIT, keepReplaced, patchSvg, toast, useApp, type Brought, type EditTool, type Toast } from './store';
 
 const set = useApp.setState;
 const get = useApp.getState;
+
+/**
+ * The Undo on a toast, which takes back the change it's about and nothing
+ * else: a plain undo while the edits are still as that change left them,
+ * otherwise `inverse` applied to them as they are by then.
+ */
+function undoAction(after: ModelEdits, inverse: (edits: ModelEdits) => ModelEdits): NonNullable<Toast['action']> {
+  return {
+    label: 'Undo',
+    run: () => {
+      const edits = get().edits;
+      if (edits === after) {
+        undoEdit();
+        return;
+      }
+      const next = inverse(edits);
+      if (next === edits) return;
+      commitEdits(next);
+      settleEdits();
+    },
+  };
+}
+
+/** Edits with these objects' edits as `from` had them. The same edits when nothing changes. */
+function putObjects(edits: ModelEdits, keys: string[], from: ModelEdits): ModelEdits {
+  const objects = { ...edits.objects };
+  let changed = false;
+  for (const key of keys) {
+    if (objects[key] === from.objects[key]) continue;
+    changed = true;
+    if (from.objects[key]) objects[key] = from.objects[key];
+    else delete objects[key];
+  }
+  return changed ? { ...edits, objects } : edits;
+}
+
+/** Edits with these shapes added again where they're missing, as many as the limit allows. */
+function putShapes(edits: ModelEdits, shapes: AddedShape[]): ModelEdits {
+  const present = new Set(edits.shapes.map((s) => s.id));
+  const back = shapes
+    .filter((s) => !present.has(s.id))
+    .slice(0, Math.max(0, MAX_SHAPES - edits.shapes.length))
+    .map((s) => ({ ...s, layer: shapeLayerIn(s, edits.layers) }));
+  return back.length ? { ...edits, shapes: [...edits.shapes, ...back] } : edits;
+}
 
 /**
  * Replace the edits. Changes tagged with the same `coalesce` in a row (the
@@ -38,6 +98,19 @@ export function commitEdits(next: ModelEdits, coalesce?: string): void {
 /** Ends a coalescing run, so the next change undoes on its own. */
 export function settleEdits(): void {
   set((state) => (state.editHistory.coalesce ? { editHistory: { ...state.editHistory, coalesce: null } } : {}));
+}
+
+/**
+ * Puts the edits back to `before` when everything since is one undo step, as
+ * a drag's changes are, and leaves nothing to redo: a drag called off never
+ * happened. Anything else in between and it does nothing.
+ */
+export function revertEdits(before: ModelEdits): void {
+  set((state) => {
+    const past = state.editHistory.past;
+    if (state.edits === before || past[past.length - 1] !== before) return {};
+    return { edits: before, editHistory: { past: past.slice(0, -1), future: [], coalesce: null } };
+  });
 }
 
 export function undoEdit(): void {
@@ -78,11 +151,12 @@ export function clearEdits(): void {
   const cleared = emptyEdits();
   commitEdits(cleared);
   setSelection([]);
+  // Edits made since stay, and win where they changed the same thing.
+  const undo = undoAction(cleared, (now) => mergeEdits(edits, now).edits);
   toast('Every edit was undone.', 'info', {
-    label: 'Undo',
+    ...undo,
     run: () => {
-      if (get().edits !== cleared) return;
-      undoEdit();
+      undo.run();
       if (kept && get().backup === kept) forgetBackup();
     },
   });
@@ -218,7 +292,12 @@ export function clearEditsFor(keys: string[]): void {
   const objects = Object.fromEntries(Object.entries(edits.objects).filter(([key]) => !gone.has(key)));
   const shapes = edits.shapes.filter((shape) => !gone.has(shapeKey(shape.id)));
   commitEdits({ ...edits, objects, shapes });
-  toast(`Cleared ${keys.length} ${keys.length === 1 ? 'change' : 'changes'}.`, 'info', { label: 'Undo', run: undoEdit });
+  const cleared = edits.shapes.filter((shape) => gone.has(shapeKey(shape.id)));
+  toast(
+    `Cleared ${keys.length} ${keys.length === 1 ? 'change' : 'changes'}.`,
+    'info',
+    undoAction(get().edits, (now) => putShapes(putObjects(now, keys, edits), cleared)),
+  );
 }
 
 export function toggleSelected(keys: string[]): void {
@@ -278,7 +357,10 @@ export function removeObjects(keys: string[]): void {
   commitEdits({ ...edits, objects, shapes: edits.shapes.filter((s) => !shapes.has(shapeKey(s.id))) });
   // Water stays selected, for the choice of keeping its hollow.
   if (!others.length || others.some((key) => kindOf(key) !== 'water')) setSelection([]);
-  if (keys.length) toast(`Removed ${describeCounts(keys)}`, 'info', { label: 'Undo', run: undoEdit });
+  const deleted = edits.shapes.filter((s) => shapes.has(shapeKey(s.id)));
+  if (keys.length) {
+    toast(`Removed ${describeCounts(keys)}`, 'info', undoAction(get().edits, (now) => putShapes(putObjects(now, others, edits), deleted)));
+  }
 }
 
 export function restoreObjects(keys: string[]): void {
@@ -341,21 +423,40 @@ export function updateLayer(id: string, patch: Partial<Omit<EditLayer, 'id'>>, c
   commitEdits({ ...edits, layers }, coalesce);
 }
 
-/** Deletes a layer. What was in it goes back to its own colour, and its shapes to the buildings'. */
+/** Deletes a layer. What was in it goes back to its own colour, and its shapes to their kind's (shapeGroup). */
 export function deleteLayer(id: string): void {
   const edits = get().edits;
+  const layer = edits.layers.find((l) => l.id === id);
+  if (!layer) return;
   const objects: Record<string, ObjectEdit> = {};
+  const members: string[] = [];
   for (const [key, edit] of Object.entries(edits.objects)) {
     if (edit.layer !== id) {
       objects[key] = edit;
       continue;
     }
+    members.push(key);
     const rest = { ...edit };
     delete rest.layer;
     if (Object.keys(rest).length) objects[key] = rest;
   }
-  const shapes = edits.shapes.map((shape) => (shape.layer === id ? { ...shape, layer: 'buildings' } : shape));
-  commitEdits({ ...edits, layers: edits.layers.filter((layer) => layer.id !== id), objects, shapes });
+  const moved = new Set(edits.shapes.filter((shape) => shape.layer === id).map((shape) => shape.id));
+  const shapes = edits.shapes.map((shape) => (moved.has(shape.id) ? { ...shape, layer: shapeGroup(shape.kind) } : shape));
+  commitEdits({ ...edits, layers: edits.layers.filter((l) => l.id !== id), objects, shapes });
+  toast(
+    `Deleted ${layer.name}.`,
+    'info',
+    undoAction(get().edits, (now) => {
+      if (now.layers.some((l) => l.id === id) || now.layers.length >= MAX_LAYERS) return now;
+      const layers = [...now.layers];
+      layers.splice(Math.min(edits.layers.indexOf(layer), layers.length), 0, layer);
+      const back = { ...now.objects };
+      // Unless they were put in another layer since.
+      for (const key of members) if (!back[key]?.layer) back[key] = { ...back[key], layer: id };
+      const restored = now.shapes.map((shape) => (moved.has(shape.id) && shape.layer === shapeGroup(shape.kind) ? { ...shape, layer: id } : shape));
+      return { ...now, layers, objects: back, shapes: restored };
+    }),
+  );
 }
 
 // ---------------------------------------------------------------- shapes
@@ -404,23 +505,45 @@ export function updateShapes(ids: string[], patch: Partial<Omit<AddedShape, 'id'
   commitEdits({ ...edits, shapes: edits.shapes.map((shape) => (wanted.has(shape.id) ? { ...shape, ...patch } : shape)) }, coalesce);
 }
 
+/** A shape moved by model mm, every point of a path or area with it. */
+export function shiftShape(shape: AddedShape, dx: number, dy: number, projection: Projection): Pick<AddedShape, 'at' | 'points'> {
+  const move = ([lon, lat]: [number, number]): [number, number] => {
+    const [x, y] = projection.toModel(lon, lat);
+    return projection.modelToGeo(x + dx, y + dy);
+  };
+  return { at: move(shape.at), points: shape.points.map(move) };
+}
+
+/** How far a copy lands from its original, so it's seen to be there. */
+const DUPLICATE_OFFSET_MM = 5;
+
+/** Copies of shapes, a little down and to the right of them, or up and left near the model's edge. */
 export function duplicateShapes(ids: string[]): void {
   const edits = get().edits;
-  const copies = edits.shapes
-    .filter((shape) => ids.includes(shape.id))
-    .map((shape) => ({ ...structuredClone(shape), id: newId() }));
-  if (!copies.length || shapesFull(copies.length)) return;
+  const originals = edits.shapes.filter((shape) => ids.includes(shape.id));
+  if (!originals.length || shapesFull(originals.length)) return;
+  const frame = getEditData().frame;
+  const projection = frame ? new Projection(frame.center, frame.rotationDeg, frame.mmPerMetre) : null;
+  let dx = DUPLICATE_OFFSET_MM;
+  let dy = -DUPLICATE_OFFSET_MM;
+  const bounds = get().generation.result?.bounds;
+  if (projection && bounds) {
+    const anchors = originals.map((shape) => projection.toModel(...shape.at));
+    if (anchors.some(([x]) => x + dx > bounds[3])) dx = -dx;
+    if (anchors.some(([, y]) => y + dy < bounds[1])) dy = -dy;
+  }
+  const copies = originals.map((shape) => ({ ...structuredClone(shape), id: newId(), ...(projection ? shiftShape(shape, dx, dy, projection) : {}) }));
   commitEdits({ ...edits, shapes: [...edits.shapes, ...copies] });
   setSelection(copies.map((shape) => shapeKey(shape.id)));
 }
 
 /**
  * Shape defaults. A drawn line starts out as a road, in the roads' colour and
- * at their height, and a drawn outline as a building with a flat roof.
+ * at their height, and a drawn outline as a building with a flat roof. None
+ * start in a custom layer: that's picked for each one.
  */
 export function shapeDefaults(kind: AddedShape['kind']): Omit<AddedShape, 'id' | 'at' | 'points'> {
-  const fallback = kind === 'path' ? 'roads' : 'buildings';
-  const common = { kind, layer: firstLayer(fallback), rotationDeg: 0, liftMm: 0, text: '', font: 'montserrat' };
+  const common = { kind, layer: shapeGroup(kind), rotationDeg: 0, liftMm: 0, text: '', font: 'montserrat' };
   switch (kind) {
     case 'text':
       return { ...common, sizeMm: 5, depthMm: 5, heightMm: 1.2, followGround: true, text: (get().placeName || 'Label').slice(0, MAX_TEXT_LENGTH) };
@@ -437,11 +560,6 @@ export function shapeDefaults(kind: AddedShape['kind']): Omit<AddedShape, 'id' |
     case 'area':
       return { ...common, sizeMm: 10, depthMm: 10, heightMm: 4, followGround: false };
   }
-}
-
-/** A new shape goes in the first custom layer, or a colour of the model. */
-function firstLayer(fallback: string): string {
-  return get().edits.layers[0]?.id ?? fallback;
 }
 
 // ------------------------------------------------------------------ sync

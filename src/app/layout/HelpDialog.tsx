@@ -38,13 +38,13 @@ const MODEL_TIPS = [
 
 const EDIT_TIPS = [
   'Press the pencil at the top right of the 3D view to change the model before you download it. Click a building, road, path, tree or body of water to select it, or find it by name in the search box. Shift-click adds to the selection and Shift-drag selects everything in a box. The Select several tool does both without a key, and on a touch screen a tap there adds or drops one thing.',
-  'Drag the arrow on a selected building or shape to change its height. Roads and paths can be made wider or taller, and Whole street picks up every connected piece with the same name. A building mapped in parts lists them, to pick one.',
+  "Drag the arrow on a selected building or shape to change its height. Looking straight down it's hidden, so a drag there moves a shape instead. Roads and paths can be made wider or taller, and Whole street picks up every connected piece with the same name. A building mapped in parts lists them, to pick one.",
   'A new layer gives whatever you put in it a colour of its own. Each layer is exported as its own part with its own filament, so a racetrack or a favourite route can print in a different colour.',
   "Removing a road or building gives the ground back to the park or plaza it was cut out of. Water you leave out is filled with ground up to its banks, unless you keep its hollow.",
   'The tools on the left add text, map pins, boxes and cylinders, or draw your own roads and buildings. A drawn line starts out as a road and a drawn outline as a building. Drag a selected shape to move it and the points of a drawn one to reshape it. Tap or click a point, then Delete point, to take it out.',
   "Everything you add is built down to what it stands on, so nothing floats: the ground, a roof or bridge you raised it onto, or the bottom of the water. Letters thinner than the nozzle prints well get a warning.",
   'Edits follow the map features, not the mesh, so they stay when you change settings and generate again. A copied share link carries them too, unless there are too many.',
-  'Keys while editing: V, M, T, P, B, C, L and A pick the tools. Delete removes the selection, F looks at it, [ and ] turn shapes and the arrow keys nudge them (with Shift for bigger steps). Ctrl+D duplicates, Ctrl+Z undoes and Ctrl+Shift+Z redoes. Enter finishes a road or outline and Esc stops drawing.',
+  'Keys while editing: V, M, T, P, B, C, L and A pick the tools. Delete removes the selection, F looks at it, [ and ] turn shapes and the arrow keys nudge them (with Shift for bigger steps). Ctrl+D duplicates, Ctrl+Z undoes and Ctrl+Shift+Z redoes. Enter finishes a road or outline, and Esc stops drawing or calls off a drag.',
 ];
 
 const SVG_TIPS = [
