@@ -26,6 +26,7 @@
 
 ### Changed
 
+- `Layers > Parks and land cover > Satellite land cover` is new and off by default, so parks and forest come from mapped data only. Overture's land cover comes from ESA WorldCover, whose tree class counts tree-lined streets and gardens as forest, and leafy cities came out almost all green. The middle of a 10 km area of west Cincinnati was 60% forest, where its mapped woods, like an SVG map of the same area, cover 27%. `Scatter in satellite forest` under `Trees` still uses it.
 - An SVG map's scale is typed in mm per metre like a model's, and is fixed at 0.05 mm per metre (1:20,000) by default. Give it the piece size and the scale and the box on the map is sized to match. `Fixed scale` and `Fit the area` under `Area > Size` replace the lock button. With `Fit the area` you resize the box yourself and the scale follows, like before. Saved settings keep the scale they had, so switch to `Fixed scale` to pick the new default up.
 - `Layers > Land > Slope beaches into water` works differently and is off by default. It used to thin the sand from its full height to 0.1 mm at the waterline, on terrain that still ended in a bank above the water. Now it slopes the ground itself down to the water's surface under sand beside cut water, and the sand keeps its thickness on top, like every other surface. Sand mapped a little short of the water is run on to it. Roads, buildings and bridges by the water keep their bank. Off, sand is a plain slab that ends at a bank like parks and paving.
 - Parks, roads, buildings, piers and trees reach 0.04 mm into the terrain instead of 0.15 mm, and 3MF exports list the terrain after them and water after the terrain. PrusaSlicer, Bambu Studio and OrcaSlicer give an overlap to the part listed later, so a park or road could print a layer below the ground at the model's edges and shores. The terrain wins it now. Filament numbers stay the same, with the terrain first.
@@ -50,6 +51,7 @@
 
 ### Fixed
 
+- The same streets could be green in a large model and plain in a small one. Satellite land cover comes in tiles 30 to 40 km across, and one tile's forest was dropped from areas under about 10 km across as a regional polygon and kept in larger ones. Land cover is now picked by zoom level, so it's the same at any size. With trees on, small areas now get satellite forest trees too, like large ones already did.
 - Flickering in the 3D view where parks, roads and buildings meet the terrain at the model's edges and shores. The terrain shows there, the way it prints.
 - The plate count on screen could differ from the export. A 3 km area at the default scale showed 1 plate and exported 4.
 - The 36-plate limit applied to every format. It's only for Bambu Studio projects now, and it's checked before anything is meshed.

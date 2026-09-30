@@ -127,8 +127,8 @@ export function geometryExtentDegrees(geometry: GeoGeometry): [number, number] |
 }
 
 // Overture's bbox filter returns every feature that intersects the
-// selection, including regional polygons. A land_cover forest several
-// hundred thousand times the selection would blanket the model.
+// selection, including mapped outlines of whole regions, like a nature
+// reserve with towns in it. Land cover has its own test (isDetailedCover).
 export const MAXIMUM_EXTENT_RATIO = 8;
 
 export function isRegional(geometry: GeoGeometry, bounds: GeoBounds, ratio = MAXIMUM_EXTENT_RATIO): boolean {
@@ -136,6 +136,32 @@ export function isRegional(geometry: GeoGeometry, bounds: GeoBounds, ratio = MAX
   if (!extent) return false;
   const selection = Math.max((bounds.east - bounds.west) * (bounds.north - bounds.south), 1e-12);
   return (extent[0] * extent[1]) / selection > ratio;
+}
+
+// Land cover comes twice: zoom 0-7 polygons for small scale maps, some of
+// them continent sized, and zoom 8-15 ones cut to zoom 10 tiles. Picking by
+// zoom rather than by size against the selection keeps a place's cover the
+// same whatever the size of the area around it. The size test dropped a
+// 25 x 30 km forest tile from areas under about 10 km across and kept it
+// over whole neighbourhoods in larger ones.
+const COVER_ZOOM = 14;
+// Only used when a release has no zoom levels: no detailed polygon is wider
+// than a zoom 10 tile (0.35 degrees).
+const COVER_TILE_DEGREES = 0.36;
+
+/** A land cover polygon of the detailed level, from its zoom range or else its extent in degrees. */
+export function isDetailedCover(props: Record<string, unknown>, extent: [number, number] | null): boolean {
+  const cartography = props.cartography as Record<string, unknown> | null | undefined;
+  const min = num(cartography?.min_zoom);
+  const max = num(cartography?.max_zoom);
+  if (min !== null || max !== null) return (min ?? 0) <= COVER_ZOOM && COVER_ZOOM <= (max ?? Infinity);
+  return extent !== null && extent[0] <= COVER_TILE_DEGREES && extent[1] <= COVER_TILE_DEGREES;
+}
+
+/** Describes more than the ground here, so it makes no surface or forest. */
+export function isRegionalFeature(type: SourceType, feature: SourceFeature, bounds: GeoBounds): boolean {
+  if (type === 'land_cover') return !isDetailedCover(feature.props, geometryExtentDegrees(feature.geometry));
+  return isRegional(feature.geometry, bounds);
 }
 
 export function str(value: unknown): string {

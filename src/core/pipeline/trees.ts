@@ -8,7 +8,7 @@ import type { MeshSolid } from '../geometry/solid';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
 import { classifySurface, isTreePoint } from './classify';
 import { count, type Context } from './context';
-import { isRegional, projectPoints, projectPolygons, type SourceData, type SourceType } from './source';
+import { isRegionalFeature, projectPoints, projectPolygons, type SourceData, type SourceType } from './source';
 
 const CANOPY_DIAMETER_M = 7;
 const TREE_HEIGHT_M = 11;
@@ -177,7 +177,7 @@ export async function buildTrees(data: SourceData, ctx: Context, options: TreeOp
     for (const [type, features] of sources) {
       for (const feature of features) {
         if (classifySurface(type, feature) !== 'forest') continue;
-        if (isRegional(feature.geometry, ctx.bounds)) continue;
+        if (isRegionalFeature(type, feature, ctx.bounds)) continue;
         const polygons = projectPolygons(feature.geometry, ctx.projection).filter((p) => boxesOverlap(ringBounds(p[0]), ctx.cropBox));
         if (polygons.length) regions.push(intersection(clipToBox(polygons, ctx.cropBox), ctx.cropSet));
       }

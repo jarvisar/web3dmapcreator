@@ -7,7 +7,8 @@
 // Options: --bbox w,s,e,n | --preset name | --area lon,lat,width,height[,rotation]
 // (metres, as in a share link), --shape rectangle|rounded|circle|hexagon,
 // --rotation deg, --scale mm-per-metre, --fit mm, --format bambu|prusa|3mf|stl-zip|stl,
-// --printer P1S, --multi-plate, --section mm, --bridges, --trees, --flat, --out path,
+// --printer P1S, --multi-plate, --section mm, --bridges, --trees, --satellite-cover
+// (satellite land cover as surfaces), --flat, --out path,
 // --settings path.json (merged onto the defaults), --no-filter (download every row,
 // for checking that the row filter drops nothing generation uses), --lidar (measure
 // buildings from streamed LiDAR), --lidar-cache dir (default out/lidar-cache),
@@ -98,6 +99,7 @@ async function main() {
   }
   if (flag('bridges')) settings.bridges.enabled = true;
   if (flag('trees')) settings.trees.enabled = true;
+  if (flag('satellite-cover')) settings.land.satelliteCover = true;
   if (flag('flat')) settings.terrain.elevation = false;
   if (flag('lidar')) settings.lidar.enabled = true;
   if (flag('lidar-only')) settings.modelSource = 'lidar';

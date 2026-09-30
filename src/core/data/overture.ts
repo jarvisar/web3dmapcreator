@@ -76,13 +76,14 @@ export const OVERTURE_COLUMNS: Record<OvertureType, readonly string[]> = {
   water: ['subtype', 'class', 'is_salt', 'is_intermittent', 'level', 'source_tags'],
   land: ['subtype', 'class', 'surface', 'elevation', 'source_tags'],
   land_use: ['subtype', 'class', 'surface', 'source_tags'],
-  land_cover: ['subtype', 'class'],
+  land_cover: ['subtype', 'class', 'cartography'],
   infrastructure: ['subtype', 'class', 'surface', 'height', 'width', 'source_tags'],
 };
 
 // Struct columns read only in part. names.common and names.rules hold the
-// translations and can outweigh the primary name many times.
-const STRUCT_CHILDREN: Record<string, readonly string[]> = { names: ['primary'] };
+// translations and can outweigh the primary name many times. Land cover's
+// zoom range picks its detailed polygons (isDetailedCover).
+const STRUCT_CHILDREN: Record<string, readonly string[]> = { names: ['primary'], cartography: ['min_zoom', 'max_zoom'] };
 
 // Footer bytes per row group in release 2026-09-23.1, rounded up. hyparquet
 // fetches the rest when a guess is short, which costs one more request.

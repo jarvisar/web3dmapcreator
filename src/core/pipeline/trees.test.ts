@@ -94,6 +94,23 @@ describe('buildTrees', () => {
     for (const tree of trees) expect(footprintInside(tree, -HALF, -HALF, HALF, HALF)).toBe(true);
   });
 
+  it('scatters through detailed satellite forest whatever its size', async () => {
+    const ctx = context();
+    const [lon, lat] = ctx.projection.center;
+    // Cut to a zoom 10 tile, nearly 300 times the selection.
+    const tile = (min_zoom: number, max_zoom: number): SourceFeature => ({
+      id: `cover ${min_zoom}`,
+      props: { subtype: 'forest', cartography: { min_zoom, max_zoom } },
+      geometry: { type: 'Polygon', coordinates: [[[lon - 0.17, lat - 0.17], [lon + 0.17, lat - 0.17], [lon + 0.17, lat + 0.17], [lon - 0.17, lat + 0.17], [lon - 0.17, lat - 0.17]]] },
+    });
+    expect((await plant(ctx, 'land_cover', [tile(8, 15)])).length).toBeGreaterThan(100);
+    expect(await plant(ctx, 'land_cover', [tile(0, 7)])).toEqual([]);
+    // Satellite surfaces are a separate setting.
+    expect(ctx.settings.land.satelliteCover).toBe(false);
+    const off = context((s) => (s.trees.landCoverScatter = false));
+    expect(await plant(off, 'land_cover', [tile(8, 15)])).toEqual([]);
+  });
+
   it('keeps crowns off buildings with road avoidance off', async () => {
     const ctx = context((s) => (s.trees.avoidRoads = false));
     const building: MultiPolygon = [[[[-10, -10], [10, -10], [10, 10], [-10, 10]]]];

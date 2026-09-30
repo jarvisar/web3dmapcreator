@@ -22,7 +22,7 @@ import type { SurfaceCategory } from '../settings';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
 import { classifySurface, isBridgeArea } from './classify';
 import { count, type Context } from './context';
-import { isPolygonal, isRegional, projectPolygons, type SourceData, type SourceType } from './source';
+import { isPolygonal, isRegionalFeature, projectPolygons, type SourceData, type SourceType } from './source';
 
 const MINIMUM_AREA_MM2 = 0.25;
 const TILED_ABOVE_MM = 250;
@@ -44,7 +44,9 @@ export async function buildLand(
   exclude: { water: MultiPolygon; roads: MultiPolygon; buildings: MultiPolygon; bridgeLines: Vec2[][] },
 ): Promise<LandSurfaces> {
   const collected: Record<SurfaceCategory, Polygon[]> = { paved: [], sand: [], rock: [], green: [], forest: [] };
-  const types: SourceType[] = ['land', 'land_use', 'land_cover'];
+  const types: SourceType[] = ['land', 'land_use'];
+  // Also read for scattered trees, so the setting decides here too.
+  if (ctx.settings.land.satelliteCover) types.push('land_cover');
   const cropBox = ctx.cropBox;
   let seen = 0;
   const total = types.reduce((n, t) => n + (data.features[t]?.length ?? 0), 0) || 1;
@@ -56,7 +58,7 @@ export async function buildLand(
       if (!isPolygonal(feature.geometry)) continue;
       const category = classifySurface(type, feature);
       if (!category) continue;
-      if (isRegional(feature.geometry, ctx.bounds)) {
+      if (isRegionalFeature(type, feature, ctx.bounds)) {
         count(ctx, 'land_regional_skipped');
         continue;
       }

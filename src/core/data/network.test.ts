@@ -53,6 +53,16 @@ describe.skipIf(process.env.NETWORK !== '1')('live data', () => {
     expect(lat).toBeCloseTo(41.88, 1);
   }, 180000);
 
+  it('reads the zoom range of land cover', async () => {
+    const data = await fetchOverture({ bounds: LOOP, types: ['land_cover'] });
+    const zooms = data.features.land_cover.map((f) => f.props.cartography as Record<string, unknown>);
+    expect(zooms.length).toBeGreaterThan(0);
+    for (const zoom of zooms) expect(Object.keys(zoom).sort()).toEqual(['max_zoom', 'min_zoom']);
+    // The detailed level, and the one for small scale maps.
+    expect(zooms.some((z) => z.min_zoom === 8 && z.max_zoom === 15)).toBe(true);
+    expect(zooms.some((z) => typeof z.max_zoom === 'number' && z.max_zoom < 8)).toBe(true);
+  }, 180000);
+
   it('downloads the elevation for the Chicago Loop', async () => {
     const started = performance.now();
     const dem = await fetchDem({ bounds: LOOP, targetSpacingM: 1100 / 192 });

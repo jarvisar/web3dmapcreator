@@ -6,7 +6,7 @@ import type { GeoBounds } from '../types';
 import { LAND_CLASS, LAND_COVER_SUBTYPE, LAND_USE_CLASS, WATER_DECK } from './classify';
 import { MINOR_ROAD_CLASSES } from './linework';
 import { AIRPORT_AREAS, AIRPORT_LINE_WIDTH_M } from './roads';
-import { MAXIMUM_EXTENT_RATIO, str, type SourceType } from './source';
+import { isDetailedCover, MAXIMUM_EXTENT_RATIO, str, type SourceType } from './source';
 
 export type RowFilter = (type: SourceType, props: Record<string, unknown>, bbox: [number, number, number, number]) => boolean;
 
@@ -17,6 +17,7 @@ interface Requirements {
   paths: boolean;
   airports: boolean;
   surfaces: boolean;
+  landCoverSurfaces: boolean;
   decks: boolean;
   mappedTrees: boolean;
   forestTrees: boolean;
@@ -34,6 +35,7 @@ function requirements(settings: ModelSettings): Requirements {
     paths: settings.roads.includePaths,
     airports: settings.roads.enabled && settings.roads.includeAirports,
     surfaces: settings.land.enabled,
+    landCoverSurfaces: settings.land.enabled && settings.land.satelliteCover,
     decks: settings.supports,
     mappedTrees: trees.enabled && trees.mapped,
     forestTrees,
@@ -57,7 +59,7 @@ function neededTypes(need: Requirements): SourceType[] {
   }
   if (need.surfaces || need.decks || need.forestTrees || need.lidarRock || need.mappedTrees) types.add('land');
   if (need.surfaces || need.decks || need.forestTrees) types.add('land_use');
-  if (need.surfaces || need.landCoverTrees) types.add('land_cover');
+  if (need.landCoverSurfaces || need.landCoverTrees) types.add('land_cover');
   return [...types];
 }
 
@@ -98,8 +100,8 @@ function rowFilter(need: Requirements, bounds: GeoBounds): RowFilter {
       }
       case 'land_cover': {
         const category = LAND_COVER_SUBTYPE[subtype] ?? LAND_COVER_SUBTYPE[cls];
-        if (!category || regional(bbox)) return false;
-        return surfaces || (need.landCoverTrees && category === 'forest');
+        if (!category || !isDetailedCover(props, [bbox[2] - bbox[0], bbox[3] - bbox[1]])) return false;
+        return need.landCoverSurfaces || (need.landCoverTrees && category === 'forest');
       }
       case 'infrastructure':
         if (subtype === 'airport') {

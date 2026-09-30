@@ -165,6 +165,12 @@ function LandOptions({ land }: { land: ModelSettings['land'] }) {
   };
   return (
     <>
+      <CheckField
+        label="Satellite land cover"
+        checked={land.satelliteCover}
+        onChange={(satelliteCover) => patchSettings('land', { satelliteCover })}
+        help="Add forest, shrub and grass seen from satellite (ESA WorldCover) to the mapped parks and woods. It fills in wooded hillsides nobody mapped, but it also counts tree-lined streets and gardens as forest, so whole neighbourhoods can come out green."
+      />
       <NumberField
         label="Rise above terrain"
         value={land.riseMm}
@@ -928,7 +934,7 @@ export function LayersPanel() {
               group="green"
               on={land.enabled}
               onToggle={(enabled) => patchSettings('land', { enabled })}
-              summary={land.enabled ? `${mm(land.riseMm)} rise` : 'Off'}
+              summary={land.enabled ? `${mm(land.riseMm)} rise${land.satelliteCover ? ' · satellite' : ''}` : 'Off'}
               help="Parks, forest floor, sand, rock and paved plazas as thin slabs on the terrain, each in its own colour."
               resetKey="land"
             >

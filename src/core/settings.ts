@@ -70,6 +70,8 @@ export interface ModelSettings {
     embedMm: number;
     /** Highest priority first; a higher category owns overlapping ground. */
     priority: SurfaceCategory[];
+    /** Add forest, shrub and grass from satellite land cover to the mapped surfaces. */
+    satelliteCover: boolean;
     taperBeaches: boolean;
     beachWidthMm: number;
   };
@@ -193,6 +195,9 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     riseMm: 0.4,
     embedMm: 0.04,
     priority: ['paved', 'sand', 'rock', 'green', 'forest'],
+    // Off: satellite tree cover counts tree-lined streets and gardens as
+    // forest, and turned whole neighbourhoods green.
+    satelliteCover: false,
     taperBeaches: false,
     beachWidthMm: 1.5,
   },

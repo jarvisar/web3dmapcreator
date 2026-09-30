@@ -11,7 +11,7 @@ Buildings, roads, railways, water, land, land use, land cover and infrastructure
 | Buildings | Buildings and building parts | ODbL |
 | Transportation | Roads, paths, railways, bridges | ODbL |
 | Base: land, water, land use, infrastructure | Water cuts, parks, piers, airports | ODbL |
-| Base: land cover | Forest and other land cover | ODbL, with ESA WorldCover content under CC BY 4.0 |
+| Base: land cover | Satellite forest and grass, when `Satellite land cover` or `Scatter in satellite forest` is on | ODbL, with ESA WorldCover content under CC BY 4.0 |
 
 Attribution:
 
@@ -19,7 +19,7 @@ Attribution:
 © OpenStreetMap contributors, Overture Maps Foundation
 ```
 
-Land cover also requires:
+Models made with land cover also need:
 
 ```text
 © ESA WorldCover project 2020 / Contains modified Copernicus Sentinel data (2020) processed by ESA WorldCover consortium

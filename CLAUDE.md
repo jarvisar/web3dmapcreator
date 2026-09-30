@@ -102,6 +102,12 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   footprints are cut out of slabs, and slivers under ~0.2 mm are opened away.
   Above 250 mm this runs in 50 mm tiles with a 1 mm margin (`tiled`), so
   each boolean only sees what's near it and seams match a single pass.
+- Satellite land cover (`land.satelliteCover`) is off by default. WorldCover
+  calls tree-lined streets forest, and whole neighbourhoods came out green.
+  Land cover is picked by zoom level (`isDetailedCover`), never by size
+  against the selection: a detailed polygon is a whole zoom 10 tile, so a
+  size test made the same streets green or not with the size of the area.
+  Mapped `land` and `land_use` keep the size test (`isRegional`).
 - Don't bring back Clipper2's `rectClip`. It drops a corner when a ring
   leaves the rectangle through one side and comes back through the next (up
   to 2 mm2 on random road networks). `clipToRect` (`geometry/clipRect.ts`,
