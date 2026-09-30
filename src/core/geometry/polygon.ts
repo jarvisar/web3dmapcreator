@@ -305,6 +305,18 @@ export function union(...sets: (MultiPolygon | Polygon[])[]): MultiPolygon {
   return run(ClipType.Union, paths, null);
 }
 
+/**
+ * Union of rings as they're drawn, each keeping its own direction, so a
+ * letter's counter drawn the other way round stays a hole.
+ */
+export function unionRings(rings: Ring[]): MultiPolygon {
+  const paths: Paths64 = [];
+  for (const ring of rings) {
+    if (ring.length >= 3) paths.push(ring.map(([x, y]) => ({ x: Math.round(x * SCALE), y: Math.round(y * SCALE) })));
+  }
+  return paths.length ? run(ClipType.Union, paths, null) : [];
+}
+
 export function difference(subject: MultiPolygon, clip: MultiPolygon): MultiPolygon {
   if (!subject.length) return [];
   if (!clip.length) return run(ClipType.Union, toPaths(subject), null);
@@ -341,7 +353,10 @@ export class ClipSet {
   }
   /** The rings cut to a box, much cheaper than clipping against all of them. */
   within(box: Box, margin = 0): Paths64 {
-    const rect = rectFor(box, margin);
+    return this.withinRect(rectFor(box, margin));
+  }
+  /** The same with the box in Clipper units, so boxes sharing an edge cut at exactly the same place. */
+  withinRect(rect: Rect64): Paths64 {
     const near: Paths64 = [];
     for (let i = 0; i < this.paths.length; i++) {
       const b = i * 4;
@@ -352,6 +367,46 @@ export class ClipSet {
     }
     return near.length ? clipToRect(rect, near) : [];
   }
+  /** The rings cut to a box, as polygons, holes and all. */
+  polygonsWithin(box: Box, margin = 0): MultiPolygon {
+    return this.polygonsWithinRect(rectFor(box, margin));
+  }
+  /** The same with the box in Clipper units. */
+  polygonsWithinRect(rect: Rect64): MultiPolygon {
+    const paths = this.withinRect(rect);
+    return paths.length ? run(ClipType.Union, paths, null) : [];
+  }
+}
+
+/**
+ * Polygons cut into a grid of square tiles, `step` Clipper units each from
+ * (left, top), keyed row * cols + column. The grid is halved again and again
+ * rather than clipped tile by tile, so a city-wide road polygon costs its
+ * size a few times over, not once per tile.
+ */
+export function splitToTiles(polygons: MultiPolygon, left: number, top: number, step: number, cols: number, rows: number): Map<number, MultiPolygon> {
+  const out = new Map<number, MultiPolygon>();
+  const visit = (paths: Paths64, c0: number, r0: number, c1: number, r1: number) => {
+    if (!paths.length) return;
+    if (c0 === c1 && r0 === r1) {
+      const pieces = run(ClipType.Union, paths, null);
+      if (pieces.length) out.set(r0 * cols + c0, pieces);
+      return;
+    }
+    const rect = (a: number, b: number, c: number, d: number): Rect64 => ({ left: left + a * step, top: top + b * step, right: left + (c + 1) * step, bottom: top + (d + 1) * step });
+    if (c1 - c0 >= r1 - r0) {
+      const mid = Math.floor((c0 + c1) / 2);
+      visit(clipToRect(rect(c0, r0, mid, r1), paths), c0, r0, mid, r1);
+      visit(clipToRect(rect(mid + 1, r0, c1, r1), paths), mid + 1, r0, c1, r1);
+    } else {
+      const mid = Math.floor((r0 + r1) / 2);
+      visit(clipToRect(rect(c0, r0, c1, mid), paths), c0, r0, c1, mid);
+      visit(clipToRect(rect(c0, mid + 1, c1, r1), paths), c0, mid + 1, c1, r1);
+    }
+  };
+  const whole: Rect64 = { left, top, right: left + cols * step, bottom: top + rows * step };
+  visit(clipToRect(whole, toPaths(polygons)), 0, 0, cols - 1, rows - 1);
+  return out;
 }
 
 /**
@@ -421,9 +476,14 @@ export function normalize(mp: MultiPolygon | Polygon[]): MultiPolygon {
  * much more expensive union.
  */
 export function clipToBox(mp: MultiPolygon | Polygon[], box: Box, margin = 1): MultiPolygon {
+  return clipToUnits(mp, rectFor(box, margin));
+}
+
+/** The same with the rectangle in Clipper units. */
+export function clipToUnits(mp: MultiPolygon | Polygon[], rect: Rect64): MultiPolygon {
   const paths = toPaths(mp);
   if (!paths.length) return [];
-  const clipped = clipToRect(rectFor(box, margin), paths);
+  const clipped = clipToRect(rect, paths);
   if (!clipped.length) return [];
   return run(ClipType.Union, clipped, null);
 }

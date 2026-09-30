@@ -39,6 +39,8 @@ export function defaultRenderSettings(mode: OutputMode = 'laser'): RenderSetting
     label: { ...DEFAULTS.label, text: place.label, style: product.labelStyle },
     source: DEFAULTS.source,
     plotter: DEFAULTS.plotter,
+    routes: [],
+    hiddenLines: [],
     title: place.name,
   });
 }

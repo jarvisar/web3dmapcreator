@@ -23,6 +23,18 @@ Open the 3MF in Bambu Studio with `File > Open Project`. Every part already has 
 
 `Export options` and `Import options` at the bottom of the settings save and restore a JSON file. Leave `Include map area` checked to restore the whole setup, or uncheck it to reuse the options at another location. Custom font files are separate.
 
+### Editing a Model
+
+Press the pencil at the top right of the 3D view to change the model before downloading it. Click a building, road, path, tree or body of water to select it. `Shift`-click adds to the selection, `Shift`-drag selects everything in a box and `Alt`-click picks one part of a building. `Whole street` selects the rest of a road with the same name.
+
+- Remove things, or leave water out of the export. A removed road or building gives its ground back to the park or plaza it was cut out of.
+- Drag the arrow on top of a building or shape to change its height, or type one in.
+- Make roads and paths wider or taller.
+- Put anything in a custom layer to give it a colour of its own. Each layer is exported as its own part with its own filament, so a racetrack or a favourite route can print in a different colour.
+- Add text, map pins, boxes and cylinders, or draw your own paths and areas. Drag the points of a path or area to reshape it.
+
+Edits follow the map features, not the mesh, so they stay when you change settings and generate again. They're saved in the browser, and in exported options when the map area is included. `Ctrl+Z` undoes, and Help lists the other keys.
+
 ### SVG Maps
 
 ![The Chicago Loop as an SVG map on a 5 x 7 in plaque, in the laser preview](docs/images/svg-map.png)
@@ -30,6 +42,8 @@ Open the 3MF in Bambu Studio with `File > Open Project`. Every part already has 
 Pick the piece under `Size`: a plaque, a sheet of paper, a coaster or your own size. The box on the map becomes the map inside the piece's border, with the margin, border and title drawn around it. By default the scale is fixed at 0.05 mm per metre (1:20,000), set under `Area`, and the box takes its size from the piece and the scale. Switch to `Fit the area` to resize the box yourself and let the scale follow.
 
 Click `Generate SVG` to open the preview, which keeps up with the settings while it's open, then `Download .svg`. `Output` switches between a laser (fills engrave, lines score and the edge cuts, one colour per layer), a pen plotter (everything is a stroke, one numbered layer per pen) and print (coloured themes). The file is sized in millimetres, so check the imported size in your laser software.
+
+To draw a route in a colour of its own, click the route button over the preview and pick the roads, paths or railways it follows. Each route is its own layer in the SVG, and picked roads can be left out instead. Picks are saved with the settings but not in share links.
 
 Two lines closer together than the laser beam burn as one dark band, so `Line cleanup` merges them, like sidewalks next to roads. Set `Line spacing` to about your beam width, or 1.5 to 2 times your pen width. See [SVG maps](docs/SVG_MAPS.md) for more.
 
@@ -48,12 +62,14 @@ The water comes from the survey, with Overture's water outlines used for smooth 
 - Optional LiDAR buildings, rebuilt from their scanned roofs with setbacks, towers, domes and spires, from USGS 3DEP, IGN France, NRCan, swisstopo and Open LiDAR Data
 - LiDAR only models: the whole area from a survey as one single-colour solid, with water recessed, as a thin layer in its own colour, or cut away
 - Optional bridges on piers, trees and a border rim
+- An editor in the 3D view: remove, raise or recolour buildings, widen roads, leave water out, and add text, pins and shapes. Custom layers export as parts of their own
 - Crop to a rectangle, rounded rectangle, circle or hexagon, rotated to follow the street grid
 - Fixed print scale, or fit the model to a size
 - Large models split into sections, one per plate
 - Exports a Bambu Studio project, a PrusaSlicer project, a 3MF with colours, or STL files
 - Colour presets, including a 4-colour AMS palette and a single-colour one
 - SVG maps for laser engravers, pen plotters and print, with a border, a title in one of eleven fonts or your own, and line cleanup made for the beam width
+- Routes in SVG maps: roads you pick, drawn in a colour and layer of their own
 - Runs entirely in the browser, and installs as an app. Downloaded data is cached, so changing a setting regenerates quickly
 
 ## Printing Tips
@@ -90,6 +106,8 @@ Pushing to `main` deploys the site with GitHub Actions. Set `Settings > Pages > 
 - LiDAR is only read from surveys a browser can stream (EPT and COPC). Places only covered by tiled LAZ downloads, like England, most of Germany and Spain, keep their mapped buildings.
 - LiDAR downloads are big: 150 to 450 MB per km² depending on the survey. The `Chicago - The Loop (small)` preset reads about 790 MB and takes about 4 minutes the first time, the `Paris - Eiffel Tower` preset about 2.2 GB and 15 minutes. Point data is cached in the browser up to 1 GB, and measured buildings are reused for a day.
 - A LiDAR only model shows the city the year it was surveyed. Glass, dark roofs and water return few points, and those spots are filled in from around them. It's 2.5D, so skybridges and elevated tracks are solid down to the ground, and with the water in a layer or cut away, bridges are solid walls down to the base.
+- Edits are tied to Overture's IDs. Most carry over from one monthly Overture release to the next, but a road or building that was redrawn gets a new ID and its edit stops applying.
+- Only added paths and areas can be reshaped point by point. Generated buildings, roads and terrain can be raised, widened or removed, but not reshaped. A LiDAR only model is one surface, so only added shapes can be edited on it.
 - The model is made of separate overlapping parts, one per colour. Slicers join them, but other tools may report them as intersecting.
 - The Bambu Studio project is tested in Bambu Studio 2.8. It hasn't been tested in OrcaSlicer.
 - SVG maps are drawn from OpenFreeMap's vector tiles, not the Overture data the models use, so the two can differ a little.

@@ -29,6 +29,7 @@ export function startSync(): void {
       state.settings !== previous.settings ||
       state.palette !== previous.palette ||
       state.exportSettings !== previous.exportSettings ||
+      state.edits !== previous.edits ||
       state.svg !== previous.svg ||
       state.placeName !== previous.placeName ||
       state.fileName !== previous.fileName ||

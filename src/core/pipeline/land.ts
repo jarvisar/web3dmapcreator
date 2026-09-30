@@ -38,10 +38,16 @@ function lineMeetsPolygon(line: Vec2[], polygon: Polygon): boolean {
   return clipLines([line], [polygon]).length > 0;
 }
 
+/**
+ * `regions`, when given, gets each category's ground before water, roads and
+ * buildings are cleared from it, for the editor to fill what a removed road
+ * or building leaves (edit/land.ts).
+ */
 export async function buildLand(
   data: SourceData,
   ctx: Context,
   exclude: { water: MultiPolygon; roads: MultiPolygon; buildings: MultiPolygon; bridgeLines: Vec2[][] },
+  regions?: Partial<LandSurfaces>,
 ): Promise<LandSurfaces> {
   const collected: Record<SurfaceCategory, Polygon[]> = { paved: [], sand: [], rock: [], green: [], forest: [] };
   const types: SourceType[] = ['land', 'land_use'];
@@ -89,6 +95,7 @@ export async function buildLand(
     let region = intersection(clipToBox(collected[category], ctx.cropBox), ctx.cropSet);
     if (owned.length) region = difference(region, owned);
     owned = union(owned, region);
+    if (regions) regions[category] = region;
     region = tiled(region, tile, TILE_MARGIN_MM, (local) => {
       const kept = differenceSet(local, cleared);
       // Strips narrower than about half a nozzle line (a median between two

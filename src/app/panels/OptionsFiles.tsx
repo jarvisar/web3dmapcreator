@@ -1,5 +1,6 @@
 import { Download, Upload } from 'lucide-react';
 import { useRef, useState } from 'react';
+import { hasEdits } from '../../core/edit/types';
 import { CheckField } from '../components/Fields';
 import { CUSTOM_FONT_ID } from '../../core/svgmap/text/fonts';
 import { downloadBlob } from '../lib/browser';
@@ -34,7 +35,8 @@ export function OptionsFiles() {
       <div className="options-file-buttons">
         <button type="button" className="btn" onClick={() => {
           const state = useApp.getState();
-          const map = includeArea ? { area: state.area, placeName: state.placeName, fileName: state.fileName } : undefined;
+          const edits = hasEdits(state.edits) ? { edits: state.edits } : {};
+          const map = includeArea ? { area: state.area, placeName: state.placeName, fileName: state.fileName, ...edits } : undefined;
           downloadBlob(new Blob([encodeOptions(state, map)], { type: 'application/json' }), 'city-model-options.json');
           if (usesCustomFont(state)) toast('Options exported. Custom font files need to be copied separately.', 'info');
         }}>
@@ -45,7 +47,7 @@ export function OptionsFiles() {
         </button>
       </div>
       <CheckField label="Include map area" checked={includeArea} onChange={setIncludeArea} />
-      <p className="options-file-help">Save or load options as a JSON file. Uncheck to keep the current location and shape. SVG area size follows the piece and scale.</p>
+      <p className="options-file-help">Save or load options as a JSON file. With the map area, edits made in the 3D view go too. Uncheck to keep the current location and shape. SVG area size follows the piece and scale.</p>
       <input ref={input} type="file" accept=".json,application/json" hidden aria-label="Import options file" onChange={(event) => {
         const file = event.currentTarget.files?.[0];
         event.currentTarget.value = '';

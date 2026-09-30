@@ -8,7 +8,8 @@ interface TooltipProps {
   anchor: HTMLElement | null;
   open: boolean;
   children: ReactNode;
-  placement?: 'top' | 'bottom';
+  /** 'right' sits beside the anchor, for a toolbar down the side. */
+  placement?: 'top' | 'bottom' | 'right';
   id?: string;
 }
 
@@ -23,7 +24,12 @@ export function Tooltip({ anchor, open, children, placement = 'top', id }: Toolt
     }
     const box = ref.current.getBoundingClientRect();
     const rect = anchor.getBoundingClientRect();
-    const place = placeFloating(rect, { width: box.width, height: box.height }, placement, 7);
+    const place = placeFloating(rect, { width: box.width, height: box.height }, placement === 'right' ? 'right-start' : placement, 7);
+    if (place.side === 'left' || place.side === 'right') {
+      const top = Math.max(8, rect.top + rect.height / 2 - box.height / 2);
+      setPosition({ left: place.left, top, side: place.side, arrow: rect.top + rect.height / 2 - top });
+      return;
+    }
     // The box can be pushed in from the screen edge, so aim the arrow at the anchor itself.
     const arrow = Math.min(box.width - 8, Math.max(8, rect.left + rect.width / 2 - place.left));
     setPosition({ left: place.left, top: place.top, side: place.side, arrow });

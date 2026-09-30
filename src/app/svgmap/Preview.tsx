@@ -1,7 +1,7 @@
 // The generated SVG map. While it's on screen it renders again whenever the
 // settings change, the way SVGmap's preview did.
-import { Info, Maximize, Minus, Plus, TriangleAlert, X } from 'lucide-react';
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { Info, Maximize, Minus, Plus, Route, TriangleAlert, X } from 'lucide-react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { OutputGroup, RenderResult } from '../../core/svgmap/result';
 import type { ElementId } from '../../core/svgmap/settings';
 import { Segmented } from '../components/Segmented';
@@ -11,6 +11,7 @@ import { formatBytes, formatInteger, formatNumber, formatSeconds } from '../lib/
 import { type PreviewLook, setPreviewLook, useApp } from '../state/store';
 import { renderSvgNow, svgProblem, useSvgKey } from './actions';
 import { renderFraction, useSvgRender } from './render';
+import { PickIndex, PickOverlay, RouteCard } from './RoutePicker';
 
 // The part of the piece in view, in mm. The height follows the stage.
 interface Box {
@@ -150,6 +151,18 @@ export function SvgPreview() {
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<{ box: Box; start: Map<number, Point> } | null>(null);
   const [dragging, setDragging] = useState(false);
+  // Picking roads: a press that barely moves is a click, anything more still pans.
+  const [picking, setPicking] = useState(false);
+  const routes = useApp((state) => state.svg.routes);
+  const [selected, setSelected] = useState<number[]>([]);
+  const [hoverLine, setHoverLine] = useState(-1);
+  const pressed = useRef<{ point: Point; moved: boolean; shift: boolean } | null>(null);
+  const index = useMemo(() => (result?.pick ? new PickIndex(result.pick) : null), [result]);
+  // Line numbers belong to one render.
+  useEffect(() => {
+    setSelected([]);
+    setHoverLine(-1);
+  }, [index]);
 
   useEffect(() => {
     const el = ref.current;
@@ -196,6 +209,12 @@ export function SvgPreview() {
     gesture.current = box && pointers.current.size > 0 ? { box, start: new Map(pointers.current) } : null;
     setDragging(pointers.current.size > 0);
   };
+  // Where a stage point is on the piece, in mm, and a few pixels' reach there.
+  const pieceAt = ([px, py]: Point): { x: number; y: number; reach: number } | null => {
+    if (!box || size.w === 0) return null;
+    const k = box.w / size.w;
+    return { x: box.x + px * k, y: box.y + py * k, reach: 8 * k };
+  };
   const onPointerDown = (e: React.PointerEvent) => {
     if (!box) return;
     try {
@@ -205,9 +224,16 @@ export function SvgPreview() {
       return;
     }
     pointers.current.set(e.pointerId, stagePoint(e));
+    pressed.current = pointers.current.size === 1 ? { point: stagePoint(e), moved: false, shift: e.shiftKey || e.ctrlKey || e.metaKey } : null;
     restart();
   };
   const onPointerMove = (e: React.PointerEvent) => {
+    if (picking && index && !pointers.current.size) {
+      const at = pieceAt(stagePoint(e));
+      if (at) setHoverLine(index.nearest(at.x, at.y, at.reach));
+    }
+    const press = pressed.current;
+    if (press && Math.hypot(stagePoint(e)[0] - press.point[0], stagePoint(e)[1] - press.point[1]) > 4) press.moved = true;
     const g = gesture.current;
     if (!g || !pointers.current.has(e.pointerId) || size.w === 0) return;
     pointers.current.set(e.pointerId, stagePoint(e));
@@ -222,6 +248,18 @@ export function SvgPreview() {
   const onPointerUp = (e: React.PointerEvent) => {
     pointers.current.delete(e.pointerId);
     restart();
+    const press = pressed.current;
+    pressed.current = null;
+    if (!picking || !index || !press || press.moved || e.type === 'pointercancel') return;
+    const at = pieceAt(press.point);
+    if (!at) return;
+    const line = index.nearest(at.x, at.y, at.reach);
+    if (line < 0) {
+      if (!press.shift) setSelected([]);
+      return;
+    }
+    if (press.shift) setSelected((current) => (current.includes(line) ? current.filter((l) => l !== line) : [...current, line]));
+    else setSelected([line]);
   };
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (!box || size.w === 0) return;
@@ -282,6 +320,7 @@ export function SvgPreview() {
         {result && box && (
           <svg viewBox={`${box.x} ${box.y} ${box.w} ${h}`} preserveAspectRatio="xMidYMid meet">
             <PreviewContent result={result} look={look} />
+            {picking && index && <PickOverlay index={index} selected={selected} hover={hoverLine} unit={box.w / Math.max(size.w, 1)} routes={routes} />}
           </svg>
         )}
       </div>
@@ -327,6 +366,17 @@ export function SvgPreview() {
             <ToolButton label="SVG details" pressed={card === 'info'} onClick={() => setCard(card === 'info' ? null : 'info')}>
               <Info size={15} aria-hidden="true" />
             </ToolButton>
+            <ToolButton
+              label={picking ? 'Stop picking roads' : 'Pick roads for routes'}
+              pressed={picking}
+              onClick={() => {
+                setPicking(!picking);
+                setSelected([]);
+                setCard(null);
+              }}
+            >
+              <Route size={15} aria-hidden="true" />
+            </ToolButton>
           </div>
           {result.mode === 'laser' && (
             <Segmented<PreviewLook>
@@ -341,6 +391,7 @@ export function SvgPreview() {
               ]}
             />
           )}
+          {picking && card === null && <RouteCard index={index} selected={selected} onSelect={setSelected} onClose={() => setPicking(false)} />}
           {card === 'info' && (
             <section className="viewer-card floating info-card" aria-label="SVG details">
               <header className="viewer-card-header">
@@ -367,7 +418,13 @@ export function SvgPreview() {
       </div>
 
       {result && (
-        <div className="viewer-hint">{coarse ? 'Drag to move · Pinch to zoom' : 'Drag to move · Scroll to zoom · Double-click to fit'}</div>
+        <div className="viewer-hint">
+          {picking
+            ? 'Click a road to pick it · Shift-click adds · Drag to move'
+            : coarse
+              ? 'Drag to move · Pinch to zoom'
+              : 'Drag to move · Scroll to zoom · Double-click to fit'}
+        </div>
       )}
       {!result && (
         <div className="viewer-empty">

@@ -59,6 +59,21 @@ export class Progress {
   }
 }
 
+/** What the viewer shows about an object you can select, by its key. */
+export interface ObjectInfo {
+  kind: 'building' | 'bridge' | 'water' | 'tree' | 'rock';
+  name?: string;
+  /** Class or type, e.g. "office" or "lake". */
+  detail?: string;
+  /** Height in metres, as mapped or measured. */
+  heightM?: number;
+  /** Ground level it stands on, in model mm. Heights are edited from here. */
+  base?: number;
+  measured?: boolean;
+  /** Where it stands on the ground and keeps land cover off, by sub-object. */
+  ground?: Map<string, MultiPolygon>;
+}
+
 export interface Context {
   settings: ModelSettings;
   projection: Projection;
@@ -72,8 +87,29 @@ export interface Context {
   stats: ModelStats;
   warnings: string[];
   progress: Progress;
+  /** Selectable objects by key, filled in as stages key their solids. */
+  objects?: Map<string, ObjectInfo>;
 }
 
-export function count(ctx: Context, key: string, by = 1): void {
+/** Records an object for the viewer, keeping what an earlier call knew. */
+export function describeObject(ctx: Context, key: string, info: ObjectInfo): void {
+  if (!ctx.objects) return;
+  const known = ctx.objects.get(key);
+  if (!known) {
+    ctx.objects.set(key, info);
+    return;
+  }
+  known.name ||= info.name;
+  known.detail ||= info.detail;
+  if (info.heightM !== undefined) known.heightM = Math.max(known.heightM ?? 0, info.heightM);
+  if (info.base !== undefined) known.base = Math.min(known.base ?? Infinity, info.base);
+  if (info.measured) known.measured = true;
+  if (info.ground) {
+    known.ground ??= new Map();
+    for (const [sub, pieces] of info.ground) known.ground.set(sub, [...(known.ground.get(sub) ?? []), ...pieces]);
+  }
+}
+
+export function count(ctx: Pick<Context, 'stats'>, key: string, by = 1): void {
   ctx.stats[key] = ((ctx.stats[key] as number) ?? 0) + by;
 }

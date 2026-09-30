@@ -158,7 +158,8 @@ describe('pruneStruct and planRead', () => {
 
     const water = planRead(metadataOf(fixture('water.parquet')), 'water', AREA);
     expect([...water.mapColumns]).toEqual(['source_tags']);
-    expect(water.columns).not.toContain('names');
+    // Only the primary name, for the editor.
+    expect(water.columns).toContain('names');
   });
 
   it('refuses a file without geometry', () => {

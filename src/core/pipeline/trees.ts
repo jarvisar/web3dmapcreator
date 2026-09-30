@@ -141,10 +141,10 @@ export async function buildTrees(data: SourceData, ctx: Context, options: TreeOp
   const water = new EdgeIndex(options.noGround, 1);
   // Long crop edges fill every bucket of their bounds, so this one is coarse.
   const crop = new EdgeIndex(ctx.cropSet, Math.max(radius * maxFactor * 4, 2));
-  const placements: [number, number, number][] = [];
+  const placements: [number, number, number, string][] = [];
   let skipped = 0;
 
-  const place = (x: number, y: number, size: number) => {
+  const place = (x: number, y: number, size: number, id: string) => {
     if (placements.length >= t.maxTrees) return;
     const r = radius * scaleFor(size);
     // The whole crown, not only the trunk, has to be on the model.
@@ -154,14 +154,14 @@ export async function buildTrees(data: SourceData, ctx: Context, options: TreeOp
       return;
     }
     if (!clearance.accept(x, y, r)) return;
-    placements.push([x, y, size]);
+    placements.push([x, y, size, id]);
   };
 
   const land = data.features.land ?? [];
   if (t.mapped) {
     for (const feature of land) {
       if (!isTreePoint(feature)) continue;
-      for (const [x, y] of projectPoints(feature.geometry, ctx.projection)) place(x, y, jitter(seed(feature.id))[2]);
+      for (const [x, y] of projectPoints(feature.geometry, ctx.projection)) place(x, y, jitter(seed(feature.id))[2], feature.id);
     }
   }
   const mapped = placements.length;
@@ -194,7 +194,7 @@ export async function buildTrees(data: SourceData, ctx: Context, options: TreeOp
   }
 
   const shape = treeGeometry(radius, height, embed);
-  const solids: MeshSolid[] = placements.map(([x, y, size]) => {
+  const solids: MeshSolid[] = placements.map(([x, y, size, id]) => {
     const factor = scaleFor(size);
     const angle = size * 2 * Math.PI;
     const cos = Math.cos(angle);
@@ -215,7 +215,7 @@ export async function buildTrees(data: SourceData, ctx: Context, options: TreeOp
     let low = hf.minOver(densifyRing(ring, hf.step / 2));
     for (const node of hf.nodesInside([ring])) low = Math.min(low, hf.values[node]);
     for (let i = 0; i < SIDES; i++) positions[i * 3 + 2] = Math.min(positions[i * 3 + 2], low - embed);
-    return { kind: 'mesh', role: 'tree', positions, indices: shape.indices, anchor: [x, y] as Vec2 };
+    return { kind: 'mesh', role: 'tree', positions, indices: shape.indices, anchor: [x, y] as Vec2, key: `t:${id}` };
   });
   count(ctx, 'trees', solids.length);
   count(ctx, 'trees_mapped', mapped);
@@ -228,7 +228,7 @@ async function scatter(
   polygon: Polygon,
   spacing: number,
   tried: Set<string>,
-  place: (x: number, y: number, size: number) => void,
+  place: (x: number, y: number, size: number, id: string) => void,
   full: () => boolean,
   progress: (fraction: number) => Promise<void>,
 ) {
@@ -252,7 +252,7 @@ async function scatter(
       const key = `${r},${c}`;
       if (tried.has(key) || !outline.contains(x, y)) continue;
       tried.add(key);
-      place(x, y, size);
+      place(x, y, size, `f${key}`);
     }
     if ((r - r0) % 16 === 15) await progress((r - r0) / (r1 - r0 + 1));
   }

@@ -14,7 +14,7 @@ import { bufferLines, clipLines, densifyLine, dropSmall, intersection, segmentDi
 import { RasterMask } from '../geometry/raster';
 import type { PrismSolid } from '../geometry/solid';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
-import { count, type Context } from './context';
+import { count, describeObject, type Context } from './context';
 import { dedupe, polylineLength } from './linework';
 import type { RoadPiece } from './roads';
 import { WATER_DROP_MM } from './water';
@@ -273,10 +273,12 @@ export async function buildBridges(
     const ribbon = dropSmall(intersection(bufferLines([{ points: piece.points, width: piece.widthMm }], 'round'), ctx.cropSet), 0.01);
     const top = profile;
     const bottom = (x: number, y: number) => profile(x, y) - b.deckThicknessMm;
+    const key = `br:${piece.sourceId}`;
     for (const polygon of ribbon) {
-      solids.push({ kind: 'prism', role: 'bridge', polygon, top, bottom, drape: station });
+      solids.push({ kind: 'prism', role: 'bridge', polygon, top, bottom, drape: station, key, sub: 'deck' });
       deckCount++;
     }
+    if (ribbon.length) describeObject(ctx, key, { kind: 'bridge', name: piece.name, detail: piece.roadClass });
 
     // Piers every spacing along the deck, clear of anchored ends and roads below.
     let travelled = spacing / 2;
@@ -319,6 +321,8 @@ export async function buildBridges(
           bottom: (x, y) => hf.heightAt(x, y) - embed,
           drape: drape ? hf.step : 0,
           lattice: drape ? hf.lattice : undefined,
+          key,
+          sub: 'pier',
         });
         if (n.wet) pierFootprints.push(footprint);
       }

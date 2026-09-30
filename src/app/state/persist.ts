@@ -12,6 +12,7 @@ import {
   sanitizeSettings,
 } from '../../core/settings';
 import type { AreaSpec, ExportSettings, ModelSettings, Palette } from '../../core/settings';
+import { sanitizeEdits, type ModelEdits } from '../../core/edit/types';
 import { type SvgSettings, defaultSvgSettings, mergeSettings } from '../svgmap/settings';
 import { matchingPreset } from './derived';
 
@@ -24,6 +25,7 @@ export interface SavedState {
   settings?: ModelSettings;
   palette?: Palette;
   exportSettings?: ExportSettings;
+  edits?: ModelEdits;
   svg?: SvgSettings;
   placeName?: string;
   fileName?: string | null;
@@ -114,6 +116,7 @@ export function loadSaved(): SavedState {
     settings: readSettings(raw.settings),
     palette: readPalette(raw.palette, raw.palettePreset),
     exportSettings: readExport(raw.exportSettings),
+    edits: isObject(raw.edits) ? sanitizeEdits(raw.edits) : undefined,
     svg: isObject(raw.svg) ? mergeSettings(defaultSvgSettings(), raw.svg) : undefined,
     placeName: typeof raw.placeName === 'string' ? raw.placeName : undefined,
     fileName: typeof raw.fileName === 'string' ? raw.fileName : null,
@@ -147,6 +150,7 @@ export function saveState(
     settings: ModelSettings;
     palette: Palette;
     exportSettings: ExportSettings;
+    edits: ModelEdits;
     svg: SvgSettings;
     placeName: string;
     fileName: string | null;
@@ -164,6 +168,7 @@ export function saveState(
     palette: state.palette,
     palettePreset: matchingPreset(state.palette)?.key,
     exportSettings: state.exportSettings,
+    edits: state.edits,
     svg: state.svg,
     placeName: state.placeName,
     fileName: state.fileName,

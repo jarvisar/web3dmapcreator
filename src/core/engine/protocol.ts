@@ -1,11 +1,28 @@
 // Messages between the UI and the generation worker.
 
+import type { ViewerGround as GroundGrid } from '../edit/ground';
+import type { RoadLines } from '../edit/lines';
+import type { EditUpdate, ObjectFacts } from '../edit/session';
+import type { ModelEdits } from '../edit/types';
 import type { AreaSpec, ExportFormat, ModelSettings, Palette } from '../settings';
 import type { MeshPart, ModelStats } from '../types';
+
+export type { EditUpdate, GroundGrid, ObjectFacts, RoadLines };
 
 export interface GenerateRequest {
   area: AreaSpec;
   settings: ModelSettings;
+  /** Applied as soon as the model is built, so it never shows without them. */
+  edits?: ModelEdits;
+  editsVersion?: number;
+  /** Where the app is served from, to load fonts for text shapes. */
+  baseUrl?: string;
+}
+
+export interface EditRequest {
+  edits: ModelEdits;
+  version: number;
+  baseUrl?: string;
 }
 
 export type Stage =
@@ -46,6 +63,18 @@ export interface GenerateResult {
   lidar?: LidarSummary;
   /** What a LiDAR Only model was read from. */
   surface?: SurfaceSummary;
+  /** Road centrelines, for picking and highlighting roads in the editor. */
+  roads?: RoadLines;
+  /** The ground's heights, for putting shapes on it. */
+  ground?: GroundGrid;
+  /** Objects the editor can select, by key. */
+  objects?: Record<string, ObjectFacts>;
+  /** The request's edits, applied. */
+  edit?: EditUpdate;
+  /** False when the model can't be edited at all. */
+  editable?: boolean;
+  /** Edit updates for this model carry this. */
+  modelId?: number;
 }
 
 export interface SurfaceSummary {
@@ -95,6 +124,8 @@ export interface ExportRequest {
   fileBase: string;
   /** Part ids left out of the export (hidden in the viewer). */
   excludeParts?: string[];
+  /** Edits to export the model with. */
+  edits?: ModelEdits;
 }
 
 export interface ExportResult {
@@ -110,10 +141,12 @@ export interface ExportResult {
 export type ToWorker =
   | { type: 'generate'; id: number; request: GenerateRequest }
   | { type: 'export'; id: number; request: ExportRequest }
+  | { type: 'edit'; id: number; request: EditRequest }
   | { type: 'cancel'; id: number };
 
 export type FromWorker =
   | { type: 'progress'; id: number; progress: ProgressEvent }
   | { type: 'generated'; id: number; result: GenerateResult }
   | { type: 'exported'; id: number; result: ExportResult }
+  | { type: 'edited'; id: number; update: EditUpdate }
   | { type: 'error'; id: number; message: string; cancelled?: boolean };

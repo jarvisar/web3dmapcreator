@@ -138,10 +138,13 @@ export async function collectRoadPieces(
   return { pieces, bridgeLines };
 }
 
-/** Ribbons for ground pieces, one unioned set per group, clipped to the model. */
+/**
+ * Ribbons for ground pieces, one unioned set per group, clipped to the model.
+ * The editor runs it on one tile at a time, with the tile as the crop.
+ */
 export async function bufferRoads(
   pieces: RoadPiece[],
-  ctx: Context,
+  ctx: Pick<Context, 'settings' | 'cropSet' | 'progress' | 'stats'>,
 ): Promise<{ road: MultiPolygon; path: MultiPolygon; rail: MultiPolygon; footprint: MultiPolygon }> {
   // Ground too thin to print between two roads side by side is filled in
   // (network/gaps.ts), in the same union as the roads either side of it.

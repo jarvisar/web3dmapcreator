@@ -1,6 +1,8 @@
 // Main-thread side of the generation worker.
 
 import type {
+  EditRequest,
+  EditUpdate,
   ExportRequest,
   ExportResult,
   FromWorker,
@@ -11,7 +13,7 @@ import type {
 } from './protocol';
 
 interface Pending {
-  message: Extract<ToWorker, { type: 'generate' | 'export' }>;
+  message: Extract<ToWorker, { type: 'generate' | 'export' | 'edit' }>;
   resolve: (value: never) => void;
   reject: (error: Error) => void;
   onProgress?: (event: ProgressEvent) => void;
@@ -93,6 +95,10 @@ export class EngineClient {
         if (message.id === this.activeGenerate) this.activeGenerate = null;
         pending.resolve(message.result as never);
         return;
+      case 'edited':
+        this.pending.delete(message.id);
+        pending.resolve(message.update as never);
+        return;
       case 'error':
         this.pending.delete(message.id);
         if (message.id === this.activeGenerate) this.activeGenerate = null;
@@ -124,6 +130,14 @@ export class EngineClient {
 
   export(request: ExportRequest, onProgress?: (event: ProgressEvent) => void): Promise<ExportResult> {
     return this.request<ExportResult>({ type: 'export', id: this.nextId++, request }, onProgress);
+  }
+
+  /**
+   * Apply edits to the model the worker holds. A newer call before this one
+   * is done supersedes it, and it rejects with CancelledError.
+   */
+  edit(request: EditRequest): Promise<EditUpdate> {
+    return this.request<EditUpdate>({ type: 'edit', id: this.nextId++, request });
   }
 
   /** Cancel the running generation. The promise rejects with CancelledError. */

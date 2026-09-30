@@ -2,6 +2,7 @@
 // a rendered SVG map: see svgmap/render.ts.
 
 import { create } from 'zustand';
+import { emptyEdits, type ModelEdits } from '../../core/edit/types';
 import type { LidarSummary, ProgressEvent, SurfaceSummary } from '../../core/engine/protocol';
 import {
   DEFAULT_AREA,
@@ -52,6 +53,15 @@ export type SectionKey =
   | 'cleanup'
   | 'data';
 export type LayerKey = 'terrain' | 'water' | 'land' | 'roads' | 'bridges' | 'buildings' | 'lidar' | 'trees' | 'rim';
+/** What a click does in the 3D editor: select, or add a shape. */
+export type EditTool = 'select' | 'text' | 'box' | 'cylinder' | 'pin' | 'path' | 'area';
+
+export interface EditHistory {
+  past: ModelEdits[];
+  future: ModelEdits[];
+  /** Changes with the same tag in a row (a drag, typing) undo as one. */
+  coalesce: string | null;
+}
 export type BasemapKey = 'streets' | 'light' | 'satellite';
 /** 'mm' is the printed size. */
 export type SizeUnit = 'km' | 'm' | 'mm';
@@ -122,6 +132,11 @@ export interface UiState {
   sizeUnit: SizeUnit;
   mapHintDismissed: boolean;
   previewLook: PreviewLook;
+  /** The 3D viewer is editing the model. */
+  editMode: boolean;
+  tool: EditTool;
+  /** Selected object keys (see core/edit/keys.ts). */
+  selection: string[];
 }
 
 export interface Toast {
@@ -137,6 +152,9 @@ export interface AppState {
   settings: ModelSettings;
   palette: Palette;
   exportSettings: ExportSettings;
+  /** Changes made to the model in the 3D editor, applied to every model of this area. */
+  edits: ModelEdits;
+  editHistory: EditHistory;
   svg: SvgSettings;
   /** Name of the title font the user loaded, set once the file is read back from IndexedDB. */
   customFontName: string | null;
@@ -189,6 +207,8 @@ function initialState(): AppState {
     settings: saved.settings ?? cloneSettings(DEFAULT_SETTINGS),
     palette: saved.palette ?? structuredClone(DEFAULT_PALETTE),
     exportSettings: saved.exportSettings ?? { ...DEFAULT_EXPORT },
+    edits: saved.edits ?? emptyEdits(),
+    editHistory: { past: [], future: [], coalesce: null },
     svg,
     customFontName: null,
     customFontId: null,
@@ -208,6 +228,9 @@ function initialState(): AppState {
       sizeUnit: saved.sizeUnit ?? 'mm',
       mapHintDismissed: saved.mapHintDismissed ?? false,
       previewLook: saved.previewLook ?? 'material',
+      editMode: false,
+      tool: 'select',
+      selection: [],
     },
     generation: {
       status: 'idle',
@@ -378,13 +401,23 @@ export function applyOptions(options: Options, includeArea = true): void {
     if (error) throw new Error(`Invalid SVG options: ${error}`);
     const { area, svg } = fitForOutput(imported.output, requestedArea, imported.svg);
     const view = state.ui.view === 'result' && !hasResult({ output: imported.output, generation: state.generation }) ? 'map' : state.ui.view;
+    // Edits come with a saved area, and undo back to what was there.
+    const edits = savedMap?.edits
+      ? { edits: savedMap.edits, editHistory: { past: [...state.editHistory.past, state.edits], future: [], coalesce: null } }
+      : {};
     return {
       ...imported,
       area,
       svg,
       ...(savedMap ? { placeName: savedMap.placeName, fileName: savedMap.fileName } : {}),
+      ...edits,
       generation: withStale(state.generation, area, imported.settings),
-      ui: { ...state.ui, view, ...(savedMap ? { mapFocus: { seq: state.ui.mapFocus.seq + 1, mode: 'always' as const } } : {}) },
+      ui: {
+        ...state.ui,
+        view,
+        ...(savedMap ? { mapFocus: { seq: state.ui.mapFocus.seq + 1, mode: 'always' as const } } : {}),
+        ...(savedMap?.edits ? { selection: [] } : {}),
+      },
     };
   });
 }

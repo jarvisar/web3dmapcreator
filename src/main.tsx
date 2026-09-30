@@ -4,6 +4,7 @@ import './app/styles/shell.css';
 import './app/styles/panels.css';
 import './app/styles/map.css';
 import './app/styles/viewer.css';
+import './app/styles/editor.css';
 import './app/styles/svgmap.css';
 import './app/styles/help.css';
 import { StrictMode } from 'react';
@@ -12,6 +13,7 @@ import { App } from './app/App';
 import { ErrorBoundary } from './app/components/ErrorBoundary';
 import { InstallPrompt } from './app/components/InstallPrompt';
 import { UpdateNotice } from './app/components/UpdateNotice';
+import { startEditSync } from './app/state/editActions';
 import { startSync } from './app/state/sync';
 import { loadStoredFont } from './app/svgmap/customFont';
 import { setCustomFont, setLabel, useApp } from './app/state/store';
@@ -19,6 +21,7 @@ import { CUSTOM_FONT_ID, fontFingerprint } from './core/svgmap/text/fonts';
 import { DEFAULT_LABEL } from './core/svgmap/text/label';
 
 startSync();
+startEditSync();
 
 void loadStoredFont().then((font) => {
   setCustomFont(font?.name ?? null, font ? fontFingerprint(font.data) : null);

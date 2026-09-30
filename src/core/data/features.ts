@@ -95,7 +95,7 @@ export interface OvertureFeature {
    * The other selected columns under their Overture names, e.g. `height`,
    * `class`, `road_flags`. Null values are left out, INT64 values are
    * numbers and MAP columns such as `source_tags` are plain objects.
-   * Buildings carry `names` as `{ primary }` only.
+   * Buildings, segments and water carry `names` as `{ primary }` only.
    */
   props: Record<string, unknown>;
 }

@@ -2,10 +2,15 @@
 // used as they are: X east, Y north, millimetres. Renders only when something
 // changes, and the shadow map only when the model or its visibility changes,
 // since the light is fixed to the model and orbiting cannot move shadows.
+//
+// Each part is drawn from its generated mesh, with the objects in it shown,
+// hidden or recoloured by the edits (composed.ts). Geometry the worker sends
+// for an edit (a taller building, a shape) is drawn as a second mesh per
+// part, and hides the object's generated triangles. Whole parts it rebuilds
+// (roads, once they're edited) replace the generated ones.
 
 import {
   ACESFilmicToneMapping,
-  BufferAttribute,
   BufferGeometry,
   Color,
   DirectionalLight,
@@ -23,18 +28,45 @@ import {
   Scene,
   ShadowMaterial,
   SRGBColorSpace,
+  Vector2,
   Vector3,
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { groundAt } from '../../core/edit/ground';
+import { isPartKey, kindOf, objectOf } from '../../core/edit/keys';
+import { FILL_PREFIX, type ObjectMesh } from '../../core/edit/session';
+import type { ModelEdits } from '../../core/edit/types';
+import type { EditUpdate } from '../../core/engine/protocol';
 import type { Palette, Printer } from '../../core/settings';
 import { OVERLAP_RANK, ROLE_GROUP } from '../../core/types';
-import type { ColourGroup, MeshPart } from '../../core/types';
+import type { ColourGroup, MaterialRole, MeshPart, PartObjects } from '../../core/types';
+import type { EditData } from '../state/model';
+import { ComposedMesh, type ComposedSource, type Entry } from './composed';
+import { extractTriangles, overlayMaterial, setOverlay, type Soup } from './highlight';
+import { Picker } from './picker';
+import { RoadIndex } from './roads';
 
 type Bounds = [number, number, number, number, number, number];
 
 export interface ViewerCallbacks {
   onContextLost?: (lost: boolean) => void;
+}
+
+/** What's under a point of the canvas. */
+export interface PickTarget {
+  /** Object or road key, or null for the ground and parts with no objects. */
+  key: string | null;
+  sub: string;
+  part: string;
+  point: Vector3;
+  /** Height of the ground under the point, when known. */
+  ground: number | null;
+}
+
+/** The same, from a hover, which may not know where the ray met it. */
+export interface HoverTarget extends Omit<PickTarget, 'point'> {
+  point: Vector3 | null;
 }
 
 interface Theme {
@@ -64,6 +96,10 @@ const DARK_THEME: Theme = {
   background: ['#45474c', '#1e1f22'],
 };
 
+const SELECT_COLOUR = '#2f7cf6';
+const ROAD_PARTS: Record<string, number> = { roads: 0, rail: 1, paths: 2 };
+export const SHAPES_PART = 'shapes';
+
 interface Tween {
   fromTarget: Vector3;
   toTarget: Vector3;
@@ -73,30 +109,16 @@ interface Tween {
   duration: number;
 }
 
-/**
- * A part's triangles with its walls last, and how many come before them.
- * Where two parts are cut by the same line (the model edge, a shore) and one
- * reaches into the other, their walls lie in one plane and z-fight. Only the
- * walls get a depth offset: offsetting a whole part would let a water surface
- * show through the bank in front of it.
- */
-function wallsLast(positions: Float32Array, indices: Uint32Array): { indices: Uint32Array; caps: number } {
-  const caps: number[] = [];
-  const walls: number[] = [];
-  for (let t = 0; t < indices.length; t += 3) {
-    const a = indices[t] * 3;
-    const b = indices[t + 1] * 3;
-    const c = indices[t + 2] * 3;
-    // Prism walls share x and y top and bottom, so their normal has no z at all.
-    const nz =
-      (positions[b] - positions[a]) * (positions[c + 1] - positions[a + 1]) -
-      (positions[b + 1] - positions[a + 1]) * (positions[c] - positions[a]);
-    (Math.abs(nz) < 1e-9 ? walls : caps).push(indices[t], indices[t + 1], indices[t + 2]);
-  }
-  const sorted = new Uint32Array(indices.length);
-  sorted.set(caps);
-  sorted.set(walls, caps.length);
-  return { indices: sorted, caps: caps.length };
+interface PartView {
+  id: string;
+  role: MaterialRole;
+  /** Set for a custom layer's own part. */
+  layer: string | null;
+  base: ComposedMesh;
+  baseSlot: number;
+  override: ComposedMesh | null;
+  overrideSlot: number;
+  overrideKeys: Set<string>;
 }
 
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
@@ -106,20 +128,77 @@ function spherical(offset: Vector3) {
   return { r, phi: Math.acos(Math.min(1, Math.max(-1, offset.z / (r || 1)))), theta: Math.atan2(offset.y, offset.x) };
 }
 
+const EMPTY_SOURCE: ComposedSource = { positions: new Float32Array(0), indices: new Uint32Array(0) };
+
+/** Several meshes as one, with their object runs moved along. */
+function combine(meshes: ObjectMesh[]): ComposedSource {
+  let vertices = 0;
+  let indices = 0;
+  for (const m of meshes) {
+    vertices += m.mesh!.positions.length;
+    indices += m.mesh!.indices.length;
+  }
+  const positions = new Float32Array(vertices);
+  const out = new Uint32Array(indices);
+  const keys: string[] = [];
+  const subs: string[] = [];
+  const runs: number[] = [];
+  let v = 0;
+  let i = 0;
+  for (const { key, mesh } of meshes) {
+    const m = mesh!;
+    positions.set(m.positions, v);
+    const vertexOffset = v / 3;
+    const triangleOffset = i / 3;
+    for (let k = 0; k < m.indices.length; k++) out[i + k] = m.indices[k] + vertexOffset;
+    const objects = m.objects;
+    if (objects) {
+      const base = keys.length;
+      keys.push(...objects.keys);
+      subs.push(...objects.subs);
+      for (let r = 0; r < objects.runs.length; r += 5) {
+        runs.push(
+          objects.runs[r] + base,
+          objects.runs[r + 1] + triangleOffset,
+          objects.runs[r + 2] + triangleOffset,
+          objects.runs[r + 3] + vertexOffset,
+          objects.runs[r + 4] + vertexOffset,
+        );
+      }
+    } else if (m.indices.length) {
+      keys.push(key);
+      subs.push('');
+      runs.push(keys.length - 1, triangleOffset, triangleOffset + m.indices.length / 3, vertexOffset, vertexOffset + m.positions.length / 3);
+    }
+    v += m.positions.length;
+    i += m.indices.length;
+  }
+  const objects: PartObjects = { keys, subs, runs: Uint32Array.from(runs) };
+  return { positions, indices: out, objects };
+}
+
 export class ViewerEngine {
   private readonly renderer: WebGLRenderer;
   private readonly scene = new Scene();
   private readonly camera = new PerspectiveCamera(32, 1, 0.1, 5000);
-  private readonly controls: OrbitControls;
+  readonly controls: OrbitControls;
   private readonly model = new Group();
   private readonly bed = new Group();
+  private readonly hoverGroup = new Group();
+  private readonly selectionGroup = new Group();
+  /** Drawn over everything: gizmos and drawing guides. */
+  readonly overlay = new Scene();
   private readonly hemi: HemisphereLight;
   private readonly sun: DirectionalLight;
   private readonly materials = new Map<string, MeshStandardMaterial>();
-  private readonly meshes = new Map<string, Mesh>();
   private readonly resizeObserver: ResizeObserver;
+  private readonly picker = new Picker();
+  private readonly hoverMaterial = overlayMaterial(SELECT_COLOUR, 0.25);
+  private readonly selectMaterial = overlayMaterial(SELECT_COLOUR, 0.42);
+  private readonly hoverLineMaterial = overlayMaterial(SELECT_COLOUR, 0.55);
+  private readonly selectLineMaterial = overlayMaterial(SELECT_COLOUR, 0.95);
   private palette: Palette | null = null;
-  private hidden = new Set<string>();
+  private hiddenParts = new Set<string>();
   private bounds: Bounds | null = null;
   private printer: Printer | null = null;
   private showBed = true;
@@ -130,6 +209,22 @@ export class ViewerEngine {
   private disposed = false;
   private width = 0;
   private height = 0;
+
+  // The model and its edits.
+  private generated = new Map<string, MeshPart>();
+  private readonly views = new Map<string, PartView>();
+  private readonly slots: ({ view: PartView; composed: ComposedMesh } | null)[] = [null];
+  private objectMeshes = new Map<string, ObjectMesh>();
+  private replaced = new Map<string, MeshPart>();
+  private implicitHidden = new Set<string>();
+  private edits: ModelEdits = { layers: [], objects: {}, shapes: [] };
+  private data: EditData = { editable: false, roads: null, objects: {}, ground: null, frame: null };
+  roads: RoadIndex | null = null;
+  private selection: string[] = [];
+  private hovered: string | null = null;
+  private centres = new Map<ComposedMesh, Float32Array>();
+  /** Called when what's shown changed shape, for handles placed on it. */
+  readonly geometryListeners = new Set<() => void>();
 
   constructor(
     private readonly container: HTMLElement,
@@ -144,6 +239,7 @@ export class ViewerEngine {
     renderer.shadowMap.type = PCFShadowMap;
     renderer.shadowMap.autoUpdate = false;
     renderer.setClearColor(0x000000, 0);
+    renderer.autoClear = false;
     renderer.domElement.className = 'viewer-canvas';
     container.appendChild(renderer.domElement);
     this.renderer = renderer;
@@ -168,7 +264,7 @@ export class ViewerEngine {
     this.sun.shadow.mapSize.set(2048, 2048);
     this.sun.shadow.radius = 3;
     this.sun.shadow.bias = -0.0004;
-    this.scene.add(this.hemi, this.sun, this.sun.target, this.model, this.bed);
+    this.scene.add(this.hemi, this.sun, this.sun.target, this.model, this.bed, this.hoverGroup, this.selectionGroup);
 
     renderer.domElement.addEventListener('webglcontextlost', this.onContextLost);
     renderer.domElement.addEventListener('webglcontextrestored', this.onContextRestored);
@@ -178,39 +274,19 @@ export class ViewerEngine {
     this.resize();
   }
 
+  get canvas(): HTMLCanvasElement {
+    return this.renderer.domElement;
+  }
+
   // -------------------------------------------------------------- public
 
-  setModel(parts: MeshPart[], bounds: Bounds): void {
+  setModel(parts: MeshPart[], bounds: Bounds, data?: EditData): void {
     const previous = this.bounds;
     this.clearModel();
-    for (const part of parts) {
-      if (!part.positions.length || !part.indices.length) continue;
-      const geometry = new BufferGeometry();
-      geometry.setAttribute('position', new BufferAttribute(part.positions, 3));
-      const group = ROLE_GROUP[part.role];
-      const rank = OVERLAP_RANK[part.role] ?? 0;
-      let material: MeshStandardMaterial | MeshStandardMaterial[] = this.material(group);
-      if (rank) {
-        const { indices, caps } = wallsLast(part.positions, part.indices);
-        geometry.setIndex(new BufferAttribute(indices, 1));
-        geometry.addGroup(0, caps, 0);
-        geometry.addGroup(caps, indices.length - caps, 1);
-        material = [material, this.material(group, rank)];
-      } else {
-        geometry.setIndex(new BufferAttribute(part.indices, 1));
-      }
-      geometry.computeBoundingSphere();
-      // flatShading takes face normals from screen-space derivatives, so no
-      // normal attribute is needed: less memory and sharp edges on every box.
-      const mesh = new Mesh(geometry, material);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.visible = !this.hidden.has(part.id);
-      mesh.name = part.id;
-      mesh.matrixAutoUpdate = false;
-      this.meshes.set(part.id, mesh);
-      this.model.add(mesh);
-    }
+    this.generated = new Map(parts.map((part) => [part.id, part]));
+    this.data = data ?? { editable: false, roads: null, objects: {}, ground: null, frame: null };
+    this.roads = this.data.roads ? new RoadIndex(this.data.roads) : null;
+    for (const part of parts) this.buildView(part.id);
     this.bounds = bounds;
     this.updateLight();
     this.updateBed();
@@ -221,20 +297,70 @@ export class ViewerEngine {
       Math.abs(previous[3] - previous[0] - (bounds[3] - bounds[0])) < 0.1 * (bounds[3] - bounds[0]) &&
       Math.abs(previous[4] - previous[1] - (bounds[4] - bounds[1])) < 0.1 * (bounds[4] - bounds[1]);
     if (!similar) this.resetView(false);
+    this.restyle();
+    this.renderer.shadowMap.needsUpdate = true;
+    this.requestRender();
+  }
+
+  /** Geometry the worker sent for edits: applied on top of what came before. */
+  applyEditUpdate(update: EditUpdate): void {
+    const touched = new Set<string>();
+    for (const object of update.objects) {
+      const before = this.objectMeshes.get(object.key);
+      if (before) touched.add(before.part);
+      if (object.mesh) this.objectMeshes.set(object.key, object);
+      else this.objectMeshes.delete(object.key);
+      touched.add(object.part);
+    }
+    const rebuilt = new Set<string>();
+    for (const { id, part } of update.parts) {
+      if (part) this.replaced.set(id, part);
+      else this.replaced.delete(id);
+      rebuilt.add(id);
+    }
+    for (const id of rebuilt) this.buildView(id);
+    for (const id of touched) if (!rebuilt.has(id)) this.buildOverrides(id);
+    this.implicitHidden = new Set(update.hidden);
+    this.restyle();
+    this.refreshHighlights();
+    this.renderer.shadowMap.needsUpdate = true;
+    this.requestRender();
+    for (const listener of this.geometryListeners) listener();
+  }
+
+  setEdits(edits: ModelEdits): void {
+    this.edits = edits;
+    for (const material of this.materials.values()) material.color.set(this.colourOf(material.userData.colour as string));
+    this.restyle();
+    this.refreshHighlights();
     this.renderer.shadowMap.needsUpdate = true;
     this.requestRender();
   }
 
   setPalette(palette: Palette): void {
     this.palette = palette;
-    for (const material of this.materials.values()) material.color.set(palette[material.userData.group as ColourGroup].hex);
+    for (const material of this.materials.values()) material.color.set(this.colourOf(material.userData.colour as string));
     this.requestRender();
   }
 
   setHidden(ids: string[]): void {
-    this.hidden = new Set(ids);
-    for (const [id, mesh] of this.meshes) mesh.visible = !this.hidden.has(id);
+    this.hiddenParts = new Set(ids);
+    for (const view of this.views.values()) this.updateVisibility(view);
+    this.restyle();
     this.renderer.shadowMap.needsUpdate = true;
+    this.requestRender();
+  }
+
+  setSelection(keys: string[]): void {
+    this.selection = keys;
+    setOverlay(this.selectionGroup, this.overlayFor(keys, false));
+    this.requestRender();
+  }
+
+  setHover(key: string | null): void {
+    if (key === this.hovered) return;
+    this.hovered = key;
+    setOverlay(this.hoverGroup, key && !this.selection.includes(key) ? this.overlayFor([key], true) : []);
     this.requestRender();
   }
 
@@ -275,10 +401,24 @@ export class ViewerEngine {
     this.moveCamera(new Vector3(center.x, center.y - distance * 0.002, center.z + distance), center, animate);
   }
 
+  /** Turns to look at a point from where the camera is, a little closer if far away. */
+  focusOn(point: Vector3, radius: number): void {
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const distance = Math.min(offset.length(), Math.max(radius * 6, 40));
+    this.moveCamera(point.clone().add(offset.setLength(distance)), point, true);
+  }
+
   /** PNG of the current view on the viewer background. */
   async screenshot(): Promise<Blob | null> {
     if (this.lost) return null;
-    this.renderer.render(this.scene, this.camera);
+    // Without the selection and gizmos.
+    const hover = this.hoverGroup.visible;
+    const selection = this.selectionGroup.visible;
+    this.hoverGroup.visible = false;
+    this.selectionGroup.visible = false;
+    this.draw(false);
+    this.hoverGroup.visible = hover;
+    this.selectionGroup.visible = selection;
     const source = this.renderer.domElement;
     const canvas = document.createElement('canvas');
     canvas.width = source.width;
@@ -293,6 +433,7 @@ export class ViewerEngine {
     context.fillRect(0, 0, width, height);
     // Same task as the render, so the drawing buffer still holds the frame.
     context.drawImage(source, 0, 0);
+    this.requestRender();
     return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), 'image/png'));
   }
 
@@ -321,6 +462,8 @@ export class ViewerEngine {
     this.controls.dispose();
     this.clearModel();
     this.clearBed();
+    for (const material of [this.hoverMaterial, this.selectMaterial, this.hoverLineMaterial, this.selectLineMaterial]) material.dispose();
+    this.picker.dispose();
     for (const material of this.materials.values()) material.dispose();
     this.materials.clear();
     this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLost);
@@ -333,6 +476,134 @@ export class ViewerEngine {
     this.renderer.domElement.remove();
   }
 
+  // ----------------------------------------------------------- picking
+
+  /** What's under a point of the page, or null for nothing (the bed, the sky). */
+  pickAt(clientX: number, clientY: number): PickTarget | null {
+    const hit = this.pick(clientX, clientY, () => true);
+    return hit?.point ? (hit as PickTarget) : null;
+  }
+
+  /**
+   * The same for hovering, which only finds where the ray met the model when
+   * it needs it to tell which road is under the pointer: it saves a render.
+   */
+  hoverAt(clientX: number, clientY: number): HoverTarget | null {
+    return this.pick(clientX, clientY, (slot, id) => id === 0 && this.isRoadPart(this.slots[slot]?.view));
+  }
+
+  private pick(clientX: number, clientY: number, wantPoint: (slot: number, id: number) => boolean): HoverTarget | null {
+    if (this.lost) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const hit = this.picker.pick(this.renderer, this.camera, clientX - rect.left, clientY - rect.top, rect.width, rect.height, wantPoint);
+    this.requestRender();
+    if (!hit) return null;
+    const info = this.slots[hit.slot];
+    if (!info) return null;
+    const { view, composed } = info;
+    const ground = hit.point ? this.groundAt(hit.point.x, hit.point.y) : null;
+    const entry = hit.id > 0 ? composed.entries[hit.id - 1] : null;
+    // Land given back to a removed road's ground is part of the land, not a thing to pick.
+    if (entry && !entry.key.startsWith(FILL_PREFIX)) {
+      return { key: entry.key, sub: entry.sub, part: view.id, point: hit.point, ground };
+    }
+    const road = hit.point ? this.roadAt(view, hit.point.x, hit.point.y) : null;
+    return { key: road, sub: '', part: view.id, point: hit.point, ground };
+  }
+
+  private isRoadPart(view: PartView | undefined): boolean {
+    return Boolean(view && (ROAD_PARTS[view.id] !== undefined || view.layer));
+  }
+
+  /** The ground's height, in the viewer's coordinates, when the model has a grid. */
+  groundAt(x: number, y: number): number | null {
+    return this.data.ground ? groundAt(this.data.ground, x, y) : null;
+  }
+
+  /** Where a ray through a point of the page meets the plane z = `z`. */
+  pointOnPlane(clientX: number, clientY: number, z: number): Vector3 | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    const origin = this.camera.position.clone();
+    const direction = new Vector3(ndc.x, ndc.y, 0.5).unproject(this.camera).sub(origin).normalize();
+    if (Math.abs(direction.z) < 1e-6) return null;
+    const t = (z - origin.z) / direction.z;
+    return t > 0 ? origin.addScaledVector(direction, t) : null;
+  }
+
+  /** The point on a vertical line through `anchor` nearest a ray through a point of the page. */
+  pointOnVertical(clientX: number, clientY: number, anchor: Vector3): number | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    const origin = this.camera.position.clone();
+    const direction = new Vector3(ndc.x, ndc.y, 0.5).unproject(this.camera).sub(origin).normalize();
+    // Closest points between the ray and the line (anchor, +z).
+    const w = origin.clone().sub(anchor);
+    const b = direction.z;
+    const d = direction.dot(w);
+    const e = w.z;
+    const denominator = 1 - b * b;
+    if (denominator < 1e-6) return null;
+    const s = (e - b * d) / denominator;
+    return anchor.z + s;
+  }
+
+  /** Canvas pixel of a model point. */
+  project(point: Vector3): { x: number; y: number; behind: boolean } {
+    const p = point.clone().project(this.camera);
+    return { x: ((p.x + 1) / 2) * this.width, y: ((1 - p.y) / 2) * this.height, behind: p.z > 1 };
+  }
+
+  /** Objects whose middle is inside a box of the canvas, in CSS pixels. */
+  keysInBox(x0: number, y0: number, x1: number, y1: number): string[] {
+    const found = new Set<string>();
+    const inside = (x: number, y: number, z: number) => {
+      const p = this.project(new Vector3(x, y, z));
+      return !p.behind && p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1;
+    };
+    for (const view of this.views.values()) {
+      if (!view.base.mesh.visible) continue;
+      for (const composed of [view.base, view.override]) {
+        if (!composed || !composed.entries.length) continue;
+        let centres = this.centres.get(composed);
+        if (!centres) this.centres.set(composed, (centres = composed.entryCentres()));
+        composed.entries.forEach((entry, i) => {
+          if (found.has(entry.key) || entry.key.startsWith(FILL_PREFIX) || !this.entryVisible(view, composed, entry)) return;
+          if (inside(centres![i * 3], centres![i * 3 + 1], centres![i * 3 + 2])) found.add(entry.key);
+        });
+      }
+    }
+    const roads = this.roads;
+    if (roads) {
+      for (let piece = 0; piece < roads.count; piece++) {
+        const key = roads.lines.keys[piece];
+        if (found.has(key) || this.edits.objects[key]?.removed) continue;
+        const [x, y, z] = roads.midpoint(piece);
+        if (inside(x, y, z)) found.add(key);
+      }
+    }
+    return [...found];
+  }
+
+  /** Bounding box of an object as shown, for gizmos. */
+  boundsOf(key: string): { min: Vector3; max: Vector3 } | null {
+    const { fills, lines } = this.soupsFor([key]);
+    const soups = [...fills, ...lines];
+    const min = new Vector3(Infinity, Infinity, Infinity);
+    const max = new Vector3(-Infinity, -Infinity, -Infinity);
+    for (const soup of soups) {
+      for (let i = 0; i < soup.length; i += 3) {
+        min.x = Math.min(min.x, soup[i]);
+        min.y = Math.min(min.y, soup[i + 1]);
+        min.z = Math.min(min.z, soup[i + 2]);
+        max.x = Math.max(max.x, soup[i]);
+        max.y = Math.max(max.y, soup[i + 1]);
+        max.z = Math.max(max.z, soup[i + 2]);
+      }
+    }
+    return Number.isFinite(min.x) ? { min, max } : null;
+  }
+
   // ------------------------------------------------------------- private
 
   private readonly render = (now: number): void => {
@@ -341,18 +612,27 @@ export class ViewerEngine {
     let again = false;
     if (this.tween) again = this.stepTween(now);
     if (this.controls.update()) again = true;
-    this.renderer.render(this.scene, this.camera);
+    this.draw(true);
     this.renderer.shadowMap.needsUpdate = false;
     if (again) this.requestRender();
   };
 
+  private draw(overlay: boolean): void {
+    this.renderer.clear();
+    this.renderer.render(this.scene, this.camera);
+    if (overlay && this.overlay.children.length) {
+      this.renderer.clearDepth();
+      this.renderer.render(this.overlay, this.camera);
+    }
+  }
+
   /** A colour's material, and with a rank its walls, pulled towards the camera to win ties (OVERLAP_RANK). */
-  private material(group: ColourGroup, rank = 0): MeshStandardMaterial {
-    const key = `${group} ${rank}`;
+  private material(colour: string, rank = 0): MeshStandardMaterial {
+    const key = `${colour} ${rank}`;
     let material = this.materials.get(key);
     if (!material) {
       material = new MeshStandardMaterial({
-        color: new Color(this.palette?.[group].hex ?? '#cccccc'),
+        color: new Color(this.colourOf(colour)),
         roughness: 0.8,
         metalness: 0,
         flatShading: true,
@@ -360,18 +640,276 @@ export class ViewerEngine {
         polygonOffsetFactor: -rank,
         polygonOffsetUnits: -rank,
       });
-      material.userData.group = group;
+      material.userData.colour = colour;
       this.materials.set(key, material);
     }
     return material;
   }
 
-  private clearModel(): void {
-    for (const mesh of this.meshes.values()) {
-      mesh.geometry.dispose();
-      this.model.remove(mesh);
+  /** A colour key's hex: a colour group, or a custom layer's `layer:<id>`. */
+  private colourOf(colour: string): string {
+    if (colour.startsWith('layer:')) return this.edits.layers.find((l) => `layer:${l.id}` === colour)?.hex ?? '#888888';
+    return this.palette?.[colour as ColourGroup]?.hex ?? '#cccccc';
+  }
+
+  private defaultColour(view: PartView): string {
+    if (view.layer) return `layer:${view.layer}`;
+    return ROLE_GROUP[view.role];
+  }
+
+  private materialsFor(view: () => PartView): (colour: string, wall: boolean) => MeshStandardMaterial {
+    return (colour, wall) => {
+      const v = view();
+      const key = colour === '' ? this.defaultColour(v) : colour.startsWith('group:') ? colour.slice(6) : colour;
+      return this.material(key, wall ? (OVERLAP_RANK[v.role] ?? 0) : 0);
+    };
+  }
+
+  /**
+   * (Re)builds a part from its generated or replacement mesh. A part only
+   * the worker's object geometry has (shapes, land given back where the
+   * model had none) starts empty.
+   */
+  private buildView(id: string): void {
+    const source = this.replaced.get(id) ?? this.generated.get(id) ?? (this.hasOverridesIn(id) ? null : undefined);
+    const existing = this.views.get(id);
+    if (existing) this.dropView(existing);
+    if (source === undefined) return;
+    const role: MaterialRole = source?.role ?? this.overrideRole(id) ?? 'building';
+    const view = {
+      id,
+      role,
+      layer: id.startsWith('layer:') ? id.slice('layer:'.length) : null,
+    } as PartView;
+    const ranked = (OVERLAP_RANK[role] ?? 0) > 0;
+    view.base = new ComposedMesh(source ?? EMPTY_SOURCE, ranked, this.materialsFor(() => view));
+    view.baseSlot = this.addSlot(view, view.base);
+    view.override = null;
+    view.overrideSlot = 0;
+    view.overrideKeys = new Set();
+    this.views.set(id, view);
+    this.model.add(view.base.mesh);
+    this.buildOverrides(id);
+    this.updateVisibility(view);
+  }
+
+  private hasOverridesIn(part: string): boolean {
+    for (const object of this.objectMeshes.values()) if (object.part === part) return true;
+    return false;
+  }
+
+  private overrideRole(part: string): MaterialRole | undefined {
+    for (const object of this.objectMeshes.values()) if (object.part === part && object.role) return object.role;
+    return undefined;
+  }
+
+  /** The part's second mesh, from the object geometry the worker sent for it. */
+  private buildOverrides(id: string): void {
+    const view = this.views.get(id);
+    if (!view) {
+      // A part only object geometry makes comes and goes with it.
+      if (this.hasOverridesIn(id)) this.buildView(id);
+      return;
     }
-    this.meshes.clear();
+    if (view.override) {
+      this.model.remove(view.override.mesh);
+      this.freeSlot(view.overrideSlot);
+      this.centres.delete(view.override);
+      view.override.dispose();
+      view.override = null;
+      view.overrideSlot = 0;
+    }
+    const meshes = [...this.objectMeshes.values()].filter((object) => object.part === id && object.mesh);
+    view.overrideKeys = new Set(meshes.map((m) => m.key));
+    if (meshes.length) {
+      const override = new ComposedMesh(combine(meshes), view.base.ranked, this.materialsFor(() => view));
+      view.override = override;
+      view.overrideSlot = this.addSlot(view, override);
+      this.model.add(override.mesh);
+    } else if (!this.generated.has(id) && !this.replaced.has(id)) {
+      this.dropView(view);
+      return;
+    }
+    this.updateVisibility(view);
+  }
+
+  private addSlot(view: PartView, composed: ComposedMesh): number {
+    let slot = this.slots.indexOf(null, 1);
+    if (slot < 0) {
+      slot = this.slots.length;
+      this.slots.push(null);
+    }
+    if (slot > 255) return 0;
+    this.slots[slot] = { view, composed };
+    this.picker.add(slot, composed.geometry, () => composed.mesh.visible);
+    return slot;
+  }
+
+  private freeSlot(slot: number): void {
+    if (!slot) return;
+    this.slots[slot] = null;
+    this.picker.remove(slot);
+  }
+
+  private dropView(view: PartView): void {
+    this.model.remove(view.base.mesh);
+    this.freeSlot(view.baseSlot);
+    this.centres.delete(view.base);
+    view.base.dispose();
+    if (view.override) {
+      this.model.remove(view.override.mesh);
+      this.freeSlot(view.overrideSlot);
+      this.centres.delete(view.override);
+      view.override.dispose();
+    }
+    this.views.delete(view.id);
+  }
+
+  private updateVisibility(view: PartView): void {
+    const visible = !this.hiddenParts.has(view.id);
+    view.base.mesh.visible = visible;
+    if (view.override) view.override.mesh.visible = visible;
+  }
+
+  /** A custom layer an entry is in, from its own edit or its object's. */
+  private layerOf(entry: Entry): string | null {
+    const layers = this.edits.layers;
+    if (entry.key.startsWith('s:')) {
+      const shape = this.edits.shapes.find((s) => `s:${s.id}` === entry.key);
+      if (!shape) return null;
+      return layers.some((l) => l.id === shape.layer) ? shape.layer : null;
+    }
+    const own = entry.sub ? this.edits.objects[`${entry.key}/${entry.sub}`]?.layer : undefined;
+    const layer = own ?? this.edits.objects[entry.key]?.layer;
+    return layer && layers.some((l) => l.id === layer) ? layer : null;
+  }
+
+  private entryVisible(view: PartView, composed: ComposedMesh, entry: Entry): boolean {
+    return this.entryStyle(view, composed, entry) !== null;
+  }
+
+  private entryStyle(view: PartView, composed: ComposedMesh, entry: Entry): string | null {
+    const { key, sub } = entry;
+    if (composed === view.base && view.overrideKeys.has(key)) return null;
+    if (this.implicitHidden.has(key)) return null;
+    const edit = this.edits.objects[key];
+    if (edit?.removed) return null;
+    if (sub && this.edits.objects[`${key}/${sub}`]?.removed) return null;
+    const layer = this.layerOf(entry);
+    if (layer) return this.hiddenParts.has(`layer:${layer}`) ? null : `layer:${layer}`;
+    if (key.startsWith('s:')) {
+      if (this.hiddenParts.has(SHAPES_PART)) return null;
+      const shape = this.edits.shapes.find((s) => `s:${s.id}` === key);
+      return shape ? `group:${shape.layer}` : null;
+    }
+    return '';
+  }
+
+  private restyle(): void {
+    for (const view of this.views.values()) {
+      for (const composed of [view.base, view.override]) {
+        if (!composed) continue;
+        composed.update((entry) => this.entryStyle(view, composed, entry));
+      }
+    }
+  }
+
+  /** Road pieces a part holds now, given the edits. */
+  private roadAt(view: PartView, x: number, y: number): string | null {
+    const roads = this.roads;
+    if (!roads) return null;
+    const group = ROAD_PARTS[view.id];
+    const layer = view.layer;
+    if (group === undefined && !layer) return null;
+    const lines = roads.lines;
+    const accept = (piece: number) => {
+      const edit = this.edits.objects[lines.keys[piece]];
+      if (edit?.removed) return false;
+      const pieceLayer = edit?.layer && this.edits.layers.some((l) => l.id === edit.layer) ? edit.layer : null;
+      if (layer) return pieceLayer === layer;
+      return !pieceLayer && lines.groups[piece] === group;
+    };
+    return roads.nearest(x, y, accept, (piece) => this.roadWidth(piece))?.key ?? null;
+  }
+
+  roadWidth(piece: number): number {
+    const lines = this.roads!.lines;
+    return this.edits.objects[lines.keys[piece]]?.widthMm ?? lines.widths[piece];
+  }
+
+  roadHeight(piece: number): number {
+    const lines = this.roads!.lines;
+    return this.edits.objects[lines.keys[piece]]?.heightMm ?? lines.thicknessMm;
+  }
+
+  /** The overlay for keys: object triangles tinted, roads outlined. */
+  private overlayFor(keys: string[], hover: boolean): Soup[] {
+    const { fills, lines } = this.soupsFor(keys);
+    const fill = hover ? this.hoverMaterial : this.selectMaterial;
+    const line = hover ? this.hoverLineMaterial : this.selectLineMaterial;
+    return [...fills.map((positions) => ({ positions, material: fill })), ...lines.map((positions) => ({ positions, material: line }))];
+  }
+
+  /** Triangle soups of the keys as shown: an object's (or one part's) triangles, or a road's edges. */
+  private soupsFor(keys: string[]): { fills: Float32Array[]; lines: Float32Array[] } {
+    const fills: Float32Array[] = [];
+    const lines: Float32Array[] = [];
+    const roadPieces: number[] = [];
+    const objects = new Map<string, Set<string> | null>();
+    for (const key of keys) {
+      if (kindOf(key) === 'road') {
+        if (this.roads && !this.edits.objects[key]?.removed) roadPieces.push(...this.roads.piecesOf(key));
+        continue;
+      }
+      const object = objectOf(key);
+      if (isPartKey(key)) {
+        const subs = objects.get(object);
+        if (subs === null) continue;
+        objects.set(object, (subs ?? new Set()).add(key.slice(object.length + 1)));
+      } else {
+        objects.set(object, null);
+      }
+    }
+    if (roadPieces.length && this.roads) {
+      // Edges only, so a road's own colour shows between them.
+      lines.push(this.roads.ribbon(roadPieces, (p) => this.roadWidth(p) + 0.3, (p) => this.roadHeight(p), 0.03, 0.18));
+    }
+    if (objects.size) {
+      for (const view of this.views.values()) {
+        if (!view.base.mesh.visible) continue;
+        for (const composed of [view.base, view.override]) {
+          if (!composed || !composed.entries.length) continue;
+          const match = (entry: Entry) => {
+            if (!objects.has(entry.key)) return false;
+            const subs = objects.get(entry.key);
+            if (subs && !subs.has(entry.sub)) return false;
+            return this.entryStyle(view, composed, entry) !== null;
+          };
+          const triangles = composed.trianglesOf(match);
+          if (triangles.length) fills.push(extractTriangles(composed.positions, triangles));
+        }
+      }
+    }
+    return { fills, lines };
+  }
+
+  private refreshHighlights(): void {
+    setOverlay(this.selectionGroup, this.overlayFor(this.selection, false));
+    const hovered = this.hovered;
+    setOverlay(this.hoverGroup, hovered && !this.selection.includes(hovered) ? this.overlayFor([hovered], true) : []);
+  }
+
+  private clearModel(): void {
+    for (const view of [...this.views.values()]) this.dropView(view);
+    this.views.clear();
+    this.picker.clear();
+    this.slots.length = 1;
+    this.objectMeshes.clear();
+    this.replaced.clear();
+    this.implicitHidden.clear();
+    this.centres.clear();
+    setOverlay(this.hoverGroup, []);
+    setOverlay(this.selectionGroup, []);
   }
 
   private framing(top = false): { center: Vector3; distance: number } | null {

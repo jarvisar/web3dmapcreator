@@ -4,6 +4,7 @@ import type { AreaSpec } from './geo/transform';
 import { DEFAULT_BORDER, type BorderSettings, type ProductSettings } from './layout/layout';
 import { DEFAULT_CLEANUP, type CleanupSettings } from './lines/cleanup';
 import type { HatchSettings } from './plotter';
+import type { LonLatLine, SvgRoute } from './routes';
 import { DEFAULT_LABEL, type LabelSettings } from './text/label';
 import type { FeatureFilters, FillLayerId, LineLayerId } from './tiles/schema';
 
@@ -86,6 +87,10 @@ export interface RenderSettings {
   label: LabelSettings;
   source: SourceSettings;
   plotter: PlotterSettings;
+  /** Roads picked out in the preview, each route a group of its own. */
+  routes: SvgRoute[];
+  /** Roads picked to be left out. */
+  hiddenLines: LonLatLine[];
   // SVG title.
   title: string;
 }

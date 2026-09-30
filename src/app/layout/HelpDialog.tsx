@@ -36,6 +36,16 @@ const MODEL_TIPS = [
   'A LiDAR only model shows the city the year it was surveyed. Glass, dark roofs and water return few points, so those spots are filled in from around them.',
 ];
 
+const EDIT_TIPS = [
+  'Press the pencil at the top right of the 3D view to change the model before you download it. Click a building, road, path, tree or body of water to select it. Shift-click adds to the selection, Shift-drag selects everything in a box, and Alt-click picks one part of a building.',
+  'Drag the arrow on a selected building or shape to change its height. Roads and paths can be made wider or taller, and Whole street picks up every connected piece with the same name.',
+  'A new layer gives whatever you put in it a colour of its own. Each layer is exported as its own part with its own filament, so a racetrack or a favourite route can print in a different colour.',
+  "Removing a road or building gives the ground back to the park or plaza it was cut out of. Water you leave out isn't exported, and the hollow it sat in stays empty.",
+  'The tools on the left add text, map pins, boxes and cylinders, or draw your own paths and areas. Drag a selected shape to move it, drag the points of a path or area to reshape it, and Alt-click a point to delete it.',
+  'Edits follow the map features, not the mesh, so they stay when you change settings and generate again.',
+  'Keys while editing: V, T, P, B, C, L and A pick the tools. Delete removes the selection, F looks at it, [ and ] turn shapes and the arrow keys nudge them (with Shift for bigger steps). Ctrl+D duplicates, Ctrl+Z undoes and Ctrl+Shift+Z redoes. Enter finishes a path or area and Esc stops drawing.',
+];
+
 const SVG_TIPS = [
   'Two lines closer together than the laser beam burn as one dark band. Set Line spacing under Line cleanup to about your beam width, or 1.5 to 2 times your pen width. The presets change it for each output.',
   'For a laser, filled areas engrave, lines score and the edge cuts. Every layer has its own colour so it can have its own process. The LightBurn layer palette puts each layer on its own LightBurn layer.',
@@ -43,6 +53,7 @@ const SVG_TIPS = [
   'The preview shows how much of the road network the cleanup kept. Below 97% a warning appears, since streets were removed and not just doubled lines.',
   'With Fixed scale, the default, the box on the map takes its size from the piece and the scale (0.05 mm per metre to start, 1:20,000), and keeps that scale while you try other places or piece sizes. Pick Fit the area to size the box yourself.',
   'The wood preview is only a rough idea of how the fills burn. Test your settings on scrap.',
+  'To draw a route in its own colour, press the route button over the preview and click the roads, paths or railways it follows. Along the road picks up the rest of the street. Each route is its own layer in the SVG. Picks are saved in this browser and in saved settings, but not in share links.',
 ];
 
 function StoredData() {
@@ -99,6 +110,13 @@ export function HelpDialog() {
       <h3 className="help-heading">3D printing tips</h3>
       <ul className="help-list">
         {MODEL_TIPS.map((tip) => (
+          <li key={tip}>{keepUnits(tip)}</li>
+        ))}
+      </ul>
+
+      <h3 className="help-heading">Editing a model</h3>
+      <ul className="help-list">
+        {EDIT_TIPS.map((tip) => (
           <li key={tip}>{keepUnits(tip)}</li>
         ))}
       </ul>

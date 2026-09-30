@@ -172,6 +172,8 @@ export interface PreparedPart {
   extents: Extents;
   group: ColourGroup;
   colour: PaletteEntry;
+  /** Set for a custom layer's colour, which isn't one of the groups. */
+  label?: string;
 }
 
 export interface PreparedPlate {
@@ -205,6 +207,10 @@ export function preparePlates(plates: Plate[], palette: Palette, credits: string
       const partExtents = checkPart(part);
       mergeExtents(plateExtents, partExtents);
       const group = partGroup(part);
+      if (part.colour) {
+        const { hex, line, label } = part.colour;
+        return { part, name: names[i], extents: partExtents, group, colour: { hex, line }, label: label.trim() || part.name };
+      }
       const colour = palette[group];
       if (!colour) throw new Error(`${part.name}: the palette has no colour for ${group}`);
       return { part, name: names[i], extents: partExtents, group, colour };
@@ -219,7 +225,7 @@ export interface FilamentUse {
   filaments: Filament[];
   /** Filament number of every part, by plate. */
   slots: number[][];
-  /** Labels of the colour groups each filament prints, in COLOUR_GROUPS order. */
+  /** Labels of the colour groups each filament prints, in COLOUR_GROUPS order, then custom layers in order of use. */
   labels: string[][];
 }
 
@@ -227,14 +233,19 @@ export interface FilamentUse {
 export function filamentUse(model: PreparedModel): FilamentUse {
   const table = new FilamentTable();
   const groups: Set<ColourGroup>[] = [];
+  const custom: Set<string>[] = [];
   const slots = model.plates.map((plate) =>
     plate.parts.map((p) => {
       const slot = table.slot(p.colour);
-      (groups[slot - 1] ??= new Set()).add(p.group);
+      if (p.label) (custom[slot - 1] ??= new Set()).add(p.label);
+      else (groups[slot - 1] ??= new Set()).add(p.group);
       return slot;
     }),
   );
-  const labels = groups.map((used) => COLOUR_GROUPS.filter((g) => used.has(g.key)).map((g) => g.label));
+  // A shape in a group's colour is labelled with the group, so names repeat.
+  const labels = table.filaments.map((_, i) => [
+    ...new Set([...COLOUR_GROUPS.filter((g) => groups[i]?.has(g.key)).map((g) => g.label), ...(custom[i] ?? [])]),
+  ]);
   return { filaments: table.filaments, slots, labels };
 }
 

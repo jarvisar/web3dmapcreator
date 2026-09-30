@@ -30,10 +30,11 @@ The build goes to `build/`, not `dist/`. In this repository `dist/` held the Ble
 | `src/core/dsm/` | LiDAR only models: reading a survey into a grid, the height rules, the mesh and the model |
 | `src/core/pipeline/` | Generation: water, roads, bridges, land cover, buildings, trees, meshing, plates |
 | `src/core/export/` | Bambu Studio, PrusaSlicer, 3MF and STL writers |
+| `src/core/edit/` | The model editor: the edits document, applying it to a generated model, road tiles, land fill and added shapes |
 | `src/core/svgmap/` | SVG maps: vector tiles, piece layout, line cleanup, fills and hatching, titles and the SVG writer |
 | `src/core/engine/` | Messages between the page and the worker |
 | `src/worker/` | The Web Worker that downloads, generates and exports, the LiDAR workers it starts, and the SVG map worker |
-| `src/app/` | The React interface: state, map, panels and 3D viewer. `src/app/svgmap/` has the SVG map sections, preview and render client |
+| `src/app/` | The React interface: state, map, panels and 3D viewer. `src/app/viewer/` has the editor's picking, overlays and tools, and `src/app/svgmap/` the SVG map sections, preview, render client and route picker |
 | `scripts/` | Command-line tools for testing |
 
 `src/core` has no DOM or React code. It runs the same in the worker and in Node, which is how the tests and scripts use it.

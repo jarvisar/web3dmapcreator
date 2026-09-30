@@ -3,6 +3,7 @@
 // draped on it, and the ground kept under structures over water depends on
 // the road and building footprints, so the terrain solid is built last.
 
+import type { GroundGrid } from '../edit/ground';
 import { areaGeoBounds, areaModelRing, effectiveScale } from '../geo/area';
 import { Projection } from '../geo/projection';
 import {
@@ -26,12 +27,12 @@ import { HeightField } from '../terrain/heightfield';
 import type { MaterialRole, ModelStats, MultiPolygon, Polygon } from '../types';
 import { buildBuildings } from './buildings';
 import { isWaterDeck } from './classify';
-import { Progress, type Context } from './context';
+import { describeObject, Progress, type Context, type ObjectInfo } from './context';
 import { buildLand } from './land';
 import { buildBridges, splitDecks } from './bridges';
 import { buildAirports, bufferRoads, collectRoadPieces, type RoadPiece, type RoadResult } from './roads';
 import { projectPolygons, type Elevation, type SourceData, type SourceType } from './source';
-import { solveWater, waterBottom } from './water';
+import { solveWater, waterBottom, type WaterKind } from './water';
 import { shapeBeaches } from './beaches';
 import { buildTrees } from './trees';
 
@@ -46,6 +47,28 @@ export interface ModelSpec {
   mmPerMetre: number;
   stats: ModelStats;
   warnings: string[];
+  /** What the editor needs beyond the layers (core/edit). */
+  edit?: EditContext;
+}
+
+export interface EditContext {
+  /** Height of the ground (the surface, in a LiDAR only model) in unshifted model mm. */
+  heightAt: (x: number, y: number) => number;
+  /** The terrain grid, when there is one. Draped shapes are cut from it. */
+  heightfield?: HeightField;
+  /** A LiDAR only model's surface grid, in place of a terrain grid. */
+  grid?: GroundGrid;
+  /** Ground road pieces as they were widened: bridges left out, demoted decks back in. */
+  roads: RoadPiece[];
+  /** Cut water and basins with no ground under them. New road area stays off it. */
+  water: MultiPolygon;
+  /** Everything selectable, by key. */
+  objects: Map<string, ObjectInfo>;
+  /**
+   * Land cover before water, roads and buildings were cleared from it, so a
+   * removed road or building can have its ground back (edit/land.ts).
+   */
+  land?: { regions: Partial<Record<SurfaceCategory, MultiPolygon>>; water: MultiPolygon };
 }
 
 export interface GenerateInput {
@@ -59,7 +82,7 @@ export interface GenerateInput {
   progress?: Progress;
 }
 
-const LAND_ROLES: Record<SurfaceCategory, MaterialRole> = {
+export const LAND_ROLES: Record<SurfaceCategory, MaterialRole> = {
   paved: 'paved',
   sand: 'sand',
   rock: 'rock',
@@ -67,7 +90,13 @@ const LAND_ROLES: Record<SurfaceCategory, MaterialRole> = {
   forest: 'forest',
 };
 
-const LAND_NAMES: Record<SurfaceCategory, string> = {
+const WATER_KINDS: Record<WaterKind, string> = {
+  cut: 'River, lake or sea',
+  basin: 'Pond or fountain',
+  sheet: 'Stream or pool',
+};
+
+export const LAND_NAMES: Record<SurfaceCategory, string> = {
   paved: 'Paved',
   sand: 'Sand',
   rock: 'Rock',
@@ -121,6 +150,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     stats: {},
     warnings: [],
     progress,
+    objects: new Map<string, ObjectInfo>(),
   };
   ctx.stats.mm_per_metre = mmPerMetre;
   ctx.stats.terrain_grid = `${heightfield.cols} x ${heightfield.rows}`;
@@ -134,17 +164,22 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   let roads: RoadResult = { road: [], path: [], rail: [], footprint: [], bridgeLines: [] };
   let bridgeSolids: PrismSolid[] = [];
   let pierGround: MultiPolygon = [];
+  let groundRoads: RoadPiece[] = [];
   if (settings.roads.enabled) {
     const collected = await collectRoadPieces(features('segment'), ctx);
     let groundPieces: RoadPiece[] = collected.pieces;
     let deckPieces: RoadPiece[] = [];
     if (settings.bridges.enabled) ({ ground: groundPieces, decks: deckPieces } = splitDecks(collected.pieces, ctx, water.cut));
     let ribbons = await bufferRoads(groundPieces, ctx);
+    groundRoads = groundPieces;
     if (deckPieces.length) {
       const bridges = await buildBridges(deckPieces, ctx, { groundRoads: ribbons.footprint, cutWater: water.cut });
       bridgeSolids = bridges.solids;
       pierGround = bridges.pierGround;
-      if (bridges.demoted.length) ribbons = await bufferRoads([...groundPieces, ...bridges.demoted], ctx);
+      if (bridges.demoted.length) {
+        groundRoads = [...groundPieces, ...bridges.demoted];
+        ribbons = await bufferRoads(groundRoads, ctx);
+      }
     }
     roads = { ...ribbons, bridgeLines: collected.bridgeLines };
   }
@@ -201,13 +236,19 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
 
   // --------------------------------------------------------------- land cover
   progress.begin('land', 'Draping parks and land cover', 0.75, 0.1);
+  const landRegions: Partial<Record<SurfaceCategory, MultiPolygon>> = {};
   const land = settings.land.enabled
-    ? await buildLand(data, ctx, {
-        water: water.all,
-        roads: roads.footprint,
-        buildings: buildings.footprint,
-        bridgeLines: roads.bridgeLines,
-      })
+    ? await buildLand(
+        data,
+        ctx,
+        {
+          water: water.all,
+          roads: roads.footprint,
+          buildings: buildings.footprint,
+          bridgeLines: roads.bridgeLines,
+        },
+        landRegions,
+      )
     : null;
 
   // ----------------------------------------------------------- terrain solid
@@ -292,13 +333,15 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
       const body = water.bodies[i];
       const entry = settled[i];
       if (i % 32 === 0) await progress.checkpoint(0.5 + 0.5 * (i / water.bodies.length));
+      const key = body.source ? `w:${body.source}` : undefined;
+      if (key) describeObject(ctx, key, { kind: 'water', name: body.name, detail: WATER_KINDS[body.kind] });
       if (entry) {
         for (const polygon of entry.polygons) {
-          fills.push({ kind: 'prism', role: 'water', polygon, top: body.top, bottom: entry.bottom ?? baseZ, drape: 0 });
+          fills.push({ kind: 'prism', role: 'water', polygon, top: body.top, bottom: entry.bottom ?? baseZ, drape: 0, key });
         }
       } else {
         const bottom = Math.max(waterBottom(body, settings)!, baseZ + 0.05);
-        fills.push({ kind: 'prism', role: 'water', polygon: body.polygon, top: body.top, bottom, drape: 0 });
+        fills.push({ kind: 'prism', role: 'water', polygon: body.polygon, top: body.top, bottom, drape: 0, key });
       }
     }
     if (fills.length) layers.push({ id: 'water', name: 'Water', role: 'water', solids: fills });
@@ -378,5 +421,13 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   }
 
   ctx.stats.model_bounds = multiBounds([outline]).map((v) => v.toFixed(1)).join(', ');
-  return { layers, outline, crop: [crop], baseZ, mmPerMetre, stats: ctx.stats, warnings: ctx.warnings };
+  const edit: EditContext = {
+    heightAt: (x, y) => hf.heightAt(x, y),
+    heightfield: hf,
+    roads: groundRoads,
+    water: union(cutFinal, basinFinal),
+    objects: ctx.objects!,
+    land: land ? { regions: landRegions, water: water.all } : undefined,
+  };
+  return { layers, outline, crop: [crop], baseZ, mmPerMetre, stats: ctx.stats, warnings: ctx.warnings, edit };
 }

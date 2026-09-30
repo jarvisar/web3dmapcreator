@@ -4,6 +4,7 @@ import { COLOUR_GROUPS, FILAMENTS, filamentName } from '../../core/settings';
 import type { FilamentLine, PaletteEntry } from '../../core/settings';
 import type { ColourGroup } from '../../core/types';
 import { HexInput } from '../components/Fields';
+import type { Placement } from '../components/floating';
 import { Popover } from '../components/Popover';
 import { Segmented } from '../components/Segmented';
 import { setPaletteEntry, useApp } from '../state/store';
@@ -18,30 +19,40 @@ interface ColourPopoverProps {
 
 export function ColourPopover({ group, anchor, onClose }: ColourPopoverProps) {
   const entry = useApp((state) => (group ? state.palette[group] : null));
+  const info = COLOUR_GROUPS.find((item) => item.key === group);
+  if (!group || !entry || !info) return null;
+  return <FilamentPopover title={info.label} entry={entry} anchor={anchor} onChange={(next) => setPaletteEntry(group, next)} onClose={onClose} />;
+}
+
+interface FilamentPopoverProps {
+  title: string;
+  entry: PaletteEntry;
+  anchor: HTMLElement | null;
+  onChange: (entry: PaletteEntry) => void;
+  onClose: () => void;
+  placement?: Placement;
+}
+
+/** Bambu filaments to pick from, or any colour by its hex code. */
+export function FilamentPopover({ title, entry, anchor, onChange, onClose, placement = 'right-start' }: FilamentPopoverProps) {
   const [filter, setFilter] = useState('');
   const hexId = useId();
-  const info = COLOUR_GROUPS.find((item) => item.key === group);
 
   useEffect(() => {
-    if (group) setFilter('');
-  }, [group]);
+    setFilter('');
+  }, [title]);
 
-  if (!group || !entry || !info) return null;
   const current = entry;
   const query = filter.trim().toLowerCase();
-
-  function choose(next: PaletteEntry) {
-    setPaletteEntry(group!, next);
-  }
-
+  const choose = (next: PaletteEntry) => onChange({ hex: next.hex.toUpperCase(), line: next.line });
   const name = filamentName(current);
 
   return (
-    <Popover anchor={anchor} open label={`${info.label} colour`} onClose={onClose} placement="right-start" className="colour-popover" initialFocus=".colour-filter input">
+    <Popover anchor={anchor} open label={`${title} colour`} onClose={onClose} placement={placement} className="colour-popover" initialFocus=".colour-filter input">
       <header className="colour-popover-header">
         <span className="swatch swatch-lg" style={{ background: current.hex }} aria-hidden="true" />
         <div>
-          <div className="colour-popover-title">{info.label}</div>
+          <div className="colour-popover-title">{title}</div>
           <div className="colour-popover-sub">{name || `Custom ${current.hex} · ${current.line}`}</div>
         </div>
       </header>
@@ -118,7 +129,7 @@ export function ColourPopover({ group, anchor, onClose }: ColourPopoverProps) {
   );
 }
 
-function isLight(hex: string): boolean {
+export function isLight(hex: string): boolean {
   const value = parseInt(hex.slice(1), 16);
   const r = (value >> 16) & 255;
   const g = (value >> 8) & 255;

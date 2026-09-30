@@ -1,4 +1,5 @@
 import { Download, Eye, LoaderCircle, RefreshCw, X } from 'lucide-react';
+import { editCount, unusedLayers } from '../../core/edit/types';
 import { TaskProgress } from '../components/TaskProgress';
 import { areaHint } from '../lib/area';
 import { PHONE_QUERY, useMediaQuery } from '../lib/browser';
@@ -79,6 +80,7 @@ function ModelActions() {
   const area = useApp((state) => state.area);
   const settings = useApp((state) => state.settings);
   const hidden = useApp((state) => state.ui.hiddenParts);
+  const edits = useApp((state) => state.edits);
   const problem = generationProblem(area, settings);
   const running = status === 'running';
 
@@ -86,11 +88,14 @@ function ModelActions() {
   let note = '';
   if (result) {
     const [minX, minY, minZ, maxX, maxY, maxZ] = result.bounds;
-    const colours = filamentCount(palette, resultGroups(result));
+    const unused = new Set(unusedLayers(edits));
+    const colours = filamentCount(palette, resultGroups(result), edits.layers.filter((layer) => !unused.has(layer.id)));
+    const changes = editCount(edits);
     summary = [
       `${formatMm(maxX - minX)} × ${formatMm(maxY - minY)} × ${formatMm(maxZ - minZ)} mm`,
       `${formatCount(result.triangles)} triangles`,
       `${colours} ${colours === 1 ? 'colour' : 'colours'}`,
+      ...(changes ? [`${changes} ${changes === 1 ? 'edit' : 'edits'}`] : []),
     ].join(' · ');
     const hiddenCount = result.parts.filter((part) => hidden.includes(part.id)).length;
     if (!result.exportable) note = 'The generator was restarted. Generate the model again before downloading.';

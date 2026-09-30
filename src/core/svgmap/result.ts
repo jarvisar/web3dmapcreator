@@ -1,5 +1,6 @@
 // A render's output. The SVG writer and the preview both draw from this.
 import type { CleanupStats } from './lines/cleanup';
+import type { PickLines } from './routes';
 import type { ElementId, OutputMode } from './settings';
 
 export interface OutputPath {
@@ -66,4 +67,6 @@ export interface RenderResult {
   stats: RenderStats;
   warnings: string[];
   meta: RenderMeta;
+  /** Road lines the preview can pick. */
+  pick?: PickLines;
 }

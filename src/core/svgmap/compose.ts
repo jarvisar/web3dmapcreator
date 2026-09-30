@@ -23,6 +23,7 @@ import { weldPaths } from './lines/weld';
 import { hatchWith, orderForPlotting, outlines } from './plotter';
 import type { Prepared, PreparedLine, PreparedPolygon } from './prepare';
 import type { OutputGroup, OutputPath, PlotterStats, RenderResult } from './result';
+import { pickedLines, pickLines, routeGroupId } from './routes';
 import {
   type ElementId,
   FILL_LAYERS,
@@ -56,6 +57,8 @@ interface Draft {
   label: string;
   kind: 'fill' | 'stroke';
   strokeWidth: number;
+  /** A route's own colour, instead of its element's. */
+  color?: string;
   fill?: Paths64;
   // Split by class when print mode gives each road class its own width.
   lines?: { cls?: string; width?: number; paths: Path[] }[];
@@ -137,10 +140,13 @@ export function compose(
   };
 
   const acceptedLines = prepared.lines.filter((l) => layerOn[l.layer] && acceptLine(l, s.filters));
+  // Roads picked in the preview: a route's index, or -1 when left out.
+  const picked = pickedLines(acceptedLines, s.routes ?? [], s.hiddenLines ?? [], prepared.transform);
+  const drawnLines = picked.size ? acceptedLines.filter((l) => !picked.has(l)) : acceptedLines;
   let waterGaps: Paths64 = [];
   if (s.water.bridgeGap > 0 && layerOn.water) {
     const bridges = acceptedLines
-      .filter((l) => l.flags & FLAG.bridge && (l.layer === 'roads' || l.layer === 'railways'))
+      .filter((l) => l.flags & FLAG.bridge && (l.layer === 'roads' || l.layer === 'railways') && picked.get(l) !== -1)
       .map((l) => l.path);
     waterGaps = bufferLines(bridges, s.water.bridgeGap, false);
   }
@@ -183,7 +189,7 @@ export function compose(
     key: { layer: l.layer, cls: l.cls },
     path: l.path,
   });
-  const cleanupInput = acceptedLines.filter((l) => l.layer !== 'raceways').map(toItem);
+  const cleanupInput = drawnLines.filter((l) => l.layer !== 'raceways').map(toItem);
   const edgeTolerance = Math.max(s.cleanup.weldTolerance, 0.001);
   const cleaned = cleanupLines(cleanupInput, s.cleanup, {
     groupOf,
@@ -211,10 +217,18 @@ export function compose(
   }
   // Racetracks skip cleanup and are drawn as mapped. Welding only rejoins tile seams.
   const raceways = weldPaths(
-    acceptedLines.filter((l) => l.layer === 'raceways').map(toItem),
+    drawnLines.filter((l) => l.layer === 'raceways').map(toItem),
     Math.max(s.cleanup.weldTolerance, 0.01),
     { groupFn: groupOf },
   ).items;
+  // Routes are drawn as picked too, their pieces welded into one another only.
+  const routeItems = (s.routes ?? []).map((_, index) =>
+    weldPaths(
+      acceptedLines.filter((l) => picked.get(l) === index).map(toItem),
+      Math.max(s.cleanup.weldTolerance, 0.01),
+      { groupFn: () => 'route' },
+    ).items,
+  );
   lap('lines');
 
   const byLayer = new Map<LineLayerId, LineItem<LineKey>[]>();
@@ -292,6 +306,21 @@ export function compose(
     }
   }
 
+  // Over the roads, each in its own colour.
+  (s.routes ?? []).forEach((route, index) => {
+    const items = routeItems[index];
+    if (!items.length) return;
+    drafts.push({
+      id: routeGroupId(index),
+      element: 'roads',
+      label: route.name,
+      kind: 'stroke',
+      strokeWidth: plotter ? pen : s.mode === 'laser' ? hairline : Math.min(5, Math.max(0.02, route.width)),
+      color: route.color,
+      lines: [{ paths: clipLabel(items.map((i) => i.path)) }],
+    });
+  });
+
   if (label) {
     const rings = label.text.rings;
     if (rings.length > 0) {
@@ -366,14 +395,15 @@ export function compose(
   lap('style');
 
   // Plotter order
+  const colorOf = (d: Draft) => d.color ?? style.colors[d.element];
   let plotterStats: PlotterStats | null = null;
   if (plotter) {
     // The file puts every layer of one pen together, so the pen travels in that order.
     const first = new Map<string, number>();
     drafts.forEach((d, i) => {
-      if (!first.has(style.colors[d.element])) first.set(style.colors[d.element], i);
+      if (!first.has(colorOf(d))) first.set(colorOf(d), i);
     });
-    drafts.sort((a, b) => first.get(style.colors[a.element])! - first.get(style.colors[b.element])!);
+    drafts.sort((a, b) => first.get(colorOf(a))! - first.get(colorOf(b))!);
     let penDown = 0;
     let penUp = 0;
     let penUpUnordered = 0;
@@ -437,7 +467,7 @@ export function compose(
       element: draft.element,
       label: draft.label,
       kind: draft.kind,
-      color: style.colors[draft.element],
+      color: colorOf(draft),
       strokeWidth: draft.strokeWidth,
       paths,
       subpaths,
@@ -478,5 +508,6 @@ export function compose(
       attribution: ATTRIBUTION,
       generated: new Date().toISOString(),
     },
+    pick: pickLines(acceptedLines, prepared.transform, picked),
   };
 }

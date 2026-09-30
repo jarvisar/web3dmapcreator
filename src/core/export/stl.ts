@@ -173,7 +173,8 @@ export function writeStlZip(model: PreparedModel, base: string, options: StlZipO
     }
     for (const slot of [...new Set(slots[i])].sort((a, b) => a - b)) {
       const { hex } = filaments[slot - 1];
-      const label = labels[slot - 1].map((l) => l.replace(/\s+/g, '-')).join('+');
+      // Custom layer names can hold anything a file name can't.
+      const label = labels[slot - 1].map((l) => l.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '') || 'Layer').join('+');
       const file = `${name}_${String(slot).padStart(digits, '0')}_${label}_${hex.slice(1)}.stl`;
       zipStl(zip, file, parts.filter((_, k) => slots[i][k] === slot), offset, scratch, header);
     }

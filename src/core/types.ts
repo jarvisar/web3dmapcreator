@@ -90,6 +90,31 @@ export interface MeshPart {
   positions: Float32Array;
   /** Three vertex indices per triangle, counter-clockwise seen from outside. */
   indices: Uint32Array;
+  /** A custom layer's own colour. Without one the part takes its role's colour group. */
+  colour?: PartColour;
+  /** Which triangles each keyed solid made. Only meshes for the viewer have this. */
+  objects?: PartObjects;
+}
+
+/** A colour that isn't one of the palette's groups: a custom layer's. */
+export interface PartColour {
+  hex: string;
+  line: 'PLA Basic' | 'PLA Matte';
+  /** Shown where the export lists colours, e.g. "Racetrack". */
+  label: string;
+}
+
+/**
+ * The keyed solids in a part, so the viewer can pick, hide and recolour
+ * them one by one. Solids of one object needn't be next to each other, so an
+ * object can have several runs.
+ */
+export interface PartObjects {
+  keys: string[];
+  /** Sub-object of each entry, '' for none. */
+  subs: string[];
+  /** Five numbers per run: entry, first triangle, end triangle, first vertex, end vertex. */
+  runs: Uint32Array;
 }
 
 export interface ModelStats {

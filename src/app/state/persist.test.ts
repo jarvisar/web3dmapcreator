@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { emptyEdits } from '../../core/edit/types';
 import { DEFAULT_AREA, DEFAULT_EXPORT, DEFAULT_PALETTE, cloneSettings } from '../../core/settings';
 import { defaultSvgSettings } from '../svgmap/settings';
 import { STORAGE_KEY, clearSavedState, saveState } from './persist';
@@ -19,6 +20,7 @@ describe('saved settings', () => {
       settings: cloneSettings(),
       palette: DEFAULT_PALETTE,
       exportSettings: DEFAULT_EXPORT,
+      edits: emptyEdits(),
       svg: defaultSvgSettings(),
       placeName: '',
       fileName: null,

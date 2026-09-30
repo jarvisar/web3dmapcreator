@@ -1,3 +1,4 @@
+import { sanitizeEdits, type ModelEdits } from '../../core/edit/types';
 import { sanitizeSettings, type AreaSpec, type ExportSettings, type ModelSettings, type Palette } from '../../core/settings';
 import { normalizeArea } from '../lib/area';
 import { defaultSvgSettings, isObject, mergeSettings, type SvgSettings } from '../svgmap/settings';
@@ -28,6 +29,8 @@ export interface SavedMap {
   area: AreaSpec;
   placeName: string;
   fileName: string | null;
+  /** The 3D editor's changes, which only mean something for this area. */
+  edits?: ModelEdits;
 }
 
 export function encodeOptions({ output, settings, palette, exportSettings, svg }: Options, map?: SavedMap): string {
@@ -85,7 +88,16 @@ export function decodeOptions(text: string): Options {
       throw new Error('Missing or invalid saved map area.');
     }
     options.map = { area: normalizeArea(area as unknown as AreaSpec), placeName: map.placeName, fileName: map.fileName };
+    if (map.edits !== undefined) {
+      if (!isObject(map.edits)) throw new Error('Invalid option: map.edits.');
+      options.map.edits = sanitizeEdits(map.edits);
+    }
   }
-  checkValues(raw, options, 'options');
+  // Edits and picked roads are cleaned rather than checked: a colour's case
+  // or a clamped height is no reason to refuse the file.
+  const { routes: _routes, hiddenLines: _hidden, ...svg } = options.svg;
+  const checked = { ...structuredClone(options), svg };
+  if (checked.map) delete checked.map.edits;
+  checkValues(raw, checked, 'options');
   return options;
 }

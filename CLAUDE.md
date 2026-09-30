@@ -38,11 +38,12 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/lidar/` | LiDAR: `sources/` discovery (USGS EPT, IGN, NRCan, swisstopo, Flai COPC), `read/` EPT/COPC/LAS reading with an injected LAZ decoder and projector, measurement (`measure.ts`, `envelope.ts`, ground, planes, terraces, selection), roof surfaces (`regularize.ts`, `delatin.ts`, `coarsen.ts`, `rim.ts`), `prepare.ts` batching and checkpoints |
 | `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges, `network/` tidy), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
+| `src/core/edit/` | Model editor: the edits document (`types.ts`, `keys.ts`), `EditSession` applying it to a generated model in the worker, road tiles, land fill, added shapes, road lines for picking |
 | `src/core/engine/` | Worker protocol and main-thread client |
 | `src/worker/engine.worker.ts` | Downloads, generates, meshes and exports off the main thread |
 | `src/worker/svg.worker.ts` | Renders SVG maps, separate so a preview updates while a model generates |
 | `src/core/svgmap/` | SVG maps: tile fetch/decode/stitch, piece layout (`layout/`), line cleanup (`lines/`), fills and hatching, titles (`text/`), SVG writer, `service.ts` (the render with its caches) |
-| `src/app/` | React UI: state (zustand), MapLibre area editor, panels, three.js viewer. `src/app/svgmap/` has the SVG sections, preview, render client, piece fitting and share encoding |
+| `src/app/` | React UI: state (zustand), MapLibre area editor, panels, three.js viewer. The model editor is `viewer/editController.ts` (pointer tools), `picker.ts`, `highlight.ts`, `viewer/edit/` (toolbar, inspector) and `state/editActions.ts` (edits, undo). `src/app/svgmap/` has the SVG sections, preview, render client, route picker, piece fitting and share encoding |
 | `scripts/` | `generate.ts` (CLI end to end), `fetch-area.ts`, `bench-synthetic.ts`, `check-bambu.ts`, `shot.mjs`, `e2e.mjs` and `e2e-mobile.mjs` (browser runs in the installed Edge) |
 
 ## Pipeline rules worth preserving
@@ -331,6 +332,41 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
 - A water layer sits `WATER_DROP_MM` (0.25 mm) under its bank like map
   models' water. `waterDepthMm` is for recessed water only.
 
+Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_WORKS.md`):
+
+- Edits are keyed by feature, never by mesh: `b:<building>[/<part>]`,
+  `r:<segment>`, `br:<segment>` (bridge decks), `w:<water>`, `t:<tree>`,
+  `k:<rock>`, `s:<shape>` (`keys.ts`). They carry over when the model is
+  generated again with other settings, and edits for things a model lacks
+  are kept and ignored. Generation tags solids with `key`/`sub` and fills
+  `ctx.objects`, and the mesher records each object's triangle runs for
+  picking. Without edits an export uses the generated spec as it is, so
+  exports stay byte-identical. Check that on the Loop and Clearwater after
+  touching generation.
+- `EditSession` applies the edits to the kept `ModelSpec` afterwards. The
+  viewer only gets what changed and hides removed objects and colours
+  layers itself. Exports mesh `session.edited()`. The worker only runs the
+  newest pending edit, and updates carry the model id and edits version so
+  a late one for an older model is dropped.
+- Road edits rebuild square tiles (`roads.ts`, 12 to 30 mm on whole Clipper
+  units) from the pieces near them with `bufferRoads`, the tile as the
+  crop. Other tiles keep the generated polygons, split into every tile at
+  once (`splitToTiles`): clipping the city-wide road polygon tile by tile
+  took over 2 s per edit in San Francisco. A road with its own height or
+  layer owns its ground, the taller one where two cross, and new road area
+  stays off water without ground under it.
+- Land fill (`land.ts`) gives ground a removed road or building left back
+  to the land regions from before clearing (`ctx.land`), per tile and
+  cached on what each tile had. The opening runs after the tiles are
+  joined, or every tile edge rounds the fill's corners.
+- Custom layers export as `layer:<id>` (building rank) and
+  `layer:<id>:water` (water rank) with a `PartColour`. Shapes in a model
+  colour export as `added-<group>` with building rank, so a water-coloured
+  shape never takes an overlap from the terrain. Shapes run down to
+  `spec.baseZ`, so nothing added floats.
+- A height edit scales everything above the building's ground
+  (`heights.ts`). A part's own height beats its building's.
+
 SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.md`):
 
 - The engine is SVGmap's, moved with its tests. At the merge, live renders of
@@ -375,6 +411,11 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
   a model, whatever mode the recipient was in. Old SVGmap links (`#s=` with
   the area inside) still open. The `s=` part is dropped from the address
   bar once read.
+- Routes (`routes.ts`): OpenFreeMap has no ids or names on road lines, so
+  picks are kept as lon/lat lines and matched to the prepared lines before
+  the line cleanup, which then never thins a route. Share links leave
+  `routes` and `hiddenLines` out. Options files keep them, sanitized rather
+  than checked.
 
 ## Verification
 

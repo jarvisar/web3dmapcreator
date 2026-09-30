@@ -1,0 +1,307 @@
+/* The 3D model editor: tools down the left, the inspector on the right. */
+
+.edit-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.toolbar-vertical {
+  flex-direction: column;
+  align-self: flex-start;
+}
+
+.toolbar-vertical .tool-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.toolbar-vertical .tool-btn + .tool-btn {
+  margin-left: 0;
+  margin-top: -1px;
+}
+
+.toolbar-vertical .tool-btn:first-child {
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.toolbar-vertical .tool-btn:last-child {
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.toolbar-vertical .tool-btn:only-child {
+  border-radius: var(--radius);
+}
+
+.tool-btn:disabled {
+  color: var(--text-4);
+  cursor: default;
+}
+
+.tool-btn:disabled:hover {
+  background: linear-gradient(var(--btn-1), var(--btn-2));
+}
+
+.inspector {
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100% - 60px);
+}
+
+.inspector-header {
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.inspector-title {
+  min-width: 0;
+  padding: 2px 0;
+}
+
+.inspector-title h3 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspector-sub {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.inspector-header-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+
+.inspector-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.inspector-body .field {
+  margin: 0;
+}
+
+.inspector-number {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.inspector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.inspector-note,
+.inspector-hint,
+.inspector-intro {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.inspector-intro {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.inspector-footer {
+  font-size: 10.5px;
+}
+
+.layer-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.layer-field .select {
+  max-width: 150px;
+}
+
+.swatch-btn-inline {
+  flex: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.swatch-btn-inline:hover {
+  box-shadow: 0 0 0 2px var(--accent-soft), 0 0 0 3px var(--accent-border);
+}
+
+.inspector-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  color: var(--text-2);
+  font-weight: bold;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.inspector-section-head .link-btn {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: normal;
+}
+
+.link-btn svg {
+  vertical-align: -2px;
+}
+
+.layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+}
+
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.layer-row.is-hidden {
+  opacity: 0.55;
+}
+
+.layer-name.text-input {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 2px 6px;
+}
+
+.layer-count {
+  min-width: 22px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.layer-count:disabled {
+  color: var(--text-4);
+  text-decoration: none;
+  cursor: default;
+}
+
+.inspector-changes {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.viewer-hover-tip {
+  position: absolute;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  max-width: 240px;
+  margin: 14px 0 0 14px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  background: rgb(24 24 24 / 0.9);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.4;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.viewer-hover-tip strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.viewer-hover-tip span {
+  color: rgb(255 255 255 / 0.7);
+}
+
+.viewer-box-select {
+  position: absolute;
+  z-index: 7;
+  border: 1px solid #2f7cf6;
+  background: rgb(47 124 246 / 0.12);
+  pointer-events: none;
+}
+
+.viewer-host.is-placing .viewer-canvas {
+  cursor: crosshair;
+}
+
+.viewer-host.is-over-handle .viewer-canvas {
+  cursor: ns-resize;
+}
+
+.viewer.is-editing .viewer-edit-hint {
+  padding: 3px 8px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-float);
+  color: var(--text-2);
+}
+
+/* Finish, undo a point or cancel while drawing, for anyone without Enter or double-click. */
+.draw-bar {
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.draw-bar-count {
+  padding: 0 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  /* The top-left column sits at the bottom of the view on phones, so the
+     tools and the drawing bar go above the size chip, in rows. */
+  .edit-tools {
+    order: -1;
+    flex-direction: row;
+    margin-top: 0;
+  }
+  .draw-bar {
+    order: -2;
+  }
+  .toolbar-vertical {
+    flex-direction: row;
+  }
+  .toolbar-vertical .tool-btn + .tool-btn {
+    margin-top: 0;
+    margin-left: -1px;
+  }
+  .toolbar-vertical .tool-btn:first-child {
+    border-radius: var(--radius) 0 0 var(--radius);
+  }
+  .toolbar-vertical .tool-btn:last-child {
+    border-radius: 0 var(--radius) var(--radius) 0;
+  }
+  .viewer-top-right .inspector {
+    max-height: 45vh;
+  }
+}

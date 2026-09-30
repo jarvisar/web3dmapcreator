@@ -637,6 +637,23 @@
   border-bottom-color: rgb(24 24 24 / 0.95);
 }
 
+.tooltip[data-side='right']::after,
+.tooltip[data-side='left']::after {
+  top: var(--arrow-x, 50%);
+  left: auto;
+  margin: -5px 0 0;
+}
+
+.tooltip[data-side='right']::after {
+  right: 100%;
+  border-right-color: rgb(24 24 24 / 0.95);
+}
+
+.tooltip[data-side='left']::after {
+  left: 100%;
+  border-left-color: rgb(24 24 24 / 0.95);
+}
+
 .popover {
   position: fixed;
   z-index: 900;

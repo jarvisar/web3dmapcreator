@@ -42,6 +42,12 @@ A road is never removed in favour of a less important one. The preview shows how
 
 `Line spacing` is the main setting. `Standard` sets it from the output: 0.3 mm for a laser, 1.7 times the pen width for a plotter and 0.35 mm for print. `Light` and `Strong` take 0.7 and 1.4 times that. The rest is under `All settings`.
 
+## Routes
+
+Roads picked in the preview go into routes, each drawn in its own colour on its own layer, or are left out. OpenFreeMap merges ways with the same tags and has no names on road lines, so a pick is saved as the line's shape in longitude and latitude, not an ID. Each render matches it back to the lines lying along it: at least 70% of a line within 4 m of the pick, or 0.25 mm printed if that's more. That happens before the line cleanup, so a route's lines only join each other and the cleanup never thins them out (`src/core/svgmap/routes.ts`).
+
+Share links leave picks out, since a long route is a lot of coordinates for a URL. Saved settings and exported options keep them.
+
 ## Titles
 
 Titles come in a box in a corner or a band across the piece, in six outline fonts, five single-line Hershey fonts or a font you load (TTF, OTF or WOFF, not WOFF2). A loaded font is kept in the browser's IndexedDB. The map on screen lays the title out with the same code as the render, so what's drawn on the map is what ends up in the file.

@@ -7,6 +7,7 @@ import type { ProductSettings } from '../../core/svgmap/layout/layout';
 import { fitNumber } from '../../core/svgmap/limits';
 import { DEFAULT_CLEANUP, type CleanupSettings } from '../../core/svgmap/lines/cleanup';
 import { DEFAULT_PRODUCT } from '../../core/svgmap/presets';
+import { sanitizeLines, sanitizeRoutes } from '../../core/svgmap/routes';
 import {
   LASER_PALETTES,
   type ModeStyle,
@@ -100,6 +101,8 @@ export function toRenderSettings(area: AreaSpec, s: SvgSettings, placeName = '')
     label: s.label,
     source: s.source,
     plotter: s.plotter,
+    routes: s.routes,
+    hiddenLines: s.hiddenLines,
     title: s.label.text.trim() || placeName.trim(),
   };
 }
@@ -126,6 +129,9 @@ function validString(path: string[], value: string): boolean {
 // the range the panels offer (core/svgmap/limits.ts).
 export function mergeSettings<T>(base: T, patch: unknown, path: string[] = []): T {
   if (patch === undefined) return base;
+  // The only lists: picked roads, cleaned on their own.
+  if (path.length === 1 && path[0] === 'routes') return sanitizeRoutes(patch) as T;
+  if (path.length === 1 && path[0] === 'hiddenLines') return sanitizeLines(patch) as T;
   if (isObject(base)) {
     if (!isObject(patch)) return base;
     const out: Record<string, unknown> = { ...base };

@@ -28,7 +28,7 @@ import type { ModelSettings } from '../settings';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
 import { isPrintableWater, isUntypedWater, recessedWaterKind } from './classify';
 import { count, type Context } from './context';
-import { projectPolygons, type SourceFeature } from './source';
+import { primaryName, projectPolygons, type SourceFeature } from './source';
 
 /** Cut water and basins sit this far below their bank: one layer of bank shows. */
 export const WATER_DROP_MM = 0.25;
@@ -52,6 +52,9 @@ export interface WaterBody {
   /** Water surface. */
   top: number;
   areaM2: number;
+  /** The feature it came from. Bodies merged into one take the largest one's. */
+  source?: string;
+  name?: string;
 }
 
 export interface WaterResult {
@@ -97,8 +100,8 @@ export async function solveWater(features: SourceFeature[], ctx: Context): Promi
   const { settings, heightfield: hf } = ctx;
   const water = settings.water;
   const cutBodies: WaterBody[] = [];
-  const sheetPolygons: Polygon[] = [];
-  const basinPolygons: Polygon[] = [];
+  const sheetPolygons: { polygon: Polygon; source: string; name: string }[] = [];
+  const basinPolygons: { polygon: Polygon; source: string; name: string }[] = [];
   const areaScale = ctx.projection.mmPerMetre ** 2;
   const seenBasins = new Set<string>();
 
@@ -121,6 +124,7 @@ export async function solveWater(features: SourceFeature[], ctx: Context): Promi
     // Decided on the whole feature, like basins: a lake with only a corner in
     // the model, or a river a round crop splits, is still cut water.
     const cut = !basinKind && sourceAreaM2(source(), ctx) >= water.cutMinAreaM2;
+    const name = primaryName(feature.props);
     for (const polygon of clipped) {
       const area = polygonArea(polygon);
       if (area < MINIMUM_AREA_MM2) continue;
@@ -128,12 +132,12 @@ export async function solveWater(features: SourceFeature[], ctx: Context): Promi
         const key = ringKey(polygon);
         if (seenBasins.has(key)) continue;
         seenBasins.add(key);
-        basinPolygons.push(polygon);
+        basinPolygons.push({ polygon, source: feature.id, name });
       } else if (cut) {
         const bed = medianLevel(hf, polygon);
-        cutBodies.push({ polygon, kind: 'cut', bed, top: bed - WATER_DROP_MM, areaM2: area / areaScale });
+        cutBodies.push({ polygon, kind: 'cut', bed, top: bed - WATER_DROP_MM, areaM2: area / areaScale, source: feature.id, name });
       } else {
-        sheetPolygons.push(polygon);
+        sheetPolygons.push({ polygon, source: feature.id, name });
       }
     }
   }
@@ -147,18 +151,18 @@ export async function solveWater(features: SourceFeature[], ctx: Context): Promi
     return kept;
   };
   const bodies: WaterBody[] = [...cutBodies];
-  for (const polygon of sheetPolygons) {
+  for (const { polygon, source, name } of sheetPolygons) {
     for (const piece of outsideCut(polygon)) {
       const bed = medianLevel(hf, piece);
-      bodies.push({ polygon: piece, kind: 'sheet', bed, top: bed + SHEET_OFFSET_MM, areaM2: polygonArea(piece) / areaScale });
+      bodies.push({ polygon: piece, kind: 'sheet', bed, top: bed + SHEET_OFFSET_MM, areaM2: polygonArea(piece) / areaScale, source, name });
     }
   }
   // Ponds are too small for the elevation data to show, so they sit below
   // their lowest bank rather than at the median inside.
-  for (const polygon of basinPolygons) {
+  for (const { polygon, source, name } of basinPolygons) {
     for (const piece of outsideCut(polygon)) {
       const bank = hf.minOver(densifyRing(piece[0], 1.5));
-      bodies.push({ polygon: piece, kind: 'basin', bed: bank, top: bank - WATER_DROP_MM, areaM2: polygonArea(piece) / areaScale });
+      bodies.push({ polygon: piece, kind: 'basin', bed: bank, top: bank - WATER_DROP_MM, areaM2: polygonArea(piece) / areaScale, source, name });
     }
   }
   await ctx.progress.checkpoint(0.9);
@@ -308,8 +312,10 @@ function mergeConnectedCut(bodies: WaterBody[], areaScale: number): WaterBody[] 
         break;
       }
     }
+    const largest = group.reduce((a, b) => (b.areaM2 > a.areaM2 ? b : a));
+    const name = largest.name || group.find((b) => b.name)?.name;
     for (const polygon of union(group.map((b) => b.polygon))) {
-      out.push({ polygon, kind: 'cut', bed: level, top: level - WATER_DROP_MM, areaM2: polygonArea(polygon) / areaScale });
+      out.push({ polygon, kind: 'cut', bed: level, top: level - WATER_DROP_MM, areaM2: polygonArea(polygon) / areaScale, source: largest.source, name });
     }
   }
   return out;

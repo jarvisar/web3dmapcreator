@@ -153,6 +153,18 @@ Parts are separate solids that overlap slightly (roads and slabs reach 0.04 mm i
 
 PrusaSlicer, Bambu Studio and OrcaSlicer give an overlap to the part listed later in the object, so 3MF exports list the terrain after everything that reaches into it, and water after the terrain, since small water sheets are sunk into it (`OVERLAP_RANK`). The overlap used to be 0.15 mm with the terrain listed first, and PrusaSlicer printed a park's lowest layer below the ground wherever a slice fell in the overlap, which shows at the model's edges and shores. Filaments keep the model's order, so the terrain is still filament 1. The 3D view settles the walls these parts share the same way.
 
+## Editing
+
+Edits are a small document kept next to the settings (`src/core/edit/types.ts`), keyed by what they change: Overture IDs for buildings, building parts, road segments and water, and IDs of the app's own for trees and added shapes. Nothing in it points into the mesh, so edits carry over when the model is generated again with other settings. Changes for things a model doesn't have are kept and ignored.
+
+The worker keeps the generated model and applies the edits to it afterwards (`src/core/edit/session.ts`). The 3D view only gets what changed: new geometry for a building with a new height or for an added shape, and whole road parts once a road is edited. It hides removed things and colours layers itself. An export applies the edits to the generated solids and meshes them like a generated model, so sections and every format work the same.
+
+Roads were the awkward part. A city's streets come out of the pipeline as one unioned polygon per colour, so one street can't just be cut out of it. Once a road is edited, the area is split into tiles of 12 to 30 mm, and each tile an edited road reaches is rebuilt from the road pieces with the pipeline's own `bufferRoads`, with the tile as the crop. The other tiles keep the generated polygons. Tile edges are on whole Clipper units, so neighbouring tiles meet exactly. A road with its own height or layer owns its ground where it crosses others, and the taller one wins.
+
+A removed road or building gives its ground back to the land cover it was cut out of, so a path taken out of a park is grass again (`src/core/edit/land.ts`). That's worked out per tile too, and cached, or every edit in a large city took seconds.
+
+Custom layers export as parts of their own, with their own filament. Added shapes run down to the model's base so a raised box never floats, and like buildings they're listed before the terrain, so the terrain wins where they overlap under the ground.
+
 ## Export
 
 - **Bambu Studio project (.3mf).** A native project with one filament per colour and Bambu PLA line, and one part per layer with its filament assigned. Each plate is one object, laid out like Bambu's own plate list.

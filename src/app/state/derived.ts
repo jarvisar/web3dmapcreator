@@ -42,9 +42,9 @@ export function filamentKey(entry: PaletteEntry): string {
   return `${entry.hex.toUpperCase()}|${entry.line}`;
 }
 
-/** Distinct (colour, line) pairs among the groups: the number of filaments to load. */
-export function filamentCount(palette: Palette, groups: ColourGroup[]): number {
-  return new Set(groups.map((group) => filamentKey(palette[group]))).size;
+/** Distinct (colour, line) pairs among the groups and custom layers: the number of filaments to load. */
+export function filamentCount(palette: Palette, groups: ColourGroup[], layers: readonly PaletteEntry[] = []): number {
+  return new Set([...groups.map((group) => filamentKey(palette[group])), ...layers.map(filamentKey)]).size;
 }
 
 export function matchingPreset(palette: Palette): PalettePreset | null {

@@ -38,9 +38,9 @@ import { isConvex, ringWidth } from './buildings/planar';
 import { footprintAdmitsMinimumHeight, sourcePartWidths } from './buildings/printability';
 import { isShaped, resolveRoof, shapedRoofRegions, type RoofRegion } from './buildings/roofs';
 import { hasHoles, selectBuildingGeometry } from './buildings/selection';
-import { count, type Context } from './context';
+import { count, describeObject, type Context } from './context';
 import { measuredSolids, projectShape } from './lidar';
-import { isPolygonal, positive, projectPolygons, type SourceFeature } from './source';
+import { isPolygonal, positive, primaryName, projectPolygons, type SourceFeature } from './source';
 
 export interface BuildingResult {
   /** Buildings built from their mapped shape. */
@@ -412,6 +412,20 @@ export async function buildBuildings(
         stat('lidar_geometry_fallbacks');
         continue;
       }
+      const key = `b:${feature.id}`;
+      for (const solid of built.solids) {
+        solid.key = key;
+        solid.sub = feature.id;
+      }
+      describeObject(ctx, key, {
+        kind: 'building',
+        name: primaryName(feature.props),
+        detail: text(feature.props.class),
+        heightM: (built.heightMm - built.lift) / vertical(1),
+        base: ground[0],
+        measured: true,
+        ground: new Map([[feature.id, pieces]]),
+      });
       measured.push(...built.solids);
       groundPieces.push(...pieces);
       stat('buildings');
@@ -426,7 +440,7 @@ export async function buildBuildings(
       } else enhanced.add(feature.id);
     }
     // Mapped bare rock, and the source buildings wholly inside a rock mass it replaces.
-    for (const record of Object.values(lidar.records)) {
+    for (const [id, record] of Object.entries(lidar.records)) {
       if (record.surfaceKind !== 'rock' || !record.surfaceGeometry) continue;
       const footprint = projectShape(record.surfaceGeometry, ctx);
       const seen = footprint.map((polygon) => visibility.of(polygon));
@@ -443,6 +457,9 @@ export async function buildBuildings(
         stat('lidar_rock_geometry_fallbacks');
         continue;
       }
+      const key = `k:${id}`;
+      for (const solid of built.solids) solid.key = key;
+      describeObject(ctx, key, { kind: 'rock', detail: 'bare rock', measured: true });
       rock.push(...built.solids);
       for (const id of record.coveredBuildings ?? []) covered.add(id);
       stat('lidar_rock_surfaces');
@@ -472,7 +489,7 @@ export async function buildBuildings(
       : null;
   await ctx.progress.checkpoint(0.15);
 
-  const emit =(surfaces: RoofRegion[], mass: Mass, bottom: HeightFn | number, grounded: boolean, tidy: boolean): number => {
+  const emit = (surfaces: RoofRegion[], mass: Mass, bottom: HeightFn | number, grounded: boolean, tidy: boolean, key: string, sub: string): number => {
     let added = 0;
     for (const surface of surfaces) {
       let shapes: MultiPolygon;
@@ -486,9 +503,9 @@ export async function buildBuildings(
         // is enough. One smaller than a cell can still cross a triangle's edge,
         // where the ground bends: 0.18 mm of air under a small house.
         if (grounded && !flat && !inOneTriangle(lattice, polygon)) {
-          solids.push({ kind: 'prism', role: 'building', polygon, top: surface.top, bottom, drape: hf.step, lattice });
+          solids.push({ kind: 'prism', role: 'building', polygon, top: surface.top, bottom, drape: hf.step, lattice, key, sub });
         } else {
-          solids.push({ kind: 'prism', role: 'building', polygon, top: surface.top, bottom, drape: 0 });
+          solids.push({ kind: 'prism', role: 'building', polygon, top: surface.top, bottom, drape: 0, key, sub });
         }
         added++;
       }
@@ -546,6 +563,8 @@ export async function buildBuildings(
     const parentId = isPart ? text(props.building_id) : '';
     const parent = parentId ? parentLookup.get(parentId) : undefined;
     const parentTopM = parent ? positive(parent.props.height) : null;
+    // A part is picked with its whole building, and edited on its own as a sub-object.
+    const key = `b:${parentId || id}`;
     const ground = groundOf(isPart ? parentId : id);
     if (!ground) continue;
     const [terrain, terrainTop] = ground;
@@ -622,7 +641,15 @@ export async function buildBuildings(
       // bridges along the ridge. Normalizing splits them.
       const tidy = !!regions && (roof.kind === 'gabled' || roof.kind === 'hipped') && !isConvex(outer);
       const first = solids.length;
-      if (!emit(surfaces, mass, floor, founded, tidy)) continue;
+      if (!emit(surfaces, mass, floor, founded, tidy, key, id)) continue;
+      describeObject(ctx, key, {
+        kind: 'building',
+        name: primaryName(parent?.props ?? props) || primaryName(props),
+        detail: text((parent ?? feature).props.class),
+        heightM: profile.topM,
+        base: terrain,
+        ground: founded ? new Map([[id, mass.pieces]]) : undefined,
+      });
       if (heightOnly.has(id)) {
         const minimum = minimumHeight > 0 && footprintAdmitsMinimumHeight(outer, minimumFootprint) ? minimumHeight : 0;
         const list = segments.get(id) ?? [];

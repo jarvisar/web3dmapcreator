@@ -5,9 +5,12 @@ import type { GenerateResult, ProgressEvent } from '../../core/engine/protocol';
 import { cloneSettings } from '../../core/settings';
 import { downloadBlob, NARROW_QUERY } from '../lib/browser';
 import { formatBytes } from '../lib/format';
+import { kindOf, objectOf } from '../../core/edit/keys';
+import type { ModelEdits } from '../../core/edit/types';
 import { fileBase, generationProblem } from './derived';
+import { flushEdits, nextEditVersion } from './editActions';
 import { getEngine, onWorkerReplaced } from './engine';
-import { setModelParts } from './model';
+import { setModelParts, type EditData } from './model';
 import {
   patchExporting,
   patchGeneration,
@@ -44,6 +47,14 @@ function describe(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === 'string' && error) return error;
   return 'Something went wrong. Try again.';
+}
+
+/** Whether a key names something in this model, or one of its added shapes. */
+function selectable(key: string, data: EditData, edits: ModelEdits): boolean {
+  const kind = kindOf(key);
+  if (kind === 'shape') return edits.shapes.some((shape) => `s:${shape.id}` === key);
+  if (kind === 'road') return data.roads?.keys.includes(key) ?? false;
+  return objectOf(key) in data.objects || kind === 'tree';
 }
 
 function toMeta(result: GenerateResult, key: string): ResultMeta {
@@ -86,11 +97,19 @@ export async function generateModel(): Promise<void> {
   const key = snapshotKey(area, settings);
   patchGeneration({ status: 'running', progress: null, startedAt: Date.now(), error: null, cancelling: false });
   try {
-    const result = await getEngine().generate({ area, settings }, (event) => {
+    const request = { area, settings, edits: structuredClone(state.edits), editsVersion: nextEditVersion(), baseUrl: document.baseURI };
+    const result = await getEngine().generate(request, (event) => {
       if (id === run) queueProgress(event, 'generation');
     });
     if (id !== run) return;
-    setModelParts(result.parts);
+    const data: EditData = {
+      editable: result.editable === true,
+      roads: result.roads ?? null,
+      objects: result.objects ?? {},
+      ground: result.ground ?? null,
+      frame: { center: area.center, rotationDeg: area.rotationDeg, mmPerMetre: result.mmPerMetre },
+    };
+    setModelParts(result.parts, data, result.edit, result.modelId);
     const meta = toMeta(result, key);
     const narrow = window.matchMedia(NARROW_QUERY).matches;
     useApp.setState((current) => ({
@@ -108,7 +127,11 @@ export async function generateModel(): Promise<void> {
         // Unless the SVG map was picked while the model generated.
         view: current.output === 'model' ? 'result' : current.ui.view,
         drawerOpen: narrow && current.output === 'model' ? false : current.ui.drawerOpen,
-        hiddenParts: current.ui.hiddenParts.filter((part) => meta.parts.some((item) => item.id === part)),
+        // Custom layers aren't parts of the generated model, but can be hidden too.
+        hiddenParts: current.ui.hiddenParts.filter((part) => meta.parts.some((item) => item.id === part) || part.startsWith('layer:') || part === 'shapes'),
+        // What was selected may not be in this model.
+        selection: current.ui.selection.filter((key) => selectable(key, data, current.edits)),
+        editMode: current.ui.editMode && data.editable,
       },
     }));
   } catch (error) {
@@ -134,7 +157,8 @@ export async function exportModel(): Promise<void> {
   const result = state.generation.result;
   if (!result || state.exporting.status === 'running' || state.generation.status === 'running') return;
   const { format, printer, multiPlate, sectionWidthMm, sectionHeightMm } = state.exportSettings;
-  const exclude = state.ui.hiddenParts.filter((id) => result.parts.some((part) => part.id === id));
+  const exclude = state.ui.hiddenParts.filter((id) => result.parts.some((part) => part.id === id) || id.startsWith('layer:') || id === 'shapes');
+  flushEdits();
   patchExporting({ status: 'running', progress: null, error: null });
   try {
     const out = await getEngine().export(
@@ -147,6 +171,7 @@ export async function exportModel(): Promise<void> {
         sectionHeightMm,
         fileBase: fileBase(state.placeName, state.fileName),
         excludeParts: exclude,
+        edits: structuredClone(state.edits),
       },
       (event) => queueProgress(event, 'exporting'),
     );

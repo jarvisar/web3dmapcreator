@@ -4,7 +4,7 @@
 // partial bridge or a partial width change is silently lost.
 
 import type { Vec2 } from '../types';
-import { num, positive, str } from './source';
+import { num, positive, primaryName, str } from './source';
 
 // Edge-to-edge carriageway estimates in metres for classes without
 // width_rules, chosen to read correctly at miniature scale.
@@ -30,6 +30,8 @@ export const MINOR_ROAD_CLASSES = new Set(['footway', 'sidewalk', 'crosswalk', '
 
 export interface SubSegment {
   sourceId: string;
+  /** Street name, for the editor. Nothing is built from it. */
+  name?: string;
   points: Vec2[];
   roadClass: string;
   subclass: string;
@@ -197,6 +199,7 @@ export function splitSegment(
   if (points.length < 2 || polylineLength(points) <= 0) return [];
   const cls = roadClass ?? (str(props.class) || 'unknown');
   const cuts = boundaries(props);
+  const name = primaryName(props);
   const out: SubSegment[] = [];
   for (let i = 0; i < cuts.length - 1; i++) {
     const t0 = cuts[i];
@@ -207,6 +210,7 @@ export function splitSegment(
     const subclassRule = activeRule(props.subclass_rules, mid);
     out.push({
       sourceId,
+      ...(name ? { name } : {}),
       points: piece,
       roadClass: cls,
       subclass: str(subclassRule?.value) || str(props.subclass),

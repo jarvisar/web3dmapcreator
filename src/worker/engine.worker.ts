@@ -13,8 +13,15 @@ import { fetchOverture } from '../core/data/overture';
 import { cellSize } from '../core/dsm/grid';
 import { surfaceModel } from '../core/dsm/model';
 import { prepareSurface, type PreparedSurface } from '../core/dsm/prepare';
-import type { ExportRequest, FromWorker, GenerateRequest, GenerateResult, LidarSummary, ProgressEvent, SurfaceSummary, ToWorker } from '../core/engine/protocol';
+import { groundGrid } from '../core/edit/ground';
+import { roadLines } from '../core/edit/lines';
+import { EditSession, type EditUpdate } from '../core/edit/session';
+import { emptyEdits, hasEdits, sanitizeEdits } from '../core/edit/types';
+import type { EditRequest, ExportRequest, FromWorker, GenerateRequest, GenerateResult, LidarSummary, ProgressEvent, SurfaceSummary, ToWorker } from '../core/engine/protocol';
 import { effectiveScale } from '../core/geo/area';
+import { Projection } from '../core/geo/projection';
+import { download } from '../core/svgmap/download';
+import { FontLoader } from '../core/svgmap/text/loadFont';
 import { prepareLidar, setCheckpointStore, type PreparedLidar } from '../core/lidar/prepare';
 import { exportPlates } from '../core/export';
 import { BAMBU_MAX_PLATES } from '../core/export/sections';
@@ -42,6 +49,11 @@ interface Running {
 
 let running: Running | null = null;
 let lastSpec: ModelSpec | null = null;
+let session: EditSession | null = null;
+/** The newest edit request not applied yet. Older ones waiting are dropped. */
+let pendingEdit: { id: number; request: EditRequest } | null = null;
+let applying = false;
+let baseUrl = '';
 let lastCredits: string[] = [];
 // A LiDAR Only model uses no map data unless it used mapped water, so its
 // exports can credit only the surveys.
@@ -53,6 +65,93 @@ let surface: { key: string; prepared: PreparedSurface } | null = null;
 
 setCheckpointStore(lidarCache);
 installLidarCodecs(lazWasmUrl);
+
+// Fonts for text shapes, cached by the service worker, so normally instant.
+const fonts = new FontLoader(async (path) => {
+  const { status, bytes } = await download(new URL(path, baseUrl || self.location.href).href, 30_000);
+  if (!bytes) throw new Error(`Could not load ${path} (${status}).`);
+  return bytes;
+});
+
+function meshTransfers(update: EditUpdate): Transferable[] {
+  const out: Transferable[] = [];
+  for (const object of update.objects) {
+    if (!object.mesh) continue;
+    out.push(object.mesh.positions.buffer, object.mesh.indices.buffer);
+    if (object.mesh.objects) out.push(object.mesh.objects.runs.buffer);
+  }
+  for (const { part } of update.parts) {
+    if (!part) continue;
+    out.push(part.positions.buffer, part.indices.buffer);
+    if (part.objects) out.push(part.objects.runs.buffer);
+  }
+  return out;
+}
+
+function partTransfers(parts: GenerateResult['parts']): Transferable[] {
+  return parts.flatMap((p) => [p.positions.buffer, p.indices.buffer, ...(p.objects ? [p.objects.runs.buffer] : [])]);
+}
+
+/**
+ * The editor's hold on a new model, with the request's edits applied. A model
+ * that can't be edited still generates.
+ */
+async function startSession(id: number, spec: ModelSpec, request: GenerateRequest, result: GenerateResult): Promise<Transferable[]> {
+  session = null;
+  result.modelId = id;
+  if (request.baseUrl) baseUrl = request.baseUrl;
+  if (!spec.edit) {
+    result.editable = false;
+    return [];
+  }
+  try {
+    const projection = new Projection(request.area.center, request.area.rotationDeg, spec.mmPerMetre);
+    session = new EditSession(spec, request.settings, projection, { load: (font) => fonts.load(font, null) }, id);
+    result.editable = true;
+    result.objects = session.describe();
+    if (spec.edit.roads.length) result.roads = roadLines(spec.edit, -spec.baseZ, request.settings.roads.thicknessMm);
+    result.ground = groundGrid(spec.edit, -spec.baseZ) ?? undefined;
+    const transfers = [...(result.roads ? roadTransfers(result.roads) : []), ...(result.ground ? [result.ground.values.buffer] : [])];
+    const edits = sanitizeEdits(request.edits ?? emptyEdits());
+    if (!hasEdits(edits)) return transfers;
+    result.edit = await session.update(edits, request.editsVersion ?? 0);
+    return [...meshTransfers(result.edit), ...transfers];
+  } catch (error) {
+    session = null;
+    result.editable = false;
+    result.warnings.push(`The model can't be edited: ${describe(error)}`);
+    return [];
+  }
+}
+
+function roadTransfers(lines: NonNullable<GenerateResult['roads']>): Transferable[] {
+  return [lines.groups.buffer, lines.widths.buffer, lines.starts.buffer, lines.points.buffer];
+}
+
+/** Applies the newest edit request, one at a time, never during a generation. */
+async function applyEdits(): Promise<void> {
+  if (applying) return;
+  applying = true;
+  try {
+    while (pendingEdit && !running) {
+      const { id, request } = pendingEdit;
+      pendingEdit = null;
+      if (request.baseUrl) baseUrl = request.baseUrl;
+      if (!session) {
+        post({ type: 'error', id, message: 'Generate a model first.' });
+        continue;
+      }
+      try {
+        const update = await session.update(sanitizeEdits(request.edits), request.version);
+        post({ type: 'edited', id, update }, meshTransfers(update));
+      } catch (error) {
+        post({ type: 'error', id, message: describe(error) });
+      }
+    }
+  } finally {
+    applying = false;
+  }
+}
 
 function boundsKey(b: GeoBounds): string {
   return [b.west, b.south, b.east, b.north].map((v) => v.toFixed(6)).join(',');
@@ -271,7 +370,7 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
     timings.generate = (performance.now() - t1) / 1000;
     const t2 = performance.now();
     job.progress.begin('mesh', 'Building meshes', 0.92, 0.08);
-    const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ, progress: job.progress, span: [0, 1] });
+    const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ, progress: job.progress, span: [0, 1], objects: true });
     timings.mesh = (performance.now() - t2) / 1000;
     lastSpec = spec;
     lastCredits = [...new Set(prepared.surveys.map((s) => `LiDAR: ${s.attribution}`))];
@@ -289,7 +388,8 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
       timings,
       surface: surfaceSummary(prepared),
     };
-    post({ type: 'generated', id, result }, meshed.parts.flatMap((p) => [p.positions.buffer, p.indices.buffer]));
+    const transfers = await startSession(id, spec, request, result);
+    post({ type: 'generated', id, result }, [...partTransfers(meshed.parts), ...transfers]);
   } finally {
     pool?.close();
   }
@@ -335,7 +435,7 @@ async function generate(id: number, request: GenerateRequest) {
 
     const t2 = performance.now();
     job.progress.begin('mesh', 'Building meshes', 0.9, 0.1);
-    const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ, progress: job.progress, span: [0, 1] });
+    const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ, progress: job.progress, span: [0, 1], objects: true });
     timings.mesh = (performance.now() - t2) / 1000;
     lastSpec = spec;
 
@@ -368,7 +468,8 @@ async function generate(id: number, request: GenerateRequest) {
       timings,
       lidar: lidar ? lidarSummary(lidar) : undefined,
     };
-    post({ type: 'generated', id, result }, meshed.parts.flatMap((p) => [p.positions.buffer, p.indices.buffer]));
+    const transfers = await startSession(id, spec, request, result);
+    post({ type: 'generated', id, result }, [...partTransfers(meshed.parts), ...transfers]);
   } catch (error) {
     const cancelled = error instanceof CancelError || job.progress.cancelled || (error as Error)?.name === 'AbortError';
     post({ type: 'error', id, message: cancelled ? 'Cancelled' : describe(error), cancelled });
@@ -376,6 +477,8 @@ async function generate(id: number, request: GenerateRequest) {
     // If one download failed, stop the other one too.
     job.abort.abort();
     if (running === job) running = null;
+    // Edits that came in meanwhile, for the new model or the one still shown.
+    void applyEdits();
   }
 }
 
@@ -391,7 +494,21 @@ async function generateLidarOnly(id: number, request: GenerateRequest) {
   } finally {
     job.abort.abort();
     if (running === job) running = null;
+    void applyEdits();
   }
+}
+
+/**
+ * Part ids the export leaves out. A custom layer hidden in the viewer takes
+ * its water part with it, and hidden added shapes take every colour's.
+ */
+function excludedParts(spec: ModelSpec, hidden: string[] = []): string[] {
+  const out = new Set(hidden);
+  for (const layer of spec.layers) {
+    if (layer.id.endsWith(':water') && out.has(layer.id.slice(0, -':water'.length))) out.add(layer.id);
+    if (layer.id.startsWith('added-') && out.has('shapes')) out.add(layer.id);
+  }
+  return [...out];
 }
 
 async function exportModel(id: number, request: ExportRequest) {
@@ -400,13 +517,15 @@ async function exportModel(id: number, request: ExportRequest) {
     const printer = printerByKey(request.printer);
     const progress = new Progress((event) => post({ type: 'progress', id, progress: { ...event, stage: 'export' } }));
     progress.begin('export', 'Preparing parts', 0, 0.8);
-    const { plates, failed } = await buildPlates(lastSpec, {
+    const edits = request.edits ? sanitizeEdits(request.edits) : null;
+    const spec = session && edits && hasEdits(edits) ? await session.edited(edits, request.palette) : lastSpec;
+    const { plates, failed } = await buildPlates(spec, {
       multiPlate: request.multiPlate,
       sectionWidthMm: request.sectionWidthMm,
       sectionHeightMm: request.sectionHeightMm,
       bedWidth: printer.width,
       bedDepth: printer.depth,
-      exclude: request.excludeParts,
+      exclude: excludedParts(spec, request.excludeParts),
       maxPlates: request.format === 'bambu' ? BAMBU_MAX_PLATES : undefined,
       progress,
     });
@@ -490,4 +609,10 @@ ctx.onmessage = (event) => {
   }
   if (message.type === 'generate') void generate(message.id, message.request);
   else if (message.type === 'export') void exportModel(message.id, message.request);
+  else if (message.type === 'edit') {
+    // Only the newest edits matter: an older request still waiting is dropped.
+    if (pendingEdit) post({ type: 'error', id: pendingEdit.id, message: 'Superseded', cancelled: true });
+    pendingEdit = { id: message.id, request: message.request };
+    void applyEdits();
+  }
 };

@@ -16,7 +16,8 @@ import { clipTin, type Tin } from '../geometry/tinclip';
 import { isPrintableWater } from '../pipeline/classify';
 import { WATER_DROP_MM } from '../pipeline/water';
 import { Progress } from '../pipeline/context';
-import type { ModelSpec } from '../pipeline/generate';
+import type { EditContext, ModelSpec } from '../pipeline/generate';
+import { groundAt, type GroundGrid } from '../edit/ground';
 import { projectPolygons, type SourceFeature } from '../pipeline/source';
 import type { AreaSpec, ModelSettings } from '../settings';
 import type { ModelStats, MultiPolygon, Polygon, Ring } from '../types';
@@ -370,5 +371,8 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
     );
   }
   for (const failure of surface.failures.slice(0, 3)) warnings.push(`LiDAR from ${failure.source} could not be read: ${failure.reason}`);
-  return { layers: layersOut, outline, crop: [crop], baseZ: 0, mmPerMetre, stats, warnings };
+  // Nothing in the surface can be picked out, but shapes can stand on it.
+  const surfaceGrid: GroundGrid = { minX: x0, minY: y0, step: dx, stepY: dy, cols: nx, rows: ny, values: result.heights };
+  const edit: EditContext = { heightAt: (x, y) => groundAt(surfaceGrid, x, y), grid: surfaceGrid, roads: [], water: [], objects: new Map() };
+  return { layers: layersOut, outline, crop: [crop], baseZ: 0, mmPerMetre, stats, warnings, edit };
 }

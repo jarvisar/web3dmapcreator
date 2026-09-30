@@ -168,6 +168,13 @@ export function str(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
+/** A feature's `names.primary`, as written. Only shown to the user. */
+export function primaryName(props: Record<string, unknown>): string {
+  const names = props.names;
+  const primary = names && typeof names === 'object' && !Array.isArray(names) ? (names as Record<string, unknown>).primary : undefined;
+  return typeof primary === 'string' ? primary.trim() : '';
+}
+
 export function num(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'bigint') return Number(value);
