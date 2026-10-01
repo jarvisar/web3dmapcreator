@@ -9,9 +9,10 @@ A browser-only app (Vite + React + TypeScript, deployed to GitHub Pages) that
 turns a map area into a multicolour FDM city model: terrain, water, land
 surfaces, roads/rail, optional schematic bridges and trees, and buildings with
 roofs from Overture Maps. It is a port of the Jarvizar City Model Blender
-add-on (separate repo `3dmapcreator`, not a dependency). Its LiDAR pipeline is
-ported for streamed surveys only (EPT and COPC). Staged LAZ downloads were left
-out. `settings.modelSource = 'lidar'` (LiDAR only) builds the whole model from
+add-on (separate repo `3dmapcreator`, not a dependency). Its LiDAR pipeline
+reads EPT, COPC and plain LAZ/LAS tiles (also inside ZIPs) straight from
+publishers that allow cross-origin requests (`docs/LIDAR_SOURCES.md`). The
+add-on's consent-gated staged downloads have no equivalent. `settings.modelSource = 'lidar'` (LiDAR only) builds the whole model from
 a survey instead, as one solid in the terrain colour, with the water as its
 own part if asked and Overture's water only for shorelines and holes
 (`src/core/dsm/`).
@@ -35,7 +36,7 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/geometry/` | Clipper2 wrappers (`polygon.ts`), prism mesher (`mesher.ts`, Delaunator + Constrainautor CDT with earcut fallback), edge/raster indexes, mesh validation |
 | `src/core/terrain/` | `HeightField`: the one grid every layer samples |
 | `src/core/dsm/` | LiDAR only models: `prepare.ts` reads a survey into a grid (`raster.ts`, `grid.ts`), `compose.ts`/`filters.ts` the height rules, `mesh.ts` RTIN and edge collapse, `model.ts` the `ModelSpec` |
-| `src/core/lidar/` | LiDAR: `sources/` discovery (USGS EPT, IGN, NRCan, swisstopo, Flai COPC), `read/` EPT/COPC/LAS reading with an injected LAZ decoder and projector, measurement (`measure.ts`, `envelope.ts`, ground, planes, terraces, selection), roof surfaces (`regularize.ts`, `delatin.ts`, `coarsen.ts`, `rim.ts`), `prepare.ts` batching and checkpoints |
+| `src/core/lidar/` | LiDAR: `sources/` one module per provider (`common.ts` has the shared catalog helpers), `read/` EPT, COPC, plain LAZ/LAS and ZIP reading (`ept.ts`, `tiles.ts`, `chunks.ts`, `zip.ts`) with an injected LAZ decoder and projector, measurement (`measure.ts`, `envelope.ts`, ground, planes, terraces, selection), roof surfaces (`regularize.ts`, `delatin.ts`, `coarsen.ts`, `rim.ts`), `prepare.ts` batching and checkpoints |
 | `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges, `network/` tidy), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
 | `src/core/edit/` | Model editor: the edits document (`types.ts`, `keys.ts`), `EditSession` applying it to a generated model in the worker, road tiles, land fill, terrain and water after edits (`earth.ts`), added shapes and what they stand on (`stand.ts`), road lines for picking |
@@ -135,6 +136,8 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   base goes down to the lowest ground under it.
 - Land categories never overlap (priority order). Water, roads and building
   footprints are cut out of slabs, and slivers under ~0.2 mm are opened away.
+  The opening grows back mitred and clipped to the slab (`openSharp`). A
+  round one rounded every corner a road or building cut by 0.1 mm.
   Above 250 mm this runs in 50 mm tiles with a 1 mm margin (`tiled`), so
   each boolean only sees what's near it and seams match a single pass.
 - Satellite land cover (`land.satelliteCover`) is off by default. WorldCover
@@ -288,6 +291,40 @@ LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
 - With `preferLidar` off, mapped assemblies with more levels or a shaped roof
   the measurement lacks are kept (`preferSourceDetail`).
 
+LiDAR sources (`src/core/lidar/sources/`, notes in `docs/LIDAR_SOURCES.md`):
+
+- A publisher is only usable when its index and its files both answer
+  cross-origin requests. Check in a real browser (fetch from another
+  origin, plainly and with `Range`): curl headers misled more than once, and
+  redirects need CORS at every hop. The doc lists what was checked and why it
+  isn't used, so it isn't checked again.
+- Each provider has `areas` and is only asked inside them. `discover` gives
+  each one a deadline (90 s, NRCan 180) and marks its failures as searches,
+  which the worker words apart from failed reads. Catalogs are kept a day,
+  and a failed one is answered from a copy up to 30 days old.
+- `read/tiles.ts` reads what a tile's header says. Plain LAZ goes through
+  laszip's chunk table (`chunks.ts`, the arithmetic coder ported and checked
+  against laz-rs on a real NRW tile and a swisstopo COPC). The first read of
+  a tile decodes every chunk and saves each chunk's box as a Fetcher note.
+  Later reads fetch only the 8 MB runs they need. Runs are fixed per file so
+  they come from the cache.
+- ZIPs: a stored member is read in place by range (Luxembourg's COPC), a
+  deflated LAZ member is fetched in 4 MB pieces six at a time and inflated
+  (Brandenburg's server gives 80 KB/s per connection), and deflated LAS is
+  cropped as it inflates (`readStream`), so a 470 MB Berlin tile is never
+  held. `whole` tiles (Helsinki) ignore Range and come in one download.
+- Flai's README lags its bucket: the provider also lists the bucket's
+  folders for countries near the area, skips its copy of IGN (read
+  directly), finds the index-less PNOA 2022-2025 by tile name and the UTM
+  zone the names turn up in, and gives Navarra 2017 tiles their own classes.
+- Grids were checked against real files, not taken from the research:
+  Luxembourg's 2024 blocks start at Y 55000 (member names give the top
+  edge), and Japan's index polygons are cut at vector-tile edges, so a
+  sheet's pieces are merged.
+- LiDAR only block checkpoints are keyed by the tiles each block reads, so a
+  block read while a catalog lacked a tile isn't kept for good. EPT surveys
+  have no tiles and keep their old keys.
+
 LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
 
 - The grid is the area's own rectangle in its rotated frame, a cell centred
@@ -423,7 +460,7 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   clearing (`ctx.land`) and what clears them now, opened like the land
   stage, and fills only what that has and the generated slab lacks. The
   vacated footprint opened on its own left bare notches at the slab's
-  rounded corners and at a pond's corners, and dropped pieces between
+  corners and at a pond's corners, and dropped pieces between
   crossing paths. It's laid per tile in a band 1 mm past what was vacated,
   cached on what the tile and its neighbours had.
 - Terrain and water after edits (`earth.ts`): water left out is filled with

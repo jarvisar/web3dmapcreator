@@ -25,6 +25,7 @@ import { Projection } from '../core/geo/projection';
 import { download } from '../core/svgmap/download';
 import { FontLoader } from '../core/svgmap/text/loadFont';
 import { prepareLidar, setCheckpointStore, type PreparedLidar } from '../core/lidar/prepare';
+import type { Failure } from '../core/lidar/sources';
 import { exportPlates } from '../core/export';
 import { BAMBU_MAX_PLATES } from '../core/export/sections';
 import { CancelError, Progress } from '../core/pipeline/context';
@@ -296,6 +297,11 @@ async function loadLidar(request: GenerateRequest, data: OvertureData, job: Runn
   return lidar;
 }
 
+/** A LiDAR failure as a warning: a catalog that couldn't be searched, or a survey that couldn't be read. */
+function lidarFailure(failure: Failure): string {
+  return failure.search ? `Couldn't search ${failure.source} for LiDAR (${failure.reason}), so its surveys weren't used.` : `LiDAR from ${failure.source} could not be read: ${failure.reason}`;
+}
+
 function lidarSummary(lidar: PreparedLidar): LidarSummary {
   const skipped: Record<string, number> = {};
   for (const reason of Object.values(lidar.rejected)) skipped[reason] = (skipped[reason] ?? 0) + 1;
@@ -415,6 +421,7 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
     const warnings = [...spec.warnings];
     if (water instanceof Error) warnings.push(`Map water could not be downloaded, so the water is the survey's alone. ${describe(water)}`);
     if (meshed.failed) warnings.push('The LiDAR surface could not be closed into a solid. Try another area shape, or report this.');
+    for (const failure of prepared.failures.slice(0, 3)) warnings.push(lidarFailure(failure));
     const result: GenerateResult = {
       parts: meshed.parts,
       bounds: partsBounds(meshed.parts),
@@ -491,7 +498,7 @@ async function generate(id: number, request: GenerateRequest) {
       if (!lidar.surveys.length && lidar.candidates && !lidar.failures.length && !Object.keys(lidar.records).length) {
         warnings.push('No LiDAR survey that a browser can read covers these buildings, so they keep their mapped shapes.');
       }
-      for (const failure of lidar.failures.slice(0, 3)) warnings.push(`LiDAR from ${failure.source} could not be read: ${failure.reason}`);
+      for (const failure of lidar.failures.slice(0, 3)) warnings.push(lidarFailure(failure));
       const fallbacks = typeof spec.stats.lidar_geometry_fallbacks === 'number' ? spec.stats.lidar_geometry_fallbacks : 0;
       if (fallbacks) warnings.push(`${fallbacks} measured buildings could not be built cleanly and keep their mapped shapes.`);
     }

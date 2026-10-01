@@ -54,6 +54,17 @@ const DEFINITIONS: Record<number, string> = {
   3059: `+proj=tmerc +lat_0=0 +lon_0=24 +k=0.9996 +x_0=500000 +y_0=-6000000 ${GRS80}`,
   4083: `+proj=utm +zone=28 ${GRS80}`,
   29902: '+proj=tmerc +lat_0=53.5 +lon_0=-8 +k=1.000035 +x_0=200000 +y_0=250000 +ellps=mod_airy +towgs84=482.5,-130.6,564.6,-1.042,-0.214,-0.631,8.15 +units=m +no_defs',
+  // ETRS89 / GK25FIN (Helsinki).
+  3879: `+proj=tmerc +lat_0=0 +lon_0=25 +k=1 +x_0=25500000 +y_0=0 ${GRS80}`,
+  // NAD83(CSRS) / MTM zone 8 (Montreal).
+  2950: `+proj=tmerc +lat_0=0 +lon_0=-73.5 +k=0.9999 +x_0=304800 +y_0=0 ${GRS80}`,
+  // NAD83(PA11) and NAD83(MA11) UTM: Hawaii, American Samoa, Guam and the Marianas (NOAA).
+  6634: `+proj=utm +zone=4 ${GRS80}`,
+  6635: `+proj=utm +zone=5 ${GRS80}`,
+  6636: `+proj=utm +zone=2 +south ${GRS80}`,
+  8693: `+proj=utm +zone=55 ${GRS80}`,
+  // NAD83(CSRS) / New Brunswick Stereographic (GeoNB).
+  2953: `+proj=sterea +lat_0=46.5 +lon_0=-66.5 +k=0.999912 +x_0=2500000 +y_0=7500000 ${GRS80}`,
   5514: '+proj=krovak +lat_0=49.5 +lon_0=24.8333333333333 +alpha=30.2881397527778 +k=0.9999 +x_0=0 +y_0=0 +ellps=bessel +towgs84=589,76,480,0,0,0,0 +units=m +no_defs',
 };
 
@@ -61,6 +72,16 @@ const DEFINITIONS: Record<number, string> = {
 for (let zone = 2; zone <= 5; zone++) {
   DEFINITIONS[31464 + zone] = `+proj=tmerc +lat_0=0 +lon_0=${3 * zone} +k=1 +x_0=${zone * 1000000 + 500000} +y_0=0 +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +units=m +no_defs`;
 }
+// Japan's plane rectangular zones I-XIX by their origins, on JGD2011
+// (EPSG:6669-6687) and JGD2000 (2443-2461). Japanese tiles carry no CRS, so
+// the zone comes from the catalog.
+const JAPAN: [number, number][] = [
+  [33, 129.5], [33, 131], [36, 132.166666666667], [33, 133.5], [36, 134.333333333333], [36, 136], [36, 137.166666666667], [36, 138.5], [36, 139.833333333333], [40, 140.833333333333],
+  [44, 140.25], [44, 142.25], [44, 144.25], [26, 142], [26, 127.5], [26, 124], [26, 131], [20, 136], [26, 154],
+];
+JAPAN.forEach(([lat, lon], k) => {
+  DEFINITIONS[6669 + k] = DEFINITIONS[2443 + k] = `+proj=tmerc +lat_0=${lat} +lon_0=${lon} +k=0.9999 +x_0=0 +y_0=0 ${GRS80}`;
+});
 // NAD83(CSRS) UTM zones as EPSG numbers them (NRCan).
 const CSRS: Record<number, number> = { 3154: 7, 3155: 8, 3156: 9, 3157: 10, 2955: 11, 2956: 12, 2957: 13, 3158: 14, 3159: 15, 3160: 16, 2958: 17, 2959: 18, 2960: 19, 2961: 20, 2962: 21, 3761: 22 };
 
@@ -71,6 +92,9 @@ function definition(code: number): string | null {
   if (code >= 25828 && code <= 25838) return `+proj=utm +zone=${code - 25800} ${GRS80}`;
   if (code >= 26901 && code <= 26923) return `+proj=utm +zone=${code - 26900} +datum=NAD83 +units=m +no_defs`;
   if (CSRS[code]) return `+proj=utm +zone=${CSRS[code]} ${GRS80}`;
+  // NAD83(2011) UTM zones 1-19 (NOAA), SIRGAS 2000 UTM zones 17-25 south (Brazil and neighbours).
+  if (code >= 6330 && code <= 6348) return `+proj=utm +zone=${code - 6329} ${GRS80}`;
+  if (code >= 31977 && code <= 31985) return `+proj=utm +zone=${code - 31960} +south ${GRS80}`;
   return null;
 }
 

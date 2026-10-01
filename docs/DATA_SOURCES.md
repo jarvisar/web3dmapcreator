@@ -50,12 +50,27 @@ Only downloaded for LiDAR buildings (`LiDAR` on) and LiDAR only models. The surv
 | Source | Where | License |
 | --- | --- | --- |
 | [USGS 3DEP](https://www.usgs.gov/3d-elevation-program), through [Hobu's EPT mirror](https://github.com/hobuinc/usgs-lidar) | United States | Public domain |
-| [IGN LiDAR HD](https://geoservices.ign.fr/lidarhd) | France | Licence Ouverte 2.0 |
+| [NOAA Digital Coast](https://coast.noaa.gov/digitalcoast/) | Hawaii and the US territories | Public domain, attribution requested |
 | [NRCan CanElevation](https://open.canada.ca/data/en/dataset/7069387e-9986-4297-9f55-0288e9676947) | Canada | Open Government Licence - Canada |
-| [swisstopo swissSURFACE3D](https://www.swisstopo.admin.ch/en/height-model-swisssurface3d) | Switzerland | swisstopo open government data terms |
-| [Open LiDAR Data](https://github.com/flai-ai/open-lidar-data) by Flai | Parts of Europe and elsewhere | Per dataset, listed in its inventory |
+| [GeoNB](https://geonb.snb.ca/) | New Brunswick | Open Government Licence - New Brunswick |
+| [IGN LiDAR HD](https://geoservices.ign.fr/lidarhd) | France | Licence Ouverte 2.0 |
+| [swisstopo swissSURFACE3D](https://www.swisstopo.admin.ch/en/height-model-swisssurface3d) | Switzerland, Liechtenstein | swisstopo open government data terms |
+| [Geobasis NRW 3D-Messdaten](https://www.opengeodata.nrw.de/produkte/geobasis/hm/3dm_l_las/) | North Rhine-Westphalia | Datenlizenz Deutschland - Zero 2.0 |
+| [LVermGeo RLP Laserscan](https://lvermgeo.rlp.de/) | Rhineland-Palatinate | Datenlizenz Deutschland - Namensnennung 2.0 |
+| [LGB Brandenburg ALS](https://geobroker.geobasis-bb.de/) | Brandenburg | Datenlizenz Deutschland - Namensnennung 2.0 |
+| [Geoportal Berlin ALS 2021](https://gdi.berlin.de/data/a_als/atom/0.atom) | Berlin | Datenlizenz Deutschland - Zero 2.0 |
+| [ACT Lidar 2024](https://data.public.lu/fr/datasets/lidar-2024-releve-3d-du-territoire-luxembourgeois/) | Luxembourg | CC0 |
+| [Scottish Remote Sensing Portal](https://remotesensingdata.gov.scot/) | Scotland | Open Government Licence v3 |
+| [GURS CLSS](https://clss.si/) | Slovenia | CC BY 4.0 |
+| [geoEuskadi LiDAR](https://www.geo.euskadi.eus/) | Basque Country | CC BY 4.0 |
+| [Provincia autonoma di Trento LiDAR](https://siat.provincia.tn.it/stem/) | Trentino | CC BY 4.0 |
+| [City of Helsinki laser data](https://hri.fi/data/en_GB/dataset/helsingin-laserkeilausaineistot) | Helsinki | CC BY 4.0 |
+| Tokyo, Kanagawa and Yamanashi point clouds, through [G-Spatial Information Center](https://www.geospatial.jp/) | Tokyo, Yokohama, Yamanashi | CC BY 4.0 |
+| [PMSP M3DC](https://registry.opendata.aws/pmsp-lidar/) | São Paulo | GPL 3.0, as the city lists it |
+| [OpenTopography](https://opentopography.org/) | New Zealand (LINZ), Montreal 2015 and research sites | Per dataset, cited by its DOI |
+| [Open LiDAR Data](https://github.com/flai-ai/open-lidar-data) by Flai | Much of the rest of Europe | Per dataset, listed in its inventory |
 
-Credit the survey's publisher, for example `LiDAR: IGN - LiDAR HD` or `LiDAR: USGS 3DEP`. For Open LiDAR Data, include the original agency and the dataset's license.
+Credit the survey's publisher, for example `LiDAR: IGN - LiDAR HD` or `LiDAR: USGS 3DEP`. The 3MF metadata already carries the credit each survey asks for, such as `Land NRW, Datenlizenz Deutschland - Zero - Version 2.0` or OpenTopography's dataset citation. For Open LiDAR Data, include the original agency and the dataset's license. [LiDAR sources](LIDAR_SOURCES.md) has more on each, and on the open surveys a browser can't read.
 
 ## Map, SVG maps and place search
 

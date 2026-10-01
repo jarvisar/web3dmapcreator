@@ -9,7 +9,7 @@
 // than a beach at most scales, so the slope is at least a cell and a half wide.
 
 import { EdgeIndex } from '../geometry/edgeindex';
-import { boxesOverlap, bufferLines, clipToBox, difference, intersection, multiArea, multiBounds, offsetPolygons, polygonArea, ringBounds, union } from '../geometry/polygon';
+import { boxesOverlap, bufferLines, clipToBox, difference, intersection, multiArea, multiBounds, offsetPolygons, openSharp, polygonArea, ringBounds, union } from '../geometry/polygon';
 import type { HeightField } from '../terrain/heightfield';
 import { SLIVER_MM } from './land';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
@@ -137,7 +137,7 @@ export function shapeBeaches(hf: HeightField, input: BeachInput): Beaches | null
   if (fill.length) {
     // Opened with the sand it joins, so a strip too thin to print is only
     // kept when sand backs it.
-    const opened = offsetPolygons(offsetPolygons(union(backing, fill), -SLIVER_MM, 'round'), SLIVER_MM, 'round');
+    const opened = openSharp(union(backing, fill), SLIVER_MM);
     fill = intersection(fill, opened).filter(
       (polygon) => polygonArea(polygon) >= MINIMUM_FILL_MM2 && touches(sand, polygon) && touches(wet, polygon),
     );

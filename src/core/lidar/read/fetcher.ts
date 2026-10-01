@@ -4,9 +4,11 @@
 // cache evicts it.
 
 import { lidarCache, type ByteCache } from '../../data/cache';
-import { fetchBytes, fetchRange } from '../../data/http';
+import { fetchByteLength, fetchBytes, fetchPost, fetchRange, fetchTail } from '../../data/http';
 
 const DAY_MS = 24 * 3600 * 1000;
+// How old a catalog may be and still stand in for a server that is down.
+const STALE_MS = 30 * DAY_MS;
 // NRCan's tile index has taken up to two minutes to answer a small query.
 const CATALOG_IDLE_MS = 150_000;
 
@@ -25,7 +27,12 @@ export function setLidarStore(value: ByteCache | null): void {
 export type LidarRequest =
   | { kind: 'bytes'; url: string }
   | { kind: 'range'; url: string; start: number; end: number }
-  | { kind: 'text'; url: string; maxAgeMs: number; json?: boolean };
+  | { kind: 'tail'; url: string; start: number }
+  | { kind: 'text'; url: string; maxAgeMs: number; json?: boolean }
+  | { kind: 'catalog'; url: string; maxAgeMs: number; magic: number[] }
+  | { kind: 'post'; url: string; body: string; type: string; maxAgeMs: number }
+  | { kind: 'size'; url: string }
+  | { kind: 'note'; key: string; value?: string };
 
 /** Where a LiDAR worker's Fetchers send their requests: to one Fetcher serving all workers. */
 export type Transport = (request: LidarRequest) => Promise<ArrayBuffer | string>;
@@ -60,11 +67,34 @@ export class Fetcher {
     return fetchRange(url, start, end, this.signal, { store, onBytes: this.onBytes });
   }
 
+  /** From `start` to the end of a file of unknown size. */
+  tail(url: string, start: number): Promise<ArrayBuffer> {
+    if (transport) return transport({ kind: 'tail', url, start }) as Promise<ArrayBuffer>;
+    return fetchTail(url, start, this.signal, { store, onBytes: this.onBytes });
+  }
+
+  /**
+   * A small note kept in the LiDAR cache, such as where a LAZ file's chunks
+   * lie, or '' when there is none. With `value` it's saved instead.
+   */
+  async note(key: string, value?: string): Promise<string> {
+    if (transport) return (await transport({ kind: 'note', key, value })) as string;
+    if (!store) return '';
+    if (value !== undefined) {
+      await store.put(`note:${key}`, new TextEncoder().encode(value).buffer as ArrayBuffer).catch(() => undefined);
+      return value;
+    }
+    const saved = await store.get(`note:${key}`).catch(() => undefined);
+    return saved ? new TextDecoder().decode(saved) : '';
+  }
+
   /**
    * A worker's request. Workers asking for the same thing at once share one
    * download, and recent answers are kept in memory for a while.
    */
   serve(request: LidarRequest): Promise<ArrayBuffer | string> {
+    // Notes change once a file has been read through, so they're never kept here.
+    if (request.kind === 'note') return this.note(request.key, request.value);
     const key = JSON.stringify(request);
     const kept = this.recent.get(key);
     if (kept !== undefined) {
@@ -80,7 +110,15 @@ export class Fetcher {
           ? this.bytes(request.url)
           : request.kind === 'range'
             ? this.range(request.url, request.start, request.end)
-            : this.text(request.url, request.maxAgeMs, request.json);
+            : request.kind === 'tail'
+              ? this.tail(request.url, request.start)
+              : request.kind === 'catalog'
+                ? this.catalog(request.url, request.maxAgeMs, request.magic)
+                : request.kind === 'post'
+                  ? this.postText(request.url, request.body, request.type, request.maxAgeMs)
+                  : request.kind === 'size'
+                    ? this.size(request.url).then(String)
+                  : this.text(request.url, request.maxAgeMs, request.json);
       pending = load
         .then((value) => {
           this.remember(key, value);
@@ -111,24 +149,87 @@ export class Fetcher {
    */
   async text(url: string, maxAgeMs = DAY_MS, json = false): Promise<string> {
     if (transport) return transport({ kind: 'text', url, maxAgeMs, json }) as Promise<string>;
-    const usable = (text: string) => catalogProblem(text, json) === null;
+    const body = await this.kept(url, maxAgeMs, (bytes) => catalogProblem(new TextDecoder().decode(bytes), json), () => this.download(url));
+    return new TextDecoder().decode(body);
+  }
+
+  /**
+   * A binary catalog document, such as a zipped tile index, reused for a
+   * day. Only kept when it starts with `magic`.
+   */
+  async catalog(url: string, maxAgeMs = DAY_MS, magic: number[] = []): Promise<ArrayBuffer> {
+    if (transport) return transport({ kind: 'catalog', url, maxAgeMs, magic }) as Promise<ArrayBuffer>;
+    const body = await this.kept(url, maxAgeMs, (bytes) => (magic.every((b, i) => bytes[i] === b) ? null : 'answered with something other than the expected file.'), () => this.download(url));
+    return body.slice().buffer;
+  }
+
+  /**
+   * A catalog document from the cache while it's younger than `maxAgeMs`,
+   * else from the server. When the server fails, a copy up to STALE_MS old
+   * is better than no survey: national services go down for maintenance
+   * for hours, and their tile indexes change slowly.
+   */
+  private download(url: string): Promise<ArrayBuffer> {
+    return fetchBytes(url, this.signal, { cache: false, onBytes: this.onBytes, idleTimeoutMs: CATALOG_IDLE_MS });
+  }
+
+  private async kept(url: string, maxAgeMs: number, problem: (bytes: Uint8Array) => string | null, load: () => Promise<ArrayBuffer>): Promise<Uint8Array> {
     const key = `catalog:${url}`;
     const cached = store ? await store.get(key).catch(() => undefined) : undefined;
+    let stale: Uint8Array | null = null;
     if (cached && cached.byteLength > 8) {
-      const view = new DataView(cached);
-      const saved = view.getFloat64(0, true);
-      const text = new TextDecoder().decode(new Uint8Array(cached, 8));
-      if (Date.now() - saved < maxAgeMs && usable(text)) return text;
+      const age = Date.now() - new DataView(cached).getFloat64(0, true);
+      const body = new Uint8Array(cached, 8);
+      if (problem(body) === null) {
+        if (age < maxAgeMs) return body;
+        if (age < STALE_MS) stale = body;
+      }
     }
-    const body = new Uint8Array(await fetchBytes(url, this.signal, { cache: false, onBytes: this.onBytes, idleTimeoutMs: CATALOG_IDLE_MS }));
-    const text = new TextDecoder().decode(body);
-    const problem = catalogProblem(text, json);
-    if (problem) throw new Error(`${url} ${problem}`);
+    let body: Uint8Array;
+    try {
+      body = new Uint8Array(await load());
+    } catch (error) {
+      if (stale && !this.signal?.aborted && (error as Error)?.name !== 'AbortError') return stale;
+      throw error;
+    }
+    const wrong = problem(body);
+    if (wrong) {
+      if (stale) return stale;
+      throw new Error(`${url.split('\n')[0]} ${wrong}`);
+    }
     const stamped = new Uint8Array(body.byteLength + 8);
     new DataView(stamped.buffer).setFloat64(0, Date.now(), true);
     stamped.set(body, 8);
     if (store) store.put(key, stamped.buffer).catch(() => undefined);
-    return text;
+    return body;
+  }
+
+  /** A file's size from a HEAD request, kept for a day: a ZIP's directory is found from its end. */
+  async size(url: string): Promise<number> {
+    if (transport) return Number(await transport({ kind: 'size', url }));
+    const key = `size:${url}`;
+    const saved = store ? await store.get(key).catch(() => undefined) : undefined;
+    if (saved && saved.byteLength === 16) {
+      const view = new DataView(saved);
+      if (Date.now() - view.getFloat64(0, true) < DAY_MS) return view.getFloat64(8, true);
+    }
+    const size = await fetchByteLength(url, this.signal);
+    const stamped = new DataView(new ArrayBuffer(16));
+    stamped.setFloat64(0, Date.now(), true);
+    stamped.setFloat64(8, size, true);
+    if (store) store.put(key, stamped.buffer).catch(() => undefined);
+    return size;
+  }
+
+  /** A JSON search answer to a POST, kept for a day like a catalog document. */
+  async post(url: string, body: string, type = 'application/json', maxAgeMs = DAY_MS): Promise<unknown> {
+    return JSON.parse(await this.postText(url, body, type, maxAgeMs));
+  }
+
+  private async postText(url: string, body: string, type: string, maxAgeMs: number): Promise<string> {
+    if (transport) return (await transport({ kind: 'post', url, body, type, maxAgeMs })) as string;
+    const answer = await this.kept(`${url}\n${body}`, maxAgeMs, (bytes) => catalogProblem(new TextDecoder().decode(bytes), true), () => fetchPost(url, body, type, this.signal, { onBytes: this.onBytes, idleTimeoutMs: CATALOG_IDLE_MS }));
+    return new TextDecoder().decode(answer);
   }
 
   async json(url: string, maxAgeMs = DAY_MS): Promise<unknown> {

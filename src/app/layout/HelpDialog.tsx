@@ -170,12 +170,15 @@ export function HelpDialog() {
           .
         </li>
         <li>
-          LiDAR from USGS 3DEP (public domain, through Hobu's EPT mirror), IGN LiDAR HD (Licence Ouverte 2.0), NRCan
-          CanElevation (Open Government Licence - Canada), swisstopo swissSURFACE3D and{' '}
+          LiDAR from USGS 3DEP (public domain, through Hobu's EPT mirror), NOAA Digital Coast, IGN LiDAR HD (Licence Ouverte 2.0), NRCan
+          CanElevation and GeoNB, swisstopo, Geobasis NRW, LVermGeo RLP, LGB Brandenburg, Geoportal Berlin, ACT Luxembourg, the Scottish
+          Government, GURS Slovenia, geoEuskadi, the Province of Trento, the City of Helsinki, Tokyo, Kanagawa and Yamanashi prefectures,
+          São Paulo, OpenTopography and{' '}
           <a href="https://github.com/flai-ai/open-lidar-data" target="_blank" rel="noreferrer">
             Open LiDAR Data
           </a>{' '}
-          by Flai (licence per dataset). The surveys a model used are listed in its details and in exported 3MF files.
+          by Flai, each under its own open licence. The surveys a model used, and the credit each asks for, are listed in its details and in
+          exported 3MF files.
         </li>
         <li>Place search by Photon from komoot, using OpenStreetMap data.</li>
         <li>

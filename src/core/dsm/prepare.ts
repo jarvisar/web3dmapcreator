@@ -12,7 +12,7 @@ import { Projection } from '../geo/projection';
 import { intersection, multiArea } from '../geometry/polygon';
 import { rowCrossings } from '../geometry/scanline';
 import { digest, rankOrder, toMetric, clipRingToBox, type BatchProgress, type Ranked } from '../lidar/prepare';
-import { readCopc } from '../lidar/read/copc';
+import { readTiles } from '../lidar/read/tiles';
 import { readEpt } from '../lidar/read/ept';
 import { Fetcher } from '../lidar/read/fetcher';
 import { lazDecoder } from '../lidar/read/laz';
@@ -150,7 +150,7 @@ export async function readSurfaceBlock(job: SurfaceJob, fetcher: Fetcher, progre
     progress: (message: string) => progress(`Reading ${survey.name}`, message),
   };
   if (survey.format === 'EPT') await readEpt(fetcher, survey.url, job.query, options);
-  else await readCopc(fetcher, survey.tiles ?? [], job.query, options);
+  else await readTiles(fetcher, survey.tiles ?? [], job.query, options);
   if (sink instanceof ProbeSink) return { probe: occupiedCell(sink, x1 - x0, y1 - y0, job.probe!), points: sink.count };
   const layers = sink.layers();
   return { layers, points: sink.kept, noise: sink.noise };
@@ -388,7 +388,11 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     const extent = blockExtent(grid, block, MARGIN * grid.dx);
     const blockBox = boxShape(...extent);
     const surveys = order.filter((r) => intersection(blockBox, r.coverage).length);
-    const key = `surface-block:${digest([identity, block.rows, block.columns, surveys.map((r) => r.candidate.url)])}`;
+    const geo = geoBox(frame, extent);
+    // A tiled survey's tiles count too, so one read while its catalog lacked a
+    // tile isn't kept for good. EPT surveys have none, and keep their keys.
+    const reads = surveys.map((r) => (r.candidate.tiles ? [r.candidate.url, slim(r.candidate, geo).tiles!.map((t) => (t.member ? `${t.url}#${t.member}` : t.url))] : r.candidate.url));
+    const key = `surface-block:${digest([identity, block.rows, block.columns, reads])}`;
     const saved = await load(key);
     const checkpoint = saved ? decodeBlock(saved) : null;
     let piece: BlockLayers;
@@ -411,7 +415,6 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
       const claimed = new Uint8Array(size);
       let claimedCount = 0;
       let failed = false;
-      const geo = geoBox(frame, extent);
       for (const survey of surveys) {
         const whole = multiArea(intersection(blockBox, survey.coverage)) >= 0.999 * multiArea(blockBox);
         const inside = whole ? new Uint8Array(size).fill(1) : cellsInside(survey.coverage, grid, block);

@@ -95,20 +95,15 @@ Buildings and building parts follow the add-on's rules (`src/core/pipeline/build
 
 ## LiDAR
 
-With `LiDAR` on, buildings are measured from public LiDAR surveys before the model is built (`src/core/lidar/`). It's a port of the add-on's LiDAR pipeline, limited to surveys a browser can stream. Tiled LAZ downloads aren't read.
+With `LiDAR` on, buildings are measured from public LiDAR surveys before the model is built (`src/core/lidar/`). It's a port of the add-on's LiDAR pipeline, limited to publishers a browser can read from directly.
 
-Surveys are found per provider (`sources/`):
-
-- USGS 3DEP in the United States, through Hobu's EPT mirror on AWS. Its catalog is a 9 MB GeoJSON of every survey outline, kept for a day.
-- IGN LiDAR HD in France (WFS tile index), NRCan in Canada (ArcGIS tile index) and swisstopo swissSURFACE3D (STAC), all as COPC tiles.
-- Open LiDAR Data by Flai, from its published inventory and each dataset's shapefile tile index.
-
-The national services are only asked inside a box around their country. A survey can measure a building when its outline holds the whole footprint.
+Surveys are found per provider, one module each in `sources/`: USGS 3DEP through Hobu's EPT mirror, NOAA, IGN, NRCan, swisstopo, several German states, Luxembourg, Scotland, Slovenia, the Basque Country, Trentino, Helsinki, Japanese prefectures, OpenTopography and Open LiDAR Data by Flai. [LiDAR sources](LIDAR_SOURCES.md) has the list, and the open surveys that couldn't be used. Each provider is only asked inside a box around its territory, and one that fails or takes over 90 s is reported while the others carry on. A survey can measure a building when its outline holds the whole footprint.
 
 Reading (`read/`):
 
 - EPT: the hierarchy is walked down to the depth with about 0.35 m point spacing, and only nodes that meet the area are downloaded. Nodes are additive, so their ancestors are read too.
-- COPC: the header, then the hierarchy pages that meet the area, then each node as one range read. A server that ignores the range is an error, never a whole-file download.
+- COPC: the header, then the hierarchy pages that meet the area, then each node as one range read. A server that ignores the range is an error, never a whole-file download, unless its provider says it does.
+- Plain LAZ and LAS tiles: read through laszip's chunk table, in runs of chunks by range. The first read of a tile decodes all of it and notes where each chunk lies, so later batches only fetch what they need. Tiles in ZIPs are read in place when stored, inflated when deflated, and plain LAS is cropped as it inflates.
 - Points are cropped, noise and withheld returns dropped, and classes mapped to ground, building, vegetation and unclassified. Z units come from the header or the catalog. Without either, metres are assumed only outside regions with a height system in feet (the US, Ireland, Kuwait and the Cayman Islands).
 - LAZ is decompressed in WebAssembly by [laz-rs](https://github.com/tmontaigu/laz-rs) (`@voxelkloud/wasm-codecs`), skipping colour and intensity. Grids other than web Mercator go through proj4, with definitions for the national grids the providers use built in.
 
@@ -190,6 +185,6 @@ With multi-plate export the model is cut into equal sections no bigger than the 
 
 - Bridges are schematic: decks on evenly spaced piers, without towers, arches or trusses.
 - Building data varies by city. Buildings without a mapped height use a class default.
-- LiDAR only comes from streamed EPT and COPC surveys, so England, most of Germany and Spain have none, for buildings or LiDAR only models.
+- LiDAR only comes from publishers a browser can read from directly. England after 2022, the Netherlands' AHN5 and AHN6, Bavaria, Portugal and most of Italy aren't, so they use older mirrors or have none.
 - Large areas need more memory and time. Around 25 km² at the default scale is comfortable on a desktop browser.
 - Areas that cross the 180th meridian or come within half a degree of the poles aren't supported.

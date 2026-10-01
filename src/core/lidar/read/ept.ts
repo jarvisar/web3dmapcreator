@@ -23,6 +23,13 @@ export interface EptMetadata {
   dataType: string;
   hierarchyType: string;
   srs?: { authority?: string; horizontal?: string; vertical?: string; wkt?: string };
+  /** Node D-X-Y-Z is stored at D/X/Y/Z rather than D-X-Y-Z (Entwine's folder layout). */
+  useFolder?: boolean;
+}
+
+/** Where a node's hierarchy page or data lives under ept-hierarchy/ or ept-data/. */
+export function nodePath(meta: EptMetadata, key: string): string {
+  return meta.useFolder ? key.replace(/-/g, '/') : key;
 }
 
 export interface ReadOptions {
@@ -112,7 +119,7 @@ export async function collectNodes(fetcher: Fetcher, base: string, meta: EptMeta
     if (visited.has(key)) continue;
     visited.add(key);
     if (visited.size > maxNodes) throw new BudgetExceeded('LiDAR hierarchy budget reached');
-    const hierarchy = (await fetcher.json(`${base}ept-hierarchy/${key}.json`)) as Record<string, number>;
+    const hierarchy = (await fetcher.json(`${base}ept-hierarchy/${nodePath(meta, key)}.json`)) as Record<string, number>;
     for (const [node, count] of Object.entries(hierarchy)) {
       if (Number(node.split('-')[0]) > maxDepth || !intersects(node, meta.bounds, query)) continue;
       if (count === -1) pending.push(node);
@@ -138,12 +145,13 @@ export async function readEpt(fetcher: Fetcher, url: string, bbox: GeoBounds, op
   const { toLonLat, fromLonLat } = lonLatTransforms(crs);
   const query = queryBounds(bbox, fromLonLat);
   const base = url.slice(0, url.lastIndexOf('/') + 1);
-  // Web Mercator stretches distance by sec(latitude); keep every ancestor down
-  // to the first depth at least as fine as the resolution asked for.
+  // Keep every ancestor down to the first depth at least as fine as the
+  // resolution asked for. Web Mercator stretches distance by sec(latitude).
   let maxDepth = 32;
   const resolution = options.resolutionM ?? 0.35;
-  if (crs.epsg === 3857 && resolution > 0) {
-    const cloudResolution = resolution / Math.cos((((bbox.south + bbox.north) / 2) * Math.PI) / 180);
+  if (!crs.geographic && resolution > 0) {
+    let cloudResolution = resolution / crs.horizontalFactor;
+    if (crs.epsg === 3857) cloudResolution /= Math.cos((((bbox.south + bbox.north) / 2) * Math.PI) / 180);
     const rootSpacing = (meta.bounds[3] - meta.bounds[0]) / meta.span;
     maxDepth = Math.max(0, Math.ceil(Math.log2(rootSpacing / cloudResolution)));
   }
@@ -155,7 +163,7 @@ export async function readEpt(fetcher: Fetcher, url: string, bbox: GeoBounds, op
   // A dozen downloads run ahead while earlier nodes decode, so memory holds
   // a few nodes rather than the whole batch.
   let i = 0;
-  for await (const body of ahead(nodes, 12, (key) => fetcher.bytes(`${base}ept-data/${key}.laz`))) {
+  for await (const body of ahead(nodes, 12, (key) => fetcher.bytes(`${base}ept-data/${nodePath(meta, key)}.laz`))) {
     await options.progress?.(`Decoding EPT node ${i + 1} of ${nodes.length}; ${sink.count.toLocaleString('en-US')} points kept`);
     const bytes = new Uint8Array(body);
     const header = readHeader(bytes);

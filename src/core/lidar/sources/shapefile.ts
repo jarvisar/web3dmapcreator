@@ -2,6 +2,7 @@
 // records from .shp, single attribute rows from .dbf by range reads (a
 // national index's .dbf can run to hundreds of megabytes).
 
+import { unzipSync } from 'fflate';
 import type { Fetcher } from '../read/fetcher';
 
 export interface IndexShape {
@@ -59,6 +60,85 @@ interface Field {
   length: number;
 }
 
+/** The fields from a .dbf header, names lower-cased. */
+function dbfFields(header: Uint8Array): Field[] {
+  const fields: Field[] = [];
+  let offset = 1;
+  for (let at = 32; at + 32 <= header.length && header[at] !== 0x0d; at += 32) {
+    let name = '';
+    for (let i = 0; i < 11 && header[at + i]; i++) name += String.fromCharCode(header[at + i]);
+    const length = header[at + 16];
+    fields.push({ name: name.toLowerCase(), type: String.fromCharCode(header[at + 11]), offset, length });
+    offset += length;
+  }
+  return fields;
+}
+
+function dbfRow(bytes: Uint8Array, fields: Field[]): Record<string, string | number> {
+  const out: Record<string, string | number> = {};
+  for (const field of fields) {
+    const raw = new TextDecoder('latin1').decode(bytes.subarray(field.offset, field.offset + field.length)).trim();
+    out[field.name] = field.type === 'N' || field.type === 'F' ? Number(raw) : raw;
+  }
+  return out;
+}
+
+/** One row of a whole .dbf held in memory. */
+export function dbfRowAt(bytes: Uint8Array, index: number): Record<string, string | number> {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = view.getUint32(4, true);
+  const headerSize = view.getUint16(8, true);
+  const rowSize = view.getUint16(10, true);
+  if (index < 0 || index >= count || headerSize + (index + 1) * rowSize > bytes.length) throw new Error('Tile geometry and attribute index disagree');
+  return dbfRow(bytes.subarray(headerSize + index * rowSize, headerSize + (index + 1) * rowSize), dbfFields(bytes.subarray(0, headerSize)));
+}
+
+export interface ZippedIndex {
+  shp: Uint8Array;
+  dbf: Uint8Array;
+  prj: string | null;
+}
+
+// Unzipped indexes, by URL and archive size, so a discovery doesn't inflate
+// the same tens of MB again.
+const unzipped = new Map<string, ZippedIndex>();
+
+/** A shapefile tile index published as one ZIP, kept for `maxAgeMs`. */
+export async function zippedIndex(fetcher: Fetcher, url: string, maxAgeMs: number): Promise<ZippedIndex> {
+  const zip = new Uint8Array(await fetcher.catalog(url, maxAgeMs, [0x50, 0x4b, 0x03, 0x04]));
+  const key = `${url}#${zip.length}`;
+  const known = unzipped.get(key);
+  if (known) return known;
+  const files = unzipSync(zip, { filter: (file) => /\.(shp|dbf|prj)$/i.test(file.name) });
+  const find = (ext: string) => Object.entries(files).find(([name]) => name.toLowerCase().endsWith(ext))?.[1];
+  const shp = find('.shp');
+  const dbf = find('.dbf');
+  if (!shp || !dbf) throw new Error(`${url} has no shapefile`);
+  const prj = find('.prj');
+  const index = { shp, dbf, prj: prj ? new TextDecoder().decode(prj) : null };
+  unzipped.clear();
+  unzipped.set(key, index);
+  return index;
+}
+
+/** Every row of a whole .dbf held in memory, deleted ones left out. */
+export function readDbf(bytes: Uint8Array): Record<string, string | number>[] {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.length < 32) throw new Error('Invalid tile attribute index');
+  const count = view.getUint32(4, true);
+  const headerSize = view.getUint16(8, true);
+  const rowSize = view.getUint16(10, true);
+  if (headerSize < 33 || rowSize < 1 || headerSize + count * rowSize > bytes.length) throw new Error('Invalid tile attribute index');
+  const fields = dbfFields(bytes.subarray(0, headerSize));
+  const out: Record<string, string | number>[] = [];
+  for (let r = 0; r < count; r++) {
+    const row = bytes.subarray(headerSize + r * rowSize, headerSize + (r + 1) * rowSize);
+    if (row[0] === 0x2a) continue;
+    out.push(dbfRow(row, fields));
+  }
+  return out;
+}
+
 /** Attribute rows of a remote .dbf, one range read each. */
 export class RemoteDbf {
   private constructor(
@@ -77,27 +157,12 @@ export class RemoteDbf {
     const rowSize = prefix.getUint16(10, true);
     if (headerSize < 33 || headerSize > 32768 || rowSize < 1 || rowSize > 32768) throw new Error('Invalid tile attribute index header');
     const header = new Uint8Array(await fetcher.range(url, 0, headerSize));
-    const fields: Field[] = [];
-    let offset = 1;
-    for (let at = 32; at + 32 <= header.length && header[at] !== 0x0d; at += 32) {
-      let name = '';
-      for (let i = 0; i < 11 && header[at + i]; i++) name += String.fromCharCode(header[at + i]);
-      const length = header[at + 16];
-      fields.push({ name: name.toLowerCase(), type: String.fromCharCode(header[at + 11]), offset, length });
-      offset += length;
-    }
-    return new RemoteDbf(fetcher, url, count, headerSize, rowSize, fields);
+    return new RemoteDbf(fetcher, url, count, headerSize, rowSize, dbfFields(header));
   }
 
   async row(index: number): Promise<Record<string, string | number>> {
     if (index < 0 || index >= this.count) throw new Error('Tile geometry and attribute index disagree');
     const start = this.headerSize + index * this.rowSize;
-    const bytes = new Uint8Array(await this.fetcher.range(this.url, start, start + this.rowSize));
-    const out: Record<string, string | number> = {};
-    for (const field of this.fields) {
-      const raw = new TextDecoder('latin1').decode(bytes.subarray(field.offset, field.offset + field.length)).trim();
-      out[field.name] = field.type === 'N' || field.type === 'F' ? Number(raw) : raw;
-    }
-    return out;
+    return dbfRow(new Uint8Array(await this.fetcher.range(this.url, start, start + this.rowSize)), this.fields);
   }
 }

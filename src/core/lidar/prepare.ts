@@ -12,7 +12,7 @@ import type { GeoBounds, MultiPolygon, Polygon, Ring } from '../types';
 import { measureFeatures, type MetricFeature } from './features';
 import type { Points } from './points';
 import { publish, type PublishedRecord } from './publish';
-import { readCopc } from './read/copc';
+import { readTiles } from './read/tiles';
 import { readEpt } from './read/ept';
 import { Fetcher } from './read/fetcher';
 import { lazDecoder } from './read/laz';
@@ -147,7 +147,8 @@ export function clipRingToBox(ring: Ring, [w, s, e, n]: [number, number, number,
 
 // Ranking of surveys for one building, after the add-on's metadata_order:
 // newest acquisition first, then coverage, resolution and classification,
-// EPT before COPC on ties, the original publisher before a mirror.
+// EPT before COPC before plain LAZ (read whole) on ties, the original
+// publisher before a mirror.
 export interface Ranked {
   candidate: Candidate;
   coverage: MultiPolygon;
@@ -170,7 +171,7 @@ export function rankOrder(a: Ranked, b: Ranked): number {
       -(density ? density / (1 + density) : 0),
       -(r.candidate.classificationQuality ?? 0),
       -r.catalogCoverage,
-      r.candidate.format === 'EPT' ? 0 : 1,
+      r.candidate.format === 'EPT' ? 0 : r.candidate.format === 'COPC' ? 1 : 2,
       r.candidate.authoritative ? 0 : 1,
     ];
   };
@@ -568,7 +569,7 @@ export async function runBatch(job: BatchJob, fetcher: Fetcher, progress: BatchP
   };
   let points: Points;
   if (survey.format === 'EPT') points = (await readEpt(fetcher, survey.url, job.query, readOptions)).points;
-  else points = (await readCopc(fetcher, survey.tiles ?? [], job.query, readOptions)).points;
+  else points = (await readTiles(fetcher, survey.tiles ?? [], job.query, readOptions)).points;
   // A reported single-year acquisition can date undated returns, never a multi-year survey.
   const start = survey.acquisitionStart ?? '';
   const end = survey.acquisitionEnd ?? '';

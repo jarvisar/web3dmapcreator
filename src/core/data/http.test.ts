@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ByteCache } from './cache';
-import { configureHttp, fetchByteLength, fetchBytes, HttpError, NetworkError, parseRetryAfter, remoteFile, setByteCache } from './http';
+import { configureHttp, fetchByteLength, fetchBytes, fetchTail, HttpError, NetworkError, parseRetryAfter, remoteFile, setByteCache } from './http';
 import { mockServer } from './testdata/serve';
 
 const URL_A = 'https://example.com/a.bin';
@@ -120,6 +120,18 @@ describe('remoteFile', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // A range covering the whole file may come back as a plain 200.
     expect((await remoteFile(URL_A, data.length).slice(0, data.length)).byteLength).toBe(data.length);
+  });
+
+  it('reads the rest of a file from an offset, and caches it', async () => {
+    const server = mockServer({ [URL_A]: data });
+    vi.stubGlobal('fetch', server.fetch);
+    setByteCache(mapCache());
+    expect(new Uint8Array(await fetchTail(URL_A, 990))).toEqual(data.slice(990));
+    expect(new Uint8Array(await fetchTail(URL_A, 990))).toEqual(data.slice(990));
+    expect(server.requests).toHaveLength(1);
+    vi.stubGlobal('fetch', async () => new Response(data.slice(), { status: 200 }));
+    await expect(fetchTail(URL_A, 10, undefined, { cache: false })).rejects.toThrow(/ignored the byte range/);
+    expect((await fetchTail(URL_A, 0, undefined, { cache: false })).byteLength).toBe(data.length);
   });
 
   it('refuses a mismatched Content-Range', async () => {

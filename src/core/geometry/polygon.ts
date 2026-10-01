@@ -549,6 +549,19 @@ export function offsetPolygons(mp: MultiPolygon, delta: number, join: 'round' | 
 }
 
 /**
+ * Parts narrower than 2 * `delta` taken away, keeping corners. A plain round
+ * opening rounded every corner a road or building cut into land cover.
+ * Grown back mitred, then kept inside `mp`, since a mitre can run past a
+ * short edge the shrink ate. Corners under about 40 degrees (the miter
+ * limit of 3) still come back squared off.
+ */
+export function openSharp(mp: MultiPolygon, delta: number): MultiPolygon {
+  const shrunk = offsetPolygons(mp, -delta, 'round');
+  if (!shrunk.length) return [];
+  return intersection(offsetPolygons(shrunk, delta, 'miter'), mp);
+}
+
+/**
  * Vertices closer than `epsilon` to the line through their neighbours
  * dropped, then tidied by a union: an outline traced along a grid loses its
  * one-cell stairs and keeps its long edges and real corners.

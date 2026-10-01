@@ -208,25 +208,27 @@ async function withRetries<T>(
 
 interface Transfer {
   url: string;
-  /** [start, end) of a range read. */
-  range?: [number, number];
+  /** [start, end) of a range read. Without an end it runs to the end of the file. */
+  range?: [number, number | undefined];
   /** Size of the whole file, when known. */
   size?: number;
+  /** A POST with this body instead of a GET, for search APIs. */
+  post?: { body: string; type: string };
   signal?: AbortSignal;
   onBytes?: BytesListener;
   idleTimeoutMs?: number;
 }
 
-function rangeProblem(response: Response, t: Transfer & { range: [number, number] }): string | undefined {
+function rangeProblem(response: Response, t: Transfer & { range: [number, number | undefined] }): string | undefined {
   const [start, end] = t.range;
   if (response.status === 200) {
-    return start === 0 && end === t.size ? undefined : 'the server ignored the byte range';
+    return start === 0 && (end === undefined || end === t.size) ? undefined : 'the server ignored the byte range';
   }
   const header = response.headers.get('content-range');
   if (!header) return undefined;
   const match = /^bytes (\d+)-(\d+)\//.exec(header);
-  if (!match || Number(match[1]) !== start || Number(match[2]) !== end - 1) {
-    return `the server sent "${header}" for bytes ${start}-${end - 1}`;
+  if (!match || Number(match[1]) !== start || (end !== undefined && Number(match[2]) !== end - 1)) {
+    return `the server sent "${header}" for bytes ${start}-${end === undefined ? '' : end - 1}`;
   }
   return undefined;
 }
@@ -304,7 +306,12 @@ async function transferOnce(t: Transfer): Promise<ArrayBuffer> {
     const init: RequestInit = { signal: controller.signal };
     // Only range reads send a header. Any other header makes the browser send
     // a CORS preflight, which stac.overturemaps.org rejects.
-    if (t.range) init.headers = { Range: `bytes=${t.range[0]}-${t.range[1] - 1}` };
+    if (t.range) init.headers = { Range: `bytes=${t.range[0]}-${t.range[1] === undefined ? '' : t.range[1] - 1}` };
+    if (t.post) {
+      init.method = 'POST';
+      init.body = t.post.body;
+      init.headers = { 'Content-Type': t.post.type };
+    }
     const response = await fetch(t.url, init);
     if (!response.ok) {
       response.body?.cancel().catch(() => undefined);
@@ -317,7 +324,7 @@ async function transferOnce(t: Transfer): Promise<ArrayBuffer> {
         throw new Error(`Could not read ${t.url}: ${problem}`);
       }
     }
-    return await readBody(response, t.range ? t.range[1] - t.range[0] : undefined, (bytes) => {
+    return await readBody(response, t.range && t.range[1] !== undefined ? t.range[1] - t.range[0] : undefined, (bytes) => {
       arm();
       received += bytes;
       t.onBytes?.(bytes, false);
@@ -339,7 +346,7 @@ async function cachedTransfer(key: string, t: Transfer, options: RequestOptions)
   const cache = options.cache === false ? null : options.store !== undefined ? options.store : byteCache;
   if (cache && !options.refresh) {
     const hit = await cache.get(key).catch(() => undefined);
-    if (hit && (!t.range || hit.byteLength === t.range[1] - t.range[0])) {
+    if (hit && (!t.range || t.range[1] === undefined || hit.byteLength === t.range[1] - t.range[0])) {
       t.signal?.throwIfAborted();
       t.onBytes?.(hit.byteLength, true);
       return hit;
@@ -381,6 +388,22 @@ export function fetchRange(url: string, start: number, end: number, signal?: Abo
   if (!(start >= 0 && end > start)) return Promise.reject(new RangeError(`Invalid byte range ${start}-${end} of ${url}`));
   const transfer = { url, range: [start, end] as [number, number], signal, onBytes: options.onBytes, idleTimeoutMs: options.idleTimeoutMs };
   return cachedTransfer(`${url}#${start}-${end}`, transfer, options);
+}
+
+/**
+ * Everything from `start` to the end of a file whose size isn't known, as
+ * `bytes=start-`. Browsers send that without a CORS preflight, which a
+ * suffix range (`bytes=-n`) would need.
+ */
+export function fetchTail(url: string, start: number, signal?: AbortSignal, options: Omit<RequestOptions, 'signal'> = {}): Promise<ArrayBuffer> {
+  if (!(start >= 0)) return Promise.reject(new RangeError(`Invalid byte offset ${start} of ${url}`));
+  const transfer = { url, range: [start, undefined] as [number, undefined], signal, onBytes: options.onBytes, idleTimeoutMs: options.idleTimeoutMs };
+  return cachedTransfer(`${url}#${start}-`, transfer, options);
+}
+
+/** The answer to a POST, never cached here: search answers are kept by whoever asks. */
+export function fetchPost(url: string, body: string, type: string, signal?: AbortSignal, options: Omit<RequestOptions, 'signal' | 'cache' | 'store'> = {}): Promise<ArrayBuffer> {
+  return withRetries(url, signal, () => transferOnce({ url, post: { body, type }, signal, onBytes: options.onBytes, idleTimeoutMs: options.idleTimeoutMs }), options.retries);
 }
 
 /** A whole file, cached by its URL unless `cache` is false. */

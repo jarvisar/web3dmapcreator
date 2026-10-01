@@ -10,6 +10,7 @@ import {
   intersection,
   multiArea,
   offsetPolygons,
+  openSharp,
   rectangle,
   SCALE,
   separateTouching,
@@ -100,10 +101,7 @@ describe('tiled', () => {
     parts.push([[[[5, 19.6], [35, 20.4], [35, 21.4], [5, 20.6]]]]);
     const subject = union(...parts);
     const clip = new ClipSet([roadNetwork(next, 30)]);
-    const fn = (local: MultiPolygon) => {
-      const kept = differenceSet(local, clip);
-      return offsetPolygons(offsetPolygons(kept, -0.1, 'round'), 0.1, 'round');
-    };
+    const fn = (local: MultiPolygon) => openSharp(differenceSet(local, clip), 0.1);
 
     const whole = fn(subject);
     const pieces = tiled(subject, 10, 1, fn);
@@ -122,6 +120,42 @@ describe('tiled', () => {
     });
     expect(calls).toBe(1);
     expect(multiArea(out)).toBeCloseTo(25, 6);
+  });
+});
+
+describe('openSharp', () => {
+  const nearest = (mp: MultiPolygon, [x, y]: Vec2) => Math.min(...mp.flat(2).map(([u, v]) => Math.hypot(u - x, v - y)));
+
+  it('keeps the corners a cut leaves and drops what is under twice the distance across', () => {
+    const land = union(
+      difference(rectangle(0, 0, 10, 10), rectangle(4, -1, 6, 11)),
+      rectangle(20, 0, 20.15, 10),
+      rectangle(10, 4, 13, 4.15),
+    );
+    const opened = openSharp(land, 0.1);
+    for (const corner of [[4, 0], [4, 10], [6, 0], [6, 10], [0, 0], [10, 10]] as Vec2[]) {
+      expect(nearest(opened, corner)).toBeLessThan(1e-3);
+    }
+    // The strip goes, and of the tail only a nub at its root.
+    expect(intersection(opened, rectangle(19, -1, 21, 11))).toEqual([]);
+    expect(intersection(opened, rectangle(10.3, 0, 14, 10))).toEqual([]);
+    const round = offsetPolygons(offsetPolygons(land, -0.1, 'round'), 0.1, 'round');
+    expect(nearest(round, [4, 0])).toBeGreaterThan(0.03);
+  });
+
+  it('never grows past what it opened', () => {
+    const next = random(5);
+    const parts: MultiPolygon[] = [];
+    for (let i = 0; i < 40; i++) parts.push(blob(next, next() * 60, next() * 60, 2 + next() * 6));
+    // Corners chamfered shorter than the shrink, which a mitre runs back out to.
+    parts.push([[[[70, 0.05], [70.05, 0], [75, 0], [75, 5], [70, 5]]]]);
+    const land = differenceSet(union(...parts), new ClipSet([roadNetwork(next, 30)]));
+    const opened = openSharp(land, 0.1);
+    // Only rounding along shared edges, under a micron wide.
+    expect(offsetPolygons(difference(opened, land), -5e-4)).toEqual([]);
+    expect(nearest(opened, [70, 0])).toBeGreaterThan(0.03);
+    const round = offsetPolygons(offsetPolygons(land, -0.1, 'round'), 0.1, 'round');
+    expect(multiArea(opened)).toBeGreaterThan(multiArea(round));
   });
 });
 

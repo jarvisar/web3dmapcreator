@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GeoBounds } from '../../types';
 import type { Fetcher } from '../read/fetcher';
-import { discover, flaiInventory, sphericalArea, USGS_CATALOG } from './index';
+import { discover as discoverAll, flaiInventory, PROVIDERS, sphericalArea, USGS_CATALOG } from './index';
 
 type Box = [number, number, number, number];
 
@@ -86,7 +86,9 @@ function fakeFetcher(route: (url: string) => string | object | Uint8Array | unde
 const listing = (keys: string[]) =>
   `<ListBucketResult><IsTruncated>false</IsTruncated>${keys.map((k) => `<Contents><Key>${k}</Key><ETag>"r"</ETag></Contents>`).join('')}</ListBucketResult>`;
 
-// Somewhere no national service covers, so only USGS and Flai are asked.
+// Somewhere no national service covers. Only USGS and Flai are asked: the
+// other worldwide catalogs have tests of their own.
+const discover = (fetcher: Fetcher, box: GeoBounds) => discoverAll(fetcher, box, undefined, PROVIDERS.filter((p) => p.id === 'usgs' || p.id === 'flai'));
 const bbox: GeoBounds = { west: 20.001, south: 60.001, east: 20.009, north: 60.009 };
 
 describe('Flai inventory', () => {
@@ -153,7 +155,7 @@ describe('LiDAR discovery', () => {
   it('keeps the other providers when one fails', async () => {
     const { fetcher } = fakeFetcher((url) => (url === USGS_CATALOG ? undefined : route(url)));
     const { candidates, failures } = await discover(fetcher, bbox);
-    expect(failures.map((f) => f.source)).toEqual(['usgs']);
+    expect(failures.map((f) => [f.source, f.search])).toEqual([['USGS 3DEP', true]]);
     expect(candidates.map((c) => c.provider)).toEqual(['Flai']);
   });
 

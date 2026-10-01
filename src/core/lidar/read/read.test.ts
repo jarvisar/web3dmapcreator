@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { Projection } from '../../geo/projection';
 import type { GeoBounds } from '../../types';
 import { crsFromEpsg, lonLatTransforms } from './crs';
-import { readCopc } from './copc';
+import { readTiles } from './tiles';
 import { BudgetExceeded, readEpt } from './ept';
 import type { Fetcher } from './fetcher';
 import { readHeader, type Vlr } from './las';
@@ -276,7 +276,7 @@ describe('COPC reading', () => {
   it('reads only the header records, the pages and nodes it needs, with Z from the header keys', async () => {
     const { bytes, badNode } = tile();
     const { fetcher, requested } = fakeFetcher({ [url]: bytes });
-    const { points, info } = await readCopc(fetcher, [{ url, bbox: [0, 44.9, 0.01, 45.1] }], bbox, { frame, resolutionM: 1 });
+    const { points, info } = await readTiles(fetcher, [{ url, bbox: [0, 44.9, 0.01, 45.1] }], bbox, { frame, resolutionM: 1 });
     expect(requested).not.toContain(badNode);
     expect(requested.every((r) => r.includes('#'))).toBe(true);
     expect(info.tiles).toBe(1);
@@ -290,7 +290,7 @@ describe('COPC reading', () => {
 
   it('skips tiles that do not reach the area', async () => {
     const { fetcher, requested } = fakeFetcher({});
-    const { points, info } = await readCopc(fetcher, [{ url, bbox: [5, 5, 6, 6] }], bbox, { frame });
+    const { points, info } = await readTiles(fetcher, [{ url, bbox: [5, 5, 6, 6] }], bbox, { frame });
     expect(points.count).toBe(0);
     expect(info.tiles).toBe(0);
     expect(requested).toEqual([]);
@@ -300,7 +300,7 @@ describe('COPC reading', () => {
     const { bytes } = tile();
     expect(bytes.length).toBeLessThan(65536);
     const { fetcher, requested } = fakeFetcher({ [url]: bytes });
-    await readCopc(fetcher, [{ url, bbox: [0, 44.9, 0.01, 45.1] }], bbox, { frame, resolutionM: 1 });
+    await readTiles(fetcher, [{ url, bbox: [0, 44.9, 0.01, 45.1] }], bbox, { frame, resolutionM: 1 });
     expect(requested[0]).toBe(`${url}#0-375`);
   });
 });

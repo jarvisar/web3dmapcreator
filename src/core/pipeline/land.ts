@@ -13,7 +13,7 @@ import {
   dropSmall,
   intersection,
   clipToBox,
-  offsetPolygons,
+  openSharp,
   ringBounds,
   tiled,
   union,
@@ -102,7 +102,7 @@ export async function buildLand(
       const kept = differenceSet(local, cleared);
       // Strips narrower than about half a nozzle line (a median between two
       // road ribbons) can't print as a colour of their own, so open them away.
-      return offsetPolygons(offsetPolygons(kept, -SLIVER_MM, 'round'), SLIVER_MM, 'round');
+      return openSharp(kept, SLIVER_MM);
     });
     result[category] = dropSmall(intersection(region, ctx.cropSet), SLAB_MINIMUM_MM2);
     ctx.stats[`land_${category}_polygons`] = result[category].length;

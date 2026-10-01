@@ -13,7 +13,7 @@
 // small to keep on their own.
 
 import type { Rect64 } from 'clipper2-ts';
-import { boxesOverlap, ClipSet, clipToUnits, difference, intersection, multiBounds, offsetPolygons, polygonArea, SCALE, type Box } from '../geometry/polygon';
+import { boxesOverlap, ClipSet, clipToUnits, difference, intersection, multiBounds, offsetPolygons, openSharp, polygonArea, SCALE, type Box } from '../geometry/polygon';
 import { SLAB_MINIMUM_MM2, SLIVER_MM } from '../pipeline/land';
 import type { SurfaceCategory } from '../settings';
 import type { MultiPolygon } from '../types';
@@ -25,8 +25,11 @@ export interface LandFill {
 
 type Regions = Partial<Record<SurfaceCategory, MultiPolygon>>;
 
-/** How far the land stage's opening carries a change: in by SLIVER_MM and out again. */
-export const FILL_REACH_MM = 2 * SLIVER_MM + 0.05;
+/**
+ * How far the land stage's opening carries a change: in by SLIVER_MM, and out
+ * again by up to three times that where a corner is mitred.
+ */
+export const FILL_REACH_MM = 4 * SLIVER_MM + 0.05;
 // Cover is laid this far past where it's kept, as the land stage's tiles look past theirs.
 const MARGIN_MM = 1;
 // Two runs of the same booleans can differ by rounding, up to about 0.15 µm.
@@ -83,7 +86,7 @@ export class LandCover {
       if (!local.length) continue;
       clear ??= intersection(blockers(near), zone);
       const kept = clear.length ? difference(local, clear) : local;
-      const laid = clipToUnits(offsetPolygons(offsetPolygons(kept, -SLIVER_MM, 'round'), SLIVER_MM, 'round'), rect);
+      const laid = clipToUnits(openSharp(kept, SLIVER_MM), rect);
       const slab = this.slabs.get(category)!.polygonsWithin(near);
       const polygons = real(slab.length ? difference(laid, slab) : laid);
       if (polygons.length) out.push({ category, polygons });

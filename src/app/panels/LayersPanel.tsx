@@ -769,7 +769,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
     <div className="lidar-model">
       <p className="layer-help">
         {keepUnits(
-          'Builds the whole model from a public LiDAR survey: the ground, buildings, trees and bridges as the survey saw them, in one piece and one colour, with the water in its own colour if you like. Covers the United States (USGS 3DEP), France (IGN), Canada (NRCan), Switzerland (swisstopo) and much of Europe (Open LiDAR Data). Expect 75 to 450 MB of downloads per km² depending on the survey and the cell size, kept in the browser for next time, so start with a small area.',
+          'Builds the whole model from a public LiDAR survey: the ground, buildings, trees and bridges as the survey saw them, in one piece and one colour, with the water in its own colour if you like. Covers the United States, Canada, France, Switzerland, Luxembourg, Slovenia, Scotland, much of Germany and Spain, Trentino, Helsinki, Tokyo and Yokohama, New Zealand, and more of Europe through Open LiDAR Data. Expect 75 MB to 1 GB of downloads per km² depending on the survey and the cell size, kept in the browser for next time, so start with a small area. Some surveys only come as whole tiles, so even a small area downloads a few of them.',
         )}
       </p>
       <SelectField
@@ -1081,7 +1081,7 @@ export function LayersPanel() {
               on={buildings.enabled && lidar.enabled}
               onToggle={(enabled) => patchSettings('lidar', { enabled })}
               summary={!lidar.enabled ? 'Off' : !buildings.enabled ? 'Needs buildings' : lidar.roofMode === 'envelope' ? 'Whole roofs' : 'Heights only'}
-              help="Measures buildings from public LiDAR surveys and rebuilds each one from its scanned roof: setbacks, towers, domes and spires included. Covers the United States (USGS 3DEP), France (IGN), Canada (NRCan), Switzerland (swisstopo) and much of Europe (Open LiDAR Data). Expect 150 to 450 MB of downloads per km² depending on the survey, kept in the browser for next time, so start with a small area. Buildings nothing covers keep their mapped shape."
+              help="Measures buildings from public LiDAR surveys and rebuilds each one from its scanned roof: setbacks, towers, domes and spires included. Covers the United States, Canada, France, Switzerland, Luxembourg, Slovenia, Scotland, much of Germany and Spain, Trentino, Helsinki, Tokyo and Yokohama, New Zealand, and more of Europe through Open LiDAR Data. Expect 150 MB to 1 GB of downloads per km² depending on the survey, kept in the browser for next time, so start with a small area. Buildings nothing covers keep their mapped shape."
               resetKey="lidar"
             >
               <LidarOptions lidar={lidar} scale={scale} />

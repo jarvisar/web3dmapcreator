@@ -24,8 +24,9 @@ export function mockServer(files: Record<string, Uint8Array | string>): MockServ
     const url = String(input);
     const method = init?.method ?? 'GET';
     const header = new Headers(init?.headers).get('range');
-    const match = header ? /^bytes=(\d+)-(\d+)$/.exec(header) : null;
-    const range: [number, number] | undefined = match ? [Number(match[1]), Number(match[2]) + 1] : undefined;
+    const match = header ? /^bytes=(\d+)-(\d*)$/.exec(header) : null;
+    // An open range (bytes=n-) runs to the end of the file.
+    const range: [number, number] | undefined = match ? [Number(match[1]), match[2] ? Number(match[2]) + 1 : Infinity] : undefined;
     requests.push({ url, method, range });
     const failure = failures.find((f) => f.times > 0 && f.match(url));
     if (failure) {
