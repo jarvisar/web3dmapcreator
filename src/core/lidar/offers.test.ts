@@ -3,6 +3,8 @@ import type { SourceFeature } from '../pipeline/source';
 import type { Candidate, Tile } from './sources';
 
 vi.mock('./sources', () => ({ discover: vi.fn(async () => ({ candidates: [], failures: [] })) }));
+// Indexes aren't read: surveys keep their catalog densities.
+vi.mock('./read/density', () => ({ localDensity: vi.fn(async () => null) }));
 vi.mock('./read/laz', async (importOriginal) => ({ ...(await importOriginal<typeof import('./read/laz')>()), lazDecoder: async () => undefined }));
 // Headers aren't fetched: a tile is readable unless a test says otherwise.
 vi.mock('./read/tiles', async (importOriginal) => ({ ...(await importOriginal<typeof import('./read/tiles')>()), checkTile: vi.fn(async () => undefined) }));
@@ -185,7 +187,8 @@ describe('prepareLidar with a whole-file survey', () => {
     const whole = candidate('whole', 'EPT', { projectYearHint: 2015, densityM2: 8 });
     const far = candidate('far', 'EPT', { coverage: [[[[10, 10], [11, 10], [11, 11], [10, 11]]]] });
     vi.mocked(discover).mockResolvedValue({ candidates: [partial, whole, far], failures: [{ source: 'Somewhere', reason: 'down', search: true }] });
-    const { surveys, failures } = await findSurveys({ center: [0.0105, 45.0005], widthM: 200, heightM: 200, rotationDeg: 0, shape: 'rectangle', cornerRadius: 0 });
+    const area = { center: [0.0105, 45.0005] as [number, number], widthM: 200, heightM: 200, rotationDeg: 0, shape: 'rectangle' as const, cornerRadius: 0 };
+    const { surveys, failures } = await findSurveys({ area, rules: { preference: 'balanced', years: 5, cellM: 0.71 }, tiered: true });
     expect(surveys.map((s) => [s.name, s.year, s.densityM2, Math.round(s.coverage * 100)])).toEqual([
       ['whole', 2015, 8, 100],
       ['partial', 2024, undefined, 50],

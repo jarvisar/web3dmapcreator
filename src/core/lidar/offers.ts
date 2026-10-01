@@ -70,12 +70,17 @@ const NEWER_YEARS = 5;
 const DENSITY_RATIO = 2;
 const DENSITY_GAIN = 2;
 
-/** Why `candidate` would be worth downloading where `current` was read, if it would. */
-export function advantage(candidate: Candidate, current: Candidate): 'newer' | 'denser' | null {
+/**
+ * Why `candidate` would be worth downloading where `current` was read, if it
+ * would. `density` gives returns per m² near the area where they're known.
+ * Being denser doesn't count when the newest survey is wanted.
+ */
+export function advantage(candidate: Candidate, current: Candidate, density: (c: Candidate) => number | undefined = (c) => c.densityM2, newestOnly = false): 'newer' | 'denser' | null {
   const started = year(candidate.acquisitionStart) ?? surveyYear(candidate);
   const ended = year(current.acquisitionEnd) ?? surveyYear(current);
   if (started !== null && ended !== null && started - ended >= NEWER_YEARS) return 'newer';
-  const [a, b] = [candidate.densityM2, current.densityM2];
+  if (newestOnly) return null;
+  const [a, b] = [density(candidate), density(current)];
   if (a && b && a >= DENSITY_RATIO * b && a - b >= DENSITY_GAIN) return 'denser';
   return null;
 }

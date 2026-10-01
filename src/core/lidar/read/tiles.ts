@@ -129,6 +129,36 @@ export async function checkTile(fetcher: Fetcher, tile: PointTile, options: Pick
   tileSetup(opened, tile, { west: w, south: s, east: e, north: n }, { ...options, frame: new Projection([(w + e) / 2, (s + n) / 2], 0, 1) });
 }
 
+/**
+ * A tile's points over the ground its header's box covers, per m², from the
+ * header alone. Null for tiles only read whole or deflated in a ZIP, and for
+ * any header that can't say. Edge tiles and tiles with water come out low.
+ */
+export async function tileDensity(fetcher: Fetcher, tile: PointTile): Promise<number | null> {
+  try {
+    const found = await tileSource(fetcher, tile, undefined, true);
+    if (!found || 'stream' in found) return null;
+    const opened = await openTile(found.source, found.first);
+    const { header } = opened;
+    if (!header.pointCount) return null;
+    if (!wktOf(opened.vlrs) && header.evlrCount) opened.vlrs = [...opened.vlrs, ...(await crsEvlrs(found.source, header.evlrOffset, header.evlrCount))];
+    const crs = tileCrs(opened.vlrs, tile.horizontalCrs);
+    let [w, h] = [header.max[0] - header.min[0], header.max[1] - header.min[1]];
+    if (crs.geographic) {
+      const lat = ((header.min[1] + header.max[1]) / 2) * (Math.PI / 180);
+      [w, h] = [w * 111_320 * Math.cos(lat), h * 110_574];
+    } else {
+      // Web Mercator stretches distance by sec(latitude).
+      const stretch = crs.epsg === 3857 ? Math.cos(lonLatTransforms(crs).toLonLat(header.min[0], (header.min[1] + header.max[1]) / 2)[1] * (Math.PI / 180)) : 1;
+      [w, h] = [w * crs.horizontalFactor * stretch, h * crs.horizontalFactor * stretch];
+    }
+    return w > 0 && h > 0 ? header.pointCount / (w * h) : null;
+  } catch (error) {
+    if ((error as Error)?.name === 'AbortError') throw error;
+    return null;
+  }
+}
+
 // Deflate input fed to the inflater at a time.
 const STREAM_STEP = 1 << 20;
 

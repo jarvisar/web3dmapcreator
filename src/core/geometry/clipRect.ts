@@ -6,6 +6,12 @@
 // of every point inside the rectangle, which is all a NonZero boolean after
 // it needs. Its output can run back and forth along the rectangle's edges,
 // so don't use it without that boolean.
+//
+// Where a ring has a vertex on the rectangle's edge, the cut leaves repeated
+// points and spikes doubling back along that edge. Clipper's union lost area
+// beside them (a 0.065 mm² sliver of park at a tile seam in Houston, and up
+// to 2 mm² on 17% of star shaped rings in a fuzz), so they're taken out
+// first. They hold no area.
 
 import type { Path64, Paths64, Point64, Rect64 } from 'clipper2-ts';
 
@@ -19,7 +25,38 @@ export function clipToRect(rect: Rect64, paths: Paths64): Paths64 {
     if (maxX > rect.right) kept = clipSide(kept, 1, rect.right);
     if (minY < rect.top) kept = clipSide(kept, 2, rect.top);
     if (maxY > rect.bottom) kept = clipSide(kept, 3, rect.bottom);
+    if (kept !== path) kept = withoutSpikes(kept);
     if (kept.length >= 3) out.push(kept);
+  }
+  return out;
+}
+
+/** Repeated points and turns straight back along the same line removed. */
+function withoutSpikes(path: Path64): Path64 {
+  const spike = (a: Point64, b: Point64, c: Point64) => {
+    const ux = b.x - a.x;
+    const uy = b.y - a.y;
+    const vx = c.x - b.x;
+    const vy = c.y - b.y;
+    return ux * vy - uy * vx === 0 && ux * vx + uy * vy <= 0;
+  };
+  const out: Path64 = [];
+  for (const point of path) {
+    out.push(point);
+    while (out.length >= 3 && spike(out[out.length - 3], out[out.length - 2], out[out.length - 1])) out.splice(out.length - 2, 1);
+  }
+  // Then across the seam where the ring closes.
+  let changed = true;
+  while (changed && out.length >= 3) {
+    changed = false;
+    const n = out.length;
+    if (spike(out[n - 2], out[n - 1], out[0])) {
+      out.pop();
+      changed = true;
+    } else if (spike(out[n - 1], out[0], out[1])) {
+      out.shift();
+      changed = true;
+    }
   }
   return out;
 }

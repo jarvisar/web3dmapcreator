@@ -39,13 +39,21 @@ Licences and the credit each one asks for are in [data sources](DATA_SOURCES.md)
 
 ## Which survey is read
 
-The newest survey that holds a building, or covers the whole area of a LiDAR only model, goes first. An older one with 2.5 times the returns per m² goes ahead of one less than five years newer, so San Francisco's 2023 USGS survey stays ahead of NOAA's sparser 2025 one. USGS work units named like `CA_SanFrancisco_1_B23` count as 2023. `Survey` under `Layers > LiDAR` picks one by hand. It's read first and the others fill in where it doesn't reach.
+The newest survey that holds a building, or covers the whole area of a LiDAR only model, goes first, unless it can't fill the model's grid cells and an older one fills them clearly finer. USGS work units named like `CA_SanFrancisco_1_B23` count as 2023.
+
+What counts is how finely a survey fills the cells actually asked for, not its density on its own. At the default scale the cells are 0.71 m and most surveys since about 2015 fill them, so the newest one wins. At 0.25 m cells only the densest do. An older survey goes first when the newest fills cells at least 1.25 times the size it does, and it's no more than `Older by up to` years older (5 by default), or twice that when the newest fills cells twice the size.
+
+Densities come from each survey's own index around the area: an EPT's hierarchy or a few tiles' headers, a few KB. The catalogs' figures are averages over whole outlines and were 2x off in both directions. San Francisco's 2023 USGS survey averages 62 returns per m² and has 150 in the Financial District. King County's 2016-17 one averages 26 and has 14 in downtown Seattle, about what the 2021 survey has there.
+
+Density alone misses holes. NOAA's 2025 Bay-Delta survey has 18 returns per m² in the Financial District but left 7% of 0.71 m cells empty between the towers, where USGS's 2023 survey left 0.5%. So when a survey 1.5 times denser than the newest could take its place, the newest is read on a 256 m block near the middle (the same probe a LiDAR only model uses for its cell size), and if it doesn't fill the cells there, so are the older ones that would beat it. That can be 25-55 MB for a dense survey, which is why it only happens when the choice depends on it. Probes are kept, so it's once per area and cell size. In the Mission, where there are no towers, the 2025 survey fills the cells and is read.
+
+`Prefer` under `Layers > LiDAR` changes this. `Newest survey` always reads the most recent one. `Most detail` compares at 0.25 m cells whatever the age, without probing. `Survey` picks one by hand. It's read first and the others fill in where it doesn't reach. The list fills in by itself, in the order Automatic reads, with each survey's returns per m² around the area, and says why when Automatic passes over the newest. Finding surveys only reads catalogs and indexes.
 
 ## Whole files are asked about first
 
 A survey that only comes as whole files (plain LAZ or LAS, a ZIP member, or a server that ignores Range) isn't downloaded until the user agrees, as in the add-on. The model is made without it and the action bar offers its tiles with their size, under `Download and regenerate`. A 300 x 250 m area of Cologne offers one 48 MB NRW tile for 41 buildings.
 
-It's offered when it would measure buildings nothing else did, or fill part of a LiDAR only model nothing else reaches. Where something else was read, it's only offered when it's at least five years newer, or twice as dense with two more returns per m². Approved tiles are kept with the LiDAR cache. One tile's header is read before offering, so a survey that couldn't be read anyway is reported instead: OpenTopography's Indiana tiles have no height units and are 300 MB each. EPT and COPC are read without asking.
+It's offered when it would measure buildings nothing else did, or fill part of a LiDAR only model nothing else reaches. Where something else was read, it's only offered when it's at least five years newer, or twice as dense around the area with two more returns per m² (not with `Newest survey`). Approved tiles are kept with the LiDAR cache. One tile's header is read before offering, so a survey that couldn't be read anyway is reported instead: OpenTopography's Indiana tiles have no height units and are 300 MB each. EPT and COPC are read without asking.
 
 ## How files are read
 

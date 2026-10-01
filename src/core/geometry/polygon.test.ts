@@ -5,13 +5,16 @@ import {
   bufferLines,
   ClipSet,
   clipToBox,
+  clipToUnits,
   difference,
   differenceSet,
   intersection,
   multiArea,
   offsetPolygons,
   openSharp,
+  pointInMulti,
   rectangle,
+  ringArea,
   SCALE,
   separateTouching,
   tiled,
@@ -88,6 +91,66 @@ describe('clipToBox', () => {
       const band = 2 * (box[2] - box[0] + box[3] - box[1]) * 1e-4;
       expect(mismatch(clipToBox(roads, box, 0), expected)).toBeLessThan(band);
     }
+  });
+
+  it('keeps everything beside a ring that touches the edge it was cut along', () => {
+    // A park cut to a tile in Houston. Its outline has a one unit edge lying on
+    // the tile's edge, and the union after the cut lost the 0.065 mm² sliver
+    // between that corner and where the outline crossed back out.
+    const unit = (points: number[][]) => points.map(([x, y]) => [x / SCALE, y / SCALE] as Vec2);
+    const park: MultiPolygon = [[
+      unit([[287851, 150004], [287938, 149599], [287939, 149599], [290696, 136610], [294300, 120172], [297612, 118892], [298148, 118502], [306440, 120073], [313661, 124209], [319274, 131287], [315044, 137845], [308660, 142048], [292215, 148400], [289429, 149421]]),
+    ]];
+    const rect = { left: 258700, top: 29599, right: 378700, bottom: 149599 };
+    const box = rectangle(rect.left / SCALE, rect.top / SCALE, rect.right / SCALE, rect.bottom / SCALE);
+    const clipped = clipToUnits(park, rect);
+    expect(pointInMulti(29.0567, 13.7467, clipped)).toBe(true);
+    expect(mismatch(clipped, intersection(park, box))).toBeLessThan(1e-6);
+  });
+
+  it('matches a boolean intersection for outlines coming onto the cut and along it', () => {
+    // Star shaped rings, so simple, some of whose rays come from outside onto a
+    // cut line and step a unit along it. Before the spikes were taken out,
+    // 17% came out wrong, by up to 2 mm².
+    const next = random(23);
+    const rect = { left: 100000, top: 100000, right: 200000, bottom: 200000 };
+    const box = rectangle(10, 10, 20, 20);
+    let worst = 0;
+    for (let trial = 0; trial < 500; trial++) {
+      const cx = 150000 + (next() - 0.5) * 60000;
+      const cy = 150000 + (next() - 0.5) * 60000;
+      const n = 6 + Math.floor(next() * 24);
+      const ring: Vec2[] = [];
+      const push = (x: number, y: number) => ring.push([x / SCALE, y / SCALE]);
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        const dx = Math.cos(a);
+        const dy = Math.sin(a);
+        let r = 20000 + next() * 70000;
+        const onLine = next() < 0.2;
+        if (onLine) {
+          const ts = [(rect.left - cx) / dx, (rect.right - cx) / dx, (rect.top - cy) / dy, (rect.bottom - cy) / dy].filter((t) => t > 1000 && Number.isFinite(t));
+          if (!ts.length) continue;
+          r = Math.min(...ts);
+          const b = a - 0.3 / n;
+          push(Math.round(cx + (r + 8000) * Math.cos(b)), Math.round(cy + (r + 8000) * Math.sin(b)));
+        }
+        let x = Math.round(cx + r * dx);
+        let y = Math.round(cy + r * dy);
+        for (const v of [rect.left, rect.right]) if (Math.abs(x - v) < 2) x = v;
+        for (const v of [rect.top, rect.bottom]) if (Math.abs(y - v) < 2) y = v;
+        push(x, y);
+        const step = next() < 0.5 ? 1 : -1;
+        if (onLine && (x === rect.left || x === rect.right)) push(x, y + step);
+        else if (onLine && (y === rect.top || y === rect.bottom)) push(x + step, y);
+      }
+      const polygon: MultiPolygon = [[ring]];
+      // Only simple rings: the boolean engine isn't a reference otherwise.
+      if (Math.abs(multiArea(union(polygon)) - Math.abs(ringArea(ring))) > 1e-4) continue;
+      worst = Math.max(worst, mismatch(clipToUnits(polygon, rect), intersection(polygon, box)));
+    }
+    // Rounding where the cut crosses edges, under a tenth of a micron along them.
+    expect(worst).toBeLessThan(1e-3);
   });
 });
 

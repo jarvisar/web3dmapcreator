@@ -11,7 +11,7 @@ import type { LazChunk } from './chunks';
 import { crsFromEpsg, lonLatTransforms } from './crs';
 import type { Fetcher } from './fetcher';
 import { setLazDecoder } from './laz';
-import { checkTile, readTiles } from './tiles';
+import { checkTile, readTiles, tileDensity } from './tiles';
 
 vi.mock('./chunks', async (original) => ({
   ...(await original<typeof import('./chunks')>()),
@@ -286,5 +286,21 @@ describe('checking a tile before offering it', () => {
     const whole = fakeFetcher({ [url]: tile(points) });
     await checkTile(whole.fetcher, { url, bbox: american, whole: true }, {});
     expect(whole.requested).toEqual([]);
+  });
+});
+
+describe('tileDensity', () => {
+  it("divides a tile's points by the ground its header's box covers, from the header alone", async () => {
+    const bytes = tile(points, 2);
+    const view = new DataView(bytes.buffer);
+    // Max and min x, then y: 1000 by 100 units at 45 degrees north, 50,000 m² on the ground.
+    [1000, 0, 5621100, 5621000].forEach((v, k) => view.setFloat64(179 + 8 * k, v, true));
+    const { fetcher, requested } = fakeFetcher({ [url]: bytes });
+    const lat = mercator.toLonLat(0, 5621050)[1] * (Math.PI / 180);
+    expect(await tileDensity(fetcher, entry())).toBeCloseTo(6 / (1000 * 100 * Math.cos(lat) ** 2), 9);
+    expect(requested.every((r) => /#\d+-\d+$/.test(r))).toBe(true);
+    // Nothing to divide by, or nothing it may read.
+    expect(await tileDensity(fakeFetcher({ [url]: tile(points, 2) }).fetcher, entry())).toBe(null);
+    expect(await tileDensity(fakeFetcher({ [url]: bytes }).fetcher, { ...entry(), whole: true })).toBe(null);
   });
 });

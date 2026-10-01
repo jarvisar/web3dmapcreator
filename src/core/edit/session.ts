@@ -1488,7 +1488,7 @@ export class EditSession {
     for (const category of this.settings.land.priority) {
       const lists = pieces.get(category);
       if (!lists) continue;
-      const polygons = cover.settle(category, lists.length === 1 ? lists[0] : union(...lists), reach);
+      const polygons = LandCover.settle(lists.length === 1 ? lists[0] : union(...lists), reach);
       if (polygons.length) fills.push({ category, polygons });
     }
     this.fillCache = { signature, fills };

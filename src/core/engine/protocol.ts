@@ -4,6 +4,7 @@ import type { ViewerGround as GroundGrid } from '../edit/ground';
 import type { RoadLines } from '../edit/lines';
 import type { EditUpdate, ObjectFacts } from '../edit/session';
 import type { SurveyChoice } from '../lidar/choice';
+import type { SurveyQuery } from '../lidar/query';
 import type { LidarOffer } from '../lidar/offers';
 import type { ModelEdits } from '../edit/types';
 import type { AreaSpec, ExportFormat, ModelSettings, Palette } from '../settings';
@@ -165,7 +166,7 @@ export type ToWorker =
   | { type: 'generate'; id: number; request: GenerateRequest }
   | { type: 'export'; id: number; request: ExportRequest }
   | { type: 'edit'; id: number; request: EditRequest }
-  | { type: 'surveys'; id: number; area: AreaSpec }
+  | { type: 'surveys'; id: number; query: SurveyQuery }
   | { type: 'cancel'; id: number };
 
 export type FromWorker =

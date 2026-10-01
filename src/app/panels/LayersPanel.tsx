@@ -1,8 +1,9 @@
 import { ArrowDown, ArrowUp } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { fixedCellLimit, gridCells, gridProblem, LARGEST_FIXED_CELLS, requestedCell } from '../../core/dsm/grid';
 import { effectiveScale } from '../../core/geo/area';
-import { modelFieldRange, type AreaSpec, type LidarCellMode, type LidarRoofMode, type LidarWaterMode, type ModelSettings, type SurfaceCategory, type TreeStyle, type WaterMode } from '../../core/settings';
+import { rankingCell } from '../../core/lidar/query';
+import { modelFieldRange, type AreaSpec, type LidarCellMode, type LidarRoofMode, type LidarWaterMode, type ModelSettings, type SurfaceCategory, type SurveyPreference, type TreeStyle, type WaterMode } from '../../core/settings';
 import type { SurveyChoice } from '../../core/engine/protocol';
 import type { ColourGroup } from '../../core/types';
 import { LayerDisclosure } from '../components/LayerDisclosure';
@@ -13,7 +14,7 @@ import { Segmented } from '../components/Segmented';
 import { formatInteger, formatNumber, keepUnits, listJoin } from '../lib/format';
 import { deviceMemoryGb, lidarCellLimit } from '../state/derived';
 import { findLidarSurveys } from '../state/actions';
-import { patchSettings, resetSettingsSection, setLargeGrids, setModelSource, setSupports, surveyAreaKey, toggleLayer, useApp } from '../state/store';
+import { patchSettings, resetSettingsSection, setLargeGrids, setModelSource, setSupports, surveySearchKey, toggleLayer, useApp } from '../state/store';
 import type { LayerKey, SettingsSection } from '../state/store';
 import { Section } from './Section';
 
@@ -595,14 +596,24 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
   );
 }
 
-function surveyText(s: SurveyChoice): string {
+/** Its name with what tells surveys apart: year, returns per m² here, the cells it filled if fewer than asked, how much of the area it covers. */
+function surveyText(s: SurveyChoice, cell: number | null): string {
   const parts = [
     s.year ? String(s.year) : '',
     s.densityM2 ? `${formatNumber(s.densityM2, s.densityM2 < 10 ? 1 : 0)} per m²` : '',
+    s.fillsM && cell !== null && s.fillsM > cell * 1.001 ? `fills ${formatNumber(s.fillsM, 2)} m cells` : '',
     s.coverage < 0.99 ? `${Math.max(1, Math.round(s.coverage * 100))}% of the area` : '',
     s.staged ? 'whole tiles' : '',
   ].filter(Boolean);
   return parts.length ? `${s.name} (${parts.join(', ')})` : s.name;
+}
+
+function surveyCell(area: AreaSpec, settings: ModelSettings): number | null {
+  try {
+    return rankingCell(area, settings);
+  } catch {
+    return null;
+  }
 }
 
 /** A name for a picked survey that isn't in the list, from its URL. */
@@ -617,23 +628,36 @@ function surveyName(url: string): string {
 
 /**
  * Picking a survey by hand, for LiDAR buildings and LiDAR only models alike.
- * The list comes from Find surveys or the last model of this area. A pick
+ * The surveys under the area are listed without asking, a moment after the
+ * area or the settings that order them settle, in the order Automatic reads
+ * them. A generation's own list replaces it, with what it measured. A pick
  * stays when the area moves, and does nothing where that survey isn't.
  */
 function SurveyPicker({ settings, area }: { settings: ModelSettings; area: AreaSpec }) {
   const chosen = settings.lidar.survey;
+  const key = surveySearchKey(area, settings);
   const search = useApp((state) => state.generation.surveys);
-  const here = search && search.key === surveyAreaKey(area) ? search : null;
+  const here = search && search.key === key ? search : null;
+  // Only catalogs and indexes are read, and they're kept for a day. A failed
+  // search waits for Search again rather than repeating itself.
+  const unsearched = here === null;
+  useEffect(() => {
+    if (!unsearched) return;
+    const timer = window.setTimeout(() => void findLidarSurveys(), 600);
+    return () => window.clearTimeout(timer);
+  }, [key, unsearched]);
   const list = here?.status === 'done' ? here.list : [];
+  const cell = surveyCell(area, settings);
+  const first = list[0];
   const listed = !chosen || list.some((s) => s.url === chosen);
   const unanswered = here?.failures.length ? `, ${here.failures.length} ${here.failures.length === 1 ? "catalog didn't" : "catalogs didn't"} answer` : '';
-  const status = !here
-    ? ''
-    : here.status === 'searching'
-      ? 'Searching the catalogs'
+  const status =
+    !here || here.status === 'searching'
+      ? 'Looking for surveys here'
       : here.status === 'error'
         ? `Couldn't search: ${here.error}`
         : `${here.list.length ? `${here.list.length} found here` : 'None found here'}${unanswered}`;
+  const preference = settings.lidar.surveyPreference;
   return (
     <>
       <SelectField
@@ -641,22 +665,49 @@ function SurveyPicker({ settings, area }: { settings: ModelSettings; area: AreaS
         stacked
         value={chosen}
         onChange={(survey) => patchSettings('lidar', { survey })}
-        help="Automatic reads the newest survey with enough detail for each spot. A survey picked here is read first, and the others still fill in where it doesn't reach. Find surveys lists the surveys under this area without downloading any points. LiDAR buildings and LiDAR only models use the same pick."
+        help="Automatic picks for you, as set under Prefer. A survey picked here is read first, and the others still fill in where it doesn't reach. The list shows each survey's year, its returns per m² around this area and how much of the area it covers. Finding them reads no points. LiDAR buildings and LiDAR only models use the same pick."
+        hint={!chosen && first?.note ? first.note : undefined}
       >
-        <option value="">Automatic</option>
+        <option value="">{first ? `Automatic: ${first.name}${first.year ? ` (${first.year})` : ''}` : 'Automatic'}</option>
         {!listed && <option value={chosen}>{`${surveyName(chosen)}${here?.status === 'done' ? ', not found here' : ''}`}</option>}
         {list.map((s) => (
           <option key={s.url} value={s.url}>
-            {surveyText(s)}
+            {surveyText(s, cell)}
           </option>
         ))}
       </SelectField>
       <div className="survey-find">
         <span role="status">{status}</span>
-        <button type="button" className="link-btn" disabled={here?.status === 'searching'} onClick={() => void findLidarSurveys()}>
-          {here?.status === 'done' ? 'Search again' : 'Find surveys'}
-        </button>
+        {here && here.status !== 'searching' && (
+          <button type="button" className="link-btn" onClick={() => void findLidarSurveys()}>
+            Search again
+          </button>
+        )}
       </div>
+      {!chosen && (
+        <SelectField
+          label="Prefer"
+          value={preference}
+          onChange={(value) => patchSettings('lidar', { surveyPreference: value as SurveyPreference })}
+          help="Balanced reads the newest survey unless it's too sparse or patchy for the grid cells, which is measured near the middle of the area when it matters. Then an older survey that fills clearly finer cells goes first, if it's no older than the years below, or twice that for cells half the size. Newest always reads the most recent survey. Most detail reads the survey with the most returns per m², whatever its age, unless the newest has nearly as many."
+        >
+          <option value="balanced">Balanced</option>
+          <option value="newest">Newest survey</option>
+          <option value="detail">Most detail</option>
+        </SelectField>
+      )}
+      {!chosen && preference === 'balanced' && (
+        <NumberField
+          label="Older by up to"
+          value={settings.lidar.olderYears}
+          onChange={(olderYears) => patchSettings('lidar', { olderYears })}
+          {...modelFieldRange('lidar', 'olderYears')}
+          step={1}
+          decimals={0}
+          unit="years"
+          help="How much older than the newest survey one may be and still be read first, when it fills the grid cells clearly finer. Buildings built or torn down since won't show. Twice this for cells half the size."
+        />
+      )}
     </>
   );
 }

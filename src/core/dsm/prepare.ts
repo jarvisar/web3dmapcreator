@@ -10,7 +10,8 @@ import { lidarCache, type ByteCache } from '../data/cache';
 import { areaGeoBounds } from '../geo/area';
 import { Projection } from '../geo/projection';
 import { intersection, multiArea } from '../geometry/polygon';
-import { digest, rankOrder, rankSurveys, toMetric, clipRingToBox, type BatchProgress, type Ranked } from '../lidar/prepare';
+import type { BatchProgress } from '../lidar/prepare';
+import { clipRingToBox, digest, measureDensities, orderSurveys, pickNote, rankOrder, surveyDensity, toMetric, type Ranked, type SurveyProbe, type SurveyRules } from '../lidar/ranking';
 import { readTiles } from '../lidar/read/tiles';
 import { readEpt } from '../lidar/read/ept';
 import { Fetcher } from '../lidar/read/fetcher';
@@ -34,8 +35,6 @@ const PROBE_VERSION = 2;
 // A block counts as covered once this share of it is inside a survey.
 const COVERED = 0.995;
 const BLOCK_POINTS = 40e6;
-// Returns per cell a survey needs on average to leave few cells empty.
-const FILLED = 4;
 // Provider codes with a surface meaning, kept out of the provider's own
 // mapping since that one shapes building measurement too.
 const SURFACE_CODES: Record<string, Record<string, string>> = {
@@ -128,6 +127,8 @@ export interface SurfaceInput {
   approved?: Approval;
   /** A survey to read first: its URL, or its name (`isChosen`). */
   survey?: string;
+  /** How the others are put in order, at `cellM`. Balanced over 5 years by default. */
+  rules?: Omit<SurveyRules, 'cellM'>;
 }
 
 export function surveyYear(c: Candidate): number | null {
@@ -339,7 +340,11 @@ function skippedCells(surveys: Ranked[], blocked: Ranked[], grid: GridSpec, bloc
  * every block they'd have been read for when they beat what was read there
  * by a wide margin (`advantage`).
  */
-async function surfaceOffers(skipped: Skipped[], surveys: Map<string, Ranked>, fetcher: Fetcher, failures: Failure[], chosen?: string): Promise<LidarOffer[]> {
+async function surfaceOffers(skipped: Skipped[], surveys: Map<string, Ranked>, fetcher: Fetcher, failures: Failure[], chosen: string | undefined, newestOnly: boolean): Promise<LidarOffer[]> {
+  const density = (c: Candidate) => {
+    const r = surveys.get(c.url);
+    return (r ? surveyDensity(r) : c.densityM2) ?? undefined;
+  };
   const bySurvey = new Map<string, Skipped[]>();
   for (const s of skipped) bySurvey.set(s.survey.url, [...(bySurvey.get(s.survey.url) ?? []), s]);
   const offers: Promise<LidarOffer | null>[] = [];
@@ -349,13 +354,77 @@ async function surfaceOffers(skipped: Skipped[], surveys: Map<string, Ranked>, f
     const taken = new Map<string, number>();
     for (const s of list) for (const [url, cells] of s.takenBy) taken.set(url, (taken.get(url) ?? 0) + cells);
     const instead = [...taken].sort((a, b) => b[1] - a[1])[0]?.[0];
-    const better = instead ? advantage(survey, surveys.get(instead)!.candidate) : null;
+    const better = instead ? advantage(survey, surveys.get(instead)!.candidate, density, newestOnly) : null;
     // One the user picked is offered for every block it would be read for.
     const picked = isChosen(survey, chosen);
     if (!picked && !gaps.length && !better) continue;
     offers.push(makeOffer(fetcher, survey, (picked || better ? list : gaps).flatMap((s) => s.tiles), picked ? 'chosen' : gaps.length ? 'gap' : better!, failures));
   }
   return (await Promise.all(offers)).filter((o): o is LidarOffer => o !== null);
+}
+
+/** What a probe needs of the area: the frame and the rectangle its grid covers. */
+export interface ProbeArea {
+  center: LonLat;
+  rotationDeg: number;
+  widthM: number;
+  heightM: number;
+}
+
+export interface ProberOptions {
+  area: ProbeArea;
+  grid: GridSpec;
+  runner: Pick<SurfaceRunner, 'surface'>;
+  approved?: Approval;
+  signal?: AbortSignal;
+  progress?: (name: string, detail?: string) => void | Promise<void>;
+  /** Only answer from probes made before, reading nothing: for listing surveys. */
+  savedOnly?: boolean;
+}
+
+/**
+ * How finely a survey fills `grid`, measured on the first of the three
+ * blocks nearest the middle that it covers and has land, and saved per block.
+ * Null when it covers none of them, they're mostly water, its tiles there
+ * weren't approved, or (savedOnly) nothing was saved.
+ */
+export function gridProber({ area, grid, runner, approved, signal, progress, savedOnly }: ProberOptions): (r: Ranked) => Promise<SurveyProbe | null> {
+  const frame = new Projection(area.center, area.rotationDeg, 1);
+  const middle = [(grid.ny - 1) / 2, (grid.nx - 1) / 2];
+  const near = blocks(grid)
+    .sort((a, b) => {
+      const d = (block: Block) => ((block.rows[0] + block.rows[1]) / 2 - middle[0]) ** 2 + ((block.columns[0] + block.columns[1]) / 2 - middle[1]) ** 2;
+      return d(a) - d(b);
+    })
+    .slice(0, 3);
+  return async (r) => {
+    for (const block of near) {
+      const extent = blockExtent(grid, block);
+      if (multiArea(intersection(boxShape(...extent), r.coverage)) < 0.999 * (extent[2] - extent[0]) * (extent[3] - extent[1])) continue;
+      const geo = geoBox(frame, extent);
+      if (staged(r.candidate) && !approves(approved, tilesIn(r.candidate, [geo.west, geo.south, geo.east, geo.north]))) continue;
+      const key = `surface-probe:${digest([VERSION, PROBE_VERSION, area.center, area.rotationDeg, area.widthM, area.heightM, grid.cell, block.rows, block.columns, r.candidate.url])}`;
+      const saved = await load(key);
+      let found: { cell: number; density: number } | null;
+      if (saved) {
+        found = (JSON.parse(new TextDecoder().decode(saved)) as { probe: { cell: number; density: number } | null }).probe;
+      } else {
+        if (savedOnly) return null;
+        await progress?.(r.candidate.name);
+        const job: SurfaceJob = { center: area.center, rotationDeg: area.rotationDeg, survey: slim(r.candidate, geo), query: geo, grid, block, resolutionM: Math.max(0.1, grid.cell / 2), probe: grid.cell };
+        const outcome = await runner.surface(job, (_label, detail) => progress?.(r.candidate.name, detail)).catch((error: Error) => {
+          if (error.name === 'AbortError' || signal?.aborted) throw error;
+          return null;
+        });
+        // A failed read isn't saved, so it's tried again next time.
+        if (!outcome) continue;
+        found = outcome.probe ?? null;
+        save(key, new TextEncoder().encode(JSON.stringify({ probe: found })).buffer as ArrayBuffer);
+      }
+      if (found) return { requested: grid.cell, cell: Math.max(grid.cell, found.cell), density: found.density };
+    }
+    return null;
+  };
 }
 
 /** The survey without what a worker doesn't need: its outline, and tiles away from the block. */
@@ -396,64 +465,44 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     if (!inside.length) continue;
     ranked.push({ candidate, coverage, catalogCoverage: multiArea(inside) / rectArea });
   }
-  // A survey covering the whole area goes first, so blocks don't mix years.
-  // Then one dense enough to fill the cells, since a sparse survey only gives
-  // a model of blobs however new it is, and among those the usual ranking.
-  const fill = (r: Ranked) => (r.candidate.densityM2 ? Math.min(1, r.candidate.densityM2 / (FILLED / requested ** 2)) : 1);
+  const runner: SurfaceRunner = input.runner ?? { concurrency: 1, surface: (job, report) => readSurfaceBlock(job, fetcher, report) };
+  const origin = { center: area.center, rotationDeg: area.rotationDeg };
+  await progress('Finding LiDAR surveys', 0.05, 'Working out their returns per m² here');
+  await measureDensities(fetcher, ranked, frame, input.signal);
+  // Measured on blocks of the grid asked for, before it grows for a sparse survey.
+  const probe = gridProber({
+    area,
+    grid,
+    runner,
+    approved: input.approved,
+    signal: input.signal,
+    progress: (name, detail) => progress('Measuring how finely the surveys fill the grid', 0.06, detail ?? name),
+  });
+  // A survey covering the whole area goes first, so blocks don't mix years,
+  // then the order the settings ask for (lidar/ranking.ts).
   const tier = (r: Ranked) => (r.catalogCoverage >= 0.99 ? 0 : 1);
-  const automatic = rankSurveys(
-    ranked,
-    (a, b) => tier(a) - tier(b) || fill(b) - fill(a) || rankOrder(a, b),
-    (a, b) => tier(a) === tier(b) && fill(a) === fill(b),
-  );
+  const compare = (a: Ranked, b: Ranked) => tier(a) - tier(b) || rankOrder(a, b);
+  const rules: SurveyRules = { preference: input.rules?.preference ?? 'balanced', years: input.rules?.years ?? 5, cellM: requested };
+  const automatic = await orderSurveys(ranked, rules, { compare, group: (a, b) => tier(a) === tier(b), probe });
   // A chosen survey goes first even when it covers part of the area.
   const order = chosenFirst(automatic, input.survey);
   if (!order.length) {
     const reason = failures.length ? ` (${failures[0].source}: ${failures[0].reason})` : '';
     throw new Error(`No LiDAR survey that a browser can read covers this area${reason}.`);
   }
-  const runner: SurfaceRunner = input.runner ?? { concurrency: 1, surface: (job, report) => readSurfaceBlock(job, fetcher, report) };
-  const origin = { center: area.center, rotationDeg: area.rotationDeg };
 
   // ------------------------------------------------------------ cell size
-  // Measured on up to three blocks near the middle that one survey covers.
-  let densityM2: number | null = null;
+  // Grown from the cell asked for where the first survey that can be read
+  // doesn't fill it, measured near the middle (already, if it was ranked by it).
   // Whole-file surveys are only read where their tiles were approved.
   const readableIn = (r: Ranked, geo: GeoBounds) => !staged(r.candidate) || approves(input.approved, tilesIn(r.candidate, [geo.west, geo.south, geo.east, geo.north]));
-  const probed0 = order.find((r) => readableIn(r, query)) ?? order[0];
-  const probeKey = `surface-probe:${digest([VERSION, PROBE_VERSION, area.center, area.rotationDeg, area.widthM, area.heightM, requested, probed0.candidate.url])}`;
-  const probed = await load(probeKey);
-  if (probed) {
-    const saved = JSON.parse(new TextDecoder().decode(probed)) as { cell: number; density: number | null };
-    densityM2 = saved.density;
-    if (saved.cell > requested) grid = gridSpec(area.widthM, area.heightM, saved.cell);
-  } else {
-    await progress("Measuring the survey's point density", 0.06);
-    const middle = [(grid.ny - 1) / 2, (grid.nx - 1) / 2];
-    const near = blocks(grid).sort((a, b) => {
-      const d = (block: Block) => ((block.rows[0] + block.rows[1]) / 2 - middle[0]) ** 2 + ((block.columns[0] + block.columns[1]) / 2 - middle[1]) ** 2;
-      return d(a) - d(b);
-    });
-    let cell = requested;
-    let measured = false;
-    for (const block of near.slice(0, 3)) {
-      const extent = blockExtent(grid, block);
-      const covering = order.find((r) => readableIn(r, geoBox(frame, extent)) && multiArea(intersection(boxShape(...extent), r.coverage)) >= 0.999 * (extent[2] - extent[0]) * (extent[3] - extent[1]));
-      if (!covering) continue;
-      const job: SurfaceJob = { ...origin, survey: slim(covering.candidate, geoBox(frame, extent)), query: geoBox(frame, extent), grid, block, resolutionM: Math.max(0.1, requested / 2), probe: requested };
-      const outcome = await runner.surface(job, (_label, detail) => progress("Measuring the survey's point density", 0.07, detail)).catch((error: Error) => {
-        if (error.name === 'AbortError' || input.signal?.aborted) throw error;
-        return null;
-      });
-      if (!outcome?.probe) continue;
-      cell = Math.max(requested, outcome.probe.cell);
-      densityM2 = outcome.probe.density;
-      measured = true;
-      break;
-    }
-    if (measured) save(probeKey, new TextEncoder().encode(JSON.stringify({ cell, density: densityM2 })).buffer as ArrayBuffer);
-    if (cell > requested) grid = gridSpec(area.widthM, area.heightM, cell);
+  let measured: SurveyProbe | null = null;
+  for (const r of order.filter((r) => readableIn(r, query)).slice(0, 3)) {
+    measured = r.probe ?? (await probe(r));
+    if (measured) break;
   }
+  const densityM2 = measured?.density ?? null;
+  if (measured && measured.cell > requested) grid = gridSpec(area.widthM, area.heightM, measured.cell);
 
   // ---------------------------------------------------------------- blocks
   const layers = emptyLayers(grid.nx, grid.ny);
@@ -579,7 +628,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
 
   let covered = 0;
   for (let k = 0; k < layers.count.length; k++) if (layers.count[k]) covered++;
-  const offers = skipped.length ? await surfaceOffers(skipped, byUrl, fetcher, failures, input.survey) : [];
+  const offers = skipped.length ? await surfaceOffers(skipped, byUrl, fetcher, failures, input.survey, rules.preference === 'newest') : [];
   if (!covered && offers.length) {
     throw new OffersError(`The LiDAR here only comes as whole tiles, which aren't downloaded without asking: ${offers.map(describeOffer).join('; ')}.`, offers);
   }
@@ -602,7 +651,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     blocks: all.length,
     reusedBlocks,
     offers,
-    found: automatic.map(surveyChoice),
+    found: automatic.map((r, i) => surveyChoice(r, i ? null : pickNote(automatic, rules, compare))),
   };
 }
 

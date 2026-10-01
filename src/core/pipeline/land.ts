@@ -24,13 +24,16 @@ import { classifySurface, isBridgeArea } from './classify';
 import { count, type Context } from './context';
 import { isPolygonal, isRegionalFeature, projectPolygons, type SourceData, type SourceType } from './source';
 
-const MINIMUM_AREA_MM2 = 0.25;
 const TILED_ABOVE_MM = 250;
 const TILE_MM = 50;
 const TILE_MARGIN_MM = 1;
-export const SLIVER_MM = 0.1;
-/** Slab pieces smaller than this are dropped. */
-export const SLAB_MINIMUM_MM2 = MINIMUM_AREA_MM2 * 0.4;
+// Land cover is laid as mapped, apart from rounding: strips under 2 µm where an
+// outline and what clears it share an edge. It used to be opened by 0.1 mm
+// with pieces under 0.1 mm² dropped, which left about 3% of it as bare
+// terrain: pockets between paths and strips beside roads and buildings.
+export const SLIVER_MM = 0.001;
+// Rounding dust, as for the terrain. Tile seams can cut scraps this small.
+const SPECK_MM2 = 1e-6;
 
 export type LandSurfaces = Record<SurfaceCategory, MultiPolygon>;
 
@@ -98,13 +101,8 @@ export async function buildLand(
     if (owned.length) region = difference(region, owned);
     owned = union(owned, region);
     if (regions) regions[category] = region;
-    region = tiled(region, tile, TILE_MARGIN_MM, (local) => {
-      const kept = differenceSet(local, cleared);
-      // Strips narrower than about half a nozzle line (a median between two
-      // road ribbons) can't print as a colour of their own, so open them away.
-      return openSharp(kept, SLIVER_MM);
-    });
-    result[category] = dropSmall(intersection(region, ctx.cropSet), SLAB_MINIMUM_MM2);
+    region = tiled(region, tile, TILE_MARGIN_MM, (local) => openSharp(differenceSet(local, cleared), SLIVER_MM));
+    result[category] = dropSmall(intersection(region, ctx.cropSet), SPECK_MM2);
     ctx.stats[`land_${category}_polygons`] = result[category].length;
     await ctx.progress.checkpoint(0.5 + (0.5 * (i + 1)) / order.length);
   }

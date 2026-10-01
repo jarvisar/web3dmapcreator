@@ -36,6 +36,8 @@ export type TreeStyle = 'natural' | 'rounded' | 'off';
 export type LidarCellMode = 'detail' | 'metres';
 /** 'map' builds a multicolour model from map data, 'lidar' the whole model from a LiDAR survey alone. */
 export type ModelSource = 'map' | 'lidar';
+/** Which survey goes first: the newest always, the newest unless it can't fill the grid cells, or the most returns per m². */
+export type SurveyPreference = 'balanced' | 'newest' | 'detail';
 
 export interface ModelSettings {
   modelSource: ModelSource;
@@ -163,6 +165,10 @@ export interface ModelSettings {
     rockSurfaces: boolean;
     /** A survey to read first (its URL), for LiDAR buildings and LiDAR only models alike. Others still fill in where it doesn't reach. '' picks for each spot. */
     survey: string;
+    /** How surveys are put in order without a pick (lidar/ranking.ts). */
+    surveyPreference: SurveyPreference;
+    /** With 'balanced', how many years older a survey may be and still go first for filling the cells better. */
+    olderYears: number;
   };
   /**
    * The LiDAR Only model: one solid in the terrain colour, and optionally the
@@ -277,7 +283,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     landCoverScatter: true,
     avoidRoads: true,
   },
-  lidar: { enabled: false, roofMode: 'envelope', preferLidar: true, minFootprintMm2: 0.7, rockSurfaces: false, survey: '' },
+  lidar: { enabled: false, roofMode: 'envelope', preferLidar: true, minFootprintMm2: 0.7, rockSurfaces: false, survey: '', surveyPreference: 'balanced', olderYears: 5 },
   lidarModel: { cellMode: 'detail', detailMm: 0.05, cellM: 0.5, trees: 'natural', keepClutter: true, waterDepthMm: 0.6, waterMode: 'recess', mapWater: true, heightScale: 1 },
   supports: true,
   rim: { enabled: false, heightMm: 1.5, widthMm: 2 },
@@ -538,7 +544,7 @@ const RANGES: SettingsRanges = {
     slendernessExemptMm: [0, 2],
   },
   trees: { spacingM: [2, 200], minHeightMm: [0.1, 10], minWidthMm: [0.1, 5], variation: [0, 0.8], maxTrees: [0, 500000, true] },
-  lidar: { minFootprintMm2: [0, 10] },
+  lidar: { minFootprintMm2: [0, 10], olderYears: [1, 15, true] },
   lidarModel: { detailMm: [0.02, 0.3], cellM: [0.25, 5], waterDepthMm: [0, 3], heightScale: [0.1, 3] },
   rim: { heightMm: [0.1, 30], widthMm: [0.1, 20] },
 };
@@ -594,6 +600,7 @@ export function sanitizeSettings(settings: unknown): ModelSettings {
   if (lidar.roofMode === 'envelope' || lidar.roofMode === 'heights') out.lidar.roofMode = lidar.roofMode;
   // Only ever compared with the surveys found, never fetched.
   if (typeof lidar.survey === 'string' && lidar.survey.length <= 1024) out.lidar.survey = lidar.survey;
+  if (lidar.surveyPreference === 'newest' || lidar.surveyPreference === 'detail') out.lidar.surveyPreference = lidar.surveyPreference;
   const lidarModel = isObject(source.lidarModel) ? source.lidarModel : {};
   if (lidarModel.cellMode === 'detail' || lidarModel.cellMode === 'metres') out.lidarModel.cellMode = lidarModel.cellMode;
   const waterMode = lidarModel.waterMode;

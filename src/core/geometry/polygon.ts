@@ -553,12 +553,14 @@ export function offsetPolygons(mp: MultiPolygon, delta: number, join: 'round' | 
  * opening rounded every corner a road or building cut into land cover.
  * Grown back mitred, then kept inside `mp`, since a mitre can run past a
  * short edge the shrink ate. Corners under about 40 degrees (the miter
- * limit of 3) still come back squared off.
+ * limit of 3) still come back squared off. It grows back two units more so
+ * edges kept land on `mp`'s own: rounded, they fell a unit inside, and left
+ * hairlines along everything that cut it.
  */
 export function openSharp(mp: MultiPolygon, delta: number): MultiPolygon {
   const shrunk = offsetPolygons(mp, -delta, 'round');
   if (!shrunk.length) return [];
-  return intersection(offsetPolygons(shrunk, delta, 'miter'), mp);
+  return intersection(offsetPolygons(shrunk, delta + 2 / SCALE, 'miter'), mp);
 }
 
 /**

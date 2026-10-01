@@ -2,6 +2,7 @@
 
 import { CancelledError, offeredTiles } from '../../core/engine/client';
 import type { GenerateResult, LidarOffer, ProgressEvent } from '../../core/engine/protocol';
+import { surveyQuery } from '../../core/lidar/query';
 import { cloneSettings } from '../../core/settings';
 import { downloadBlob, NARROW_QUERY } from '../lib/browser';
 import { formatBytes } from '../lib/format';
@@ -15,7 +16,7 @@ import {
   patchExporting,
   patchGeneration,
   snapshotKey,
-  surveyAreaKey,
+  surveySearchKey,
   toast,
   useApp,
 } from './store';
@@ -127,7 +128,7 @@ export async function generateModel(options: { approveTiles?: string[] } = {}): 
         result: meta,
         stale: key !== snapshotKey(current.area, current.settings),
         offers: offersFor(key, result.lidar?.offers ?? result.surface?.offers),
-        surveys: found.length ? { key: surveyAreaKey(area), status: 'done', list: found, failures: [] } : current.generation.surveys,
+        surveys: found.length ? { key: surveySearchKey(area, settings), status: 'done', list: found, failures: [] } : current.generation.surveys,
       },
       ui: {
         ...current.ui,
@@ -159,15 +160,17 @@ function offersFor(key: string, list: LidarOffer[] | undefined) {
   return list?.length ? { key, list } : null;
 }
 
-/** Lists the LiDAR surveys under the area, for picking one by hand. Nothing is downloaded but their catalogs. */
+/** Lists the LiDAR surveys under the area in the order they'd be read, for picking one by hand. Nothing is downloaded but catalogs and indexes. */
 export async function findLidarSurveys(): Promise<void> {
-  const area = structuredClone(useApp.getState().area);
-  const key = surveyAreaKey(area);
+  const state = useApp.getState();
+  const area = structuredClone(state.area);
+  const settings = cloneSettings(state.settings);
+  const key = surveySearchKey(area, settings);
   patchGeneration({ surveys: { key, status: 'searching', list: [], failures: [] } });
   // Another search or a generate may have taken over, or the area moved on.
   const current = () => useApp.getState().generation.surveys?.key === key;
   try {
-    const result = await getEngine().surveys(area);
+    const result = await getEngine().surveys(surveyQuery(area, settings));
     if (current()) patchGeneration({ surveys: { key, status: 'done', list: result.surveys, failures: result.failures } });
   } catch (error) {
     if (current() && !(error instanceof CancelledError)) patchGeneration({ surveys: { key, status: 'error', list: [], failures: [], error: describe(error) } });

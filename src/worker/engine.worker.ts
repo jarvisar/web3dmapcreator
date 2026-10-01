@@ -25,6 +25,7 @@ import { Projection } from '../core/geo/projection';
 import { download } from '../core/svgmap/download';
 import { FontLoader } from '../core/svgmap/text/loadFont';
 import { findSurveys, lidarRequest, prepareLidar, setCheckpointStore, type PreparedLidar } from '../core/lidar/prepare';
+import type { SurveyQuery } from '../core/lidar/query';
 import { OffersError, reopened } from '../core/lidar/offers';
 import type { Failure } from '../core/lidar/sources';
 import { exportPlates } from '../core/export';
@@ -35,7 +36,7 @@ import { dataBoundsFor, generateModel, type ModelSpec } from '../core/pipeline/g
 import { meshLayers, partsBounds } from '../core/pipeline/mesh';
 import { buildPlates } from '../core/pipeline/plates';
 import type { SourceFeature } from '../core/pipeline/source';
-import { printerByKey, sanitizeSettings, type AreaSpec } from '../core/settings';
+import { printerByKey, sanitizeSettings } from '../core/settings';
 import type { GeoBounds, ModelStats } from '../core/types';
 import { installLidarCodecs } from './lidarCodecs';
 import { lidarPool, lidarPoolSize, surfacePoolSize } from './lidarPool';
@@ -328,9 +329,9 @@ function missingChoice(survey: string, found: SurveyChoice[]): string | null {
 }
 
 /** The surveys under an area, for picking one by hand. */
-async function listSurveys(id: number, area: AreaSpec) {
+async function listSurveys(id: number, query: SurveyQuery) {
   try {
-    const { surveys, failures } = await findSurveys(area);
+    const { surveys, failures } = await findSurveys(query);
     post({ type: 'surveys', id, result: { surveys, failures: failures.map(lidarFailure) } });
   } catch (error) {
     post({ type: 'error', id, message: describe(error) });
@@ -371,7 +372,7 @@ type Pool = ReturnType<typeof lidarPool>;
 async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | null): Promise<PreparedSurface> {
   const { area, settings } = request;
   const cell = requestedCell(settings.lidarModel, effectiveScale(area, settings.scale), area.widthM, area.heightM);
-  const key = JSON.stringify([area.center, area.rotationDeg, area.widthM, area.heightM, cell, settings.lidar.survey]);
+  const key = JSON.stringify([area.center, area.rotationDeg, area.widthM, area.heightM, cell, settings.lidar.survey, settings.lidar.surveyPreference, settings.lidar.olderYears]);
   const approved = await approvedTiles(request);
   if (surface?.key === key && !reopened(surface.prepared.offers, approved)) {
     const kept = surface.prepared;
@@ -390,6 +391,7 @@ async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | 
     runner: pool ?? undefined,
     approved,
     survey: settings.lidar.survey || undefined,
+    rules: { preference: settings.lidar.surveyPreference, years: settings.lidar.olderYears },
   });
   // A failed read leaves a hole, and a survey whose catalog failed can leave
   // half the area without one, so try again next time. Blocks that were read
@@ -706,7 +708,7 @@ ctx.onmessage = (event) => {
   }
   if (message.type === 'generate') void generate(message.id, message.request);
   else if (message.type === 'export') void exportModel(message.id, message.request);
-  else if (message.type === 'surveys') void listSurveys(message.id, message.area);
+  else if (message.type === 'surveys') void listSurveys(message.id, message.query);
   else if (message.type === 'edit') {
     // Only the newest edits matter: an older request still waiting is dropped.
     if (pendingEdit) post({ type: 'error', id: pendingEdit.id, message: 'Superseded', cancelled: true });

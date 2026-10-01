@@ -70,10 +70,18 @@ interface SelectFieldProps {
   children: ReactNode;
   help?: string;
   stacked?: boolean;
+  /** A line under the field, read out with it. */
+  hint?: ReactNode;
 }
 
-export function SelectField({ label, value, onChange, children, help, stacked }: SelectFieldProps) {
+export function SelectField({ label, value, onChange, children, help, stacked, hint }: SelectFieldProps) {
   const id = useId();
+  const hintId = useId();
+  const select = (
+    <select id={id} className={stacked ? 'select select-block' : 'select'} value={value} aria-describedby={hint ? hintId : undefined} onChange={(event) => onChange(event.target.value)}>
+      {children}
+    </select>
+  );
   return (
     <div className={`field${stacked ? ' field-stacked' : ''}`}>
       <div className="field-row">
@@ -81,16 +89,13 @@ export function SelectField({ label, value, onChange, children, help, stacked }:
           <label htmlFor={id}>{label}</label>
           {help && <HelpTip text={help} label={label} />}
         </span>
-        {!stacked && (
-          <select id={id} className="select" value={value} onChange={(event) => onChange(event.target.value)}>
-            {children}
-          </select>
-        )}
+        {!stacked && select}
       </div>
-      {stacked && (
-        <select id={id} className="select select-block" value={value} onChange={(event) => onChange(event.target.value)}>
-          {children}
-        </select>
+      {stacked && select}
+      {hint && (
+        <div className="field-hint" id={hintId}>
+          {hint}
+        </div>
       )}
     </div>
   );

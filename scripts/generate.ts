@@ -26,7 +26,9 @@
 // --download-tiles (read surveys that only come as whole files, which are
 // otherwise only listed as offers, as the app does until the user agrees),
 // --survey url|name (read that LiDAR survey first, the others fill in where
-// it doesn't reach, and list every survey found),
+// it doesn't reach), --prefer balanced|newest|detail and --older-years n (how
+// surveys are put in order without one, see lidar/ranking.ts). Every survey
+// found is listed in the order it would be read,
 // --options path.json (an options file exported from the app with its map area:
 // the area, settings, colours, export options and 3D edits, which the other
 // flags override), --no-edits (leave the options file's edits out).
@@ -170,6 +172,8 @@ async function main() {
   if (flag('water-layer')) settings.lidarModel.waterMode = 'layer';
   if (flag('no-map-water')) settings.lidarModel.mapWater = false;
   if (arg('survey')) settings.lidar.survey = arg('survey')!;
+  if (arg('prefer')) settings.lidar.surveyPreference = arg('prefer') as typeof settings.lidar.surveyPreference;
+  if (arg('older-years')) settings.lidar.olderYears = Number(arg('older-years'));
   settings = sanitizeSettings(settings);
   if (settings.modelSource === 'lidar') return lidarOnly(area, settings);
 
@@ -219,7 +223,7 @@ async function main() {
     for (const survey of lidar.surveys) console.log(`  ${survey.provider} ${survey.name}: ${survey.buildings} buildings`);
     for (const failure of lidar.failures) console.log(`  failed: ${failure.source}: ${failure.reason}`);
     for (const offer of lidar.offers) console.log(`  offered (${offer.reason}, ${offer.buildings} buildings, --download-tiles to read): ${describeOffer(offer)}`);
-    if (settings.lidar.survey) listFound(settings.lidar.survey, lidar.found);
+    listFound(settings.lidar.survey, lidar.found);
     if (arg('lidar-records')) {
       mkdirSync(dirname(arg('lidar-records')!), { recursive: true });
       writeFileSync(arg('lidar-records')!, JSON.stringify(lidar));
@@ -294,7 +298,7 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
         })
       : Promise.resolve(undefined);
     const maxCells = settings.lidarModel.cellMode !== 'metres' ? undefined : arg('max-cells') ? Number(arg('max-cells')) : fixedCellLimit(reportedMemoryGb(totalmem()));
-    const surface = await prepareSurface({ area, cellM: cell, maxCells, progress: (label, _fraction, detail) => log(label, detail), runner: pool ?? undefined, approved: flag('download-tiles') ? 'all' : undefined, survey: settings.lidar.survey || undefined });
+    const surface = await prepareSurface({ area, cellM: cell, maxCells, progress: (label, _fraction, detail) => log(label, detail), runner: pool ?? undefined, approved: flag('download-tiles') ? 'all' : undefined, survey: settings.lidar.survey || undefined, rules: { preference: settings.lidar.surveyPreference, years: settings.lidar.olderYears } });
     const mapWater = await water;
     const t1 = performance.now();
     const { grid } = surface;
@@ -302,7 +306,7 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
     for (const s of surface.surveys) console.log(`  ${s.provider} ${s.name} (${s.year ?? 'year unknown'}): ${s.points.toLocaleString('en-US')} returns in ${s.blocks} blocks`);
     for (const failure of surface.failures) console.log(`  failed: ${failure.source}: ${failure.reason}`);
     for (const offer of surface.offers) console.log(`  offered (${offer.reason}, --download-tiles to read): ${describeOffer(offer)}`);
-    if (settings.lidar.survey) listFound(settings.lidar.survey, surface.found);
+    listFound(settings.lidar.survey, surface.found);
     if (arg('surface-out')) {
       const dir = arg('surface-out')!;
       mkdirSync(dir, { recursive: true });
@@ -358,9 +362,10 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
 
 /** The surveys found, as `--survey` takes them, and whether the one asked for was among them. */
 function listFound(survey: string, found: SurveyChoice[]): void {
-  if (!found.some((s) => s.url === survey || s.name === survey)) console.log(`  --survey ${survey} wasn't found here, so surveys were picked automatically`);
+  if (survey && !found.some((s) => s.url === survey || s.name === survey)) console.log(`  --survey ${survey} wasn't found here, so surveys were picked automatically`);
   console.log('  surveys found, in automatic order:');
-  for (const s of found) console.log(`    ${s.name} (${s.year ?? 'year unknown'}, ${s.densityM2 ? `${s.densityM2.toFixed(1)} per m²` : 'density unknown'}, ${Math.round(s.coverage * 100)}%${s.staged ? ', whole tiles' : ''})  ${s.url}`);
+  for (const s of found) console.log(`    ${s.name} (${s.year ?? 'year unknown'}, ${s.densityM2 ? `${s.densityM2.toFixed(1)} per m²` : 'density unknown'}${s.fillsM ? `, fills ${s.fillsM} m` : ''}, ${Math.round(s.coverage * 100)}%${s.staged ? ', whole tiles' : ''})  ${s.url}`);
+  if (found[0]?.note) console.log(`  ${found[0].note}`);
 }
 
 main().catch((error) => {

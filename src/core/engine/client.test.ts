@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { SurveyQuery } from '../lidar/query';
 import type { AreaSpec, ModelSettings } from '../settings';
 import { CancelledError, EngineClient } from './client';
 import type { FromWorker, ToWorker } from './protocol';
@@ -148,8 +149,8 @@ describe('EngineClient', () => {
   it('answers a survey search, and never takes a slow one for a stuck worker', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
     const { client, workers } = setup();
-    const search = client.surveys({} as AreaSpec);
-    expect(workers[0].sent[0]).toEqual({ type: 'surveys', id: 1, area: {} });
+    const search = client.surveys({} as SurveyQuery);
+    expect(workers[0].sent[0]).toEqual({ type: 'surveys', id: 1, query: {} });
     vi.advanceTimersByTime(30000);
     const job = client.generate(request);
     expect(workers).toHaveLength(1);

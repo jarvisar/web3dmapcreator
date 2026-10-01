@@ -18,11 +18,14 @@ import { readEpt } from './read/ept';
 import { Fetcher } from './read/fetcher';
 import { lazDecoder } from './read/laz';
 import { ALGORITHM_VERSION, type LidarRecord } from './records';
-import { rockDomains, shortHash } from './rock';
-import { chooseMeasurement, projectYear, type Observation } from './selection';
-import { cellSize, DEFAULT_DETAIL_MM, requestedCell } from '../dsm/grid';
-import type { AreaSpec, ModelSettings } from '../settings';
-import { area, bounds, boxShape, buffer, centroid, intersects, keepStart } from './shapes';
+import { rockDomains } from './rock';
+import { chooseMeasurement, type Observation } from './selection';
+import { cellSize, DEFAULT_DETAIL_MM, gridSpec, requestedCell } from '../dsm/grid';
+import { gridProber, readSurfaceBlock, type SurfaceRunner } from '../dsm/prepare';
+import type { AreaSpec, ModelSettings, SurveyPreference } from '../settings';
+import { area, bounds, boxShape, buffer, centroid, intersects } from './shapes';
+import { checkNote, clipRingToBox, digest, measureDensities, orderSurveys, pickNote, rankOrder, surveyDensity, toMetric, type Ranked } from './ranking';
+import type { SurveyQuery, SurveyRules } from './query';
 import { chosenFirst, isChosen, surveyChoice, type SurveyChoice } from './choice';
 import { advantage, approves, makeOffer, reopened, staged, tilesIn, type Approval, type LidarOffer } from './offers';
 import { discover, type Candidate, type Failure, type Tile } from './sources';
@@ -41,6 +44,9 @@ export interface PrepareSettings {
   cellM?: number;
   /** A survey to read first: its URL, or its name (`isChosen`). */
   survey?: string;
+  /** How the others are put in order (lidar/ranking.ts). Balanced over 5 years by default. */
+  surveyPreference?: SurveyPreference;
+  olderYears?: number;
 }
 
 /** The area, so measured roofs follow the cells of a LiDAR Only model of it. */
@@ -72,8 +78,8 @@ export interface PrepareInput {
   settings: PrepareSettings;
   signal?: AbortSignal;
   progress?: (label: string, fraction: number, detail?: string) => Promise<void> | void;
-  /** Where batches are read and measured. By default one at a time in this thread. */
-  runner?: BatchRunner;
+  /** Where batches are read and measured, and surveys probed. By default one at a time in this thread. */
+  runner?: BatchRunner & Partial<Pick<SurfaceRunner, 'surface'>>;
   /** Tiles of whole-file surveys the user agreed to download. Other whole-file surveys are only offered. */
   approved?: Approval;
 }
@@ -135,11 +141,6 @@ function saveJson(key: string, value: unknown): void {
   resultStore.put(key, bytes.buffer as ArrayBuffer).catch(() => undefined);
 }
 
-/** A stable short hash of any JSON-able value. */
-export function digest(value: unknown): string {
-  return shortHash(JSON.stringify(value));
-}
-
 function geometryRings(geometry: SourceFeature['geometry'] | null | undefined): Polygon[] {
   if (!geometry) return [];
   const open = (ring: number[][]): Ring => {
@@ -153,118 +154,19 @@ function geometryRings(geometry: SourceFeature['geometry'] | null | undefined): 
   return [];
 }
 
-export function toMetric(polygons: Polygon[], frame: Projection): MultiPolygon {
-  const projected = polygons.map((polygon) => polygon.filter((ring) => ring.length >= 3).map((ring) => ring.map(([lon, lat]) => frame.toLocal(lon, lat))));
-  const valid = projected.filter((p) => p.length);
-  return keepStart(union(valid), valid);
-}
-
-/** Sutherland-Hodgman of lon/lat rings against a lon/lat box, before projecting huge catalog outlines. */
-export function clipRingToBox(ring: Ring, [w, s, e, n]: [number, number, number, number]): Ring {
-  let points = ring;
-  const sides: [(p: [number, number]) => boolean, (a: [number, number], b: [number, number]) => [number, number]][] = [
-    [(p) => p[0] >= w, (a, b) => [w, a[1] + ((w - a[0]) / (b[0] - a[0])) * (b[1] - a[1])]],
-    [(p) => p[0] <= e, (a, b) => [e, a[1] + ((e - a[0]) / (b[0] - a[0])) * (b[1] - a[1])]],
-    [(p) => p[1] >= s, (a, b) => [a[0] + ((s - a[1]) / (b[1] - a[1])) * (b[0] - a[0]), s]],
-    [(p) => p[1] <= n, (a, b) => [a[0] + ((n - a[1]) / (b[1] - a[1])) * (b[0] - a[0]), n]],
-  ];
-  for (const [inside, cross] of sides) {
-    const out: Ring = [];
-    for (let i = 0; i < points.length; i++) {
-      const a = points[(i + points.length - 1) % points.length];
-      const b = points[i];
-      if (inside(a) !== inside(b)) out.push(cross(a, b));
-      if (inside(b)) out.push(b);
-    }
-    points = out;
-    if (!points.length) break;
-  }
-  return points;
-}
-
-// Ranking of surveys for one building, after the add-on's metadata_order:
-// newest acquisition first, then coverage, resolution and classification,
-// EPT before COPC before plain LAZ (read whole) on ties, the original
-// publisher before a mirror. `rankSurveys` then moves much denser surveys
-// ahead of slightly newer ones, which the add-on doesn't.
-export interface Ranked {
-  candidate: Candidate;
-  coverage: MultiPolygon;
-  catalogCoverage: number;
-}
-
-function acquisitionOrdinal(c: Candidate): number {
-  const date = c.acquisitionStart ?? c.acquisitionEnd;
-  if (date) return Date.parse(date) / DAY_MS;
-  const hint = c.projectYearHint ?? projectYear(c.name);
-  return hint ? Date.UTC(hint, 0, 1) / DAY_MS : 0;
-}
-
-export function rankOrder(a: Ranked, b: Ranked): number {
-  const key = (r: Ranked) => {
-    const density = r.candidate.densityM2;
-    return [
-      -acquisitionOrdinal(r.candidate),
-      r.catalogCoverage < 0.98 ? 1 : 0,
-      -(density ? density / (1 + density) : 0),
-      -(r.candidate.classificationQuality ?? 0),
-      -r.catalogCoverage,
-      r.candidate.format === 'EPT' ? 0 : r.candidate.format === 'COPC' ? 1 : 2,
-      r.candidate.authoritative ? 0 : 1,
-    ];
-  };
-  const [p, q] = [key(a), key(b)];
-  for (let i = 0; i < p.length; i++) if (p[i] !== q[i]) return p[i] - q[i];
-  return a.candidate.url < b.candidate.url ? -1 : a.candidate.url > b.candidate.url ? 1 : 0;
-}
-
-// Less than five years newer and with 2.5 times fewer returns per m² (and
-// two fewer) loses: about the add-on's margins for paying for an upgrade,
-// taken the other way. San Francisco's 2023 survey, 62 per m² over its
-// outline, stays ahead of NOAA's 2025 Bay-Delta survey at 20. The densities
-// are points over a whole outline and can be 2x off where it matters: the
-// same 2023 survey has 143 per m² downtown, and King County's 2016-17 one
-// averages 26 but has 14 in downtown Seattle, where the 2021 survey has 12.
-// At twice, that older one won. Both densities have to be known, so an
-// undated or unmeasured survey never moves.
-const DENSER_YEARS = 5;
-const DENSER_RATIO = 2.5;
-const DENSER_GAIN = 2;
-
-function denserThanNewer(older: Candidate, newer: Candidate): boolean {
-  const [a, b] = [older.densityM2, newer.densityM2];
-  if (!a || !b || a < DENSER_RATIO * b || a - b < DENSER_GAIN) return false;
-  const days = acquisitionOrdinal(newer) - acquisitionOrdinal(older);
-  return days > 0 && days < DENSER_YEARS * 365.25;
-}
-
 /**
- * Surveys best first: by `compare`, then each one moved up past the slightly
- * newer surveys it's much denser than, within `group`. The rule isn't
- * transitive (three surveys can beat each other in a circle), so it's a pass
- * that stops at the first survey one doesn't beat, not a sort comparator.
+ * The surveys found under an area, for picking one by hand, in the order
+ * they'd be read. Only catalogs and indexes are read. Probes made before for
+ * this area and cell count, and new ones wait for Generate.
  */
-export function rankSurveys(list: Ranked[], compare: (a: Ranked, b: Ranked) => number = rankOrder, group: (a: Ranked, b: Ranked) => boolean = () => true): Ranked[] {
-  const out = [...list].sort(compare);
-  for (let i = 1; i < out.length; i++) {
-    for (let j = i; j > 0 && group(out[j - 1], out[j]) && denserThanNewer(out[j].candidate, out[j - 1].candidate); j--) {
-      [out[j - 1], out[j]] = [out[j], out[j - 1]];
-    }
-  }
-  return out;
-}
-
-/**
- * The surveys found under an area, for picking one by hand, without reading
- * any points. Ones covering the whole area come first, as a LiDAR only model
- * reads them.
- */
-export async function findSurveys(spec: AreaSpec, signal?: AbortSignal): Promise<{ surveys: SurveyChoice[]; failures: Failure[] }> {
+export async function findSurveys(query: SurveyQuery, signal?: AbortSignal): Promise<{ surveys: SurveyChoice[]; failures: Failure[] }> {
+  const { area: spec, rules } = query;
   const frame = new Projection(spec.center, spec.rotationDeg, 1);
   const rect = boxShape(-spec.widthM / 2, -spec.heightM / 2, spec.widthM / 2, spec.heightM / 2);
-  const query = areaGeoBounds(spec);
-  const found = await discover(new Fetcher(signal), query);
-  const box: [number, number, number, number] = [query.west, query.south, query.east, query.north];
+  const bbox = areaGeoBounds(spec);
+  const fetcher = new Fetcher(signal);
+  const found = await discover(fetcher, bbox);
+  const box: [number, number, number, number] = [bbox.west, bbox.south, bbox.east, bbox.north];
   const ranked: Ranked[] = [];
   for (const candidate of found.candidates) {
     const clipped = candidate.coverage.map((polygon) => polygon.map((ring) => clipRingToBox(ring, box)).filter((ring) => ring.length >= 3)).filter((p) => p.length);
@@ -272,11 +174,15 @@ export async function findSurveys(spec: AreaSpec, signal?: AbortSignal): Promise
     if (!coverage.length) continue;
     ranked.push({ candidate, coverage, catalogCoverage: multiArea(coverage) / multiArea(rect) });
   }
-  const tier = (r: Ranked) => (r.catalogCoverage >= 0.99 ? 0 : 1);
-  const order = rankSurveys(ranked, (a, b) => tier(a) - tier(b) || rankOrder(a, b), (a, b) => tier(a) === tier(b));
-  return { surveys: order.map(surveyChoice), failures: found.failures };
+  await measureDensities(fetcher, ranked, frame, signal);
+  const tier = (r: Ranked) => (query.tiered && r.catalogCoverage < 0.99 ? 1 : 0);
+  const compare = (a: Ranked, b: Ranked) => tier(a) - tier(b) || rankOrder(a, b);
+  const probe = gridProber({ area: spec, grid: gridSpec(spec.widthM, spec.heightM, rules.cellM), runner: { surface: () => Promise.reject(new Error('Nothing is read while listing surveys')) }, savedOnly: true });
+  const group = (a: Ranked, b: Ranked) => tier(a) === tier(b);
+  const order = await orderSurveys(ranked, rules, { compare, group, probe });
+  const note = pickNote(order, rules, compare) ?? checkNote(order, rules, compare, group);
+  return { surveys: order.map((r, i) => surveyChoice(r, i ? null : note)), failures: found.failures };
 }
-
 
 export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> {
   const { bounds: bbox, settings } = input;
@@ -292,6 +198,7 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
   const minFootprintM2 = settings.minFootprintMm2 / settings.xyScale ** 2;
   const frame = input.area ? new Projection(input.area.center, input.area.rotationDeg, 1) : new Projection([(bbox.west + bbox.east) / 2, (bbox.south + bbox.north) / 2], 0, 1);
   const cellM = settings.cellM ?? cellSize(DEFAULT_DETAIL_MM, settings.xyScale, 0, 0);
+  const rules: SurveyRules = { preference: settings.surveyPreference ?? 'balanced', years: settings.olderYears ?? 5, cellM };
   const surface: SurfaceSettings | undefined = heightOnly ? undefined : { cellM, widthM: input.area?.widthM, heightM: input.area?.heightM, xyScale, zScale };
 
   // ------------------------------------------------------------ footprints
@@ -366,6 +273,7 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
     parts: digest([...sourcePartsByParent].map(([k, v]) => [k, v.map((p) => [p.id, measuredProps(p.props), p.geometry])])),
     // Only when there is one, so results saved without a choice keep their keys.
     ...(settings.survey ? { survey: settings.survey } : {}),
+    ranking: [RANKING_VERSION, rules.preference, rules.years],
   };
   const requestKey = `prepared:${digest(request)}`;
   const previous = await loadJson<PreparedLidar & { saved: number }>(requestKey);
@@ -447,19 +355,26 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
     if (!coverage.length) continue;
     ranked.push({ candidate, coverage, catalogCoverage: area(coverage) / haloArea });
   }
-  // Per building: the surveys whose coverage holds its whole footprint.
-  const orders = new Map<string, Ranked[]>();
-  const rankings = new Map<string, Ranked[]>();
-  for (const f of eligible) {
-    const usable = ranked.filter((r) => multiArea(difference(f.geometry, r.coverage)) <= 1e-6);
-    const key = usable.map((r) => r.candidate.url).join('|');
-    let order = rankings.get(key);
-    if (!order) rankings.set(key, (order = chosenFirst(rankSurveys(usable), settings.survey)));
-    orders.set(f.id, order);
-  }
-  const automatic = rankSurveys(ranked);
-  result.found = automatic.map(surveyChoice);
-  const globalRank = new Map(chosenFirst(automatic, settings.survey).map((r, i) => [r.candidate.url, i]));
+  await progress('Finding LiDAR surveys', 0.05, 'Working out their returns per m² here');
+  await measureDensities(fetcher, ranked, frame, input.signal);
+  // Probed on the grid roofs are cut from: the blocks a LiDAR only model of the area would probe.
+  const prober: Pick<SurfaceRunner, 'surface'> = { surface: input.runner?.surface ?? ((job, report) => readSurfaceBlock(job, fetcher, report)) };
+  const probe = input.area
+    ? gridProber({
+        area: input.area,
+        grid: gridSpec(input.area.widthM, input.area.heightM, cellM),
+        runner: prober,
+        approved: input.approved,
+        signal: input.signal,
+        progress: (name, detail) => progress('Measuring how finely the surveys fill the grid', 0.06, detail ?? name),
+      })
+    : undefined;
+  const automatic = await orderSurveys(ranked, rules, { probe });
+  result.found = automatic.map((r, i) => surveyChoice(r, i ? null : pickNote(automatic, rules)));
+  // Per building: the surveys whose coverage holds its whole footprint, in the area's order.
+  const chosen = chosenFirst(automatic, settings.survey);
+  const orders = new Map(eligible.map((f) => [f.id, chosen.filter((r) => multiArea(difference(f.geometry, r.coverage)) <= 1e-6)]));
+  const globalRank = new Map(chosen.map((r, i) => [r.candidate.url, i]));
 
   // ------------------------------------------------------------ acquisition
   const alternatives = new Map<string, LidarRecord[]>();
@@ -565,7 +480,7 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
   result.surveys = [...used.values()];
   if (pending.length) {
     await progress('Sizing LiDAR tiles to offer', 0.995);
-    result.offers = await stagedOffers(pending, result, ranked, input.approved, fetcher, settings.survey);
+    result.offers = await stagedOffers(pending, result, ranked, input.approved, fetcher, settings.survey, rules.preference === 'newest');
   }
   result.downloadedBytes += fetcher.downloaded + (runner.downloaded?.() ?? 0);
   // Keep the result only when every survey was read: a failed read is retried next time.
@@ -582,8 +497,10 @@ const SOURCE_INDEPENDENT = new Set(['invalid_or_small_footprint', 'elevated_or_u
  * or ones it beats by a wide margin (`advantage`). Each comes with every tile
  * its batches need, so approving it reads those batches in full next time.
  */
-async function stagedOffers(pending: { survey: Candidate; ids: string[]; tiles: Tile[] }[], result: PreparedLidar, ranked: Ranked[], approved: Approval | undefined, fetcher: Fetcher, chosen?: string): Promise<LidarOffer[]> {
+async function stagedOffers(pending: { survey: Candidate; ids: string[]; tiles: Tile[] }[], result: PreparedLidar, ranked: Ranked[], approved: Approval | undefined, fetcher: Fetcher, chosen: string | undefined, newestOnly: boolean): Promise<LidarOffer[]> {
   const surveys = new Map(ranked.map((r) => [r.candidate.url, r.candidate]));
+  const densities = new Map(ranked.map((r) => [r.candidate.url, surveyDensity(r) ?? undefined]));
+  const density = (c: Candidate) => densities.get(c.url) ?? c.densityM2;
   const wanted = new Map<string, { survey: Candidate; tiles: Tile[]; buildings: Set<string>; reasons: Set<LidarOffer['reason']> }>();
   for (const { survey, ids, tiles } of pending) {
     let used = false;
@@ -591,7 +508,7 @@ async function stagedOffers(pending: { survey: Candidate; ids: string[]; tiles: 
       const from = result.records[id]?.sourceUrl;
       const current = from ? surveys.get(from) : undefined;
       // One the user picked is always offered: it's why they picked it.
-      const reason = isChosen(survey, chosen) ? 'chosen' : current ? advantage(survey, current) : SOURCE_INDEPENDENT.has(result.rejected[id]) ? null : 'gap';
+      const reason = isChosen(survey, chosen) ? 'chosen' : current ? advantage(survey, current, density, newestOnly) : SOURCE_INDEPENDENT.has(result.rejected[id]) ? null : 'gap';
       if (!reason) continue;
       const entry = wanted.get(survey.url) ?? { survey, tiles: [], buildings: new Set<string>(), reasons: new Set<LidarOffer['reason']>() };
       wanted.set(survey.url, entry);
@@ -624,6 +541,9 @@ export interface BatchOutcome {
   rejected: Record<string, string>;
   observations: Record<string, Observation>;
 }
+
+// Raised when the order surveys are read in changes, so prepared results from the old order aren't reused.
+const RANKING_VERSION = 2;
 
 /** One batch against one survey, as plain data so a worker can run it. */
 export interface BatchJob {

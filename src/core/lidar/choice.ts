@@ -3,7 +3,7 @@
 // reach and a model never has a hole because of the choice.
 
 import { staged, surveyYear } from './offers';
-import type { Ranked } from './prepare';
+import { surveyDensity, type Ranked } from './ranking';
 import type { Candidate, Format } from './sources';
 
 /** A survey found over an area, for picking one. */
@@ -13,17 +13,33 @@ export interface SurveyChoice {
   name: string;
   provider: string;
   year: number | null;
+  /** Returns per m² near the area, or the catalog's average where its index couldn't tell. */
   densityM2?: number;
+  /** The smallest grid cell it filled near the middle of the area, metres, where that was measured. */
+  fillsM?: number;
   format: Format;
   /** Share of the area its outline covers. */
   coverage: number;
   /** Only comes as whole files, downloaded once the user agrees. */
   staged: boolean;
+  /** Why the automatic order put it first, on the first survey when that isn't simply the newest. */
+  note?: string;
 }
 
-export function surveyChoice(r: Ranked): SurveyChoice {
+export function surveyChoice(r: Ranked, note?: string | null): SurveyChoice {
   const c = r.candidate;
-  return { url: c.url, name: c.name, provider: c.provider, year: surveyYear(c), densityM2: c.densityM2, format: c.format, coverage: Math.min(1, r.catalogCoverage), staged: staged(c) };
+  return {
+    url: c.url,
+    name: c.name,
+    provider: c.provider,
+    year: surveyYear(c),
+    densityM2: surveyDensity(r) ?? undefined,
+    fillsM: r.probe?.cell,
+    format: c.format,
+    coverage: Math.min(1, r.catalogCoverage),
+    staged: staged(c),
+    ...(note ? { note } : {}),
+  };
 }
 
 /** Whether `survey` names this one: its URL, or for the CLI its name. */

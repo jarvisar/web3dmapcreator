@@ -136,10 +136,12 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   are cut from the lattice, piers drape like buildings, and a tree's flat
   base goes down to the lowest ground under it.
 - Land categories never overlap (priority order). Water, roads and building
-  footprints are cut out of slabs, and slivers under ~0.2 mm are opened away.
-  The opening grows back mitred and clipped to the slab (`openSharp`). A
-  round one rounded every corner a road or building cut by 0.1 mm.
-  Above 250 mm this runs in 50 mm tiles with a 1 mm margin (`tiled`), so
+  footprints are cut out of slabs, and the rest is kept as mapped. Only
+  rounding under 2 µm goes (`openSharp`, mitred and clipped to the slab,
+  so corners stay sharp and edges stay on the roads that cut them). Opening
+  by 0.1 mm and dropping pieces under 0.1 mm² left about 3% of the land
+  cover as bare terrain, pockets between paths and strips beside roads, and
+  filled holes under 0.025 mm² over small buildings. Above 250 mm this runs in 50 mm tiles with a 1 mm margin (`tiled`), so
   each boolean only sees what's near it and seams match a single pass.
 - Satellite land cover (`land.satelliteCover`) is off by default. WorldCover
   calls tree-lined streets forest, and whole neighbourhoods came out green.
@@ -151,7 +153,11 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   leaves the rectangle through one side and comes back through the next (up
   to 2 mm2 on random road networks). `clipToRect` (`geometry/clipRect.ts`,
   shared with SVG maps) is Sutherland-Hodgman, and needs a NonZero boolean
-  after it.
+  after it. It takes out the repeated points and spikes it leaves where a
+  ring has a vertex on the cut line: Clipper's union lost area beside them
+  (17% of rings in a fuzz, a 0.065 mm² sliver of park at an editor tile
+  seam). Clipper's own `intersection()` is right on simple rings but not on
+  self-intersecting ones, so check against sampled winding numbers there.
 - Boolean output is sorted into outers and holes by orientation, not tree
   depth. Where edges of two inputs nearly coincide, the engine can return a
   hole at the top level, and `placeStrays` puts it back into its owner.
@@ -362,21 +368,41 @@ LiDAR sources (`src/core/lidar/sources/`, notes in `docs/LIDAR_SOURCES.md`):
   points were flown within a year or two of it. Undated, 226 of them
   ranked behind every older survey (Minneapolis read 2011 at 10 returns per
   m² over 2022 at 64).
-- `rankSurveys` is newest first like the add-on, then moves a survey ahead
-  of ones less than five years newer with 2.5 times fewer returns per m²
-  and two fewer. The densities are points over a whole outline and run 2x
-  off: at twice, King County's 2016-17 survey (26 over the county, 14
-  downtown) beat Seattle's 2021 one. The rule isn't transitive, so it's a
-  pass that stops at the first survey it doesn't beat, not a comparator.
+- Survey order is `lidar/ranking.ts`. `rankOrder` is the add-on's, newest
+  first, then `rankSurveys` moves an older survey ahead of a newer one that
+  fills the model's grid cells clearly worse (`effectiveCell`, 1.25 times)
+  within `lidar.olderYears` (5), or half as finely within twice that. Any
+  age, as LiDAR only models' old fill tier had it, would put a 2010 survey
+  over NOAA's 2025 one in the Financial District without USGS's 2023 one.
+  'newest' moves nothing, 'detail' compares at 0.25 m at any age.
+  At the default 0.71 m cells most modern surveys fill them and the newest
+  wins. The rule isn't transitive, so it's a pass that stops at the first
+  survey it doesn't beat, not a comparator.
+- Densities come from each survey's index near the area (`read/density.ts`):
+  EPT hierarchies in 32 m columns with water and holes left out, or a few
+  tiles' headers. Catalog densities are outline averages and ran 2x off
+  (San Francisco's 2023 survey: 62 over its outline, 150 downtown). The
+  hierarchy came within 30% of counted returns for a few KB.
+- Density misses holes: NOAA's 2025 Bay-Delta survey has 18 returns per m²
+  in the Financial District and left 7% of 0.71 m cells empty between the
+  towers. With 'balanced', when a survey 1.5 times denser could take the
+  newest's place, the newest is probed near the middle (`gridProber`, the
+  LiDAR only density probe, saved per block), and if it doesn't fill the
+  cells, so are the rivals that would beat it. A probe of a dense survey
+  can be 25-55 MB, hence the gate. LiDAR only models reuse it for the cell
+  size, and the survey search only uses saved ones (`savedOnly`).
 - `settings.lidar.survey` picks a survey by hand (`choice.ts`), for LiDAR
   buildings and LiDAR only models alike. It only moves that survey to the
   front of every order (`chosenFirst`), ahead of whole-area coverage too,
   so the others still fill in where it doesn't reach. A picked whole-file
-  survey is always offered. The worker lists the surveys under an area
-  without reading points (`findSurveys`, the `surveys` message), and every
-  prepared result carries what it found (`found`) for the same list. The
-  pick only enters a prepared result's key when set, so results saved
-  without one keep theirs. A survey search never counts as a stuck worker.
+  survey is always offered. The worker lists the surveys under an area in
+  automatic order without reading points (`findSurveys`, the `surveys`
+  message), which the picker asks for by itself once the area and the
+  ranking settings settle (`surveySearchKey`). Every prepared result
+  carries what it found (`found`) for the same list, with a `note` on why
+  the first goes first when it isn't simply the newest. The pick only
+  enters a prepared result's key when set, so results saved without one
+  keep theirs. A survey search never counts as a stuck worker.
 
 LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
 
@@ -427,7 +453,7 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   over nothing (a pond) float when everything around is 30 m lower. Check
   changes on the regression areas' raw tops, not only Houston: glass towers,
   stepped roof edges and ledges are what drafts took by mistake.
-- Surveys: whole-area coverage first, then `rankSurveys`. A cell belongs to the
+- Surveys: whole-area coverage first, then `orderSurveys`. A cell belongs to the
   first survey whose outline holds it, returns or not.
 - The mesher prices collapses by memoryless quadrics against the current
   faces (the add-on's, so stair walls straighten), and also checks every
@@ -512,8 +538,7 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   clearing (`ctx.land`) and what clears them now, opened like the land
   stage, and fills only what that has and the generated slab lacks. The
   vacated footprint opened on its own left bare notches at the slab's
-  corners and at a pond's corners, and dropped pieces between
-  crossing paths. It's laid per tile in a band 1 mm past what was vacated,
+  corners and at a pond's corners. It's laid per tile in a band 1 mm past what was vacated,
   cached on what the tile and its neighbours had.
 - Terrain and water after edits (`earth.ts`): water left out is filled with
   ground on the grid (flattened to its bank for cut water), or with

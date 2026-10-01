@@ -24,7 +24,7 @@ Only streamed surveys (EPT and COPC) are read, through the same discovery and re
 
 Blocks are checkpointed in the LiDAR cache. A cancelled read picks up after the blocks it finished, and changing any setting that doesn't change the area or the cell size reads nothing again. A block whose read failed isn't kept, so the next Generate tries it again.
 
-A survey covering the whole area goes first so blocks don't mix years, then the same ranking as for buildings: newest first, unless an older one has 2.5 times the returns and is less than five years older. Each cell takes its returns from the first survey whose outline holds it, even when it has none there: water and dark roofs return nothing, and another survey's returns would be another year's surface.
+A survey covering the whole area goes first so blocks don't mix years, then the same ranking as for buildings: newest first, unless it can't fill the grid cells and a survey a few years older fills them clearly finer (see [which survey is read](LIDAR_SOURCES.md#which-survey-is-read)). The density probe that grows the cell for a sparse survey is the one the ranking uses, so it isn't read twice. Each cell takes its returns from the first survey whose outline holds it, even when it has none there: water and dark roofs return nothing, and another survey's returns would be another year's surface.
 
 Every surface seen from above is kept (`surfaceClassTable`), including returns nobody classified, since whole surveys come that way. Noise, overlap, wires and towers are dropped. A provider's own class mapping only names ground, buildings and vegetation, so water and bridges keep their standard codes.
 

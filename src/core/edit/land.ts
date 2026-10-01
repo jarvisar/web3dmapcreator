@@ -7,14 +7,12 @@
 // cleared and what clears it now, and the fill is what that has and the
 // generated slab lacks. So the fill meets the slab along the slab's own
 // edges, and the part gets a second shell there, which prints like one.
-// Laying the vacated footprint and opening it on its own left holes: the
-// slab's corners stayed rounded where they had met the road, the fill's were
-// rounded where it met the slab, and pieces between crossing roads were too
-// small to keep on their own.
+// Laying the vacated footprint and opening it on its own left holes where
+// its edges and the slab's didn't meet.
 
 import type { Rect64 } from 'clipper2-ts';
-import { boxesOverlap, ClipSet, clipToUnits, difference, intersection, multiBounds, offsetPolygons, openSharp, polygonArea, SCALE, type Box } from '../geometry/polygon';
-import { SLAB_MINIMUM_MM2, SLIVER_MM } from '../pipeline/land';
+import { boxesOverlap, ClipSet, clipToUnits, difference, intersection, multiBounds, offsetPolygons, openSharp, SCALE, type Box } from '../geometry/polygon';
+import { SLIVER_MM } from '../pipeline/land';
 import type { SurfaceCategory } from '../settings';
 import type { MultiPolygon } from '../types';
 
@@ -72,10 +70,8 @@ export class LandCover {
     const box: Box = [Math.max(r[0], rect.left / SCALE), Math.max(r[1], rect.top / SCALE), Math.min(r[2], rect.right / SCALE), Math.min(r[3], rect.bottom / SCALE)];
     if (box[0] > box[2] || box[1] > box[3]) return [];
     const near: Box = [box[0] - MARGIN_MM, box[1] - MARGIN_MM, box[2] + MARGIN_MM, box[3] + MARGIN_MM];
-    // Only a band around what was vacated is laid again. A piece the land
-    // stage dropped as too small is at least 2 * SLIVER_MM wide and under
-    // SLAB_MINIMUM_MM2, so it can't reach far past the band's inner edge.
-    // Laying the whole box took 430 ms for Mission Creek in San Francisco.
+    // Only a band around what was vacated is laid again. Laying the whole box
+    // took 430 ms for Mission Creek in San Francisco.
     const zone = intersection(offsetPolygons(reach, MARGIN_MM), [[[[near[0], near[1]], [near[2], near[1]], [near[2], near[3]], [near[0], near[3]]]]]);
     let clear: MultiPolygon | null = null;
     const out: LandFill[] = [];
@@ -94,20 +90,11 @@ export class LandCover {
     return out;
   }
 
-  /**
-   * One category's fill joined across tiles, as the land stage keeps it:
-   * only what reaches vacated ground, not specks the stage dropped elsewhere,
-   * and a piece on its own only when it's as big as the stage keeps.
-   */
-  settle(category: SurfaceCategory, polygons: MultiPolygon, reach: ClipSet): MultiPolygon {
-    const slab = this.slabs.get(category);
+  /** One category's fill joined across tiles: only what reaches vacated ground. */
+  static settle(polygons: MultiPolygon, reach: ClipSet): MultiPolygon {
     return polygons.filter((p) => {
-      const box = multiBounds([p]);
-      const near = reach.polygonsWithin(box);
-      if (!near.length || !intersection([p], near).length) return false;
-      if (polygonArea(p) >= SLAB_MINIMUM_MM2) return true;
-      const around = slab?.polygonsWithin(box, 0.01) ?? [];
-      return around.length > 0 && intersection(offsetPolygons([p], 2 * DRIFT_MM), around).length > 0;
+      const near = reach.polygonsWithin(multiBounds([p]));
+      return near.length > 0 && intersection([p], near).length > 0;
     });
   }
 }

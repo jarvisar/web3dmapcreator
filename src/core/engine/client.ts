@@ -1,6 +1,6 @@
 // Main-thread side of the generation worker.
 
-import type { AreaSpec } from '../settings';
+import type { SurveyQuery } from '../lidar/query';
 import type {
   EditRequest,
   EditUpdate,
@@ -161,9 +161,9 @@ export class EngineClient {
     return this.request<EditUpdate>({ type: 'edit', id: this.nextId++, request });
   }
 
-  /** The LiDAR surveys found under an area, without reading any points. */
-  surveys(area: AreaSpec): Promise<SurveyList> {
-    return this.request<SurveyList>({ type: 'surveys', id: this.nextId++, area });
+  /** The LiDAR surveys found under an area, in the order they'd be read, without reading any points. */
+  surveys(query: SurveyQuery): Promise<SurveyList> {
+    return this.request<SurveyList>({ type: 'surveys', id: this.nextId++, query });
   }
 
   /** Cancel the running generation. The promise rejects with CancelledError. */

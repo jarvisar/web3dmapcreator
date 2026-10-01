@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Projection } from '../geo/projection';
-import { multiArea } from '../geometry/polygon';
+import { difference, intersection, multiArea, rectangle, union } from '../geometry/polygon';
 import { cloneSettings, type ModelSettings } from '../settings';
 import { HeightField } from '../terrain/heightfield';
 import type { Ring } from '../types';
@@ -63,6 +63,32 @@ describe('buildLand', () => {
     const unzoned = await land({ land_cover: [square(0.17, { subtype: 'forest' })] }, on);
     expect(multiArea(unzoned.forest)).toBeGreaterThan(0.99 * cropArea);
     expect((await land({ land_cover: [square(1, { subtype: 'forest' })] }, on)).forest).toEqual([]);
+  });
+
+  it('keeps pockets and strips between what clears it, and only rounding goes', async () => {
+    const roads = [
+      // A 0.3 mm square pocket, 0.09 mm².
+      ...difference(rectangle(-2, -2, 2, 2), rectangle(-0.15, -0.15, 0.15, 0.15)),
+      // A 0.15 mm strip, a 0.01 mm one, and a 1 µm hairline.
+      ...rectangle(3, -2, 4, 2),
+      ...rectangle(4.15, -2, 5, 2),
+      ...rectangle(5.01, -2, 6, 2),
+      ...rectangle(6.001, -2, 7, 2),
+    ];
+    const building = rectangle(-6, -6, -5.9, -5.9);
+    const { green } = await buildLand(
+      { release: 'test', features: { land_use: [square(0.002, { subtype: 'park', class: 'park' })] } },
+      context(),
+      { water: [], roads, buildings: building, bridgeLines: [] },
+    );
+    expect(multiArea(intersection(green, rectangle(-0.15, -0.15, 0.15, 0.15)))).toBeCloseTo(0.09, 6);
+    expect(multiArea(intersection(green, rectangle(4, -2, 4.15, 2)))).toBeCloseTo(0.6, 6);
+    expect(multiArea(intersection(green, rectangle(5, -2, 5.01, 2)))).toBeCloseTo(0.04, 6);
+    // Apart from nubs where it meets the park.
+    expect(intersection(green, rectangle(6, -1.9, 6.001, 1.9))).toEqual([]);
+    expect(intersection(green, building)).toEqual([]);
+    // Up against the roads exactly, with no hairline left between.
+    expect(multiArea(difference(rectangle(-3, -3, 3, 3), union(green, roads)))).toBeLessThan(1e-9);
   });
 
   it('still skips mapped polygons far larger than the selection', async () => {

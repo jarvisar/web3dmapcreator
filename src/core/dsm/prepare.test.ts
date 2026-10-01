@@ -14,6 +14,8 @@ import { BlockRaster, EMPTY_SHARE, occupiedCell, ProbeSink } from './raster';
 
 vi.mock('../lidar/sources', async (original) => ({ ...(await original<typeof import('../lidar/sources')>()), discover: vi.fn() }));
 vi.mock('../lidar/read/tiles', async (original) => ({ ...(await original<typeof import('../lidar/read/tiles')>()), checkTile: vi.fn(async () => undefined) }));
+// Indexes aren't read: surveys keep their catalog densities.
+vi.mock('../lidar/read/density', () => ({ localDensity: vi.fn(async () => null) }));
 
 setLazDecoder({ decodeFile: () => ({ records: new Uint8Array(), pointCount: 0, pointSize: 0 }), chunkDecoder: () => ({ decode: (chunk) => chunk, free: () => undefined }) });
 
@@ -275,8 +277,8 @@ function tiled(name: string, year: number, box?: number[]): Candidate {
   return { ...survey(name, year, box), provider: 'Somewhere', url: `https://example.com/${name}/`, format: 'LAZ', tiles };
 }
 
-/** A runner that invents returns over each job's box: a 50 m tower 80 x 60 m in the middle, ground at 10 m, every 0.25 m. */
-function fakeRunner(calls: SurfaceJob[], height = 50): SurfaceRunner {
+/** A runner that invents returns over each job's box: a 50 m tower 80 x 60 m in the middle, ground at 10 m, every 0.25 m unless `spacing` says. */
+function fakeRunner(calls: SurfaceJob[], height = 50, spacing: (job: SurfaceJob) => number = () => 0.25): SurfaceRunner {
   return {
     concurrency: 2,
     async surface(job): Promise<SurfaceOutcome> {
@@ -285,7 +287,7 @@ function fakeRunner(calls: SurfaceJob[], height = 50): SurfaceRunner {
       const [x0, y0] = [job.grid.x0 + (job.block.columns[0] - 0.5) * job.grid.dx, job.grid.y0 + (job.block.rows[0] - 0.5) * job.grid.dy];
       const [x1, y1] = [job.grid.x0 + (job.block.columns[1] - 0.5) * job.grid.dx, job.grid.y0 + (job.block.rows[1] - 0.5) * job.grid.dy];
       const sink = job.probe !== undefined ? new ProbeSink(x0, y0) : new BlockRaster(job.grid, job.block);
-      const step = 0.25;
+      const step = spacing(job);
       for (let lon = job.query.west; lon <= job.query.east; lon += step / 80000) {
         for (let lat = job.query.south; lat <= job.query.north; lat += step / 111000) {
           const [x, y] = frame.toLocal(lon, lat);
@@ -390,31 +392,43 @@ describe('prepareSurface', () => {
     expect(mixed.coverage).toBeGreaterThan(0.99);
   });
 
-  it('prefers a survey dense enough for the cells, then the newest', async () => {
+  it('reads an older survey first where the newest cannot fill the cells, within the years allowed', async () => {
+    // Returns every 2 m: about 2.6 m cells come out full, at 1 m asked for.
+    const runner = (calls: SurfaceJob[]) => fakeRunner(calls, 50, (job) => (job.survey.name === 'sparse' ? 2 : 0.25));
     const sparse = { ...survey('sparse', 2022), densityM2: 2 };
-    const dense = { ...survey('dense', 2012), densityM2: 30 };
-    const alsoDense = { ...survey('also dense', 2018), densityM2: 12 };
+    const dense = { ...survey('dense', 2019), densityM2: 30 };
     vi.mocked(discover).mockResolvedValue({ candidates: [sparse, dense], failures: [] });
     let calls: SurfaceJob[] = [];
-    // One metre cells need about four returns per m²: the new sparse survey can't fill them.
-    await prepareSurface({ area, cellM: 1, runner: fakeRunner(calls) });
-    expect(new Set(calls.map((c) => c.survey.name))).toEqual(new Set(['dense']));
-    vi.mocked(discover).mockResolvedValue({ candidates: [sparse, dense, alsoDense], failures: [] });
+    const result = await prepareSurface({ area, cellM: 1, runner: runner(calls) });
+    expect(new Set(calls.filter((c) => c.probe === undefined).map((c) => c.survey.name))).toEqual(new Set(['dense']));
+    expect(result.found.map((s) => s.name)).toEqual(['dense', 'sparse']);
+    expect(result.found[0].note).toMatch(/^The newer sparse \(2022\) only filled 2\.\d+ m cells/);
+    expect(result.grid.cell).toBe(1);
+    // Twelve years older is past twice the five allowed, unless more are.
+    const old = { ...dense, acquisitionEnd: '2010-05-01', projectYearHint: 2010 };
+    vi.mocked(discover).mockResolvedValue({ candidates: [sparse, old], failures: [] });
     calls = [];
-    await prepareSurface({ area, cellM: 1.01, runner: fakeRunner(calls) });
-    expect(new Set(calls.map((c) => c.survey.name))).toEqual(new Set(['also dense']));
+    await prepareSurface({ area, cellM: 1.02, runner: runner(calls) });
+    expect(new Set(calls.filter((c) => c.probe === undefined).map((c) => c.survey.name))).toEqual(new Set(['sparse']));
+    calls = [];
+    await prepareSurface({ area, cellM: 1.04, runner: runner(calls), rules: { preference: 'balanced', years: 12 } });
+    expect(new Set(calls.filter((c) => c.probe === undefined).map((c) => c.survey.name))).toEqual(new Set(['dense']));
+    // Or always the newest.
+    vi.mocked(discover).mockResolvedValue({ candidates: [sparse, dense], failures: [] });
+    calls = [];
+    await prepareSurface({ area, cellM: 1.06, runner: runner(calls), rules: { preference: 'newest', years: 5 } });
+    expect(new Set(calls.filter((c) => c.probe === undefined).map((c) => c.survey.name))).toEqual(new Set(['sparse']));
   });
 
-  it('reads a much denser survey ahead of one flown a little later, but not five years later', async () => {
+  it('keeps the newest survey where it fills the cells, next to a much denser one', async () => {
     const dense = { ...survey('dense', 2023), densityM2: 60 };
     vi.mocked(discover).mockResolvedValue({ candidates: [{ ...survey('newer', 2025), densityM2: 20 }, dense], failures: [] });
-    let calls: SurfaceJob[] = [];
-    await prepareSurface({ area, cellM: 1, runner: fakeRunner(calls) });
-    expect(new Set(calls.map((c) => c.survey.name))).toEqual(new Set(['dense']));
-    vi.mocked(discover).mockResolvedValue({ candidates: [{ ...survey('newer', 2025), densityM2: 20 }, { ...dense, acquisitionEnd: '2019-05-01', projectYearHint: 2019 }], failures: [] });
-    calls = [];
-    await prepareSurface({ area, cellM: 1.02, runner: fakeRunner(calls) });
+    const calls: SurfaceJob[] = [];
+    const result = await prepareSurface({ area, cellM: 1, runner: fakeRunner(calls) });
     expect(new Set(calls.map((c) => c.survey.name))).toEqual(new Set(['newer']));
+    // Measured once, for the ranking and the cell size alike.
+    expect(calls.filter((c) => c.probe !== undefined)).toHaveLength(1);
+    expect(result.found[0].note).toBe('dense (2023) is denser, but this newer one fills the 1 m cells near the middle of the area.');
   });
 
   it('reads a survey picked by hand first, the others filling in where it does not reach', async () => {

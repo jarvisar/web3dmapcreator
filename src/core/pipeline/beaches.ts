@@ -11,7 +11,6 @@
 import { EdgeIndex } from '../geometry/edgeindex';
 import { boxesOverlap, bufferLines, clipToBox, difference, intersection, multiArea, multiBounds, offsetPolygons, openSharp, polygonArea, ringBounds, union } from '../geometry/polygon';
 import type { HeightField } from '../terrain/heightfield';
-import { SLIVER_MM } from './land';
 import type { MultiPolygon, Polygon, Vec2 } from '../types';
 
 // Waterlines are judged in pieces this long, so a beach ends close to where
@@ -19,6 +18,8 @@ import type { MultiPolygon, Polygon, Vec2 } from '../types';
 const PIECE_MM = 0.5;
 // Smaller scraps of bare ground left between sand and water aren't worth a polygon.
 const MINIMUM_FILL_MM2 = 0.01;
+// Sand added here is made up, so it has to be printable on its own.
+const FILL_SLIVER_MM = 0.1;
 
 export interface BeachInput {
   /** Cut water left open by the ground kept under structures, with its surface. */
@@ -137,7 +138,7 @@ export function shapeBeaches(hf: HeightField, input: BeachInput): Beaches | null
   if (fill.length) {
     // Opened with the sand it joins, so a strip too thin to print is only
     // kept when sand backs it.
-    const opened = openSharp(union(backing, fill), SLIVER_MM);
+    const opened = openSharp(union(backing, fill), FILL_SLIVER_MM);
     fill = intersection(fill, opened).filter(
       (polygon) => polygonArea(polygon) >= MINIMUM_FILL_MM2 && touches(sand, polygon) && touches(wet, polygon),
     );

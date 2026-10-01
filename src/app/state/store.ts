@@ -32,6 +32,7 @@ import { mergePicks, type Picks } from '../../core/svgmap/routes';
 import type { FeatureFilters } from '../../core/svgmap/tiles/schema';
 import type { ColourGroup, MaterialRole, ModelStats } from '../../core/types';
 import { effectiveScale } from '../../core/geo/area';
+import { surveyQuery } from '../../core/lidar/query';
 import { Projection } from '../../core/geo/projection';
 import { constrainSize, normalizeArea, scaleArea } from '../lib/area';
 import { type PieceFit, areaShapeOf, fitAreaToPiece, pieceLayout } from '../svgmap/piece';
@@ -111,7 +112,7 @@ export interface GenerationState {
   stale: boolean;
   /** LiDAR tiles the last generation offered, for the area and settings in `key`. */
   offers: { key: string; list: LidarOffer[] } | null;
-  /** LiDAR surveys found under the area in `key` (surveyAreaKey), from a search or the last generation. */
+  /** LiDAR surveys found under the area in `key` (surveySearchKey), from a search or the last generation. */
   surveys: SurveySearch | null;
 }
 
@@ -368,9 +369,19 @@ const get = useApp.getState;
 
 // Keyed by the scale it works out to, so trading a fixed scale for a fitted
 // size that gives the same one (the scale and size locks) isn't a change.
-/** What decides which surveys are under an area. Its shape doesn't, since surveys are found for its rectangle. */
-export function surveyAreaKey(area: AreaSpec): string {
-  return JSON.stringify([area.center, area.widthM, area.heightM, area.rotationDeg]);
+/**
+ * What decides which surveys are under an area and the order they'd be read
+ * in. Its shape doesn't, since surveys are found for its rectangle.
+ */
+export function surveySearchKey(area: AreaSpec, settings: ModelSettings): string {
+  let order: unknown = null;
+  try {
+    const { rules, tiered } = surveyQuery(area, settings);
+    order = [rules, tiered];
+  } catch {
+    // A cell that can't be worked out yet: the search fails the same way.
+  }
+  return JSON.stringify([area.center, area.widthM, area.heightM, area.rotationDeg, order]);
 }
 
 export function snapshotKey(area: AreaSpec, settings: ModelSettings): string {
