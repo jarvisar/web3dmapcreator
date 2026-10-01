@@ -6,7 +6,7 @@ import { HeightField } from '../terrain/heightfield';
 import type { Ring } from '../types';
 import { Progress, type Context } from './context';
 import type { SourceFeature } from './source';
-import { WATER_DROP_MM, solveWater, waterBottom } from './water';
+import { WATER_DROP_MM, solveWater, waterBottom, type WaterBody } from './water';
 
 const CROP: Ring = [[-50, -35], [50, -35], [50, 35], [-50, 35]];
 
@@ -123,5 +123,80 @@ describe('solveWater', () => {
     // A 1.5 km square lake with 3 x 3 mm (about 1800 m2) in the model.
     const result = await solveWater([water(ctx, 'lake', 47, 32, 152, 137, LAKE)], ctx);
     expect(result.bodies.map((b) => b.kind)).toEqual(['cut']);
+  });
+});
+
+describe('joining small water to cut water', () => {
+  const DOCK = { subtype: 'water', class: 'dock' };
+  const CANAL = { subtype: 'canal', class: 'canal' };
+  const byId = (bodies: WaterBody[], id: string) => bodies.find((b) => b.source === id)!;
+
+  it('sinks a lock with the water beside it, not on its dam', async () => {
+    // The elevation data reads the lock as its dam, 0.2 mm over the water.
+    const ctx = context((x, y) => (x > 0 && x < 3 && Math.abs(y) < 1.5 ? 1.2 : 1));
+    const features = [water(ctx, 'river', -40, -20, 0, 20, LAKE), water(ctx, 'lock', 0, -1.5, 3, 1.5, DOCK)];
+    const result = await solveWater(features, ctx);
+    const lock = byId(result.bodies, 'lock');
+    expect(lock.kind).toBe('cut');
+    expect(lock.top).toBeCloseTo(byId(result.bodies, 'river').top, 9);
+    expect(ctx.stats.water_joined_to_cut).toBe(1);
+    expect(multiArea(result.cut)).toBeCloseTo(40 * 40 + 9, 3);
+
+    const off = context((x, y) => (x > 0 && x < 3 && Math.abs(y) < 1.5 ? 1.2 : 1));
+    off.settings.water.joinSmallWater = false;
+    const sheet = byId((await solveWater(features, off)).bodies, 'lock');
+    expect(sheet.kind).toBe('sheet');
+    expect(sheet.top).toBeGreaterThan(byId(result.bodies, 'river').top + 0.4);
+  });
+
+  it('carries on through canal pieces that only touch each other', async () => {
+    const ctx = context(() => 1);
+    const result = await solveWater(
+      [water(ctx, 'river', -40, -20, 0, 20, LAKE), water(ctx, 'a', 0, -1, 4, 1, CANAL), water(ctx, 'b', 4, -1, 8, 1, CANAL), water(ctx, 'c', 8, -1, 12, 1, CANAL)],
+      ctx,
+    );
+    const top = byId(result.bodies, 'river').top;
+    for (const id of ['a', 'b', 'c']) {
+      expect(byId(result.bodies, id).kind).toBe('cut');
+      expect(byId(result.bodies, id).top).toBeCloseTo(top, 9);
+    }
+  });
+
+  it('takes the lower level between two bodies of water', async () => {
+    // A lock between a river and a harbour 0.3 mm higher.
+    const ctx = context((x) => (x < 0 ? 1 : x > 3 ? 1.3 : 1.2));
+    const result = await solveWater(
+      [water(ctx, 'river', -40, -20, 0, 20, LAKE), water(ctx, 'lock', 0, -1.5, 3, 1.5, DOCK), water(ctx, 'harbour', 3, -20, 40, 20, LAKE)],
+      ctx,
+    );
+    const [river, lock, harbour] = ['river', 'lock', 'harbour'].map((id) => byId(result.bodies, id));
+    expect(harbour.bed).toBeGreaterThan(river.bed + 0.2);
+    expect(lock.bed).toBeCloseTo(river.bed, 9);
+  });
+
+  it('leaves a stream climbing away from the water on the ground', async () => {
+    const ctx = context((x) => (x > 0 ? 1 + x / 3 : 1));
+    const result = await solveWater([water(ctx, 'lake', -40, -20, 0, 20, LAKE), water(ctx, 'stream', 0, -1, 9, 1, CANAL)], ctx);
+    expect(byId(result.bodies, 'stream').kind).toBe('sheet');
+  });
+
+  it('joins untyped small water but not a tagged pond', async () => {
+    const ctx = context(() => 1);
+    const result = await solveWater(
+      [
+        water(ctx, 'lake', -40, -20, 0, 20, LAKE),
+        water(ctx, 'pond', 0, 5, 3, 8, { subtype: 'water', class: 'pond' }),
+        water(ctx, 'untyped', 0, -8, 3, -5, { subtype: 'water', class: 'water' }),
+      ],
+      ctx,
+    );
+    expect(byId(result.bodies, 'pond').kind).toBe('basin');
+    expect(byId(result.bodies, 'untyped').kind).toBe('cut');
+  });
+
+  it("leaves small water that doesn't touch", async () => {
+    const ctx = context(() => 1);
+    const result = await solveWater([water(ctx, 'lake', -40, -20, 0, 20, LAKE), water(ctx, 'lock', 0.5, -1.5, 3.5, 1.5, DOCK)], ctx);
+    expect(byId(result.bodies, 'lock').kind).toBe('sheet');
   });
 });

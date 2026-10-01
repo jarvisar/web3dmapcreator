@@ -141,9 +141,15 @@ function WaterOptions({ water }: { water: ModelSettings['water'] }) {
         unit="m²"
         help={
           through
-            ? 'Rivers, lakes and the sea at least this large are cut right through the base. Smaller water is a thin sheet on the terrain.'
-            : 'Rivers, lakes and the sea at least this large are levelled from their shores and sunk just below them. Smaller water is a thin sheet on the terrain.'
+            ? 'Rivers, lakes and the sea at least this large are cut right through the base. Smaller water is a thin sheet on the terrain, unless it joins large water.'
+            : 'Rivers, lakes and the sea at least this large are levelled from their shores and sunk just below them. Smaller water is a thin sheet on the terrain, unless it joins large water.'
         }
+      />
+      <CheckField
+        label="Join small water to large water"
+        checked={water.joinSmallWater}
+        onChange={(joinSmallWater) => patchSettings('water', { joinSmallWater })}
+        help="Small water touching large water, like locks, docks and canals mapped in pieces, is sunk with it at the same level. Off, it's a sheet on the terrain like a stream, about 0.4 mm above the water beside it. Water that climbs away from it by more than 0.5 mm printed stays a sheet."
       />
       <CheckField
         label="Skip ponds, fountains and basins"
@@ -346,6 +352,12 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
         checked={roads.includeAirports}
         onChange={(includeAirports) => patchSettings('roads', { includeAirports })}
         help="Runways, taxiways and aprons, printed with the roads."
+      />
+      <CheckField
+        label="Racetracks"
+        checked={roads.includeRaceways}
+        onChange={(includeRaceways) => patchSettings('roads', { includeRaceways })}
+        help="Race and kart tracks, printed like roads. Overture leaves these out, so they come from the OpenFreeMap tiles the SVG maps use."
       />
       <CheckField
         label="Tidy road network"
@@ -893,7 +905,12 @@ export function LayersPanel() {
   const scale = settings.scale.mode === 'fixed' ? settings.scale.mmPerMetre : 0;
   const lidarOnly = settings.modelSource === 'lidar';
 
-  const roadExtras = [roads.includePaths && 'paths', roads.includeRail && 'rail', roads.includeAirports && 'airports'].filter(Boolean);
+  const roadExtras = [
+    roads.includePaths && 'paths',
+    roads.includeRail && 'rail',
+    roads.includeAirports && 'airports',
+    roads.includeRaceways && 'racetracks',
+  ].filter(Boolean);
   const cell = lidarCell(area, settings);
   const lidarWater = { recess: '', layer: ' · water layer', cut: ' · water cut away' }[settings.lidarModel.waterMode];
   const summary = lidarOnly

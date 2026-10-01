@@ -152,6 +152,18 @@ describe('dataPlan', () => {
     expect(after.key).not.toBe(before.key);
   });
 
+  it('asks for racetracks apart from the Overture download', () => {
+    const settings = cloneSettings();
+    const on = dataPlan(settings, bounds);
+    settings.roads.includeRaceways = false;
+    const off = dataPlan(settings, bounds);
+    expect([on.raceways, off.raceways]).toEqual([true, false]);
+    expect(off.key).toBe(on.key);
+    settings.roads.includeRaceways = true;
+    settings.roads.enabled = false;
+    expect(dataPlan(settings, bounds).raceways).toBe(false);
+  });
+
   it('only shares a cache key when requested types and retained rows agree', () => {
     const flags: ((settings: ModelSettings, on: boolean) => void)[] = [
       (s, on) => { s.roads.enabled = on; },

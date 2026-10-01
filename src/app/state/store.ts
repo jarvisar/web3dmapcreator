@@ -591,7 +591,8 @@ export function applyPiecePreset(id: string): void {
       productPreset: id,
       product: size,
       border: { ...svg.border, style: preset.border },
-      label: { ...svg.label, style: preset.labelStyle },
+      // A title dragged into place on the last piece starts over on this one.
+      label: { ...svg.label, style: preset.labelStyle, offsetX: 0, offsetY: 0, bandOffsetX: 0, bandOffsetY: 0 },
     }),
     (state) => ({ area: { ...state.area, shape: areaShapeOf(shape) } }),
   );

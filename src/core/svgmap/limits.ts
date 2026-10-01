@@ -85,6 +85,11 @@ export const LIMITS: Record<string, Limit> = {
   'label.borderWidth': { min: 0.01, max: 5 },
   'label.gap': { min: 0, max: 50 },
   'label.textScale': { min: 0.1, max: 1 },
+  // Shares of the space inside the border, or of the band.
+  'label.offsetX': { min: -1, max: 1 },
+  'label.offsetY': { min: -1, max: 1 },
+  'label.bandOffsetX': { min: -1, max: 1 },
+  'label.bandOffsetY': { min: -1, max: 1 },
 };
 
 function limitKey(path: readonly string[]): string[] {

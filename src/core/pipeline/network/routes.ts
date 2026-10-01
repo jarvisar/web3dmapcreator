@@ -8,9 +8,10 @@ import { cumulative, SegmentIndex, unit } from './lines';
 
 // Lower wins when two lines double each other. Rail sits between the streets
 // and the service roads: a track beside a residential street yields to the
-// street, a service road beside the track yields to the track.
+// street, a service road beside the track yields to the track. Racetracks
+// have service roads and paths all around them, and keep their line.
 const RANK: Record<string, number> = {
-  motorway: 0, trunk: 1, primary: 2, secondary: 3, tertiary: 4, unclassified: 5, residential: 6, living_street: 6,
+  motorway: 0, trunk: 1, primary: 2, secondary: 3, tertiary: 4, unclassified: 5, raceway: 5, residential: 6, living_street: 6,
   [RAIL_CLASS]: 7, pedestrian: 7, service: 8, track: 9, cycleway: 10, bridleway: 11, footway: 11, path: 11, steps: 11,
 };
 const UNRANKED = 12;

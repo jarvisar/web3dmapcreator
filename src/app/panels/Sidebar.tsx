@@ -106,7 +106,7 @@ export function Sidebar() {
           <a href="https://overturemaps.org" target="_blank" rel="noreferrer">
             Overture Maps Foundation
           </a>
-          . Elevation from the AWS Terrain Tiles open dataset (Mapzen). Basemap and SVG map tiles © OpenFreeMap, OpenMapTiles, OpenStreetMap contributors.
+          . Elevation from the AWS Terrain Tiles open dataset (Mapzen). Basemap, SVG map and racetrack tiles © OpenFreeMap, OpenMapTiles, OpenStreetMap contributors.
           {output === 'svg' && ' Credit OpenStreetMap on anything you publish or sell.'}
         </p>
       </footer>

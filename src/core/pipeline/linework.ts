@@ -12,7 +12,7 @@ export const DEFAULT_ROAD_WIDTH_M: Record<string, number> = {
   motorway: 14, trunk: 12, primary: 11, secondary: 9.5, tertiary: 8, residential: 6.5,
   living_street: 5.5, unclassified: 6, service: 4.5, pedestrian: 4, footway: 2, sidewalk: 2,
   crosswalk: 2.5, steps: 1.6, path: 1.5, track: 3, cycleway: 2, bridleway: 2, driveway: 3,
-  parking_aisle: 3.5, alley: 3.5, unknown: 5,
+  parking_aisle: 3.5, alley: 3.5, unknown: 5, raceway: 14,
 };
 export const FALLBACK_ROAD_WIDTH_M = 5;
 export const RAIL_CLASS = 'rail';

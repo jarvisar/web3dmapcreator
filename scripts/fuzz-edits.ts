@@ -23,6 +23,7 @@ import { entryColour } from '../src/app/viewer/shown';
 import { fetchDem } from '../src/core/data/dem';
 import { setByteCache } from '../src/core/data/http';
 import { fetchOverture } from '../src/core/data/overture';
+import { fetchRaceways, withRaceways } from '../src/core/data/raceways';
 import { cellSize } from '../src/core/dsm/grid';
 import { surfaceModel } from '../src/core/dsm/model';
 import { prepareSurface } from '../src/core/dsm/prepare';
@@ -98,11 +99,12 @@ async function build(area: ReturnType<typeof areaFromBounds>, settings: ModelSet
   }
   const bounds = dataBoundsFor(area);
   const plan = dataPlan(settings, bounds);
-  const [data, dem] = await Promise.all([
+  const [data, dem, raceways] = await Promise.all([
     fetchOverture({ bounds, types: plan.types, keep: plan.keep }),
     fetchDem({ bounds, targetSpacingM: Math.max(area.widthM, area.heightM) / settings.terrain.resolution }),
+    plan.raceways ? fetchRaceways(bounds) : Promise.resolve(null),
   ]);
-  return generateModel({ area, settings, data, elevation: dem, progress });
+  return generateModel({ area, settings, data: withRaceways(data, raceways), elevation: dem, progress });
 }
 
 /** Signed volume of a mesh's triangles from `from` to `to`. */

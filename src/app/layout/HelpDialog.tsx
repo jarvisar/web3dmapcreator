@@ -158,7 +158,7 @@ export function HelpDialog() {
           <a href="https://openmaptiles.org" target="_blank" rel="noreferrer">
             OpenMapTiles
           </a>
-          , OpenStreetMap contributors. Satellite imagery © Esri and its partners. SVG maps are drawn from the same OpenFreeMap vector tiles.
+          , OpenStreetMap contributors. Satellite imagery © Esri and its partners. SVG maps are drawn from the same OpenFreeMap vector tiles, and models take their racetracks from them since Overture has none.
         </li>
         <li>
           Title fonts for SVG maps: Montserrat, Josefin Sans, Cinzel, Oswald, Bebas Neue and Bitter, under the SIL Open Font License. The Hershey Fonts were

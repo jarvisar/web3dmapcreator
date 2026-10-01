@@ -1,9 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_BORDER, computeLayout } from '../layout/layout';
+import { DEFAULT_BORDER, type Layout, computeLayout } from '../layout/layout';
+import { type Shape, insetShape, shapeContains } from '../layout/shapes';
+import type { Point } from '../lines/geometry';
 import { PRODUCT_PRESETS } from '../presets';
 import { type HersheyFile, parseHershey } from './hershey';
-import { DEFAULT_LABEL, LabelError, buildLabel, layoutBoxLabel } from './label';
+import { DEFAULT_LABEL, type LabelSettings, LabelError, buildLabel, layoutBoxLabel } from './label';
 import { parseOutlineFont } from './loadFont';
 import { geometryBounds, textGeometry } from './outline';
 
@@ -75,5 +77,106 @@ describe('title layout', () => {
     const { artwork, error } = buildLabel(plaque, { ...DEFAULT_LABEL, size: 1000 }, montserrat, montserrat);
     expect(artwork).toBeNull();
     expect(error).toMatch(/does not fit/);
+  });
+});
+
+describe('titles on round and hexagonal pieces', () => {
+  const single = { ...DEFAULT_BORDER, style: 'single' as const };
+  const margins = { top: 2, right: 2, bottom: 2, left: 2 };
+  const coaster = computeLayout({ shape: 'circle', width: 100, height: 100, cornerRadius: 0, margins }, single);
+  const hexagon = computeLayout({ shape: 'hexagon', width: 120, height: 120 * (Math.sqrt(3) / 2), cornerRadius: 0, margins }, single);
+  const box = (layout: Layout, patch: Partial<LabelSettings>, text = 'ROME') =>
+    layoutBoxLabel(layout, { ...DEFAULT_LABEL, ...patch }, textGeometry(montserrat, text));
+  const corners = ([x, y, w, h]: number[]): Point[] => [
+    [x, y],
+    [x + w, y],
+    [x, y + h],
+    [x + w, y + h],
+  ];
+  // A micron of slack for the corners that touch the edge.
+  const within = (shape: Shape, p: Point) => shapeContains(insetShape(shape, -1e-6), p);
+
+  it('keeps every box position inside the border', () => {
+    for (const layout of [coaster, hexagon]) {
+      const limit = insetShape(layout.labelAnchor, DEFAULT_LABEL.gap);
+      for (const position of ['lower_right', 'lower_left', 'upper_right', 'upper_left', 'lower_center', 'upper_center'] as const) {
+        for (const rotation of [0, 90] as const) {
+          for (const text of ['ROME', 'VANCOUVER']) {
+            const { knockout } = box(layout, { position, rotation }, text);
+            for (const p of corners(knockout)) expect(within(limit, p)).toBe(true);
+          }
+        }
+      }
+    }
+  });
+
+  it('puts the corner positions of a circle in the corners', () => {
+    const right = box(coaster, { position: 'lower_right' }).knockout;
+    const left = box(coaster, { position: 'lower_left' }).knockout;
+    const [cx, cy] = [coaster.window.x + coaster.window.w / 2, coaster.window.y + coaster.window.h / 2];
+    // Mirror images, well to either side and below the middle.
+    expect(right[0] + right[2] / 2 - cx).toBeCloseTo(cx - (left[0] + left[2] / 2), 6);
+    expect(right[0] + right[2] / 2 - cx).toBeGreaterThan(10);
+    expect(right[1] + right[3] / 2 - cy).toBeGreaterThan(20);
+  });
+
+  it('sits a box on the flat bottom of a hexagon', () => {
+    const limit = insetShape(hexagon.labelAnchor, DEFAULT_LABEL.gap);
+    for (const position of ['lower_right', 'lower_left', 'lower_center'] as const) {
+      const [, y, , h] = box(hexagon, { position }).knockout;
+      expect(y + h).toBeCloseTo(limit.y + limit.h, 6);
+    }
+    const [x, , w] = box(hexagon, { position: 'lower_right' }).knockout;
+    expect(x + w).toBeGreaterThan(limit.x + limit.w * 0.7);
+  });
+
+  it('puts the outer corner of a corner box on the rim of a circle', () => {
+    const limit = insetShape(coaster.labelAnchor, DEFAULT_LABEL.gap);
+    const [cx, cy] = [limit.x + limit.r, limit.y + limit.r];
+    for (const rotation of [0, 90] as const) {
+      const [x, y, w, h] = box(coaster, { position: 'lower_right', rotation }).knockout;
+      expect(Math.hypot(x + w - cx, y + h - cy)).toBeCloseTo(limit.r, 2);
+    }
+  });
+
+  it('moves a dragged box and keeps it inside', () => {
+    const start = box(coaster, {});
+    const moved = box(coaster, { offsetX: -0.2, offsetY: -0.3 });
+    expect(moved.offset[0]).toBeCloseTo(-0.2, 9);
+    expect(moved.offset[1]).toBeCloseTo(-0.3, 9);
+    expect(moved.knockout[0] - start.knockout[0]).toBeCloseTo(-0.2 * coaster.labelAnchor.w, 6);
+    // Dragged off the piece it stops at the edge, and says where.
+    const far = box(coaster, { offsetX: 1, offsetY: 1 });
+    expect(far.offset[0]).toBeLessThan(1);
+    const limit = insetShape(coaster.labelAnchor, DEFAULT_LABEL.gap);
+    for (const p of corners(far.knockout)) expect(within(limit, p)).toBe(true);
+    const again = box(coaster, { offsetX: far.offset[0], offsetY: far.offset[1] });
+    expect(again.knockout[0]).toBeCloseTo(far.knockout[0], 6);
+    expect(again.knockout[1]).toBeCloseTo(far.knockout[1], 6);
+  });
+
+  it('fits band text by the straight edge of a circle, inside the window', () => {
+    for (const bandPosition of ['bottom', 'top'] as const) {
+      const s = { ...DEFAULT_LABEL, style: 'band' as const, bandPosition, text: 'VANCOUVER', subtitle: '49.2827° N, 123.1207° W' };
+      const { artwork } = buildLabel(coaster, s, montserrat, montserrat);
+      const b = geometryBounds(artwork!.text)!;
+      for (const ring of artwork!.text.rings) for (const p of ring) expect(within(coaster.window, p)).toBe(true);
+      const [, top, , height] = artwork!.knockout;
+      const middle = top + height / 2;
+      // Nearer the divider than the rim.
+      if (bandPosition === 'bottom') expect((b[1] + b[3]) / 2).toBeLessThan(middle);
+      else expect((b[1] + b[3]) / 2).toBeGreaterThan(middle);
+    }
+  });
+
+  it('moves dragged band text within the band', () => {
+    const s = { ...DEFAULT_LABEL, style: 'band' as const, text: 'ROME' };
+    const start = buildLabel(hexagon, s, montserrat, montserrat).artwork!;
+    const moved = buildLabel(hexagon, { ...s, bandOffsetX: -0.1 }, montserrat, montserrat).artwork!;
+    expect(moved.offset[0]).toBeCloseTo(-0.1, 6);
+    expect(geometryBounds(moved.text)![0] - geometryBounds(start.text)![0]).toBeCloseTo(-0.1 * hexagon.bandAnchor.w, 6);
+    const far = buildLabel(hexagon, { ...s, bandOffsetX: -1, bandOffsetY: 1 }, montserrat, montserrat).artwork!;
+    expect(far.offset[0]).toBeGreaterThan(-1);
+    for (const ring of far.text.rings) for (const p of ring) expect(within(hexagon.window, p)).toBe(true);
   });
 });

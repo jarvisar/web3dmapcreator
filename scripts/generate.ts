@@ -31,6 +31,7 @@ import { surfaceModel } from '../src/core/dsm/model';
 import { prepareSurface, setSurfaceStore } from '../src/core/dsm/prepare';
 import { fetchDem } from '../src/core/data/dem';
 import { fetchOverture } from '../src/core/data/overture';
+import { fetchRaceways, withRaceways } from '../src/core/data/raceways';
 import { exportPlates } from '../src/core/export';
 import { BAMBU_MAX_PLATES } from '../src/core/export/sections';
 import { areaFromBounds, effectiveScale, parseBoundsText } from '../src/core/geo/area';
@@ -165,15 +166,18 @@ async function main() {
     if (label !== lastLabel) console.log(`  ${((performance.now() - t0) / 1000).toFixed(1)}s ${label}`);
     lastLabel = label;
   };
-  const [data, dem] = await Promise.all([
+  const [overture, dem, raceways] = await Promise.all([
     fetchOverture({ bounds, types: plan.types, keep: flag('no-filter') ? undefined : plan.keep, onProgress: (p) => log(p.message) }),
     settings.terrain.elevation
       ? fetchDem({ bounds, targetSpacingM: Math.max(area.widthM, area.heightM) / settings.terrain.resolution })
       : Promise.resolve(null),
+    plan.raceways ? fetchRaceways(bounds) : Promise.resolve(null),
   ]);
+  const data = withRaceways(overture, raceways);
   const t1 = performance.now();
   console.log(`data: ${(data.bytes / 1e6).toFixed(1)} MB in ${((t1 - t0) / 1000).toFixed(1)} s, release ${data.release}`);
   for (const [type, s] of Object.entries(data.stats)) if (s.features) console.log(`  ${type}: ${s.features} features`);
+  if (raceways?.features.length) console.log(`  raceways: ${raceways.features.length} lines, ${(raceways.downloaded / 1e6).toFixed(2)} MB downloaded`);
 
   let lidar: PreparedLidar | null = null;
   if (settings.lidar.enabled && settings.buildings.enabled) {

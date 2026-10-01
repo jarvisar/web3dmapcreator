@@ -59,7 +59,7 @@ Credit the survey's publisher, for example `LiDAR: IGN - LiDAR HD` or `LiDAR: US
 
 ## Map, SVG maps and place search
 
-The map on the site uses [OpenFreeMap](https://openfreemap.org) vector tiles (© OpenFreeMap, © OpenMapTiles, data © OpenStreetMap contributors). SVG maps are drawn from the same tiles, or from another source in the OpenMapTiles schema set under `Map data`. The satellite option uses Esri World Imagery. Place search uses [Photon](https://photon.komoot.io) by komoot, which searches OpenStreetMap data. Your search text is sent to Photon.
+The map on the site uses [OpenFreeMap](https://openfreemap.org) vector tiles (© OpenFreeMap, © OpenMapTiles, data © OpenStreetMap contributors). SVG maps are drawn from the same tiles, or from another source in the OpenMapTiles schema set under `Map data`. Models get their racetracks from these tiles too, since Overture leaves OpenStreetMap's raceways out. The satellite option uses Esri World Imagery. Place search uses [Photon](https://photon.komoot.io) by komoot, which searches OpenStreetMap data. Your search text is sent to Photon.
 
 ## Fonts
 

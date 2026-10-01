@@ -76,6 +76,17 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   raised to the low tenth of its shoreline (grid nodes inside the crop
   only). Cut bodies that overlap merge into one at their area-weighted
   median level. The grid is flattened under it and the shore raised.
+- Small water touching cut water (sheets and untyped small water, not
+  tagged ponds) joins it as cut water at its level, the lowest where it
+  touches several, and on through chains of small pieces
+  (`joinSmallWater`, `water.joinSmallWater`, on by default). As sheets,
+  Boston's locks and Amsterdam's and Venice's canal pieces stood 0.4 to
+  0.6 mm over the water beside them. Their own median isn't used: the
+  elevation data reads a lock as its dam and Venice's canals up to 11 m
+  over the lagoon. A piece more than 15 real metres from that level stays
+  a sheet, for a stream climbing away from a lake. Touching cut bodies
+  still keep their own levels, so steps between large water mapped
+  separately remain (up to 0.5 mm in Venice).
 - Beaches (`beaches.ts`, `land.taperBeaches`, off by default) lower the grid
   itself from the waterline to the ground behind, after every layer is laid
   out and before the base is worked out, so draped parts follow. Only nodes
@@ -143,6 +154,11 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 - Road widths clamp to 0.45-0.7 mm and groups are unioned. Roads beat rail beat
   paths. Split segments at every `between` boundary before reading rules.
   Tunnels and indoor corridors are skipped.
+- Overture has no raceways (OSM `highway=raceway`), so `data/raceways.ts`
+  reads them from OpenFreeMap tiles and adds them to the segments as class
+  `raceway`: zoom 12 to find them, zoom 14 over what it found (zoom 12 is up
+  to 3 m off). Tiles have no OSM ids, so edit keys come from each line's
+  ends and length. A failed download is a warning, never a failed model.
 - Buildings follow the add-on's selection/height/roof rules. See comments in
   `src/core/pipeline/buildings/`. The exception is raised parts
   (`min_height`): by default they're built down to the terrain
@@ -589,6 +605,15 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
   them out of wherever they were with `withoutLines`, which only compares
   lines whose boxes touch: comparing every pair froze the page for 13 s
   with 2,000 picked.
+- Titles (`text/label.ts`, `text/place.ts`): a box goes to the nearest
+  spot that fits its position, flush along a flat edge, or with its corner
+  on a circle's rim. Walking it towards the centre, as SVGmap did, left
+  corner boxes floating mid-map and both lower corners of a circle in one
+  spot. Rectangles come out as before. A dragged title is an offset from
+  that spot (`offsetX/Y`, `bandOffsetX/Y`), and the layout returns the
+  offset it ended up at once clamped, which is what a drop stores. Drags
+  lay the title out on the main thread (`layoutWith` from
+  `useLabelArtwork`) and only write the store when let go.
 
 ## Verification
 

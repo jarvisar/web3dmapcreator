@@ -21,7 +21,9 @@ const ROTATE_OFFSET = 30;
 const LABEL_GAP = 12;
 const EDGE = 8;
 
-type DragKind = 'move' | 'resize' | 'rotate';
+type DragKind = 'move' | 'resize' | 'rotate' | 'title';
+
+export type TitleDragPhase = 'start' | 'move' | 'end' | 'cancel';
 
 interface Corner {
   sx: 1 | -1;
@@ -39,11 +41,15 @@ interface Drag {
   grab?: LonLat;
   grabAngle?: number;
   handle?: HTMLElement;
+  // Where a title drag started, in map pixels.
+  from?: [number, number];
 }
 
 export interface AreaEditorOptions {
   onChange: (area: AreaSpec) => void;
   onDragStart?: () => void;
+  /** The SVG map's title dragged by (dx, dy) piece millimetres since it was grabbed. */
+  onTitleDrag?: (phase: TitleDragPhase, dx: number, dy: number) => void;
 }
 
 function svg<K extends keyof SVGElementTagNameMap>(tag: K, className: string): SVGElementTagNameMap[K] {
@@ -79,6 +85,8 @@ export class AreaEditor {
   private aspect: number | null = null;
   private resizable = true;
   private piece: PieceOverlay | null = null;
+  // Piece millimetres to map pixels, as an SVG matrix.
+  private pieceMatrix = [1, 0, 0, 1, 0, 0];
   private screen: number[] = [];
   private drag: Drag | null = null;
   private lastDown: { id: number; type: string } | null = null;
@@ -188,7 +196,7 @@ export class AreaEditor {
 
   destroy(): void {
     this.destroyed = true;
-    this.endDrag();
+    this.endDrag(true);
     const map = this.map;
     map.off('move', this.layout);
     map.off('resize', this.layout);
@@ -285,6 +293,7 @@ export class AreaEditor {
       const e = center.x - a * cx - c * cy;
       const f = center.y - b * cx - d * cy;
       this.pieceGroup.setAttribute('transform', `matrix(${a} ${b} ${c} ${d} ${e} ${f})`);
+      this.pieceMatrix = [a, b, c, d, e, f];
       // The margin and border reach past the window, so keep the label clear of them.
       const [x0, y0, w0, h0] = this.piece.canvas;
       for (const [u, v] of [
@@ -315,6 +324,21 @@ export class AreaEditor {
     this.label.style.transform = `translate(${Math.round(lx)}px, ${Math.round(ly)}px)`;
   };
 
+  // A vector in map pixels as piece millimetres.
+  private toPiece(x: number, y: number): [number, number] {
+    const [a, b, c, d] = this.pieceMatrix;
+    const det = a * d - b * c;
+    if (Math.abs(det) < 1e-12) return [NaN, NaN];
+    return [(d * x - c * y) / det, (a * y - b * x) / det];
+  }
+
+  private overTitle(x: number, y: number): boolean {
+    const title = this.piece?.title;
+    if (!title || !this.options.onTitleDrag) return false;
+    const [u, v] = this.toPiece(x - this.pieceMatrix[4], y - this.pieceMatrix[5]);
+    return u >= title[0] && u <= title[0] + title[2] && v >= title[1] && v <= title[1] + title[3];
+  }
+
   private contains(x: number, y: number): boolean {
     const p = this.screen;
     let inside = false;
@@ -336,31 +360,38 @@ export class AreaEditor {
 
   private readonly onMapHover = (event: MapMouseEvent): void => {
     if (this.drag) return;
-    const inside = this.contains(event.point.x, event.point.y);
+    const title = this.overTitle(event.point.x, event.point.y);
+    this.element.classList.toggle('is-over-title', title);
+    const inside = title || this.contains(event.point.x, event.point.y);
     if (inside === this.hovering) return;
     this.hovering = inside;
     this.map.getCanvas().style.cursor = inside ? 'move' : '';
   };
 
+  // The title sits over the area, so a press on it moves the title instead.
   private readonly onMapMouseDown = (event: MapMouseEvent): void => {
     if (this.drag || event.originalEvent.button !== 0) return;
-    if (!this.contains(event.point.x, event.point.y)) return;
+    const title = this.overTitle(event.point.x, event.point.y);
+    if (!title && !this.contains(event.point.x, event.point.y)) return;
     event.preventDefault();
     const id = this.lastDown?.type === 'mouse' ? this.lastDown.id : 1;
-    this.beginDrag('move', id, event.originalEvent.clientX, event.originalEvent.clientY);
+    this.beginDrag(title ? 'title' : 'move', id, event.originalEvent.clientX, event.originalEvent.clientY);
   };
 
   private readonly onMapTouchStart = (event: MapTouchEvent): void => {
     if (event.points.length !== 1) {
       // A second finger: hand the gesture back to the map for pinch zoom.
       if (this.drag?.kind === 'move') this.endDrag();
+      if (this.drag?.kind === 'title') this.endDrag(true);
       return;
     }
-    if (this.drag || !this.contains(event.point.x, event.point.y)) return;
+    if (this.drag) return;
+    const title = this.overTitle(event.point.x, event.point.y);
+    if (!title && !this.contains(event.point.x, event.point.y)) return;
     event.preventDefault();
     const touch = event.originalEvent.touches[0];
     const id = this.lastDown && this.lastDown.type !== 'mouse' ? this.lastDown.id : -1;
-    this.beginDrag('move', id, touch.clientX, touch.clientY);
+    this.beginDrag(title ? 'title' : 'move', id, touch.clientX, touch.clientY);
   };
 
   private onHandleDown(event: PointerEvent, kind: 'resize' | 'rotate', corner?: Corner): void {
@@ -396,6 +427,8 @@ export class AreaEditor {
       drag.grab = [at.lng, at.lat];
     } else if (kind === 'rotate') {
       drag.grabAngle = this.bearingFromCenter(start, x, y);
+    } else if (kind === 'title') {
+      drag.from = [x, y];
     }
     this.drag = drag;
     window.addEventListener('pointermove', this.onDragMove);
@@ -406,6 +439,7 @@ export class AreaEditor {
     document.documentElement.classList.add('is-area-dragging');
     if (kind === 'move') this.map.getCanvas().style.cursor = 'grabbing';
     this.options.onDragStart?.();
+    if (kind === 'title') this.options.onTitleDrag?.('start', 0, 0);
   }
 
   private readonly onDragMove = (event: PointerEvent): void => {
@@ -420,6 +454,11 @@ export class AreaEditor {
     }
     const x = event.clientX - drag.rect.left;
     const y = event.clientY - drag.rect.top;
+    if (drag.kind === 'title') {
+      const [dx, dy] = this.toPiece(x - drag.from![0], y - drag.from![1]);
+      if (Number.isFinite(dx) && Number.isFinite(dy)) this.options.onTitleDrag?.('move', dx, dy);
+      return;
+    }
     let next: AreaSpec;
     if (drag.kind === 'move') next = this.moved(drag, x, y);
     else if (drag.kind === 'resize') next = this.resized(drag, x, y, event.altKey);
@@ -435,15 +474,21 @@ export class AreaEditor {
     if (event.key !== 'Escape' || !this.drag) return;
     event.preventDefault();
     event.stopPropagation();
+    if (this.drag.kind === 'title') {
+      this.endDrag(true);
+      return;
+    }
     const start = this.drag.start;
     this.endDrag();
     this.options.onChange(start);
   };
 
-  private endDrag(): void {
+  // cancel puts a dragged title back where it was.
+  private endDrag(cancel = false): void {
     const drag = this.drag;
     if (!drag) return;
     this.drag = null;
+    if (drag.kind === 'title') this.options.onTitleDrag?.(cancel ? 'cancel' : 'end', 0, 0);
     window.removeEventListener('pointermove', this.onDragMove);
     window.removeEventListener('pointerup', this.onDragEnd);
     window.removeEventListener('pointercancel', this.onDragEnd);
@@ -453,7 +498,7 @@ export class AreaEditor {
     } catch {
       // Already released.
     }
-    this.element.classList.remove('is-dragging', 'is-move', 'is-resize', 'is-rotate');
+    this.element.classList.remove('is-dragging', 'is-move', 'is-resize', 'is-rotate', 'is-title', 'is-over-title');
     document.documentElement.classList.remove('is-area-dragging');
     this.hovering = false;
     this.map.getCanvas().style.cursor = '';

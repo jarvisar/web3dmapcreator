@@ -10,6 +10,7 @@ import { lidarCache } from '../core/data/cache';
 import { fetchDem, type DemMosaic } from '../core/data/dem';
 import type { OvertureData } from '../core/data/features';
 import { fetchOverture } from '../core/data/overture';
+import { fetchRaceways, withRaceways, type Raceways } from '../core/data/raceways';
 import { cellSize } from '../core/dsm/grid';
 import { surfaceModel } from '../core/dsm/model';
 import { prepareSurface, type PreparedSurface } from '../core/dsm/prepare';
@@ -61,6 +62,7 @@ let lastCredits: string[] = [];
 // exports can credit only the surveys.
 let lastMapData = true;
 let overture: { key: string; data: OvertureData } | null = null;
+let raceways: { key: string; found: Raceways } | null = null;
 let elevation: { key: string; dem: DemMosaic } | null = null;
 let prepared: { key: string; lidar: PreparedLidar } | null = null;
 let surface: { key: string; prepared: PreparedSurface } | null = null;
@@ -236,8 +238,19 @@ async function loadData(request: GenerateRequest, job: Running, report: (e: Prog
     return dem;
   };
 
-  const [data, dem] = await Promise.all([loadOverture(), loadElevation()]);
-  return { data, dem, downloaded };
+  const loadRaceways = async (): Promise<Raceways | null> => {
+    if (!plan.raceways) return null;
+    const racewayKey = boundsKey(bounds);
+    if (raceways?.key === racewayKey) return raceways.found;
+    const found = await fetchRaceways(bounds, job.abort.signal);
+    downloaded += found.downloaded;
+    // A failed download is tried again next time.
+    raceways = found.warning ? null : { key: racewayKey, found };
+    return found;
+  };
+
+  const [data, dem, found] = await Promise.all([loadOverture(), loadElevation(), loadRaceways()]);
+  return { data: withRaceways(data, found), dem, downloaded };
 }
 
 // LiDAR takes this share of the progress bar, and generation the rest after it.

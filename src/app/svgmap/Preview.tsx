@@ -4,12 +4,17 @@ import { Info, Maximize, Minus, Plus, Route, TriangleAlert, X } from 'lucide-rea
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { OutputGroup, RenderResult } from '../../core/svgmap/result';
 import type { ElementId } from '../../core/svgmap/settings';
+import { fmt, polylineD } from '../../core/svgmap/svg/format';
+import type { LabelArtwork, LabelSettings } from '../../core/svgmap/text/label';
 import { Segmented } from '../components/Segmented';
 import { ToolButton } from '../components/ToolButton';
 import { COARSE_QUERY, useMediaQuery } from '../lib/browser';
 import { formatBytes, formatInteger, formatNumber, formatSeconds } from '../lib/format';
-import { type PreviewLook, setPreviewLook, useApp } from '../state/store';
+import { type PreviewLook, setLabel, setPreviewLook, useApp } from '../state/store';
 import { renderSvgNow, svgProblem, useSvgKey } from './actions';
+import { useLabelArtwork } from './labelArtwork';
+import { draggedLabel, offsetPatch, titleAt } from './labelDrag';
+import { pieceLayout } from './piece';
 import { renderFraction, useSvgRender } from './render';
 import { PickIndex, PickOverlay, RouteCard } from './RoutePicker';
 
@@ -55,13 +60,19 @@ function groupPaint(group: OutputGroup, result: RenderResult, look: PreviewLook)
     : { fill: 'none', stroke: group.color, strokeWidth: width };
 }
 
-const PreviewContent = memo(function PreviewContent(props: { result: RenderResult; look: PreviewLook }) {
-  const { result, look } = props;
-  const background = result.mode === 'laser' ? (look === 'material' ? WOOD : '#fff') : (result.background ?? '#fff');
+const backgroundOf = (result: RenderResult, look: PreviewLook) =>
+  result.mode === 'laser' ? (look === 'material' ? WOOD : '#fff') : (result.background ?? '#fff');
+
+const isTitle = (group: OutputGroup) => group.element === 'text' || group.element === 'frame';
+
+// hideTitle leaves the title out while a moved one is drawn over the result.
+const PreviewContent = memo(function PreviewContent(props: { result: RenderResult; look: PreviewLook; hideTitle: boolean }) {
+  const { result, look, hideTitle } = props;
   return (
     <g>
-      <path d={result.outline} fill={background} />
+      <path d={result.outline} fill={backgroundOf(result, look)} />
       {result.groups.map((group) => {
+        if (hideTitle && isTitle(group)) return null;
         const paint = groupPaint(group, result, look);
         return (
           <g key={group.id} {...paint} strokeLinecap="round" strokeLinejoin="round">
@@ -74,6 +85,29 @@ const PreviewContent = memo(function PreviewContent(props: { result: RenderResul
     </g>
   );
 });
+
+// The title laid out on the main thread, drawn while it's dragged and until
+// the render with it in its new place comes back. Fills are drawn solid even
+// when the file hatches them.
+function TitleGhost(props: { artwork: LabelArtwork; style: LabelSettings['style']; result: RenderResult; look: PreviewLook; outline: boolean }) {
+  const { artwork, style, result, look, outline } = props;
+  const material = result.mode === 'laser' && look === 'material';
+  const ink = (element: ElementId) => (material ? BURN : (result.groups.find((g) => g.element === element)?.color ?? '#222'));
+  const [x, y, w, h] = artwork.knockout;
+  const rings = artwork.text.rings.map((ring) => polylineD(ring, true)).join('');
+  const strokes = artwork.text.strokes.map((stroke) => polylineD(stroke)).join('');
+  return (
+    <g pointerEvents="none">
+      {style === 'box' && <rect x={fmt(x)} y={fmt(y)} width={fmt(w)} height={fmt(h)} fill={backgroundOf(result, look)} />}
+      {artwork.frame.map((segment, i) => (
+        <path key={i} d={polylineD(segment)} fill="none" stroke={ink('frame')} strokeWidth={Math.max(artwork.frameWidth, 0.1)} />
+      ))}
+      {rings && <path d={rings} fill={ink('text')} />}
+      {strokes && <path d={strokes} fill="none" stroke={ink('text')} strokeWidth={0.3} strokeLinecap="round" strokeLinejoin="round" />}
+      {outline && <rect className="title-grab" x={fmt(x)} y={fmt(y)} width={fmt(w)} height={fmt(h)} />}
+    </g>
+  );
+}
 
 // Centre of the touching pointers and their average distance from it.
 function spread(points: Map<number, Point>): [Point, number] {
@@ -158,6 +192,25 @@ export function SvgPreview() {
   const [hoverLine, setHoverLine] = useState(-1);
   const pressed = useRef<{ point: Point; moved: boolean } | null>(null);
   const index = useMemo(() => (result?.pick ? new PickIndex(result.pick) : null), [result]);
+
+  // Moving the title. It's laid out here as it's dragged and only stored when
+  // let go, and the moved one is drawn over the result until the render
+  // catches up (`placing`).
+  const shape = useApp((state) => state.area.shape);
+  const product = useApp((state) => state.svg.product);
+  const border = useApp((state) => state.svg.border);
+  const label = useApp((state) => state.svg.label);
+  const customFontId = useApp((state) => state.customFontId);
+  const layout = useMemo(() => pieceLayout(product, shape, border).layout, [product, shape, border]);
+  const [dragged, setDragged] = useState<LabelSettings | null>(null);
+  const title = useLabelArtwork(Boolean(result), layout, dragged ?? label, customFontId);
+  const titleGrab = useRef<{ pointerId: number; start: Point; from: [number, number]; to: LabelSettings | null } | null>(null);
+  const [overTitle, setOverTitle] = useState(false);
+  const [placing, setPlacing] = useState(false);
+  useEffect(() => {
+    if (!stale) setPlacing(false);
+  }, [stale, result, placing]);
+  const ghost = (dragged !== null || placing) && title.artwork !== null;
   // Line numbers belong to one render.
   useEffect(() => {
     setSelected([]);
@@ -223,11 +276,40 @@ export function SvgPreview() {
     } catch {
       return;
     }
-    pointers.current.set(e.pointerId, stagePoint(e));
-    pressed.current = pointers.current.size === 1 ? { point: stagePoint(e), moved: false } : null;
+    const point = stagePoint(e);
+    pointers.current.set(e.pointerId, point);
+    pressed.current = pointers.current.size === 1 ? { point, moved: false } : null;
+    if (titleGrab.current) {
+      // A second finger puts the title back and pinches instead.
+      cancelTitleDrag();
+    } else if (pointers.current.size === 1 && !picking && e.button === 0 && title.artwork) {
+      const at = pieceAt(point);
+      if (at && titleAt(title.artwork, at.x, at.y)) {
+        titleGrab.current = { pointerId: e.pointerId, start: point, from: title.artwork.offset, to: null };
+        return;
+      }
+    }
     restart();
   };
+  const cancelTitleDrag = () => {
+    titleGrab.current = null;
+    setDragged(null);
+  };
   const onPointerMove = (e: React.PointerEvent) => {
+    const grab = titleGrab.current;
+    if (grab && grab.pointerId === e.pointerId) {
+      const point = stagePoint(e);
+      pointers.current.set(e.pointerId, point);
+      if (!layout || !box || size.w === 0) return;
+      const k = box.w / size.w;
+      grab.to = draggedLabel(layout, label, grab.from, (point[0] - grab.start[0]) * k, (point[1] - grab.start[1]) * k);
+      setDragged(grab.to);
+      return;
+    }
+    if (!picking && !pointers.current.size) {
+      const at = pieceAt(stagePoint(e));
+      setOverTitle(Boolean(at && titleAt(title.artwork, at.x, at.y)));
+    }
     if (picking && index && !pointers.current.size) {
       const at = pieceAt(stagePoint(e));
       if (at) setHoverLine(index.nearest(at.x, at.y, at.reach));
@@ -247,6 +329,19 @@ export function SvgPreview() {
   };
   const onPointerUp = (e: React.PointerEvent) => {
     pointers.current.delete(e.pointerId);
+    const grab = titleGrab.current;
+    if (grab && grab.pointerId === e.pointerId) {
+      titleGrab.current = null;
+      pressed.current = null;
+      const placed = e.type !== 'pointercancel' && grab.to && title.layoutWith ? title.layoutWith(grab.to) : null;
+      if (placed) {
+        setLabel(offsetPatch(label, placed));
+        setPlacing(true);
+      }
+      setDragged(null);
+      restart();
+      return;
+    }
     restart();
     const press = pressed.current;
     pressed.current = null;
@@ -260,6 +355,11 @@ export function SvgPreview() {
     setSelected((current) => (current.includes(line) ? current.filter((l) => l !== line) : [...current, line]));
   };
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (titleGrab.current && e.key === 'Escape') {
+      cancelTitleDrag();
+      e.preventDefault();
+      return;
+    }
     if (picking && e.key === 'Escape' && selected.length) {
       setSelected([]);
       e.preventDefault();
@@ -304,7 +404,7 @@ export function SvgPreview() {
     <div className="svg-preview" role="region" aria-label="SVG preview">
       <div
         ref={ref}
-        className={`svg-stage${dragging ? ' is-dragging' : ''}`}
+        className={`svg-stage${dragging ? ' is-dragging' : ''}${dragged ? ' is-moving-title' : !picking && overTitle ? ' is-over-title' : ''}`}
         role="img"
         tabIndex={result ? 0 : -1}
         aria-label={
@@ -318,11 +418,16 @@ export function SvgPreview() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onPointerLeave={() => setOverTitle(false)}
         onDoubleClick={fit}
       >
         {result && box && (
           <svg viewBox={`${box.x} ${box.y} ${box.w} ${h}`} preserveAspectRatio="xMidYMid meet">
-            <PreviewContent result={result} look={look} />
+            <PreviewContent result={result} look={look} hideTitle={ghost} />
+            {ghost && title.artwork && <TitleGhost artwork={title.artwork} style={(dragged ?? label).style} result={result} look={look} outline={dragged !== null} />}
+            {!ghost && !picking && overTitle && title.artwork && (
+              <rect className="title-grab" x={fmt(title.artwork.knockout[0])} y={fmt(title.artwork.knockout[1])} width={fmt(title.artwork.knockout[2])} height={fmt(title.artwork.knockout[3])} />
+            )}
             {picking && index && <PickOverlay index={index} selected={selected} hover={hoverLine} unit={box.w / Math.max(size.w, 1)} routes={routes} />}
           </svg>
         )}
@@ -427,8 +532,8 @@ export function SvgPreview() {
               ? 'Tap roads to pick them · Tap again to drop one'
               : 'Click roads to pick them · Click again to drop one · Esc clears · Drag to move'
             : coarse
-              ? 'Drag to move · Pinch to zoom'
-              : 'Drag to move · Scroll to zoom · Double-click to fit'}
+              ? `Drag to move · Pinch to zoom${title.artwork ? ' · Drag the title to place it' : ''}`
+              : `Drag to move · Scroll to zoom · Double-click to fit${title.artwork ? ' · Drag the title to place it' : ''}`}
         </div>
       )}
       {!result && (

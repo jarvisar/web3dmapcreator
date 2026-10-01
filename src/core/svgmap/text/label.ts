@@ -3,9 +3,10 @@
 // title, optional subtitle and optional divider. Either way the map under it is
 // removed. Text only ever scales uniformly to fit.
 import type { Path, Point } from '../lines/geometry';
-import { type Shape, insetShape, shapeCentre, shapeContains } from '../layout/shapes';
+import { insetShape } from '../layout/shapes';
 import type { Layout } from '../layout/layout';
 import { type LoadedFont, type TextGeometry, geometryBounds, textGeometry } from './outline';
+import { boxCentres, nearestIn, regionSlice, rowsSpan } from './place';
 
 export type LabelPosition = 'lower_right' | 'lower_left' | 'upper_right' | 'upper_left' | 'lower_center' | 'upper_center';
 
@@ -29,6 +30,10 @@ export interface LabelSettings {
   borderWidth: number;
   boxBorder: boolean;
   gap: number;
+  // Where the box was dragged to from its position, as a share of the space
+  // inside the border. 0 leaves it where the position puts it.
+  offsetX: number;
+  offsetY: number;
   // Band
   bandPosition: 'bottom' | 'top';
   bandHeight: number;
@@ -44,6 +49,9 @@ export interface LabelSettings {
   divider: boolean;
   dividerWidth: number;
   dividerInset: number;
+  // The band's text dragged from where it's aligned, as a share of the band.
+  bandOffsetX: number;
+  bandOffsetY: number;
 }
 
 export const DEFAULT_LABEL: LabelSettings = {
@@ -64,6 +72,8 @@ export const DEFAULT_LABEL: LabelSettings = {
   borderWidth: 0.25,
   boxBorder: true,
   gap: 1.0,
+  offsetX: 0,
+  offsetY: 0,
   bandPosition: 'bottom',
   bandHeight: 20,
   bandAlign: 'center',
@@ -78,6 +88,8 @@ export const DEFAULT_LABEL: LabelSettings = {
   divider: true,
   dividerWidth: 0.1,
   dividerInset: 0,
+  bandOffsetX: 0,
+  bandOffsetY: 0,
 };
 
 export interface LabelArtwork {
@@ -87,6 +99,9 @@ export interface LabelArtwork {
   // Box outline or band divider.
   frame: Path[];
   frameWidth: number;
+  // The offset it ended up at once kept inside the border. A drag stores
+  // this, so what's saved is what's drawn.
+  offset: [number, number];
 }
 
 export class LabelError extends Error {}
@@ -101,25 +116,6 @@ function place(g: TextGeometry, transform: (p: Point) => Point): TextGeometry {
 function mergeGeometry(a: TextGeometry, b: TextGeometry | null): TextGeometry {
   if (!b) return a;
   return { rings: [...a.rings, ...b.rings], strokes: [...a.strokes, ...b.strokes] };
-}
-
-// For round and rounded pieces, where a corner position can stick out.
-function nudgeInside(limit: Shape, x: number, y: number, w: number, h: number): [number, number] | null {
-  if (limit.kind === 'rect') return [x, y];
-  const [cx, cy] = shapeCentre(limit);
-  for (let i = 0; i <= 400; i++) {
-    const t = i / 400;
-    const nx = x + (cx - (x + w / 2)) * t;
-    const ny = y + (cy - (y + h / 2)) * t;
-    const corners: Point[] = [
-      [nx, ny],
-      [nx + w, ny],
-      [nx, ny + h],
-      [nx + w, ny + h],
-    ];
-    if (corners.every((c) => shapeContains(limit, c))) return [nx, ny];
-  }
-  return null;
 }
 
 export function layoutBoxLabel(layout: Layout, s: LabelSettings, text: TextGeometry): LabelArtwork {
@@ -146,12 +142,16 @@ export function layoutBoxLabel(layout: Layout, s: LabelSettings, text: TextGeome
 
   const anchor = layout.labelAnchor;
   const limit = insetShape(anchor, s.gap);
-  const left0 = limit.x;
-  const top0 = limit.y;
-  const right0 = limit.x + limit.w - boxW;
-  const bottom0 = limit.y + limit.h - boxH;
-  const centreX = limit.x + (limit.w - boxW) / 2;
-  const positions: Record<LabelPosition, [number, number]> = {
+  const centres = boxCentres(limit, boxW, boxH);
+  if (centres.length === 0) {
+    throw new LabelError('The title does not fit inside the border. Make it smaller or shorten the text.');
+  }
+  const left0 = limit.x + boxW / 2;
+  const top0 = limit.y + boxH / 2;
+  const right0 = limit.x + limit.w - boxW / 2;
+  const bottom0 = limit.y + limit.h - boxH / 2;
+  const centreX = limit.x + limit.w / 2;
+  const positions: Record<LabelPosition, Point> = {
     lower_right: [right0, bottom0],
     lower_left: [left0, bottom0],
     upper_right: [right0, top0],
@@ -159,14 +159,36 @@ export function layoutBoxLabel(layout: Layout, s: LabelSettings, text: TextGeome
     lower_center: [centreX, bottom0],
     upper_center: [centreX, top0],
   };
+  // A corner of the bounding box is off a round or hexagonal piece, so the box
+  // goes to the nearest spot that fits. Heading for the centre, as before,
+  // left boxes floating mid-map.
   const start = positions[s.position] ?? positions.lower_right;
-  const placed = nudgeInside(limit, start[0], start[1], boxW, boxH);
-  if (!placed || boxW > limit.w || boxH > limit.h) {
-    throw new LabelError('The title does not fit inside the border. Make it smaller or shorten the text.');
+  let base: Point;
+  if (limit.kind === 'circle') {
+    // No flat edge to sit on, so the box's corner lands on the rim about 45
+    // degrees round. Kept flush to the top or bottom, the corner boxes all but
+    // met in the middle.
+    base = nearestIn(centres, start)!;
+  } else {
+    // Flush along its long side if it fits there anywhere, so a box sits on a
+    // hexagon's flat bottom and slides out of a rounded corner. Otherwise the
+    // nearest spot, counted in box widths and heights so it stays near that
+    // edge.
+    const axis = boxW >= boxH ? 1 : 0;
+    const along = regionSlice(centres, axis, start[axis]);
+    if (along) {
+      const other = Math.min(Math.max(start[1 - axis], along[0]), along[1]);
+      base = axis === 1 ? [other, start[1]] : [start[0], other];
+    } else {
+      base = nearestIn(centres, start, 1 / boxW, 1 / boxH)!;
+    }
   }
-  const [left, top] = placed;
-  const cx = left + boxW / 2;
-  const cy = top + boxH / 2;
+  const moved = s.offsetX !== 0 || s.offsetY !== 0;
+  const [cx, cy] = moved ? nearestIn(centres, [base[0] + s.offsetX * anchor.w, base[1] + s.offsetY * anchor.h])! : base;
+  const left = cx - boxW / 2;
+  const top = cy - boxH / 2;
+  const offset: [number, number] = moved ? [(cx - base[0]) / anchor.w, (cy - base[1]) / anchor.h] : [0, 0];
+
   const cos = Math.round(Math.cos((rotation * Math.PI) / 180));
   const sin = Math.round(Math.sin((rotation * Math.PI) / 180));
   const lettering = place(text, ([x, y]) => {
@@ -198,19 +220,11 @@ export function layoutBoxLabel(layout: Layout, s: LabelSettings, text: TextGeome
         ],
       ]
     : [];
-  return { knockout: [left, top, boxW, boxH], text: lettering, frame, frameWidth: border };
+  return { knockout: [left, top, boxW, boxH], text: lettering, frame, frameWidth: border, offset };
 }
 
-// Round and hexagonal pieces get narrower towards the edge.
-function availableWidthAt(shape: Shape, y0: number, y1: number): [number, number] {
-  if (shape.kind !== 'circle' && shape.kind !== 'hexagon') return [shape.x, shape.x + shape.w];
-  const [cx, cy] = shapeCentre(shape);
-  const d = Math.max(Math.abs(y0 - cy), Math.abs(y1 - cy));
-  let half: number;
-  if (shape.kind === 'hexagon') half = Math.max(0, shape.r - d / Math.sqrt(3));
-  else half = d >= shape.r ? 0 : Math.sqrt(shape.r * shape.r - d * d);
-  return [cx - half, cx + half];
-}
+// Rows the band fit tries. A 20 mm band gets them 0.1 mm apart.
+const BAND_ROWS = 200;
 
 export function layoutBandLabel(
   layout: Layout,
@@ -231,8 +245,6 @@ export function layoutBandLabel(
   if (availableH <= gap) throw new LabelError('The title band has no room for text. Make it taller or reduce padding.');
 
   const lines: { g: TextGeometry; b: [number, number, number, number]; scale: number }[] = [];
-  const fitWidth = (a: number, b: number) => ((b - a - 2 * padX) * s.bandMaxWidth) / 100;
-  let widthLimit = fitWidth(anchor.x, anchor.x + anchor.w);
   for (const [g, target] of [
     [title, s.titleHeight * k],
     [subtitle, s.subtitleHeight * k],
@@ -243,40 +255,119 @@ export function layoutBandLabel(
     lines.push({ g, b, scale: target / (b[3] - b[1]) });
   }
   if (lines.length === 0) throw new LabelError('The title needs at least one visible character.');
+  const align = s.bandAlign === 'left' ? 0 : s.bandAlign === 'right' ? 1 : 0.5;
+  const window = layout.window;
+  const rowsFrom = top + padY;
+  const rowsTo = top + height - padY;
+  const naturalH = lines.reduce((sum, l) => sum + (l.b[3] - l.b[1]) * l.scale, 0);
+  const blockWidth = (fit: number) => Math.max(...lines.map((l) => (l.b[2] - l.b[0]) * l.scale * fit));
 
-  // Shrinking the text moves it, which changes the width available on a round
-  // piece, so fit a few times.
-  let fit = 1;
-  let blockTop = 0;
-  let blockH = 0;
-  for (let pass = 0; pass < 3; pass++) {
-    const natural = lines.reduce((sum, l) => sum + (l.b[3] - l.b[1]) * l.scale, 0);
-    fit = Math.min(1, (availableH - gap) / natural);
+  // The range the text's left edge can take with the text at fit and its top
+  // at y, or null when a line doesn't fit. Each line is held to its own rows,
+  // so on a round piece a title isn't held to the narrower rows under its
+  // subtitle.
+  const slot = (fit: number, y: number): [number, number] | null => {
+    const w = blockWidth(fit);
+    let lo = -Infinity;
+    let hi = Infinity;
+    let cursor = y;
     for (const l of lines) {
-      const w = (l.b[2] - l.b[0]) * l.scale * fit;
-      if (w > widthLimit) fit *= widthLimit / w;
+      const lw = (l.b[2] - l.b[0]) * l.scale * fit;
+      const lh = (l.b[3] - l.b[1]) * l.scale * fit;
+      const span = rowsSpan(window, cursor, cursor + lh);
+      if (!span) return null;
+      const from = Math.max(span[0], anchor.x) + padX;
+      const to = Math.min(span[1], anchor.x + anchor.w) - padX;
+      if (lw > ((to - from) * s.bandMaxWidth) / 100 + 1e-9) return null;
+      const shift = align * (w - lw);
+      lo = Math.max(lo, from - shift);
+      hi = Math.min(hi, to - lw - shift);
+      cursor += lh + gap;
     }
-    blockH = lines.reduce((sum, l) => sum + (l.b[3] - l.b[1]) * l.scale * fit, 0) + gap;
-    blockTop = top + (height - blockH) / 2;
-    const [a, b] = availableWidthAt(layout.window, blockTop, blockTop + blockH);
-    widthLimit = Math.min(fitWidth(anchor.x, anchor.x + anchor.w), fitWidth(a, b));
-    if (widthLimit <= 0) throw new LabelError('The title band is too narrow here for any text.');
+    if (cursor - gap > rowsTo + 1e-9 || lo > hi + 1e-9) return null;
+    return [lo, Math.max(lo, hi)];
+  };
+  // First and last top the text fits at, or null.
+  const tops = (fit: number): [number, number] | null => {
+    const last = rowsTo - (naturalH * fit + gap);
+    if (last < rowsFrom - 1e-9) return null;
+    const at = (i: number) => rowsFrom + ((last - rowsFrom) * i) / BAND_ROWS;
+    let first = -1;
+    let end = -1;
+    for (let i = 0; i <= BAND_ROWS; i++) {
+      if (!slot(fit, at(i))) continue;
+      if (first < 0) first = i;
+      end = i;
+    }
+    if (first < 0) return null;
+    const edgeOf = (inside: number, outside: number) => {
+      let a = at(inside);
+      let b = at(outside);
+      for (let i = 0; i < 20; i++) {
+        const m = (a + b) / 2;
+        if (slot(fit, m)) a = m;
+        else b = m;
+      }
+      return a;
+    };
+    return [first > 0 ? edgeOf(first, first - 1) : at(first), end < BAND_ROWS ? edgeOf(end, end + 1) : at(end)];
+  };
+
+  // The largest text, up to the set heights, that fits somewhere in the band.
+  // On a round piece that's by the band's straight edge.
+  const widest = Math.min(window.w, anchor.w) - 2 * padX;
+  let fit = Math.min(1, (availableH - gap) / naturalH, (widest * s.bandMaxWidth) / 100 / blockWidth(1));
+  if (!(fit > 0)) throw new LabelError('The title band is too narrow here for any text.');
+  if (!tops(fit)) {
+    let lo = 0;
+    let hi = fit;
+    for (let i = 0; i < 30; i++) {
+      const m = (lo + hi) / 2;
+      if (tops(m)) lo = m;
+      else hi = m;
+    }
+    fit = lo;
+  }
+  const range = fit > 1e-6 ? tops(fit) : null;
+  if (!range) throw new LabelError('The title band is too narrow here for any text.');
+
+  // Centred in the rows it fits in, then aligned across them.
+  const w = blockWidth(fit);
+  const baseY = (range[0] + range[1]) / 2;
+  const [lo, hi] = slot(fit, baseY) ?? slot(fit, range[0])!;
+  const middle = window.x + window.w / 2 - w / 2;
+  const baseX = align === 0 ? lo : align === 1 ? hi : Math.min(Math.max(middle, lo), hi);
+  let x = baseX;
+  let y = baseY;
+  if (s.bandOffsetX !== 0 || s.bandOffsetY !== 0) {
+    // The nearest spot to where it was dragged that it still fits.
+    const tx = baseX + s.bandOffsetX * anchor.w;
+    const ty = baseY + s.bandOffsetY * height;
+    const clampedY = Math.min(Math.max(ty, range[0]), range[1]);
+    let best = Infinity;
+    for (let i = -1; i <= BAND_ROWS; i++) {
+      const ry = i < 0 ? clampedY : range[0] + ((range[1] - range[0]) * i) / BAND_ROWS;
+      const span = slot(fit, ry);
+      if (!span) continue;
+      const rx = Math.min(Math.max(tx, span[0]), span[1]);
+      const d = (rx - tx) ** 2 + (ry - ty) ** 2;
+      if (d < best - 1e-12) {
+        best = d;
+        x = rx;
+        y = ry;
+      }
+    }
   }
 
-  let cursor = blockTop;
+  let cursor = y;
   let lettering: TextGeometry = { rings: [], strokes: [] };
-  const [rowLeft, rowRight] = availableWidthAt(layout.window, blockTop, blockTop + blockH);
-  const left = Math.max(anchor.x, rowLeft);
-  const right = Math.min(anchor.x + anchor.w, rowRight);
   for (const l of lines) {
     const scale = l.scale * fit;
-    const w = (l.b[2] - l.b[0]) * scale;
-    const x =
-      s.bandAlign === 'left' ? left + padX : s.bandAlign === 'right' ? right - padX - w : (left + right - w) / 2;
-    const y = cursor;
+    const lx = x + align * (w - (l.b[2] - l.b[0]) * scale);
+    const ly = cursor;
     lettering = mergeGeometry(
       lettering,
-      place(l.g, ([px, py]) => [x + (px - l.b[0]) * scale, y + (py - l.b[1]) * scale]),
+      place(l.g, ([px, py]) => [lx + (px - l.b[0]) * scale, ly + (py - l.b[1]) * scale]),
     );
     cursor += (l.b[3] - l.b[1]) * scale + gap;
   }
@@ -284,9 +375,9 @@ export function layoutBandLabel(
   const frame: Path[] = [];
   if (s.divider) {
     const dy = s.bandPosition === 'top' ? top + height : top;
-    const [a, b] = availableWidthAt(anchor, dy, dy);
-    const x0 = Math.max(anchor.x, a) + s.dividerInset;
-    const x1 = Math.min(anchor.x + anchor.w, b) - s.dividerInset;
+    const span = rowsSpan(anchor, dy, dy);
+    const x0 = Math.max(anchor.x, span ? span[0] : anchor.x) + s.dividerInset;
+    const x1 = Math.min(anchor.x + anchor.w, span ? span[1] : anchor.x + anchor.w) - s.dividerInset;
     if (x1 > x0) {
       frame.push([
         [x0, dy],
@@ -294,7 +385,13 @@ export function layoutBandLabel(
       ]);
     }
   }
-  return { knockout: [anchor.x, top, anchor.w, height], text: lettering, frame, frameWidth: s.dividerWidth };
+  return {
+    knockout: [anchor.x, top, anchor.w, height],
+    text: lettering,
+    frame,
+    frameWidth: s.dividerWidth,
+    offset: [(x - baseX) / anchor.w, (y - baseY) / height],
+  };
 }
 
 // artwork is null when the title is off or doesn't fit, and error says why.

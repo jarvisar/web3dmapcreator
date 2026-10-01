@@ -1,5 +1,5 @@
 import { fieldRange } from '../../core/svgmap/limits';
-import { CircleAlert, MapPin } from 'lucide-react';
+import { CircleAlert, MapPin, RotateCcw } from 'lucide-react';
 import { useRef, useState } from 'react';
 import type { FillMode } from '../../core/svgmap/settings';
 import { CUSTOM_FONT_ID, FONTS, fontFingerprint, fontInfo } from '../../core/svgmap/text/fonts';
@@ -10,6 +10,7 @@ import { Segmented } from '../components/Segmented';
 import { Section } from '../panels/Section';
 import { setCustomFont, setLabel, setSvgStyle, useApp } from '../state/store';
 import { checkFont, storeFont } from './customFont';
+import { RESET_OFFSET, labelMoved } from './labelDrag';
 
 const POSITIONS: { value: LabelPosition; label: string }[] = [
   { value: 'lower_right', label: 'Bottom right' },
@@ -135,7 +136,7 @@ export function TitlePanel() {
                   label="Band position"
                   value={label.bandPosition}
                   stretch
-                  onChange={(bandPosition) => set({ bandPosition })}
+                  onChange={(bandPosition) => set({ bandPosition, bandOffsetX: 0, bandOffsetY: 0 })}
                   options={[
                     { value: 'top', label: 'Top' },
                     { value: 'bottom', label: 'Bottom' },
@@ -144,13 +145,24 @@ export function TitlePanel() {
               </div>
             </>
           ) : (
-            <SelectField label="Position" value={label.position} onChange={(position) => set({ position: position as LabelPosition })}>
+            <SelectField
+              label="Position"
+              value={label.position}
+              onChange={(position) => set({ position: position as LabelPosition, offsetX: 0, offsetY: 0 })}
+              help="Where the box starts. You can also drag the title on the map or in the preview."
+            >
               {POSITIONS.map((p) => (
                 <option key={p.value} value={p.value}>
                   {p.label}
                 </option>
               ))}
             </SelectField>
+          )}
+          {labelMoved(label) && (
+            <button type="button" className="btn btn-sm align-start" onClick={() => set(RESET_OFFSET)}>
+              <RotateCcw size={14} aria-hidden="true" />
+              Reset the position
+            </button>
           )}
           <SelectField label="Font" value={label.font} onChange={(id) => chooseFont('font', id)} stacked help="Single-line fonts draw each letter as one stroke, the way a pen writes. You can also load a TTF, OTF or WOFF file.">
             <FontOptions customName={customFontName} />
@@ -190,7 +202,7 @@ export function TitlePanel() {
                   label="Alignment"
                   value={label.bandAlign}
                   stretch
-                  onChange={(bandAlign) => set({ bandAlign })}
+                  onChange={(bandAlign) => set({ bandAlign, bandOffsetX: 0 })}
                   options={[
                     { value: 'left', label: 'Left' },
                     { value: 'center', label: 'Centre' },

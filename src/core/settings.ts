@@ -62,6 +62,8 @@ export interface ModelSettings {
     thicknessMm: number;
     /** Water at least this large is levelled from its shores (and cut through with 'through'); smaller water is a surface sheet. */
     cutMinAreaM2: number;
+    /** Small water touching cut water, like locks, docks and canal pieces, is cut water at its level instead of a sheet. */
+    joinSmallWater: boolean;
     skipPonds: boolean;
     /** Fill piers, breakwaters and islands narrower than `skipThinMm` with water, so they don't leave a slot in it. */
     skipThinGround: boolean;
@@ -90,6 +92,8 @@ export interface ModelSettings {
     skipSidewalks: boolean;
     includeRail: boolean;
     includeAirports: boolean;
+    /** Racetracks, from OpenFreeMap tiles since Overture has none. */
+    includeRaceways: boolean;
     /** Tidy the centerlines before they're widened. Off prints every mapped line as it comes. */
     tidy: boolean;
     /** Leave out a line running alongside a more important one closer than the gap. */
@@ -194,6 +198,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     mode: 'layer',
     thicknessMm: 1,
     cutMinAreaM2: 5000,
+    joinSmallWater: true,
     skipPonds: false,
     // 0.42 mm is a line from a 0.4 mm nozzle.
     skipThinGround: false,
@@ -221,6 +226,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     skipSidewalks: true,
     includeRail: true,
     includeAirports: true,
+    includeRaceways: true,
     tidy: true,
     removeDoubled: true,
     mergeDivided: true,

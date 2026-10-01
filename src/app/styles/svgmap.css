@@ -80,6 +80,13 @@
   fill: rgb(255 255 255 / 0.88);
 }
 
+/* The title can be dragged on the map */
+.area-editor.is-over-title .piece-title-box {
+  stroke: var(--map-accent);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
 .piece-title-fill {
   fill: rgb(0 0 0 / 0.75);
 }
@@ -123,6 +130,19 @@
 
 .svg-stage.is-dragging {
   cursor: grabbing;
+}
+
+.svg-stage.is-over-title,
+.svg-stage.is-moving-title {
+  cursor: move;
+}
+
+.title-grab {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
 }
 
 .svg-stage svg {

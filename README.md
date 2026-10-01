@@ -123,7 +123,7 @@ See [troubleshooting](docs/TROUBLESHOOTING.md) if something goes wrong, [how it 
 
 ## Credits
 
-Map data © OpenStreetMap contributors, Overture Maps Foundation. Elevation from the AWS Terrain Tiles open dataset. LiDAR from USGS 3DEP, IGN, NRCan, swisstopo and Open LiDAR Data by Flai for LiDAR buildings and LiDAR only models. Basemap and SVG map tiles © OpenFreeMap, OpenMapTiles, OpenStreetMap contributors. Place search by [Photon](https://photon.komoot.io). See [data sources](docs/DATA_SOURCES.md) for the full attribution, and what to include with printed models and SVG maps.
+Map data © OpenStreetMap contributors, Overture Maps Foundation. Elevation from the AWS Terrain Tiles open dataset. LiDAR from USGS 3DEP, IGN, NRCan, swisstopo and Open LiDAR Data by Flai for LiDAR buildings and LiDAR only models. Basemap, SVG map and racetrack tiles © OpenFreeMap, OpenMapTiles, OpenStreetMap contributors. Place search by [Photon](https://photon.komoot.io). See [data sources](docs/DATA_SOURCES.md) for the full attribution, and what to include with printed models and SVG maps.
 
 Built with React, MapLibre GL, three.js, hyparquet, Clipper2, opentype.js and pmtiles. LiDAR is decoded by [laz-rs](https://github.com/tmontaigu/laz-rs) (Apache-2.0) and reprojected with proj4js. The site's `licenses.md` and `laz-decoder-notices.md` list the licenses of everything it bundles. The title fonts are under the SIL Open Font License (see `public/fonts`), and the Hershey fonts are credited in [data sources](docs/DATA_SOURCES.md).
 

@@ -3,18 +3,20 @@ import { Map as MlMap, NavigationControl, ScaleControl, setWorkerUrl } from 'map
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { IControl } from 'maplibre-gl';
 import { CircleAlert, X } from 'lucide-react';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { areaGeoBounds, modelSizeMm, validateArea } from '../../core/geo/area';
 import type { AreaSpec } from '../../core/settings';
+import type { LabelSettings } from '../../core/svgmap/text/label';
 import { Segmented } from '../components/Segmented';
 import { areaHint } from '../lib/area';
 import { formatInteger, formatMmPair, formatSizePair } from '../lib/format';
-import { dismissMapHint, setArea, setBasemap, useApp } from '../state/store';
+import { dismissMapHint, setArea, setBasemap, setLabel, useApp } from '../state/store';
 import type { AppState, BasemapKey } from '../state/store';
 import { useLabelArtwork } from '../svgmap/labelArtwork';
+import { draggedLabel, offsetPatch } from '../svgmap/labelDrag';
 import { pieceOverlay } from '../svgmap/overlay';
 import { pieceLayout } from '../svgmap/piece';
-import { AreaEditor } from './AreaEditor';
+import { AreaEditor, type TitleDragPhase } from './AreaEditor';
 import { BASEMAPS, flattenBuildings } from './basemaps';
 import { registerMap } from './mapHandle';
 
@@ -99,7 +101,33 @@ export function MapView({ active }: { active: boolean }) {
   const locked = useApp((state) => state.svg.scaleLocked);
   const customFontId = useApp((state) => state.customFontId);
   const layout = useMemo(() => (svg ? pieceLayout(piece, shape, border).layout : null), [svg, piece, shape, border]);
-  const { artwork, error: labelError } = useLabelArtwork(svg, layout, label, customFontId);
+  // The title while it's dragged on the map. It's only stored when let go.
+  const [dragged, setDragged] = useState<LabelSettings | null>(null);
+  const { artwork, error: labelError, layoutWith } = useLabelArtwork(svg, layout, dragged ?? label, customFontId);
+  const latest = useRef({ layout, label, artwork, layoutWith });
+  latest.current = { layout, label, artwork, layoutWith };
+  const grab = useRef<{ from: [number, number]; to: LabelSettings | null } | null>(null);
+
+  const onTitleDrag = (phase: TitleDragPhase, dx: number, dy: number) => {
+    const { layout: at, label: stored, artwork: shown, layoutWith: relayout } = latest.current;
+    if (phase === 'start') {
+      grab.current = shown ? { from: shown.offset, to: null } : null;
+      return;
+    }
+    const g = grab.current;
+    if (phase === 'move') {
+      if (!at || !g) return;
+      g.to = draggedLabel(at, stored, g.from, dx, dy);
+      setDragged(g.to);
+      return;
+    }
+    grab.current = null;
+    const placed = phase === 'end' && g?.to && relayout ? relayout(g.to) : null;
+    if (placed) setLabel(offsetPatch(stored, placed));
+    setDragged(null);
+  };
+  const titleDrag = useRef(onTitleDrag);
+  titleDrag.current = onTitleDrag;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -136,6 +164,7 @@ export function MapView({ active }: { active: boolean }) {
       onDragStart: () => {
         if (!useApp.getState().ui.mapHintDismissed) dismissMapHint();
       },
+      onTitleDrag: (phase, dx, dy) => titleDrag.current(phase, dx, dy),
     });
     editorRef.current = editor;
     editor.setLabel(areaLabel(initial));

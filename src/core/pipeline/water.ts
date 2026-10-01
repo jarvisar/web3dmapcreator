@@ -20,6 +20,7 @@ import {
   dropSmall,
   intersection,
   multiArea,
+  offsetPolygons,
   polygonArea,
   ringBounds,
   union,
@@ -47,6 +48,14 @@ const OVERLAP_MM2 = 0.01;
 // out. Kept, they were a pillar of ground too thin to print, and before the
 // terrain kept every piece of ground, a hole through the model.
 const DECK_SPECK_MM2 = 0.01;
+// Small water only joins cut water whose level is within this of its own.
+// Further off, it climbs or falls away from it, like a stream running down to
+// a lake, and stays a sheet following the ground. It's in real metres since
+// what it has to allow for is elevation data reading roofs: Venice's canals
+// read up to 11 m over the lagoon.
+const JOIN_LEVEL_M = 15;
+// Neighbouring features share their edges, so touching only has to cover rounding.
+const TOUCH_MM = 0.01;
 
 export type WaterKind = 'cut' | 'sheet' | 'basin';
 
@@ -115,7 +124,7 @@ export async function solveWater(features: SourceFeature[], ctx: Context, mapped
   const water = settings.water;
   const cutBodies: WaterBody[] = [];
   const sheetPolygons: { polygon: Polygon; source: string; name: string }[] = [];
-  const basinPolygons: { polygon: Polygon; source: string; name: string }[] = [];
+  const basinPolygons: { polygon: Polygon; source: string; name: string; untyped: boolean }[] = [];
   const areaScale = ctx.projection.mmPerMetre ** 2;
   const seenBasins = new Set<string>();
 
@@ -146,7 +155,7 @@ export async function solveWater(features: SourceFeature[], ctx: Context, mapped
         const key = ringKey(polygon);
         if (seenBasins.has(key)) continue;
         seenBasins.add(key);
-        basinPolygons.push({ polygon, source: feature.id, name });
+        basinPolygons.push({ polygon, source: feature.id, name, untyped: basinKind === 'untyped_water' });
       } else if (cut) {
         const bed = medianLevel(hf, polygon);
         cutBodies.push({ polygon, kind: 'cut', bed, top: bed - WATER_DROP_MM, areaM2: area / areaScale, source: feature.id, name });
@@ -165,24 +174,37 @@ export async function solveWater(features: SourceFeature[], ctx: Context, mapped
     return kept;
   };
   const bodies: WaterBody[] = [...cutBodies];
+  // Water that joins cut water it touches: sheets, and small water mapped
+  // without a type. Tagged ponds and fountains keep their own level.
+  const joinable = new Set<WaterBody>();
   for (const { polygon, source, name } of sheetPolygons) {
     for (const piece of outsideCut(polygon)) {
       const bed = medianLevel(hf, piece);
-      bodies.push({ polygon: piece, kind: 'sheet', bed, top: bed + SHEET_OFFSET_MM, areaM2: polygonArea(piece) / areaScale, source, name });
+      const body: WaterBody = { polygon: piece, kind: 'sheet', bed, top: bed + SHEET_OFFSET_MM, areaM2: polygonArea(piece) / areaScale, source, name };
+      bodies.push(body);
+      joinable.add(body);
     }
   }
   // Ponds are too small for the elevation data to show, so they sit below
   // their lowest bank rather than at the median inside.
-  for (const { polygon, source, name } of basinPolygons) {
+  for (const { polygon, source, name, untyped } of basinPolygons) {
     for (const piece of outsideCut(polygon)) {
       const bank = hf.minOver(densifyRing(piece[0], 1.5));
-      bodies.push({ polygon: piece, kind: 'basin', bed: bank, top: bank - WATER_DROP_MM, areaM2: polygonArea(piece) / areaScale, source, name });
+      const body: WaterBody = { polygon: piece, kind: 'basin', bed: bank, top: bank - WATER_DROP_MM, areaM2: polygonArea(piece) / areaScale, source, name };
+      bodies.push(body);
+      if (untyped) joinable.add(body);
     }
   }
   await ctx.progress.checkpoint(0.9);
 
   raiseCutWaterToShore(hf, bodies, ctx.crop);
   let levelled = mergeConnectedCut(bodies, areaScale);
+  if (water.joinSmallWater) {
+    const joined = joinSmallWater(levelled, joinable, JOIN_LEVEL_M * ctx.projection.mmPerMetre * settings.terrain.exaggeration);
+    ctx.stats.water_joined_to_cut = joined.count;
+    // Joined pieces mapped over each other are one body, like overlapping cut water.
+    if (joined.count) levelled = mergeConnectedCut(joined.bodies, areaScale);
+  }
   const mappedCut = union(levelled.filter((b) => b.kind === 'cut').map((b) => b.polygon));
   let decks = mappedDecks.length && mappedCut.length ? dropSmall(intersection(clipToBox(mappedDecks, ctx.cropBox), mappedCut), DECK_SPECK_MM2) : [];
   let filled = false;
@@ -204,6 +226,54 @@ export async function solveWater(features: SourceFeature[], ctx: Context, mapped
   ctx.stats.water_basins = levelled.filter((b) => b.kind === 'basin').length;
   ctx.stats.water_cut_area_mm2 = Math.round(multiArea(cut));
   return { bodies: levelled, cut, basins, sheets, all: union(cut, basins, sheets), decks, mappedCut };
+}
+
+/**
+ * Small water touching cut water, like a lock, a dock or a canal mapped in
+ * pieces, is cut water at the level of what it joins, the lowest one where it
+ * touches several. As a sheet it stood about 0.4 mm over the water beside it.
+ * Its own level isn't used: elevation data can't see water this small, so a
+ * lock reads as its dam and a canal as the street beside it. Joins carry on
+ * through chains of small pieces, lowest levels first.
+ */
+function joinSmallWater(bodies: WaterBody[], joinable: ReadonlySet<WaterBody>, reach: number): { bodies: WaterBody[]; count: number } {
+  const cut = bodies.filter((b) => b.kind === 'cut');
+  const small = bodies.filter((b) => joinable.has(b));
+  if (!cut.length || !small.length) return { bodies, count: 0 };
+  const nodes = [...cut, ...small];
+  const boxes = nodes.map((b) => ringBounds(b.polygon[0]));
+  const neighbours = nodes.map((): number[] => []);
+  // Each pair with a small piece in it, once.
+  for (let i = cut.length; i < nodes.length; i++) {
+    const grown = offsetPolygons([nodes[i].polygon], TOUCH_MM);
+    for (let j = 0; j < i; j++) {
+      if (!boxesOverlap(boxes[i], boxes[j], TOUCH_MM)) continue;
+      // A coastline only takes part near the piece.
+      const local = clipToBox([nodes[j].polygon], boxes[i]);
+      if (!local.length || multiArea(intersection(grown, local)) <= 1e-6) continue;
+      neighbours[i].push(j);
+      neighbours[j].push(i);
+    }
+  }
+  const level = nodes.map((b, i) => (i < cut.length ? b.bed : NaN));
+  const queue = cut.map((_, i) => i).sort((a, b) => level[a] - level[b]);
+  while (queue.length) {
+    const i = queue.shift()!;
+    for (const j of neighbours[i]) {
+      if (!Number.isNaN(level[j]) || Math.abs(nodes[j].bed - level[i]) > reach) continue;
+      // Nothing queued is lower, so it goes to the front.
+      level[j] = level[i];
+      queue.unshift(j);
+    }
+  }
+  const joined = new Map<WaterBody, number>();
+  for (let i = cut.length; i < nodes.length; i++) if (!Number.isNaN(level[i])) joined.set(nodes[i], level[i]);
+  if (!joined.size) return { bodies, count: 0 };
+  const out = bodies.map((body): WaterBody => {
+    const bed = joined.get(body);
+    return bed === undefined ? body : { ...body, kind: 'cut', bed, top: bed - WATER_DROP_MM };
+  });
+  return { bodies: out, count: joined.size };
 }
 
 /**

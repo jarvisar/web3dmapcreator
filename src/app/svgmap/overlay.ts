@@ -12,6 +12,8 @@ export interface PieceOverlay {
   /** The map window and the whole piece, [x, y, w, h] in piece millimetres. */
   window: [number, number, number, number];
   canvas: [number, number, number, number];
+  /** Where the title can be grabbed to move it. */
+  title: [number, number, number, number] | null;
 }
 
 const LINE = 'vector-effect="non-scaling-stroke"';
@@ -23,7 +25,10 @@ export function pieceOverlay(layout: Layout, artwork: LabelArtwork | null): Piec
   parts.push(`<path class="piece-edge" ${LINE} d="${shapePathD(layout.canvas)}"/>`);
   if (artwork) {
     const [x, y, w, h] = artwork.knockout;
-    parts.push(`<rect class="piece-title-box" x="${fmt(x)}" y="${fmt(y)}" width="${fmt(w)}" height="${fmt(h)}"/>`);
+    // A band is as wide as the piece's box, so on a circle or hexagon it
+    // stuck out past the sides.
+    parts.push(`<clipPath id="piece-title-clip"><path d="${shapePathD(layout.canvas)}"/></clipPath>`);
+    parts.push(`<rect class="piece-title-box" clip-path="url(#piece-title-clip)" x="${fmt(x)}" y="${fmt(y)}" width="${fmt(w)}" height="${fmt(h)}"/>`);
     for (const segment of artwork.frame) parts.push(`<path class="piece-title-line" ${LINE} d="${polylineD(segment)}"/>`);
     const rings = artwork.text.rings.map((ring) => polylineD(ring, true)).join('');
     if (rings) parts.push(`<path class="piece-title-fill" d="${rings}"/>`);
@@ -35,5 +40,6 @@ export function pieceOverlay(layout: Layout, artwork: LabelArtwork | null): Piec
     markup: parts.join(''),
     window: [window.x, window.y, window.w, window.h],
     canvas: [canvas.x, canvas.y, canvas.w, canvas.h],
+    title: artwork ? artwork.knockout : null,
   };
 }

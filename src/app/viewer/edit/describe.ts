@@ -30,6 +30,7 @@ const ROAD_CLASSES: Record<string, string> = {
   cycleway: 'Cycleway',
   bridleway: 'Bridleway',
   rail: 'Railway',
+  raceway: 'Racetrack',
   unknown: 'Road',
 };
 

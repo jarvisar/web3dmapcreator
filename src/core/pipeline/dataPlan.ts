@@ -119,9 +119,16 @@ export interface DataPlan {
   keep: RowFilter;
   /** Selection settings only. The caller also keys the geographic bounds. */
   key: string;
+  /** Racetracks from OpenFreeMap (`fetchRaceways`), apart from the Overture key. */
+  raceways: boolean;
 }
 
 export function dataPlan(settings: ModelSettings, bounds: GeoBounds): DataPlan {
   const need = requirements(settings);
-  return { types: neededTypes(need), keep: rowFilter(need, bounds), key: JSON.stringify(need) };
+  return {
+    types: neededTypes(need),
+    keep: rowFilter(need, bounds),
+    key: JSON.stringify(need),
+    raceways: settings.roads.enabled && settings.roads.includeRaceways,
+  };
 }
