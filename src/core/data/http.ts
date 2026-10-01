@@ -4,6 +4,7 @@
 
 import type { AsyncBuffer } from 'hyparquet';
 import { persistentCache, type ByteCache } from './cache';
+import { requestUrl } from './corsProxy';
 
 export interface HttpConfig {
   /** Requests in flight to one host. Browsers allow 6 per host over HTTP/1.1 anyway. */
@@ -93,7 +94,9 @@ export class NetworkError extends Error {
   readonly url: string;
 
   constructor(url: string, cause: unknown) {
-    super(`Network error while downloading ${url}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    // Over its daily limit, the proxy answers without CORS headers, which only shows as a network error.
+    const through = requestUrl(url) !== url ? ' through the LiDAR proxy, which may be over its daily limit' : '';
+    super(`Network error while downloading ${url}${through}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
     this.name = 'NetworkError';
     this.url = url;
   }
@@ -312,7 +315,7 @@ async function transferOnce(t: Transfer): Promise<ArrayBuffer> {
       init.body = t.post.body;
       init.headers = { 'Content-Type': t.post.type };
     }
-    const response = await fetch(t.url, init);
+    const response = await fetch(requestUrl(t.url), init);
     if (!response.ok) {
       response.body?.cancel().catch(() => undefined);
       throw new HttpError(response.status, t.url, parseRetryAfter(response.headers.get('retry-after')));
@@ -427,7 +430,7 @@ export function fetchByteLength(url: string, signal?: AbortSignal): Promise<numb
     }, config.idleTimeoutMs);
     try {
       if (signal?.aborted) forward();
-      const response = await fetch(url, { method: 'HEAD', signal: controller.signal });
+      const response = await fetch(requestUrl(url), { method: 'HEAD', signal: controller.signal });
       if (!response.ok) throw new HttpError(response.status, url, parseRetryAfter(response.headers.get('retry-after')));
       const length = Number(response.headers.get('content-length'));
       if (!Number.isFinite(length) || length <= 0) throw new Error(`No file size for ${url}`);

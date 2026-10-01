@@ -132,6 +132,8 @@ export interface NormalizeOptions {
   toLonLat: Transform;
   frame: Projection;
   zFactor: number;
+  /** Metres added after zFactor, where a copy moved the heights to another datum. */
+  zOffset?: number;
   classes: Uint8Array;
   /** The USGS EPT mirror drops the GPS encoding bit; see gpsCaptureYears. */
   knownEpt?: boolean;
@@ -148,6 +150,7 @@ export function normalizeRecords(records: Uint8Array, count: number, size: numbe
   const f: RecordFields = { x: 0, y: 0, z: 0, classification: 0, returnNumber: 0, numberOfReturns: 0, withheld: false, overlap: false, gpsTime: 0 };
   const [qx0, qy0, qx1, qy1] = options.query;
   const { west, south, east, north } = options.bbox;
+  const zOffset = options.zOffset ?? 0;
   if (options.years === false) {
     let kept = 0;
     for (let i = 0; i < count; i++) {
@@ -158,7 +161,7 @@ export function normalizeRecords(records: Uint8Array, count: number, size: numbe
       const [lon, lat] = options.toLonLat(f.x, f.y);
       if (!(lon >= west && lon <= east && lat >= south && lat <= north)) continue;
       const [x, y] = options.frame.toLocal(lon, lat);
-      sink.push(x, y, f.z * options.zFactor, cls, f.numberOfReturns === 1 ? 1 : 0, 0, 0);
+      sink.push(x, y, f.z * options.zFactor + zOffset, cls, f.numberOfReturns === 1 ? 1 : 0, 0, 0);
       kept++;
     }
     return kept;
@@ -179,7 +182,7 @@ export function normalizeRecords(records: Uint8Array, count: number, size: numbe
     gps[kept] = f.gpsTime;
     lonlat[3 * kept] = lon;
     lonlat[3 * kept + 1] = lat;
-    lonlat[3 * kept + 2] = f.z * options.zFactor;
+    lonlat[3 * kept + 2] = f.z * options.zFactor + zOffset;
     kept++;
   }
   const adjusted = (options.header.globalEncoding & 1) === 1;

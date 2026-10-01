@@ -102,7 +102,7 @@ export default defineConfig({
   worker: { format: 'es' },
   server: { watch: { ignored } },
   test: {
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'proxy/src/**/*.test.ts'],
     environment: 'node',
     testTimeout: 60000,
   },

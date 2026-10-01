@@ -108,7 +108,7 @@ export function rankOrder(a: Ranked, b: Ranked): number {
       -(density ? density / (1 + density) : 0),
       -(r.candidate.classificationQuality ?? 0),
       -r.catalogCoverage,
-      r.candidate.format === 'EPT' ? 0 : r.candidate.format === 'COPC' ? 1 : 2,
+      r.candidate.format === 'EPT' ? 0 : r.candidate.format === 'COPC' || r.candidate.format === 'I3S' ? 1 : 2,
       r.candidate.authoritative ? 0 : 1,
     ];
   };

@@ -14,6 +14,7 @@ import type { BatchProgress } from '../lidar/prepare';
 import { clipRingToBox, digest, measureDensities, orderSurveys, pickNote, rankOrder, surveyDensity, toMetric, type Ranked, type SurveyProbe, type SurveyRules } from '../lidar/ranking';
 import { readTiles } from '../lidar/read/tiles';
 import { readEpt } from '../lidar/read/ept';
+import { readI3s } from '../lidar/read/i3s';
 import { Fetcher } from '../lidar/read/fetcher';
 import { lazDecoder } from '../lidar/read/laz';
 import { chosenFirst, isChosen, surveyChoice, type SurveyChoice } from '../lidar/choice';
@@ -39,6 +40,8 @@ const BLOCK_POINTS = 40e6;
 // mapping since that one shapes building measurement too.
 const SURFACE_CODES: Record<string, Record<string, string>> = {
   'IGN France': { '64': 'unclassified' }, // permanent structures above ground
+  // Rail and overhead structures, which Cook 2022 classifies.
+  'Illinois State Geological Survey': { '10': 'unclassified', '19': 'unclassified' },
 };
 
 let store: ByteCache | null = lidarCache;
@@ -160,6 +163,7 @@ export async function readSurfaceBlock(job: SurfaceJob, fetcher: Fetcher, progre
     progress: (message: string) => progress(`Reading ${survey.name}`, message),
   };
   if (survey.format === 'EPT') await readEpt(fetcher, survey.url, job.query, options);
+  else if (survey.format === 'I3S') await readI3s(fetcher, survey.url, job.query, options);
   else await readTiles(fetcher, survey.tiles ?? [], job.query, options);
   if (sink instanceof ProbeSink) return { probe: occupiedCell(sink, x1 - x0, y1 - y0, job.probe!), points: sink.count };
   const layers = sink.layers();

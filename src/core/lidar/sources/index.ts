@@ -10,13 +10,20 @@ import { HttpError, NetworkError } from '../../data/http';
 import type { GeoBounds } from '../../types';
 import type { Fetcher } from '../read/fetcher';
 import { overlaps, type Candidate, type Failure, type Provider } from './common';
+import { aist3ddb } from './aist3ddb';
+import { alaska } from './alaska';
+import { arpai } from './arpai';
 import { basque } from './basque';
 import { berlin } from './berlin';
 import { brandenburg } from './brandenburg';
+import { dc } from './dc';
 import { flai } from './flai';
+import { genova } from './genova';
 import { geonb } from './geonb';
+import { halle } from './halle';
 import { helsinki } from './helsinki';
 import { ign } from './ign';
+import { illinois } from './illinois';
 import { indiana } from './indiana';
 import { japan } from './japan';
 import { kyfromabove } from './kyfromabove';
@@ -27,11 +34,15 @@ import { nrw } from './nrw';
 import { opentopography } from './opentopography';
 import { rlp } from './rlp';
 import { saoPaulo } from './saopaulo';
+import { sceneLayers } from './scenelayers';
 import { scotland } from './scotland';
 import { slovenia } from './slovenia';
 import { swisstopo } from './swisstopo';
 import { trentino } from './trentino';
+import { turku } from './turku';
 import { usgs } from './usgs';
+import { usgsStaged } from './usgsstaged';
+import { wisconsin } from './wisconsin';
 
 export type { Box, Candidate, Failure, Format, Provider, Tile } from './common';
 export { geoPolygons, sphericalArea } from './common';
@@ -40,7 +51,7 @@ export { USGS_CATALOG } from './usgs';
 
 // Registry order is the order candidates come out in, which ranking falls
 // back on, so it stays the same however the requests finish.
-export const PROVIDERS: Provider[] = [usgs, kyfromabove, indiana, flai, ign, nrcan, swisstopo, nrw, rlp, brandenburg, berlin, luxembourg, scotland, slovenia, basque, trentino, helsinki, geonb, noaa, saoPaulo, japan, opentopography];
+export const PROVIDERS: Provider[] = [usgs, usgsStaged, kyfromabove, indiana, illinois, wisconsin, dc, alaska, arpai, flai, ign, nrcan, swisstopo, nrw, rlp, brandenburg, berlin, halle, luxembourg, scotland, slovenia, basque, trentino, genova, helsinki, turku, geonb, noaa, saoPaulo, japan, aist3ddb, sceneLayers, opentopography];
 
 const TIMEOUT_MS = 90_000;
 

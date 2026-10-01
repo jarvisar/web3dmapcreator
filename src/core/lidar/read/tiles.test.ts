@@ -213,6 +213,12 @@ describe('uncompressed LAS tiles', () => {
     expect(notes.size).toBe(1);
   });
 
+  it("adds a tile's height offset to every return", async () => {
+    const { fetcher } = fakeFetcher({ [url]: tile(points) });
+    const { points: read } = await readTiles(fetcher, [{ ...entry(), zOffset: -36.5 }], bboxOf(0, 5621000, 500, 5621100), { frame });
+    expect([...read.z]).toEqual([5 - 36.5, 6 - 36.5, 7 - 36.5]);
+  });
+
   it('reads a whole file from a server that ignores Range', async () => {
     const { fetcher, requested } = fakeFetcher({ [url]: tile(points) });
     const { points: read } = await readTiles(fetcher, [{ ...entry(), whole: true }], everything, { frame });

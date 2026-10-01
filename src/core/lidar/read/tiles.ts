@@ -37,11 +37,16 @@ export interface PointTile {
   whole?: boolean;
   /** Class codes for this tile alone, where one survey mixes schemes. */
   classification?: Record<string, string>;
+  /** Metres added to every height, where a copy moved them to another datum. */
+  zOffset?: number;
 }
 
 // Chunks of a plain tile are fetched in runs of about this many bytes: few
 // enough requests, and the same runs every time so they come from the cache.
+// A file under six runs is cut into six instead, so it still comes over six
+// connections at once: rockyweb gives each about 48 KB/s.
 const RUN_BYTES = 8 * 1024 * 1024;
+const PARALLEL_RUNS = 6;
 // Uncompressed LAS is read in slabs of this many records.
 const SLAB_POINTS = 65536;
 // A chunk table past this is not a LAZ file we can use.
@@ -287,7 +292,7 @@ function tileSetup(opened: Opened, tile: PointTile, bbox: GeoBounds, options: Re
   const query = queryBounds(bbox, fromLonLat);
   const mapping = tile.classification ?? classificationLookup(vlrs) ?? options.classification;
   const classes = options.surface ? surfaceClassTable(mapping, options.surfaceCodes) : classTable(mapping);
-  return { crs, query, normalize: { header, query, bbox, toLonLat, frame: options.frame, zFactor, classes, years: !options.surface } };
+  return { crs, query, normalize: { header, query, bbox, toLonLat, frame: options.frame, zFactor, zOffset: tile.zOffset, classes, years: !options.surface } };
 }
 
 interface TileContext {
@@ -435,13 +440,15 @@ async function plainChunks(ctx: TileContext): Promise<LazChunk[]> {
   return chunks;
 }
 
-/** Consecutive chunks in runs of about RUN_BYTES; a chunk larger than that is a run of its own. */
+/** Consecutive chunks in runs of up to RUN_BYTES, at least PARALLEL_RUNS of them where they're big enough; a chunk larger than that is a run of its own. */
 function runs(chunks: LazChunk[]): { start: number; end: number; chunks: number[] }[] {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteSize, 0);
+  const limit = Math.min(RUN_BYTES, Math.max(1024 * 1024, Math.ceil(total / PARALLEL_RUNS)));
   const out: { start: number; end: number; chunks: number[] }[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
     const run = out.at(-1);
-    if (run && run.end === chunk.offset && chunk.offset + chunk.byteSize - run.start <= RUN_BYTES) {
+    if (run && run.end === chunk.offset && chunk.offset + chunk.byteSize - run.start <= limit) {
       run.end = chunk.offset + chunk.byteSize;
       run.chunks.push(i);
     } else out.push({ start: chunk.offset, end: chunk.offset + chunk.byteSize, chunks: [i] });
@@ -500,7 +507,7 @@ async function readChunks(ctx: TileContext): Promise<number> {
   let r = 0;
   const total = wanted.filter(Boolean).length;
   try {
-    for await (const body of ahead(needed, 4, (run) => source.range(run.start, run.end))) {
+    for await (const body of ahead(needed, PARALLEL_RUNS, (run) => source.range(run.start, run.end))) {
       const run = needed[r++];
       const bytes = new Uint8Array(body);
       for (const i of run.chunks) {

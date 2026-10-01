@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "citymodel-lidar-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-15",
+  "workers_dev": true,
+  // Sites allowed to use the proxy, comma separated. localhost is always allowed.
+  "vars": { "ORIGINS": "https://citymodel.jarvisar.com" },
+  "observability": { "enabled": true }
+}

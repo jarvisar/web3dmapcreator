@@ -170,10 +170,10 @@ export function HelpDialog() {
           .
         </li>
         <li>
-          LiDAR from USGS 3DEP (public domain, through Hobu's EPT mirror), NOAA Digital Coast, KyFromAbove, IndianaMap, IGN LiDAR HD (Licence Ouverte 2.0), NRCan
-          CanElevation and GeoNB, swisstopo, Geobasis NRW, LVermGeo RLP, LGB Brandenburg, Geoportal Berlin, ACT Luxembourg, the Scottish
-          Government, GURS Slovenia, geoEuskadi, the Province of Trento, the City of Helsinki, Tokyo, Kanagawa and Yamanashi prefectures,
-          São Paulo, OpenTopography and{' '}
+          LiDAR from USGS 3DEP (public domain, through Hobu's EPT mirror), NOAA Digital Coast, KyFromAbove, IndianaMap, the Illinois State Geological Survey, WisconsinView, DC OCTO, Alaska DNR, US DOT ARPA-I, IGN LiDAR HD (Licence Ouverte 2.0), NRCan
+          CanElevation and GeoNB, swisstopo, Geobasis NRW, LVermGeo RLP, LGB Brandenburg, Geoportal Berlin, LVermGeo Sachsen-Anhalt, ACT Luxembourg, the Scottish
+          Government, GURS Slovenia, geoEuskadi, the Province of Trento, the Comune di Genova, the Cities of Helsinki and Turku, Tokyo, Kanagawa, Yamanashi, Nagasaki and Hyogo prefectures (some through AIST 3DDB),
+          São Paulo, DAERA (Northern Ireland), Canterbury Maps, OpenTopography and{' '}
           <a href="https://github.com/flai-ai/open-lidar-data" target="_blank" rel="noreferrer">
             Open LiDAR Data
           </a>{' '}

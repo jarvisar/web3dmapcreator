@@ -49,10 +49,14 @@ Only downloaded for LiDAR buildings (`LiDAR` on) and LiDAR only models. The surv
 
 | Source | Where | License |
 | --- | --- | --- |
-| [USGS 3DEP](https://www.usgs.gov/3d-elevation-program), through [Hobu's EPT mirror](https://github.com/hobuinc/usgs-lidar) | United States | Public domain |
+| [USGS 3DEP](https://www.usgs.gov/3d-elevation-program), through [Hobu's EPT mirror](https://github.com/hobuinc/usgs-lidar), and USGS's own LAZ for work units the mirror lacks | United States | Public domain |
 | [NOAA Digital Coast](https://coast.noaa.gov/digitalcoast/) | United States and its territories, mostly coasts and cities | Public domain, attribution requested. Some local surveys ask for credit to their agency, like NYC DoITT |
 | [KyFromAbove](https://kyfromabove.ky.gov/) | Kentucky | Public domain with attribution |
 | [IndianaMap elevation](https://registry.opendata.aws/in-elevation/) | Indiana's Lake Michigan shore | CC0 |
+| [Illinois Height Modernization](https://clearinghouse.isgs.illinois.edu/data/elevation/illinois-height-modernization-ilhmp), ISGS | Illinois | No restrictions |
+| [WisconsinView](https://www.sco.wisc.edu/data/elevationlidar/) | Madison, Milwaukee and the 2024 Wisconsin counties | Public |
+| [DC 2024 LiDAR](https://opendata.dc.gov/datasets/8035c633024e49c29a3ee1206a474e7a), DC OCTO | Washington, DC | CC0 |
+| [Alaska DNR elevation](https://elevation.alaska.gov/) | Alaskan towns and villages | Public, no licence named |
 | [NRCan CanElevation](https://open.canada.ca/data/en/dataset/7069387e-9986-4297-9f55-0288e9676947) | Canada | Open Government Licence - Canada |
 | [GeoNB](https://geonb.snb.ca/) | New Brunswick | Open Government Licence - New Brunswick |
 | [IGN LiDAR HD](https://geoservices.ign.fr/lidarhd) | France | Licence Ouverte 2.0 |
@@ -61,13 +65,17 @@ Only downloaded for LiDAR buildings (`LiDAR` on) and LiDAR only models. The surv
 | [LVermGeo RLP Laserscan](https://lvermgeo.rlp.de/) | Rhineland-Palatinate | Datenlizenz Deutschland - Namensnennung 2.0 |
 | [LGB Brandenburg ALS](https://geobroker.geobasis-bb.de/) | Brandenburg | Datenlizenz Deutschland - Namensnennung 2.0 |
 | [Geoportal Berlin ALS 2021](https://gdi.berlin.de/data/a_als/atom/0.atom) | Berlin | Datenlizenz Deutschland - Zero 2.0 |
+| [LVermGeo Sachsen-Anhalt open data](https://www.lvermgeo.sachsen-anhalt.de/de/gdp-open-data.html) | Halle (Saale) | Datenlizenz Deutschland - Namensnennung 2.0 |
 | [ACT Lidar 2024](https://data.public.lu/fr/datasets/lidar-2024-releve-3d-du-territoire-luxembourgeois/) | Luxembourg | CC0 |
 | [Scottish Remote Sensing Portal](https://remotesensingdata.gov.scot/) | Scotland | Open Government Licence v3 |
 | [GURS CLSS](https://clss.si/) | Slovenia | CC BY 4.0 |
 | [geoEuskadi LiDAR](https://www.geo.euskadi.eus/) | Basque Country | CC BY 4.0 |
 | [Provincia autonoma di Trento LiDAR](https://siat.provincia.tn.it/stem/) | Trentino | CC BY 4.0 |
+| [Comune di Genova LAS 2018](https://mappe.comune.genova.it/MapStore2/) | Genoa | CC BY 4.0 |
 | [City of Helsinki laser data](https://hri.fi/data/en_GB/dataset/helsingin-laserkeilausaineistot) | Helsinki | CC BY 4.0 |
+| [City of Turku laser data 2021](https://www.avoindata.fi/data/fi/dataset/turun-kaupungin-kaupunkitietomalli) | Turku | CC BY 4.0 |
 | Tokyo, Kanagawa and Yamanashi point clouds, through [G-Spatial Information Center](https://www.geospatial.jp/) | Tokyo, Yokohama, Yamanashi | CC BY 4.0 |
+| Tokyo 23 wards, Open Nagasaki and Hyogo point clouds as COPC, through [AIST 3DDB](https://www.digiarc.aist.go.jp/team/gsvrt/information/) | Tokyo, Nagasaki, Kobe's hills | CC BY 4.0 |
 | [PMSP M3DC](https://registry.opendata.aws/pmsp-lidar/) | São Paulo | GPL 3.0, as the city lists it |
 | [OpenTopography](https://opentopography.org/) | New Zealand (LINZ), Montreal 2015 and research sites | Per dataset, cited by its DOI |
 | [Open LiDAR Data](https://github.com/flai-ai/open-lidar-data) by Flai | Much of the rest of Europe | Per dataset, listed in its inventory |

@@ -54,8 +54,11 @@ const DEFINITIONS: Record<number, string> = {
   3059: `+proj=tmerc +lat_0=0 +lon_0=24 +k=0.9996 +x_0=500000 +y_0=-6000000 ${GRS80}`,
   4083: `+proj=utm +zone=28 ${GRS80}`,
   29902: '+proj=tmerc +lat_0=53.5 +lon_0=-8 +k=1.000035 +x_0=200000 +y_0=250000 +ellps=mod_airy +towgs84=482.5,-130.6,564.6,-1.042,-0.214,-0.631,8.15 +units=m +no_defs',
-  // ETRS89 / GK25FIN (Helsinki).
+  // ETRS89 / GK25FIN (Helsinki) and GK23FIN (Turku).
   3879: `+proj=tmerc +lat_0=0 +lon_0=25 +k=1 +x_0=25500000 +y_0=0 ${GRS80}`,
+  3877: `+proj=tmerc +lat_0=0 +lon_0=23 +k=1 +x_0=23500000 +y_0=0 ${GRS80}`,
+  // RDN2008 / UTM zone 32N (Genoa).
+  7791: `+proj=utm +zone=32 ${GRS80}`,
   // NAD83(CSRS) / MTM zone 8 (Montreal).
   2950: `+proj=tmerc +lat_0=0 +lon_0=-73.5 +k=0.9999 +x_0=304800 +y_0=0 ${GRS80}`,
   // NAD83(PA11) and NAD83(MA11) UTM: Hawaii, American Samoa, Guam and the Marianas (NOAA).
@@ -93,6 +96,18 @@ for (const [lon, x, metres, feet] of [
   for (const code of metres) DEFINITIONS[code] = `${zone} +units=m +no_defs`;
   for (const code of feet) DEFINITIONS[code] = `${zone} +units=us-ft +no_defs`;
 }
+// Illinois East and West on NAD83, HARN, NSRS2007 and 2011, metres and US
+// feet. Its older tiles only carry GeoTIFF keys.
+for (const [lon, k, x, metres, feet] of [
+  [-88.3333333333333, 0.999975, 300000, [26971, 2790, 3528, 6454], [3435, 3443, 3529, 6455]],
+  [-90.1666666666667, 0.999941177, 700000, [26972, 2791, 3530, 6456], [3436, 3444, 3531, 6457]],
+] as [number, number, number, number[], number[]][]) {
+  const zone = `+proj=tmerc +lat_0=36.6666666666667 +lon_0=${lon} +k=${k} +x_0=${x} +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0`;
+  for (const code of metres) DEFINITIONS[code] = `${zone} +units=m +no_defs`;
+  for (const code of feet) DEFINITIONS[code] = `${zone} +units=us-ft +no_defs`;
+}
+// NAD83(HARN) / Maryland (DC's own surveys).
+DEFINITIONS[2804] = `+proj=lcc +lat_0=37.6666666666667 +lon_0=-77 +lat_1=39.45 +lat_2=38.3 +x_0=400000 +y_0=0 ${GRS80}`;
 JAPAN.forEach(([lat, lon], k) => {
   DEFINITIONS[6669 + k] = DEFINITIONS[2443 + k] = `+proj=tmerc +lat_0=${lat} +lon_0=${lon} +k=0.9999 +x_0=0 +y_0=0 ${GRS80}`;
 });

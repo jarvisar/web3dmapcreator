@@ -5,8 +5,8 @@ import type { GeoBounds, Polygon, Ring } from '../../types';
 import { crsFromEpsg, lonLatTransforms, type Transform } from '../read/crs';
 import type { Fetcher } from '../read/fetcher';
 
-/** EPT is one octree for a survey. COPC and LAZ come as tiles; LAZ tiles have no index, so they're read whole. */
-export type Format = 'EPT' | 'COPC' | 'LAZ';
+/** EPT and I3S (an Esri scene layer) are one tree for a survey. COPC and LAZ come as tiles; LAZ tiles have no index, so they're read whole. */
+export type Format = 'EPT' | 'I3S' | 'COPC' | 'LAZ';
 
 export type Box = [number, number, number, number];
 
@@ -25,6 +25,8 @@ export interface Tile {
   whole?: boolean;
   /** Class codes for this tile alone, where one survey mixes schemes. */
   classification?: Record<string, string>;
+  /** Metres added to every height, where a copy moved them to another datum. */
+  zOffset?: number;
 }
 
 export interface Candidate {
@@ -32,7 +34,7 @@ export interface Candidate {
   /** Survey identity within its provider. */
   id: string;
   name: string;
-  /** EPT: its ept.json. Tiled: a stable survey key; points come from `tiles`. */
+  /** EPT: its ept.json. I3S: its layer, `.../SceneServer/layers/0`. Tiled: a stable survey key; points come from `tiles`. */
   url: string;
   format: Format;
   /** Where the survey has points, as lon/lat polygons. */
@@ -50,6 +52,8 @@ export interface Candidate {
   sourcePage: string;
   /** The original publisher, not a mirror. Breaks quality ties. */
   authoritative?: boolean;
+  /** No ground or building classes at all, so only LiDAR only models read it. */
+  unclassified?: boolean;
   projectYearHint: number | null;
 }
 

@@ -6,6 +6,7 @@
 // They're heavy: about 0.5 GB per km² compressed in Tokyo's wards and
 // Yamanashi, up to 1.2 GB in Tama. Shizuoka's full-density files (1.4-3 GB
 // per km²) are left out. No file has a CRS: the plane zone comes from here.
+// In the 23 wards, AIST's COPC copies (aist3ddb.ts) are read first.
 
 import { VectorTile } from '@mapbox/vector-tile';
 import { gunzipSync } from 'fflate';

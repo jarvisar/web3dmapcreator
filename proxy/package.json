@@ -1,0 +1,15 @@
+{
+  "name": "citymodel-lidar-proxy",
+  "private": true,
+  "description": "CORS proxy for the City Model site's LiDAR downloads, as a Cloudflare Worker.",
+  "license": "GPL-3.0-or-later",
+  "author": "Jarvizar",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.146.0"
+  }
+}

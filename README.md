@@ -60,7 +60,7 @@ The water comes from the survey, with Overture's water outlines used for smooth 
 - Parks, forest, sand, rock and paving, each as its own colour
 - Roads, paths, railways and airport paving, widened where needed so they print with a 0.4 mm nozzle, and tidied so divided roads print as one road and doubled lines and stray scraps of path don't print
 - Buildings from mapped heights and building parts, with gabled, hipped, skillion, pyramid and dome roofs
-- Optional LiDAR buildings, rebuilt from their scanned roofs with setbacks, towers, domes and spires, from about twenty public surveys in North America, Europe, Japan, New Zealand and São Paulo (see [LiDAR sources](docs/LIDAR_SOURCES.md))
+- Optional LiDAR buildings, rebuilt from their scanned roofs with setbacks, towers, domes and spires, from about thirty publishers' surveys in North America, Europe, Japan, New Zealand and São Paulo (see [LiDAR sources](docs/LIDAR_SOURCES.md))
 - LiDAR only models: the whole area from a survey as one single-colour solid, with water recessed, as a thin layer in its own colour, or cut away
 - Optional bridges on piers, trees and a border rim
 - An editor in the 3D view: remove, raise or recolour buildings, widen roads, leave water out, add text and pins, and draw your own roads and buildings. Custom layers export as parts of their own
@@ -95,7 +95,7 @@ When a new version is deployed, a notice asks you to reload. It never reloads on
 2. Clone the repository and run `npm install`.
 3. Run `npm run dev` and open the address it prints.
 
-`npm test` runs the unit tests and `npm run build` builds the site into `build/`. See [development](docs/DEVELOPMENT.md) for the command-line tools and how the code is laid out.
+`npm test` runs the unit tests and `npm run build` builds the site into `build/`. Set `VITE_LIDAR_PROXY` to the LiDAR proxy's address to read the sources that need it (see [proxy/README.md](proxy/README.md)). See [development](docs/DEVELOPMENT.md) for the command-line tools and how the code is laid out.
 
 Pushing to `main` deploys the site with GitHub Actions. Set `Settings > Pages > Source` to `GitHub Actions` once.
 
@@ -105,7 +105,7 @@ Pushing to `main` deploys the site with GitHub Actions. Set `Settings > Pages > 
 - An area that needs more than 300 MB of map data is refused. Make it smaller or pick fewer layers.
 - Map data varies by city. Buildings without a mapped height get a typical height for their type, and some places have few mapped buildings.
 - Bridges are schematic: decks on evenly spaced piers, without towers, arches or trusses.
-- LiDAR is only read from publishers whose servers let a browser download from another site (CORS). England's surveys after 2022, the Netherlands' AHN5 and AHN6, Bavaria, Portugal and most of Italy don't allow that, so those areas use older mirrors or keep their mapped buildings. [LiDAR sources](docs/LIDAR_SOURCES.md) lists what was checked.
+- LiDAR is only read from publishers whose servers let a browser download from another site (CORS). England's surveys after 2022, the Netherlands' AHN5 and AHN6, Bavaria, Portugal and most of Italy don't allow that, so those areas use older mirrors or keep their mapped buildings. USGS's newest surveys (Cincinnati, Houston, Philadelphia and others) are read through a small proxy instead, see [proxy/README.md](proxy/README.md). [LiDAR sources](docs/LIDAR_SOURCES.md) lists what was checked.
 - LiDAR downloads are big: 150 MB to 1 GB per km² depending on the survey. Some publishers only offer whole tiles of up to a few hundred MB, and a few servers are slow (Brandenburg's gives about 80 KB/s per connection), so those are only downloaded after you press `Download and regenerate`. `Survey` under `Layers > LiDAR` picks a survey by hand where the automatic choice isn't the one you want. The `Chicago - The Loop (small)` preset reads about 790 MB and takes about 4 minutes the first time, the `Paris - Eiffel Tower` preset about 2.2 GB and 15 minutes. Point data is cached in the browser up to 1 GB, and measured buildings are reused for a day.
 - A LiDAR only model shows the city the year it was surveyed. Glass, dark roofs and water return few points, and those spots are filled in from around them. It's 2.5D, so skybridges and elevated tracks are solid down to the ground, and with the water in a layer or cut away, bridges are solid walls down to the base.
 - Edits are tied to Overture's IDs. Most carry over from one monthly Overture release to the next, but a road or building that was redrawn gets a new ID and its edit stops applying.

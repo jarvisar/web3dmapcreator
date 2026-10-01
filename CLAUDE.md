@@ -10,14 +10,16 @@ turns a map area into a multicolour FDM city model: terrain, water, land
 surfaces, roads/rail, optional schematic bridges and trees, and buildings with
 roofs from Overture Maps. It is a port of the Jarvizar City Model Blender
 add-on (separate repo `3dmapcreator`, not a dependency). Its LiDAR pipeline
-reads EPT, COPC and plain LAZ/LAS tiles (also inside ZIPs) straight from
+reads EPT, COPC, Esri I3S scene layers and plain LAZ/LAS tiles (also inside ZIPs) straight from
 publishers that allow cross-origin requests (`docs/LIDAR_SOURCES.md`).
 Surveys that only come as whole files are offered and read once the user
 approves their tiles, like the add-on's staged downloads (`lidar/offers.ts`). `settings.modelSource = 'lidar'` (LiDAR only) builds the whole model from
 a survey instead, as one solid in the terrain colour, with the water as its
 own part if asked and Overture's water only for shorelines and holes
 (`src/core/dsm/`).
-There is no server: data is read from public, CORS-enabled sources.
+There is no server of our own, apart from an optional CORS proxy (`proxy/`, a
+Cloudflare Worker) for LiDAR files on a fixed list of hosts without CORS
+headers. Everything else is read from public, CORS-enabled sources.
 
 The same app makes flat SVG maps for laser engraving, pen plotters and print
 (`output: 'svg'`), from OpenFreeMap vector tiles. That engine came from the
@@ -37,12 +39,13 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/geometry/` | Clipper2 wrappers (`polygon.ts`), prism mesher (`mesher.ts`, Delaunator + Constrainautor CDT with earcut fallback), edge/raster indexes, mesh validation |
 | `src/core/terrain/` | `HeightField`: the one grid every layer samples |
 | `src/core/dsm/` | LiDAR only models: `prepare.ts` reads a survey into a grid (`raster.ts`, `grid.ts`), `compose.ts`/`filters.ts` the height rules, `mesh.ts` RTIN and edge collapse, `model.ts` the `ModelSpec` |
-| `src/core/lidar/` | LiDAR: `sources/` one module per provider (`common.ts` has the shared catalog helpers), `read/` EPT, COPC, plain LAZ/LAS and ZIP reading (`ept.ts`, `tiles.ts`, `chunks.ts`, `zip.ts`) with an injected LAZ decoder and projector, measurement (`measure.ts`, ground, planes, terraces, selection), roofs cut from the LiDAR only surface (`surface.ts`, `rim.ts`), `prepare.ts` batching and checkpoints |
+| `src/core/lidar/` | LiDAR: `sources/` one module per provider (`common.ts` has the shared catalog helpers), `read/` EPT, COPC, I3S, plain LAZ/LAS and ZIP reading (`ept.ts`, `tiles.ts`, `i3s.ts`, `chunks.ts`, `zip.ts`) with an injected LAZ decoder and projector, measurement (`measure.ts`, ground, planes, terraces, selection), roofs cut from the LiDAR only surface (`surface.ts`, `rim.ts`), `prepare.ts` batching and checkpoints |
 | `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges, `network/` tidy), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
 | `src/core/edit/` | Model editor: the edits document (`types.ts`, `keys.ts`), `EditSession` applying it to a generated model in the worker, road tiles, land fill, terrain and water after edits (`earth.ts`), added shapes and what they stand on (`stand.ts`), road lines for picking |
 | `src/core/engine/` | Worker protocol and main-thread client |
 | `src/worker/engine.worker.ts` | Downloads, generates, meshes and exports off the main thread |
+| `proxy/` | The LiDAR CORS proxy, a Cloudflare Worker: only the prefixes in `src/core/data/corsProxy.ts`, only the site's origins, bodies streamed |
 | `src/worker/svg.worker.ts` | Renders SVG maps, separate so a preview updates while a model generates |
 | `src/core/svgmap/` | SVG maps: tile fetch/decode/stitch, piece layout (`layout/`), line cleanup (`lines/`), fills and hatching, titles (`text/`), SVG writer, `service.ts` (the render with its caches) |
 | `src/app/` | React UI: state (zustand), MapLibre area editor, panels, three.js viewer. The model editor is `viewer/editController.ts` (pointer tools), `picker.ts`, `highlight.ts`, `shown.ts` (what the view hides and colours), `viewer/edit/` (toolbar, inspector) and `state/editActions.ts` (edits, undo). `src/app/svgmap/` has the SVG sections, preview, render client, route picker, piece fitting and share encoding |
@@ -358,10 +361,30 @@ LiDAR sources (`src/core/lidar/sources/`, notes in `docs/LIDAR_SOURCES.md`):
   OpenTopography's Indiana tiles have no height units and are 300 MB each.
 - A LiDAR only model with nothing to read but offers throws `OffersError`,
   whose offers reach the UI with the error (`offeredTiles` in the client).
-- USGS's own LAZ (TNM) can't be read: `rockyweb.usgs.gov` has no CORS,
-  `prd-tnm` only holds link lists, and `s3://usgs-lidar` is requester pays.
-  NOAA's bucket is the US source of tiles instead: its EPTs, and for a
-  survey without one, the zipped tile index in `laz/<datum>/<id>/`.
+- USGS's own LAZ is only on `rockyweb.usgs.gov` (no CORS) and
+  `s3://usgs-lidar` (requester pays, so anonymous requests are refused).
+  `usgsstaged.ts` reads the work units Hobu hasn't built from rockyweb
+  through the proxy, found with USGS's product search. NOAA's bucket is the
+  other US source of tiles: its EPTs, and for a survey without one, the
+  zipped tile index in `laz/<datum>/<id>/`.
+- The proxy (`data/corsProxy.ts`, `proxy/`) only rewrites the request:
+  cache keys stay the file's own URL. The browser workers get its address
+  from `VITE_LIDAR_PROXY` at build time, Node goes direct (`setUpLidar`), and
+  providers that need it return nothing without it (`proxyAvailable`). The
+  Worker streams bodies through: 128 MB of memory per isolate wouldn't hold
+  a tile. Over the free plan's 100,000 requests a day it answers without
+  CORS headers, which the site only sees as a network error.
+- Copies can move heights to another datum. AIST 3DDB's COPC of Tokyo's
+  wards is on the ellipsoid, 36-38 m over the T.P. of Tama's and
+  Kanagawa's tiles beside it, so each tile carries `zOffset` (the API's
+  original minz less the header's). Without it a model across the wards'
+  edge stepped 37 m. Surveys with no classes at all (`unclassified`: ARPA-I,
+  Open Nagasaki) only go into LiDAR only models, never building measurement.
+- Esri I3S scene layers (`read/i3s.ts`, LEPCC in `read/lepcc.ts`) answer a
+  missing resource with HTTP 200 and a JSON body, so a node resource is
+  checked for one. Coarse nodes are snapped to cells of up to a metre and
+  are left out. A layer's outline is its ~250 m nodes under the area: a box
+  around the coastal survey would claim Belfast's centre, where it has no points.
 - 3DEP work units since 2020 have no year written out
   (`CA_SanFrancisco_1_B23`), so the USGS provider reads it from the suffix
   (`workUnitYear`). Only there: `projectYear` stays the add-on's. Their

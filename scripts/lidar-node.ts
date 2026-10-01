@@ -11,6 +11,7 @@ import type { ByteCache } from '../src/core/data/cache';
 import { setSurfaceStore } from '../src/core/dsm/prepare';
 import { setCheckpointStore } from '../src/core/lidar/prepare';
 import { setLidarStore } from '../src/core/lidar/read/fetcher';
+import { setCorsProxy } from '../src/core/data/corsProxy';
 import { installLidarCodecs } from '../src/worker/lidarCodecs';
 import { lidarPool, type WorkerLike } from '../src/worker/lidarPool';
 
@@ -40,6 +41,8 @@ export function setUpLidar(cacheDir: string): void {
   setCheckpointStore(store);
   setSurfaceStore(store);
   installLidarCodecs(readFileSync(createRequire(import.meta.url).resolve('@voxelkloud/wasm-codecs/voxelkloud_wasm_codecs_bg.wasm')));
+  // Node has no CORS, so files the site reads through its proxy come straight from their hosts.
+  setCorsProxy('direct');
 }
 
 function threadWorker(cacheDir: string): WorkerLike {

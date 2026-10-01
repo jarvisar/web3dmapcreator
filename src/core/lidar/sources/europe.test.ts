@@ -11,12 +11,15 @@ import { basque } from './basque';
 import { berlin } from './berlin';
 import { brandenburg } from './brandenburg';
 import { flai, unlistedDataset } from './flai';
+import { genova } from './genova';
+import { halle } from './halle';
 import { helsinki } from './helsinki';
 import { luxembourg } from './luxembourg';
 import { rlp, rlpTiles } from './rlp';
 import { scotland } from './scotland';
 import { slovenia } from './slovenia';
 import { trentino } from './trentino';
+import { turku } from './turku';
 import { zippedShapefile } from './test-shapefile';
 
 setProjector((from, to) => proj4(from, to));
@@ -259,5 +262,42 @@ describe('Flai', () => {
     expect(failures).toEqual([]);
     expect(surveys.map((s) => s.id)).toEqual(['data/ES/CNIG/Lidar_2022-2025']);
     expect(surveys[0].tiles).toEqual([expect.objectContaining({ url: bucket + tileName, horizontalCrs: 'EPSG:25830' })]);
+  });
+});
+
+describe('Halle', () => {
+  it("reads the 2 km tiles from the ZIP's directory, grouped by year", async () => {
+    const zip = zipSync({
+      'Gemeinde_HalleSaale/3dm_32_704_5704_2_st_2017.laz': [new Uint8Array(10), { level: 0 }],
+      'Gemeinde_HalleSaale/3dm_32_714_5708_2_st_2021.laz': [new Uint8Array(12), { level: 0 }],
+    });
+    const { fetcher } = fakeFetcher((url) => (url.endsWith('Gemeinde_HalleSaale.zip') ? zip : undefined));
+    const [lon, lat] = proj4('+proj=utm +zone=32 +ellps=GRS80 +units=m', 'EPSG:4326', [705000, 5705000]);
+    const surveys = await halle.discover(fetcher, around(lon, lat, 0.001), []);
+    expect(surveys.map((s) => [s.name, s.projectYearHint])).toEqual([['Halle (Saale) 3D-Messdaten 2017', 2017]]);
+    expect(surveys[0].tiles).toEqual([expect.objectContaining({ member: 'Gemeinde_HalleSaale/3dm_32_704_5704_2_st_2017.laz', bytes: 10, horizontalCrs: 'EPSG:25832' })]);
+  });
+});
+
+describe('Genova', () => {
+  it('takes the LAS sheets from the WFS in one request', async () => {
+    const { fetcher, requested } = fakeFetcher((url) =>
+      url.startsWith('https://mappe.comune.genova.it/geoserver/wfs')
+        ? { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: square(8.9155, 44.3989, 8.9366, 44.4116), properties: { LINK_LAS: 'LAS3830.las' } }] }
+        : undefined,
+    );
+    const [survey] = await genova.discover(fetcher, around(8.93, 44.405), []);
+    expect(requested).toHaveLength(1);
+    expect(requested[0]).not.toContain('startIndex');
+    expect(survey.tiles).toEqual([expect.objectContaining({ url: 'https://mappe.comune.genova.it/gis/rilievo/LAS/LAS3830.las', horizontalCrs: 'EPSG:7791' })]);
+  });
+});
+
+describe('Turku', () => {
+  it('finds sheets from its table, named after their west and north edges', async () => {
+    // Inside sheet 23460000_6705000 in the centre (E 23460000-23460500, N 6704500-6705000).
+    const [survey] = await turku.discover(null as never, around(22.2777, 60.4529, 0.0005), []);
+    expect(survey.tiles!.map((t) => t.url)).toEqual(['https://turku.asiointi.fi/3d/pistepilvi/23460000_6705000.laz']);
+    expect(await turku.discover(null as never, around(22.0, 60.7, 0.001), [])).toEqual([]);
   });
 });

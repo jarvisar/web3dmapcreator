@@ -31,6 +31,8 @@ const MIN_DENSITY = 0.05;
 /** Returns per m² on land in `box`, or null when the index can't tell. `inside` limits it to where the survey's outline is. */
 export async function localDensity(fetcher: Fetcher, survey: Candidate, box: GeoBounds, inside?: (lon: number, lat: number) => boolean): Promise<number | null> {
   if (survey.format === 'EPT') return eptDensity(fetcher, survey.url, box, inside);
+  // Scene layers rank on their provider's figure.
+  if (survey.format === 'I3S') return null;
   return tilesDensity(fetcher, survey, box);
 }
 

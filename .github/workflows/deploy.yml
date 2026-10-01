@@ -27,7 +27,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      # The LiDAR CORS proxy (proxy/README.md). Without the variable, sources that need it are left out.
       - run: npm run build
+        env:
+          VITE_LIDAR_PROXY: ${{ vars.LIDAR_PROXY_URL }}
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:

@@ -15,6 +15,7 @@ import type { Points } from './points';
 import { publish, type PublishedRecord } from './publish';
 import { readTiles } from './read/tiles';
 import { readEpt } from './read/ept';
+import { readI3s } from './read/i3s';
 import { Fetcher } from './read/fetcher';
 import { lazDecoder } from './read/laz';
 import { ALGORITHM_VERSION, type LidarRecord } from './records';
@@ -169,6 +170,8 @@ export async function findSurveys(query: SurveyQuery, signal?: AbortSignal): Pro
   const box: [number, number, number, number] = [bbox.west, bbox.south, bbox.east, bbox.north];
   const ranked: Ranked[] = [];
   for (const candidate of found.candidates) {
+    // Map models never read them for buildings, so they aren't offered there.
+    if (candidate.unclassified && !query.tiered) continue;
     const clipped = candidate.coverage.map((polygon) => polygon.map((ring) => clipRingToBox(ring, box)).filter((ring) => ring.length >= 3)).filter((p) => p.length);
     const coverage = intersection(toMetric(clipped, frame), rect);
     if (!coverage.length) continue;
@@ -350,6 +353,8 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
   const haloArea = area(halo);
   const ranked: Ranked[] = [];
   for (const candidate of found.candidates) {
+    // Measurement needs classified ground, so these would only be downloaded for nothing.
+    if (candidate.unclassified) continue;
     const clipped = candidate.coverage.map((polygon) => polygon.map((ring) => clipRingToBox(ring, box)).filter((ring) => ring.length >= 3)).filter((p) => p.length);
     const coverage = intersection(toMetric(clipped, frame), halo);
     if (!coverage.length) continue;
@@ -656,6 +661,7 @@ export async function runBatch(job: BatchJob, fetcher: Fetcher, progress: BatchP
   };
   let points: Points;
   if (survey.format === 'EPT') points = (await readEpt(fetcher, survey.url, job.query, readOptions)).points;
+  else if (survey.format === 'I3S') points = (await readI3s(fetcher, survey.url, job.query, readOptions)).points;
   else points = (await readTiles(fetcher, survey.tiles ?? [], job.query, readOptions)).points;
   // A reported single-year acquisition can date undated returns, never a multi-year survey.
   const start = survey.acquisitionStart ?? '';

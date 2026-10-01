@@ -7,6 +7,7 @@
 
 import lazWasmUrl from '@voxelkloud/wasm-codecs/voxelkloud_wasm_codecs_bg.wasm?url';
 import { lidarCache } from '../core/data/cache';
+import { setCorsProxy } from '../core/data/corsProxy';
 import { fetchDem, type DemMosaic } from '../core/data/dem';
 import type { OvertureData } from '../core/data/features';
 import { fetchOverture } from '../core/data/overture';
@@ -74,6 +75,8 @@ let surface: { key: string; prepared: PreparedSurface } | null = null;
 
 setCheckpointStore(lidarCache);
 installLidarCodecs(lazWasmUrl);
+// The CORS proxy for LiDAR hosts without CORS headers, set when the site is built. Without it those sources are left out.
+setCorsProxy(import.meta.env.VITE_LIDAR_PROXY);
 
 // Fonts for text shapes, cached by the service worker, so normally instant.
 const fonts = new FontLoader(async (path) => {
