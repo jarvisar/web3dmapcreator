@@ -16,7 +16,9 @@ export const PROXIED: string[] = [
 let proxy: string | null = null;
 
 export function setCorsProxy(value: string | null | undefined): void {
-  proxy = value ? value.replace(/\/+$/, '') : null;
+  const trimmed = value?.trim().replace(/\/+$/, '');
+  // An address given without its scheme (as Cloudflare shows a workers.dev one) is https.
+  proxy = !trimmed ? null : trimmed === 'direct' || /^https?:\/\//.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
 export const needsProxy = (url: string): boolean => PROXIED.some((prefix) => url.startsWith(prefix));

@@ -17,6 +17,8 @@ describe('CORS proxy', () => {
     setCorsProxy('https://proxy.example.workers.dev/');
     expect(requestUrl(file)).toBe('https://proxy.example.workers.dev/rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/P/WU/LAZ/tile.laz');
     expect(requestUrl('https://example.com/tile.laz')).toBe('https://example.com/tile.laz');
+    setCorsProxy('proxy.example.workers.dev');
+    expect(requestUrl(file)).toBe('https://proxy.example.workers.dev/rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/P/WU/LAZ/tile.laz');
     setCorsProxy('direct');
     expect(requestUrl(file)).toBe(file);
     setCorsProxy(null);
