@@ -17,6 +17,8 @@ export interface Tile {
   horizontalCrs?: string;
   /** File size in bytes, when the catalog gives it. */
   size?: number;
+  /** What reading it downloads, where that's less than the file: one member of a ZIP holding many. */
+  bytes?: number;
   /** For a ZIP, the member holding the points; by default its first .laz or .las. */
   member?: string;
   /** The server ignores Range, so the file is read whole. */

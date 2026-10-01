@@ -231,58 +231,7 @@ export function compose(
   const s = { ...DEFAULT_COMPOSE, ...settings };
   const { nx, ny } = layers;
   const n = nx * ny;
-  let returns = false;
-  for (let i = 0; i < n && !returns; i++) returns = layers.count[i] > 0;
-  if (!returns) throw new Error('The prepared LiDAR model has no returns');
-
-  const counts: Record<string, number> = {};
-  const ground = groundGrid(layers, dx, counts);
-  const { surface, water } = fillSurface(layers, ground, dx, dy, counts, mapped);
-  if (shore?.includes(1)) Object.assign(counts, followShore(layers, surface, ground, water, shore, mapped ?? shore, dx, dy));
-  if (s.removeClutter) counts.boat_cells = clearBoats(layers, surface, water, dx, dy);
-  const canopy = treeMask(layers, surface, ground);
-  for (let i = 0; i < n; i++) if (water[i]) canopy[i] = 0;
-  counts.tree_cells = countSet(canopy);
-
-  if (s.removeClutter) {
-    let clutter = 0;
-    for (let i = 0; i < n; i++) {
-      if (water[i] || canopy[i]) continue;
-      const above = surface[i] - ground[i];
-      if (!(above < s.clutterHeightM)) continue;
-      if (above > 0.2) clutter++;
-      surface[i] = ground[i];
-    }
-    counts.clutter_cells = clutter;
-  }
-
-  let skirt: Uint8Array;
-  if (s.trees === 'rounded') {
-    skirt = domes(surface, ground, canopy, water, s.clutterHeightM, nx, ny);
-  } else if (s.trees === 'natural') {
-    skirt = new Uint8Array(n);
-    naturalCrowns(surface, ground, canopy, nx, ny);
-  } else {
-    // Taken down to what stands under them, these are ordinary cells again.
-    // The add-on kept them out of the cleanup below and meshed them as finely
-    // as crowns, which left the cars and benches under trees.
-    skirt = new Uint8Array(n);
-    for (let i = 0; i < n; i++) {
-      if (!canopy[i]) continue;
-      const under = layers.solid[i];
-      surface[i] = under === under ? Math.max(under, ground[i]) : ground[i];
-      if (s.removeClutter && surface[i] - ground[i] < s.clutterHeightM) surface[i] = ground[i];
-      canopy[i] = 0;
-    }
-  }
-
-  const keep = new Uint8Array(n);
-  for (let i = 0; i < n; i++) keep[i] = water[i] | canopy[i] | skirt[i];
-  const narrowed = narrow(surface, nx, ny, ground, keep, true, dx, surface);
-  counts.pit_cells = narrowed.pits;
-  counts.sliver_cells = narrowed.slivers;
-  evenOut(surface, nx, ny, keep, EVEN_M, surface);
-  counts.spikes_removed = despike(surface, nx, ny, SPIKE_M, water, surface).count;
+  const { surface, ground, water, canopy, skirt, counts } = composeSurface(layers, dx, dy, s, mapped, shore);
 
   let cut: Uint8Array = new Uint8Array(n);
   const layer = s.water === 'layer';
@@ -329,6 +278,92 @@ export function compose(
   }
   if (counts.cut_water_cells) bankHeights(surface, cut, nx, ny, BANK_RINGS + (mapped ? Math.ceil(MAP_EDGE_M / Math.min(dx, dy)) : 0));
   return { heights: surface, water, cut, waterTop, detail, groundMaxMm: groundMax + shift, counts };
+}
+
+/**
+ * The surface compose works out before scaling it for print, in metres in
+ * the survey's datum, and what it found in each cell. Measured buildings
+ * take their roofs from this, so they come out the way the same cells do in
+ * a LiDAR Only model.
+ */
+export interface ComposedSurface {
+  surface: Float32Array;
+  ground: Float32Array;
+  water: Uint8Array;
+  canopy: Uint8Array;
+  skirt: Uint8Array;
+  /** Canopy taken down to what stands under it (trees 'off'), else null. */
+  taken: Uint8Array | null;
+  counts: Record<string, number>;
+}
+
+/** compose's rules for land and water, without the scaling, cuts and base. */
+export function composeSurface(
+  layers: SurfaceLayers,
+  dx: number,
+  dy: number,
+  settings: Pick<ComposeSettings, 'trees' | 'removeClutter' | 'clutterHeightM'>,
+  mapped?: Uint8Array,
+  shore?: Uint8Array,
+): ComposedSurface {
+  const s = settings;
+  const { nx, ny } = layers;
+  const n = nx * ny;
+  let returns = false;
+  for (let i = 0; i < n && !returns; i++) returns = layers.count[i] > 0;
+  if (!returns) throw new Error('The prepared LiDAR model has no returns');
+
+  const counts: Record<string, number> = {};
+  const ground = groundGrid(layers, dx, counts);
+  const { surface, water } = fillSurface(layers, ground, dx, dy, counts, mapped);
+  if (shore?.includes(1)) Object.assign(counts, followShore(layers, surface, ground, water, shore, mapped ?? shore, dx, dy));
+  if (s.removeClutter) counts.boat_cells = clearBoats(layers, surface, water, dx, dy);
+  const canopy = treeMask(layers, surface, ground);
+  for (let i = 0; i < n; i++) if (water[i]) canopy[i] = 0;
+  counts.tree_cells = countSet(canopy);
+
+  if (s.removeClutter) {
+    let clutter = 0;
+    for (let i = 0; i < n; i++) {
+      if (water[i] || canopy[i]) continue;
+      const above = surface[i] - ground[i];
+      if (!(above < s.clutterHeightM)) continue;
+      if (above > 0.2) clutter++;
+      surface[i] = ground[i];
+    }
+    counts.clutter_cells = clutter;
+  }
+
+  let skirt: Uint8Array;
+  let taken: Uint8Array | null = null;
+  if (s.trees === 'rounded') {
+    skirt = domes(surface, ground, canopy, water, s.clutterHeightM, nx, ny);
+  } else if (s.trees === 'natural') {
+    skirt = new Uint8Array(n);
+    naturalCrowns(surface, ground, canopy, nx, ny);
+  } else {
+    // Taken down to what stands under them, these are ordinary cells again.
+    // The add-on kept them out of the cleanup below and meshed them as finely
+    // as crowns, which left the cars and benches under trees.
+    skirt = new Uint8Array(n);
+    taken = canopy.slice();
+    for (let i = 0; i < n; i++) {
+      if (!canopy[i]) continue;
+      const under = layers.solid[i];
+      surface[i] = under === under ? Math.max(under, ground[i]) : ground[i];
+      if (s.removeClutter && surface[i] - ground[i] < s.clutterHeightM) surface[i] = ground[i];
+      canopy[i] = 0;
+    }
+  }
+
+  const keep = new Uint8Array(n);
+  for (let i = 0; i < n; i++) keep[i] = water[i] | canopy[i] | skirt[i];
+  const narrowed = narrow(surface, nx, ny, ground, keep, true, dx, surface);
+  counts.pit_cells = narrowed.pits;
+  counts.sliver_cells = narrowed.slivers;
+  evenOut(surface, nx, ny, keep, EVEN_M, surface);
+  counts.spikes_removed = despike(surface, nx, ny, SPIKE_M, water, surface).count;
+  return { surface, ground, water, canopy, skirt, taken, counts };
 }
 
 /**

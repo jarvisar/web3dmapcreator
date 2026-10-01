@@ -6,7 +6,7 @@
 // options file, so `scripts/generate.ts --options <file>` rebuilds it.
 //
 //   npx tsx scripts/fuzz-edits.ts --preset "Chicago - The Loop (small)" [--steps 40] [--seed 1]
-//     [--check-every 5] [--trees] [--bridges] [--no-supports] [--through] [--skip-thin] [--widen-thin] [--shape circle] [--rotation 30] [--lidar-only [--lidar-water cut|layer]]
+//     [--check-every 5] [--trees] [--bridges] [--no-supports] [--through] [--skip-thin] [--widen-thin] [--shape circle] [--rotation 30] [--lidar] [--lidar-only [--lidar-water cut|layer]]
 //
 // --selftest exports without the last step's edits, which every check has to
 // catch, to show the checks still catch something.
@@ -28,13 +28,16 @@ import { fetchRaceways, withRaceways } from '../src/core/data/raceways';
 import { fixedCellLimit, reportedMemoryGb, requestedCell } from '../src/core/dsm/grid';
 import { surfaceModel } from '../src/core/dsm/model';
 import { prepareSurface } from '../src/core/dsm/prepare';
+import { lidarRequest, prepareLidar } from '../src/core/lidar/prepare';
 import { roadLines } from '../src/core/edit/lines';
 import { EditSession, excludedParts, SHAPES_PART, type EditUpdate, type ObjectMesh } from '../src/core/edit/session';
+import { tinHeight } from '../src/core/edit/stand';
+import { tinBounds } from '../src/core/geometry/cap';
 import { emptyEdits, sanitizeEdits, SHAPE_KINDS, type AddedShape, type ModelEdits, type ObjectEdit } from '../src/core/edit/types';
 import { areaFromBounds, effectiveScale, parseBoundsText } from '../src/core/geo/area';
 import { Projection } from '../src/core/geo/projection';
 import { boxesOverlap, intersection, multiArea, pointInPolygon, ringBounds } from '../src/core/geometry/polygon';
-import type { PrismSolid } from '../src/core/geometry/solid';
+import type { CapSolid, PrismSolid } from '../src/core/geometry/solid';
 import { edgeReport, signedVolume } from '../src/core/geometry/validate';
 import { interiorPoints } from '../src/core/terrain/heightfield';
 import { Progress } from '../src/core/pipeline/context';
@@ -47,7 +50,7 @@ import { FONTS } from '../src/core/svgmap/text/fonts';
 import { FontLoader } from '../src/core/svgmap/text/loadFont';
 import { ROLE_GROUP, type MeshPart } from '../src/core/types';
 import { folderStore, setUpLidar, threadPool } from './lidar-node';
-import { surfacePoolSize } from '../src/worker/lidarPool';
+import { lidarPoolSize, surfacePoolSize } from '../src/worker/lidarPool';
 
 const arg = (name: string) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -106,7 +109,17 @@ async function build(area: ReturnType<typeof areaFromBounds>, settings: ModelSet
     fetchDem({ bounds, targetSpacingM: Math.max(area.widthM, area.heightM) / settings.terrain.resolution }),
     plan.raceways ? fetchRaceways(bounds) : Promise.resolve(null),
   ]);
-  return generateModel({ area, settings, data: withRaceways(data, raceways), elevation: dem, progress });
+  let lidar;
+  if (settings.lidar.enabled && settings.buildings.enabled) {
+    setUpLidar('out/lidar-cache');
+    const pool = threadPool(lidarPoolSize(), 'out/lidar-cache');
+    try {
+      lidar = await prepareLidar({ bounds, ...lidarRequest(area, settings), buildings: data.features.building ?? [], parts: data.features.building_part ?? [], land: data.features.land ?? [], runner: pool });
+    } finally {
+      pool.close();
+    }
+  }
+  return generateModel({ area, settings, data: withRaceways(data, raceways), elevation: dem, progress, lidar });
 }
 
 /** Signed volume of a mesh's triangles from `from` to `to`. */
@@ -145,6 +158,7 @@ async function main() {
   if (flag('through')) settings.water.mode = 'through';
   if (flag('skip-thin')) settings.water.skipThinGround = true;
   if (flag('widen-thin')) settings.water.widenThinGround = true;
+  if (flag('lidar')) settings.lidar.enabled = true;
   if (flag('lidar-only')) settings.modelSource = 'lidar';
   const lidarWater = arg('lidar-water');
   if (lidarWater === 'cut' || lidarWater === 'layer') settings.lidarModel.waterMode = lidarWater;
@@ -575,19 +589,30 @@ async function main() {
   const shapesFloating = (model: ModelSpec): string[] => {
     const out: string[] = [];
     const solids: { solid: PrismSolid; box: ReturnType<typeof ringBounds> }[] = [];
+    // Measured roofs, which hold a shape raised onto them like any roof.
+    const caps: { cap: CapSolid; box: ReturnType<typeof ringBounds> }[] = [];
     for (const layer of model.layers) {
       if (layer.role === 'water') continue;
-      for (const solid of layer.solids) if (solid.kind === 'prism' && solid.role !== 'water') solids.push({ solid, box: ringBounds(solid.polygon[0]) });
+      for (const solid of layer.solids) {
+        if (solid.kind === 'prism' && solid.role !== 'water') solids.push({ solid, box: ringBounds(solid.polygon[0]) });
+        else if (solid.kind === 'cap') caps.push({ cap: solid, box: tinBounds(solid) });
+      }
     }
     for (const { solid } of solids) {
       if (!solid.key?.startsWith('s:')) continue;
       for (const [x, y] of interiorPoints(solid.polygon, 0.5, 12)) {
         const bottom = zOf(solid.bottom, x, y);
         if (bottom <= model.baseZ + 1e-6 || bottom <= heightAt(x, y) + 0.05) continue;
-        const held = solids.some(({ solid: other, box }) => {
-          if (other === solid || x < box[0] || x > box[2] || y < box[1] || y > box[3] || !pointInPolygon(x, y, other.polygon)) return false;
-          return zOf(other.bottom, x, y) <= bottom + 0.05 && zOf(other.top, x, y) >= bottom - 0.05;
-        });
+        const held =
+          solids.some(({ solid: other, box }) => {
+            if (other === solid || x < box[0] || x > box[2] || y < box[1] || y > box[3] || !pointInPolygon(x, y, other.polygon)) return false;
+            return zOf(other.bottom, x, y) <= bottom + 0.05 && zOf(other.top, x, y) >= bottom - 0.05;
+          }) ||
+          caps.some(({ cap, box }) => {
+            if (x < box[0] || x > box[2] || y < box[1] || y > box[3]) return false;
+            const top = tinHeight(cap, x, y);
+            return cap.bottom <= bottom + 0.05 && top >= bottom - 0.05;
+          });
         if (!held) {
           out.push(`${solid.key} at ${x.toFixed(2)}, ${y.toFixed(2)} is ${(bottom - heightAt(x, y)).toFixed(2)} mm over the ground on nothing`);
           break;

@@ -170,7 +170,7 @@ export function HelpDialog() {
           .
         </li>
         <li>
-          LiDAR from USGS 3DEP (public domain, through Hobu's EPT mirror), NOAA Digital Coast, IGN LiDAR HD (Licence Ouverte 2.0), NRCan
+          LiDAR from USGS 3DEP (public domain, through Hobu's EPT mirror), NOAA Digital Coast, KyFromAbove, IndianaMap, IGN LiDAR HD (Licence Ouverte 2.0), NRCan
           CanElevation and GeoNB, swisstopo, Geobasis NRW, LVermGeo RLP, LGB Brandenburg, Geoportal Berlin, ACT Luxembourg, the Scottish
           Government, GURS Slovenia, geoEuskadi, the Province of Trento, the City of Helsinki, Tokyo, Kanagawa and Yamanashi prefectures,
           São Paulo, OpenTopography and{' '}

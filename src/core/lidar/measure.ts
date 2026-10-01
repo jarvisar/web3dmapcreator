@@ -9,7 +9,6 @@ import { difference, intersection, union } from '../geometry/polygon';
 import type { MultiPolygon } from '../types';
 import { measuredTierBoundary } from './boundaries';
 import { regularizeGridContours } from './contours';
-import { DEFAULT_SURFACE_SCALE, envelopeParameters, fitRoofEnvelope } from './envelope';
 import { groundAnchor, groundReference } from './ground';
 import { sourceHeights, supportedHeight, type CellHeights, type CellSample } from './height';
 import { mean, median, quantile, searchLeft, searchRight, sortedQuantile } from './numeric';
@@ -33,6 +32,7 @@ import {
   type Box,
 } from './shapes';
 import type { Props, SourcePart } from './source';
+import { BatchSurface, DEFAULT_SURFACE_SCALE, massRise, surfaceAround } from './surface';
 
 export type RoofMode = 'FACETED' | 'TERRACES' | 'HEIGHT_ONLY';
 
@@ -210,6 +210,8 @@ export interface MeasureOptions {
   /** Height-only mode: the feature and its parts, to correct each mass on its own. */
   heightTargets?: { feature: { id: string; props: Props }; parts: SourcePart[] };
   preferLidar?: boolean;
+  /** The batch's surface that measured roofs are cut from. Without one, the building's own returns make one. */
+  surface?: BatchSurface | null;
 }
 
 interface OnceOptions extends MeasureOptions {
@@ -435,7 +437,7 @@ function measureOnce(footprint: MultiPolygon, index: PointIndex, minWidthM: numb
       u[k] = toU(secondary.x[k], secondary.y[k]);
       v[k] = toV(secondary.x[k], secondary.y[k]);
     }
-    const floor = localCanopy(footprint, index, ground, options.neighbours ?? []) + envelopeParameters(options.surfaceScale ?? DEFAULT_SURFACE_SCALE)[2];
+    const floor = localCanopy(footprint, index, ground, options.neighbours ?? []) + massRise((options.surfaceScale ?? DEFAULT_SURFACE_SCALE)[0]);
     continueWithVegetation(secondary, u, v, { x0, y0, cell, rotated, parts }, state, floor);
   }
   const cells = state.cells;
@@ -530,37 +532,17 @@ function measureOnce(footprint: MultiPolygon, index: PointIndex, minWidthM: numb
   // ground, coverage and contradiction guards above are shared.
   let surfaceFallback: string | null = null;
   if (detailedSurfaces) {
-    const facetKeys = [...state.facetSamples.keys()].sort((a, b) => {
-      const [ax, ay] = parseKey(a);
-      const [bx, by] = parseKey(b);
-      return ax - bx || ay - by;
-    });
-    const facet = xyz(facetKeys.length);
-    facetKeys.forEach((key, k) => {
-      const [x, y, z] = state.facetSamples.get(key)!;
-      facet.x[k] = x;
-      facet.y[k] = y;
-      facet.z[k] = z;
-    });
-    const { fit, reason } = fitRoofEnvelope(
-      footprint,
-      facet,
-      cell,
-      options.surfaceScale ?? DEFAULT_SURFACE_SCALE,
-      state.boundary.length ? concatXyz(state.boundary) : xyz(0),
-      secondary,
-      neighbours,
-    );
+    const surface = options.surface !== undefined ? options.surface : surfaceAround(footprint, index.points, options.surfaceScale ?? DEFAULT_SURFACE_SCALE);
+    const { fit, reason } = surface ? surface.fit(footprint, ground, neighbours) : { fit: null, reason: 'insufficient upper surface samples' };
     if (fit) {
       const record: LidarRecord = {
         ...stats,
-        explainedFraction: Math.min(1, (fit.diagnostics.surface_retained_samples as number) / Math.max(expected, 1)),
+        explainedFraction: Math.min(1, state.facetSamples.size / Math.max(expected, 1)),
         heightM: fit.heightM,
         tiers: [],
         cap: fit.cap,
         method: 'faceted_roof',
-        surfaceReconstruction: 'roof_envelope',
-        roofFitP95M: fit.roofFitP95M,
+        surfaceReconstruction: 'surface',
         surfaceDiagnostics: fit.diagnostics,
       };
       if (areaCoverage) record.coverageBasis = 'footprint_area';

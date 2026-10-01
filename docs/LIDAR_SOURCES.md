@@ -11,7 +11,9 @@ Each provider is a module in `src/core/lidar/sources/`, registered in `PROVIDERS
 | Where | Source | Files | Notes |
 | --- | --- | --- | --- |
 | United States | USGS 3DEP, Hobu's mirror | EPT | |
-| Hawaii, Puerto Rico, Virgin Islands, Guam, Marianas, American Samoa | NOAA Digital Coast | EPT | Only asked there, not on the mainland. Topobathy water surface (class 41) reads as water |
+| United States and its territories | NOAA Digital Coast | EPT, COPC or LAZ tiles | NOAA's own builds of surveys USGS's mirror lacks: New York 2017 (23 returns per m² against 4), Philadelphia 2022, Miami-Dade 2021, DC, Richmond and Charleston 2025, Hawaii and the territories. A survey without an EPT is read through its zipped tile index, as COPC (Connecticut 2023) or as plain LAZ, which is offered. Topobathy water surface (class 41) reads as water |
+| Kentucky | KyFromAbove | COPC, 5000 ft | Phase 2 (2019-2021, statewide) and phase 3 (from 2022). USGS's mirror has some of these flights, but over Louisville and Paducah only 2012-2013 data at 1-4.5 returns per m², against 5-7 here |
+| Indiana's Lake Michigan shore | IndianaMap | COPC, 1250 ft | April 2025, about 35 returns per m², not in USGS's mirror yet |
 | Canada | NRCan CanElevation | COPC | |
 | New Brunswick | GeoNB | LAZ, 1 km | Adds 2025 (Moncton, Saint John), which NRCan doesn't have |
 | France | IGN LiDAR HD | COPC | |
@@ -34,6 +36,16 @@ Each provider is a module in `src/core/lidar/sources/`, registered in `PROVIDERS
 Flai's README is out of date: its bucket has datasets the table doesn't list, such as Spain's second coverage in UTM 30 (Madrid, Seville, Valencia), the 2022-2025 PNOA around Zaragoza and Riga 2022. The provider lists the bucket's folders for the countries near the area as well as reading the README. It leaves out Flai's copy of IGN France, since IGN is read directly and that index alone cost tens of MB near France.
 
 Licences and the credit each one asks for are in [data sources](DATA_SOURCES.md).
+
+## Which survey is read
+
+The newest survey that holds a building, or covers the whole area of a LiDAR only model, goes first. An older one with 2.5 times the returns per m² goes ahead of one less than five years newer, so San Francisco's 2023 USGS survey stays ahead of NOAA's sparser 2025 one. USGS work units named like `CA_SanFrancisco_1_B23` count as 2023. `Survey` under `Layers > LiDAR` picks one by hand. It's read first and the others fill in where it doesn't reach.
+
+## Whole files are asked about first
+
+A survey that only comes as whole files (plain LAZ or LAS, a ZIP member, or a server that ignores Range) isn't downloaded until the user agrees, as in the add-on. The model is made without it and the action bar offers its tiles with their size, under `Download and regenerate`. A 300 x 250 m area of Cologne offers one 48 MB NRW tile for 41 buildings.
+
+It's offered when it would measure buildings nothing else did, or fill part of a LiDAR only model nothing else reaches. Where something else was read, it's only offered when it's at least five years newer, or twice as dense with two more returns per m². Approved tiles are kept with the LiDAR cache. One tile's header is read before offering, so a survey that couldn't be read anyway is reported instead: OpenTopography's Indiana tiles have no height units and are 300 MB each. EPT and COPC are read without asking.
 
 ## How files are read
 
@@ -89,6 +101,16 @@ Most of these have open data. They fail on CORS, a login or the format. A few wo
 | Caribbean Netherlands | AHN 2023-24 | Same bucket as AHN |
 | Japan | Shizuoka | Works, but 1.4-3 GB per km². Left out for now |
 | Hong Kong, Singapore, Korea, Taiwan, Israel | | Rasters only, by order, or nothing found |
+| United States | USGS's staged LAZ (TNM) | `rockyweb.usgs.gov` has no CORS, `prd-tnm` only holds link lists and `s3://usgs-lidar` is requester pays. Hobu's EPT and NOAA cover most of it |
+| United States | Planetary Computer 3DEP COPC | 2012-2022 copies of what Hobu's EPT has |
+| Illinois | ISGS clearinghouse | Works. Chicago 2022 is about 100 returns per m², but uncompressed LAS of 1.7-2 GB per 762 m tile. Not added yet |
+| Wisconsin | WisconsinView on UW's S3 | Works, with a GeoJSON index per dataset but no search by area. Madison 2024 and Milwaukee 2021 would need a hand-made list. Not added yet |
+| Washington DC | OCTO 2024 ImageServer | Works, but whole uncompressed LAS of about 300 MB without Range. NOAA has 2020 and 2022 |
+| Alaska | DNR COPC in `nuview-state-opendata` | Works, but only small towns and no index. Not added yet |
+| Texas | TxGIO | The catalog API has CORS, the files don't. Worth asking: nothing after 2018 is readable there |
+| Washington, New York State, Pennsylvania, Omaha | DNR portal, `gisdata.ny.gov`, PASDA, `dcgis-lidar` | No CORS on the files. Long Island 2024 and Philadelphia 2025 are nowhere else |
+| New Jersey, Connecticut (CT ECO), Hawaii | State buckets | No CORS, and nothing newer than NOAA or USGS have |
+| Kentucky, Indiana | KyFromAbove phase 1, Indiana's statewide COPC and 2024 deliveries | The same flights as USGS's, or LAS and LAZ in folders that look temporary |
 
 ## Adding a source
 

@@ -1,14 +1,15 @@
-import { Download, Eye, LoaderCircle, RefreshCw, X } from 'lucide-react';
+import { CloudDownload, Download, Eye, LoaderCircle, RefreshCw, X } from 'lucide-react';
+import type { LidarOffer } from '../../core/engine/protocol';
 import { editCount, unusedLayers } from '../../core/edit/types';
 import { TaskProgress } from '../components/TaskProgress';
 import { areaHint } from '../lib/area';
 import { PHONE_QUERY, useMediaQuery } from '../lib/browser';
-import { formatCount, formatInteger, formatMm, formatNumber } from '../lib/format';
+import { formatBytes, formatCount, formatInteger, formatMm, formatNumber } from '../lib/format';
 import { useState } from 'react';
 import { cancelExport, cancelGeneration, exportModel, generateModel } from '../state/actions';
 import { FORMAT_EXTENSIONS, filamentCount, generationProblem, hiddenDownloadParts, modelSize, resultGroups } from '../state/derived';
 import { getEditData } from '../state/model';
-import { areaResizable, dismissExportError, dismissGenerationError, dismissMapHint, setView, useApp } from '../state/store';
+import { areaResizable, dismissExportError, dismissGenerationError, dismissMapHint, dismissOffers, setView, snapshotKey, useApp } from '../state/store';
 import { downloadSvg, generateSvg, svgProblem, useSvgKey } from '../svgmap/actions';
 import { cancelRender, renderFraction, useSvgRender } from '../svgmap/render';
 
@@ -90,6 +91,61 @@ function Alert({ title, text, onDismiss }: { title: string; text: string; onDism
   );
 }
 
+function offerLine(offer: LidarOffer, failed: boolean): string {
+  const name = `${offer.name}${offer.year ? ` (${offer.year})` : ''}`;
+  const buildings = offer.buildings === undefined ? null : `${formatCount(offer.buildings)} ${offer.buildings === 1 ? 'building' : 'buildings'}`;
+  if (offer.reason === 'chosen') return buildings ? `${name}, the survey picked under Layers, would measure ${buildings}.` : `${name} is the survey picked under Layers.`;
+  // A LiDAR only model that couldn't be built had nothing else to read.
+  if (failed) return `${name} has the only LiDAR for this area.`;
+  if (offer.reason === 'gap') return buildings ? `${name} has LiDAR for ${buildings} nothing else measured.` : `${name} covers parts of the area nothing else does.`;
+  const how = offer.reason === 'newer' ? 'much newer' : 'much denser';
+  return buildings ? `${name} is ${how} than what ${buildings} were measured from.` : `${name} is ${how} than the survey read here.`;
+}
+
+/**
+ * Surveys that only come as whole files, offered rather than downloaded, as
+ * the add-on did. Approving them regenerates with their tiles.
+ */
+/** The last generation's offers, while the area and settings are still the ones they were made for. */
+function useOffers() {
+  const offers = useApp((state) => state.generation.offers);
+  const current = useApp((state) => (state.generation.offers ? snapshotKey(state.area, state.settings) : ''));
+  return offers && offers.key === current ? offers : null;
+}
+
+function LidarOffers({ failed }: { failed: boolean }) {
+  const offers = useOffers();
+  if (!offers) return null;
+  const tiles = [...new Set(offers.list.flatMap((o) => o.tiles))];
+  const bytes = offers.list.reduce((sum, o) => sum + o.bytes, 0);
+  const unsized = offers.list.reduce((sum, o) => sum + o.unsized, 0);
+  const count = `${formatCount(tiles.length)} ${tiles.length === 1 ? 'tile' : 'tiles'}`;
+  const size = bytes ? `, about ${bytes >= 1e9 ? `${formatNumber(bytes / 1e9, 1)} GB` : formatBytes(bytes)}${unsized ? ` plus ${unsized} of unknown size` : ''}` : ' of unknown size';
+  return (
+    <div className="notice offer-notice" role="status">
+      <CloudDownload size={14} aria-hidden="true" />
+      <div className="alert-text">
+        <strong>LiDAR to download</strong>
+        {offers.list.map((offer) => (
+          <span key={offer.url}>{offerLine(offer, failed)}</span>
+        ))}
+        <span>
+          {count}
+          {size}. They come as whole files, so this can take a while, and are kept in the LiDAR cache.
+        </span>
+        <div className="offer-actions">
+          <button type="button" className="btn btn-sm btn-primary" onClick={() => void generateModel({ approveTiles: tiles })}>
+            Download and regenerate
+          </button>
+          <button type="button" className="btn btn-sm btn-ghost" onClick={dismissOffers}>
+            Not now
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ModelActions() {
   const status = useApp((state) => state.generation.status);
   const error = useApp((state) => state.generation.error);
@@ -106,6 +162,8 @@ function ModelActions() {
   const largeGrids = useApp((state) => state.ui.largeGrids);
   const problem = generationProblem(area, settings, largeGrids);
   const running = status === 'running';
+  // An offer says what the error would, with a way forward.
+  const offers = useOffers();
 
   let summary = '';
   let note = '';
@@ -130,8 +188,9 @@ function ModelActions() {
 
   return (
     <>
-      {status === 'error' && error && <Alert title="Could not generate the model" text={error} onDismiss={dismissGenerationError} />}
+      {status === 'error' && error && !offers && <Alert title="Could not generate the model" text={error} onDismiss={dismissGenerationError} />}
       {exportError && <Alert title="Could not export the model" text={exportError} onDismiss={dismissExportError} />}
+      {!running && !exporting && <LidarOffers failed={status === 'error'} />}
 
       {running ? (
         <Progress />

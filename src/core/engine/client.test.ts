@@ -145,6 +145,20 @@ describe('EngineClient', () => {
     expect(onReplaced).toHaveBeenCalledTimes(1);
   });
 
+  it('answers a survey search, and never takes a slow one for a stuck worker', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const { client, workers } = setup();
+    const search = client.surveys({} as AreaSpec);
+    expect(workers[0].sent[0]).toEqual({ type: 'surveys', id: 1, area: {} });
+    vi.advanceTimersByTime(30000);
+    const job = client.generate(request);
+    expect(workers).toHaveLength(1);
+    workers[0].reply({ type: 'surveys', id: 1, result: { surveys: [], failures: ['x'] } });
+    await expect(search).resolves.toEqual({ surveys: [], failures: ['x'] });
+    workers[0].reply({ type: 'generated', id: 2, result: { parts: [] } as never });
+    await expect(job).resolves.toEqual({ parts: [] });
+  });
+
   it('replaces a worker stuck on an edit when a new model is asked for', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
     const { client, workers } = setup();

@@ -6,13 +6,16 @@ import { zipSync } from 'fflate';
 import proj4 from 'proj4';
 import { describe, expect, it } from 'vitest';
 import type { GeoBounds } from '../../types';
-import { setProjector } from '../read/crs';
+import { crsFromEpsg, lonLatTransforms, setProjector } from '../read/crs';
 import type { Fetcher } from '../read/fetcher';
 import { geonb } from './geonb';
 import { noaa } from './noaa';
 import { opentopography } from './opentopography';
+import { indiana } from './indiana';
 import { japan } from './japan';
+import { kyfromabove } from './kyfromabove';
 import { saoPaulo } from './saopaulo';
+import { zippedShapefile } from './test-shapefile';
 
 setProjector((from, to) => proj4(from, to));
 
@@ -152,6 +155,8 @@ describe('NOAA Digital Coast', () => {
       if (url.endsWith('mission_10092.json')) return item('https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/entwine/geoid12b/10092/ept.json', 4e9);
       if (url.endsWith('mission_9118.json')) return item('https://s3-us-west-2.amazonaws.com/usgs-lidar-public/USGS_LPC_X/ept.json', 4e9);
       if (url.endsWith('mission_2497.json')) return item('https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/entwine/geoid12b/2497/ept.json', 1e6);
+      // Nor tiles.
+      if (url.includes('list-type=2')) return listing([]);
       return undefined;
     });
     const failures: { source: string; reason: string }[] = [];
@@ -162,6 +167,46 @@ describe('NOAA Digital Coast', () => {
     // About 390 km² of outline.
     expect(surveys[0].densityM2).toBeGreaterThan(5);
     expect(surveys[0].classification!['41']).toBe('water');
+  });
+
+  it('reads the tile index of a survey without an EPT, and leaves old ones alone', async () => {
+    const { fromLonLat } = lonLatTransforms(crsFromEpsg(6347));
+    const [x, y] = fromLonLat(-72.925, 41.305);
+    const tile = (dx: number): [number, number, number, number] => [x - 400 + dx, y - 400, x + 400 + dx, y + 400];
+    const folder = 'https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/laz/geoid18/';
+    const index = (id: number, ext: string) =>
+      zippedShapefile(
+        [tile(0), tile(20000)],
+        [['filename', 30], ['srs', 9], ['url', 100]],
+        [
+          [`near${ext}`, 'EPSG:6347', `${folder}${id}/BLOCK1/near${ext}`],
+          [`far${ext}`, 'EPSG:6347', `${folder}${id}/BLOCK1/far${ext}`],
+        ],
+      );
+    const { fetcher, requested } = fakeFetcher((url) => {
+      if (url.startsWith('https://coast.noaa.gov/'))
+        return collection([
+          { type: 'Feature', geometry: null, properties: { id: 10296, title: '2023 CT GIS Office Lidar: Connecticut Statewide' } },
+          { type: 'Feature', geometry: null, properties: { id: 4000, title: '2019 County Lidar' } },
+          { type: 'Feature', geometry: null, properties: { id: 1468, title: '2006 FEMA Lidar: Connecticut Coastal' } },
+        ]);
+      if (url.includes(encodeURIComponent('laz/geoid18/10296/tileindex_'))) return listing([['laz/geoid18/10296/tileindex_CT_statewide_m10296.zip', 1e6]]);
+      if (url.endsWith('tileindex_CT_statewide_m10296.zip')) return index(10296, '.copc.laz');
+      // The 2019 one is under the other datum, as plain LAZ.
+      if (url.includes(encodeURIComponent('laz/geoid12b/4000/tileindex_'))) return listing([['laz/geoid12b/4000/tileindex_county_m4000.zip', 1e6]]);
+      if (url.endsWith('tileindex_county_m4000.zip')) return index(4000, '.laz');
+      if (url.includes('list-type=2')) return listing([]);
+      return undefined;
+    });
+    const failures: { source: string; reason: string }[] = [];
+    const surveys = await noaa.discover(fetcher, { west: -72.927, south: 41.303, east: -72.923, north: 41.307 }, failures);
+    expect(failures).toEqual([]);
+    expect(surveys.map((s) => [s.id, s.format, s.projectYearHint, s.tiles!.map((t) => t.url.split('/').pop())])).toEqual([
+      ['10296', 'COPC', 2023, ['near.copc.laz']],
+      ['4000', 'LAZ', 2019, ['near.laz']],
+    ]);
+    expect(surveys[0].url).toBe(`${folder}10296/`);
+    expect(requested.some((url) => url.includes(encodeURIComponent('/1468/')))).toBe(false);
   });
 });
 
@@ -192,5 +237,53 @@ describe('Japan', () => {
     const failures: { source: string; reason: string }[] = [];
     expect(await japan.discover(fakeFetcher(() => undefined).fetcher, { west: 139.75, south: 35.68, east: 139.752, north: 35.682 }, failures)).toEqual([]);
     expect(failures).toEqual([]);
+  });
+});
+
+/** An S3 ListObjectsV2 answer for these keys and sizes. */
+const listing = (keys: [string, number][]) =>
+  `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated>${keys.map(([key, size]) => `<Contents><Key>${key}</Key><Size>${size}</Size><ETag>&quot;x&quot;</ETag></Contents>`).join('')}</ListBucketResult>`;
+
+describe('KyFromAbove', () => {
+  // Inside tile N159E063 over Paducah.
+  const paducah: GeoBounds = { west: -88.5925, south: 37.0845, east: -88.5905, north: 37.0865 };
+
+  it("finds each phase's COPC tiles by listing the rows of the grid", async () => {
+    const { fetcher, requested } = fakeFetcher((url) => {
+      if (url.includes(encodeURIComponent('elevation/PointCloud/Phase2/N159'))) return listing([['elevation/PointCloud/Phase2/N159E062_LAS_Phase2.copc.laz', 40e6], ['elevation/PointCloud/Phase2/N159E063_LAS_Phase2.copc.laz', 30e6]]);
+      if (url.includes(encodeURIComponent('elevation/PointCloud/Phase3/N159'))) return listing([['elevation/PointCloud/Phase3/N159E063_LAS_Phase3.copc.laz', 50e6]]);
+      return undefined;
+    });
+    const surveys = await kyfromabove.discover(fetcher, paducah, []);
+    expect(requested).toHaveLength(2);
+    expect(surveys.map((s) => [s.name, s.format, s.projectYearHint, s.verticalUnits])).toEqual([
+      ['KyFromAbove Phase 2 (2019-2021)', 'COPC', 2019, 'us-ft'],
+      ['KyFromAbove Phase 3 (2022-)', 'COPC', 2022, 'us-ft'],
+    ]);
+    expect(surveys[1].tiles).toEqual([expect.objectContaining({ url: 'https://kyfromabove.s3.us-west-2.amazonaws.com/elevation/PointCloud/Phase3/N159E063_LAS_Phase3.copc.laz', size: 50e6, horizontalCrs: 'EPSG:3089' })]);
+    // The tile's corners as the state's tile grid has them, within a few metres.
+    const [w, s, e, n] = surveys[1].tiles![0].bbox;
+    expect([w, s, e, n].map((v) => Number(v.toFixed(3)))).toEqual([-88.6, 37.079, -88.583, 37.093]);
+  });
+
+  it('has nothing where a phase lacks the tile', async () => {
+    const { fetcher } = fakeFetcher(() => listing([]));
+    expect(await kyfromabove.discover(fetcher, paducah, [])).toEqual([]);
+  });
+});
+
+describe('Indiana', () => {
+  // Inside tile in2025_28222356 on the Lake Michigan shore.
+  const shore: GeoBounds = { west: -87.5585, south: 41.7173, east: -87.5575, north: 41.7181 };
+
+  it("reads the lake rim survey's COPC tiles, not their colourised copies", async () => {
+    const folder = 'copc/lakerim/2025/SPW/ql1/';
+    const { fetcher } = fakeFetcher((url) =>
+      url.includes(encodeURIComponent(`${folder}in2025_2822`)) ? listing([[`${folder}in2025_28222356_03.copc.laz`, 29e6], [`${folder}in2025_28222356_03_rgb.copc.laz`, 39e6], [`${folder}in2025_28222355_03.copc.laz`, 31e6]]) : undefined,
+    );
+    const [survey, ...rest] = await indiana.discover(fetcher, shore, []);
+    expect(rest).toEqual([]);
+    expect(survey).toMatchObject({ format: 'COPC', acquisitionStart: '2025-04-27', verticalUnits: 'us-ft', license: 'CC0 1.0' });
+    expect(survey.tiles!.map((t) => [t.url, t.size])).toEqual([[`https://giselevationingov.s3.amazonaws.com/${folder}in2025_28222356_03.copc.laz`, 29e6]]);
   });
 });

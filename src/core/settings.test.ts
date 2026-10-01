@@ -90,6 +90,16 @@ describe('water settings', () => {
   });
 });
 
+describe('LiDAR survey choice', () => {
+  it('keeps a picked survey and drops anything that is not one', () => {
+    const url = 'https://s3-us-west-2.amazonaws.com/usgs-lidar-public/CA_SanFrancisco_1_B23/ept.json';
+    expect(sanitizeSettings({ lidar: { survey: url } }).lidar.survey).toBe(url);
+    expect(sanitizeSettings({ lidar: { survey: 42 } }).lidar.survey).toBe('');
+    expect(sanitizeSettings({ lidar: { survey: 'x'.repeat(2000) } }).lidar.survey).toBe('');
+    expect(sanitizeSettings({}).lidar.survey).toBe('');
+  });
+});
+
 describe('LiDAR only settings', () => {
   it('keep the model source and clamp its numbers', () => {
     const lidar = sanitizeSettings({ ...cloneSettings(), modelSource: 'lidar', lidarModel: { detailMm: 0, keepClutter: 'no', waterDepthMm: 9, heightScale: 2 } });

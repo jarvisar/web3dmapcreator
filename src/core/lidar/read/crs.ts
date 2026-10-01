@@ -65,6 +65,9 @@ const DEFINITIONS: Record<number, string> = {
   8693: `+proj=utm +zone=55 ${GRS80}`,
   // NAD83(CSRS) / New Brunswick Stereographic (GeoNB).
   2953: `+proj=sterea +lat_0=46.5 +lon_0=-66.5 +k=0.999912 +x_0=2500000 +y_0=7500000 ${GRS80}`,
+  // NAD83 and NAD83(2011) / Kentucky Single Zone, metres and US feet (KyFromAbove).
+  3088: `+proj=lcc +lat_0=36.3333333333333 +lon_0=-85.75 +lat_1=37.0833333333333 +lat_2=38.6666666666667 +x_0=1500000 +y_0=1000000 ${GRS80}`,
+  3089: `+proj=lcc +lat_0=36.3333333333333 +lon_0=-85.75 +lat_1=37.0833333333333 +lat_2=38.6666666666667 +x_0=1500000 +y_0=999999.9998984 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=us-ft +no_defs`,
   5514: '+proj=krovak +lat_0=49.5 +lon_0=24.8333333333333 +alpha=30.2881397527778 +k=0.9999 +x_0=0 +y_0=0 +ellps=bessel +towgs84=589,76,480,0,0,0,0 +units=m +no_defs',
 };
 
@@ -79,6 +82,17 @@ const JAPAN: [number, number][] = [
   [33, 129.5], [33, 131], [36, 132.166666666667], [33, 133.5], [36, 134.333333333333], [36, 136], [36, 137.166666666667], [36, 138.5], [36, 139.833333333333], [40, 140.833333333333],
   [44, 140.25], [44, 142.25], [44, 144.25], [26, 142], [26, 127.5], [26, 124], [26, 131], [20, 136], [26, 154],
 ];
+DEFINITIONS[6472] = DEFINITIONS[3088];
+DEFINITIONS[6473] = DEFINITIONS[3089];
+// NAD83 and NAD83(2011) / Indiana East and West, metres and US feet (Indiana's own lidar).
+for (const [lon, x, metres, feet] of [
+  [-85.6666666666667, 100000, [26973, 6458], [2965, 6459]],
+  [-87.0833333333333, 900000, [26974, 6460], [2966, 6461]],
+] as [number, number, number[], number[]][]) {
+  const zone = `+proj=tmerc +lat_0=37.5 +lon_0=${lon} +k=0.999966666666667 +x_0=${x} +y_0=250000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0`;
+  for (const code of metres) DEFINITIONS[code] = `${zone} +units=m +no_defs`;
+  for (const code of feet) DEFINITIONS[code] = `${zone} +units=us-ft +no_defs`;
+}
 JAPAN.forEach(([lat, lon], k) => {
   DEFINITIONS[6669 + k] = DEFINITIONS[2443 + k] = `+proj=tmerc +lat_0=${lat} +lon_0=${lon} +k=0.9999 +x_0=0 +y_0=0 ${GRS80}`;
 });
@@ -170,7 +184,8 @@ export function crsFromEpsg(epsg: number): CrsInfo {
 export function lonLatTransforms(crs: CrsInfo): { toLonLat: Transform; fromLonLat: Transform } {
   if (crs.epsg === 3857 || crs.epsg === 900913 || crs.epsg === 3785) return webMercator;
   if (crs.geographic && (crs.epsg === 4326 || crs.epsg === null)) return { toLonLat: identity, fromLonLat: identity };
-  const def = (crs.epsg !== null && definition(crs.epsg)) || crs.wkt;
+  // proj4 can't read a compound WKT, but it can read its horizontal part.
+  const def = (crs.epsg !== null && definition(crs.epsg)) || (crs.wkt && horizontalPart(crs.wkt));
   if (!def) throw new Error(`No definition for LiDAR coordinate system ${crs.key}`);
   if (!projector) throw new Error(`Reading LiDAR in ${crs.key} needs a projection library`);
   const converter = projector(def, 'EPSG:4326');

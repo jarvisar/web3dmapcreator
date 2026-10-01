@@ -117,6 +117,7 @@ describe('LiDAR discovery', () => {
       { properties: { name: 'XX_Here_2020', url: 'https://example.com/here/ept.json' }, geometry: { type: 'Polygon', coordinates: [[[19.9, 59.9], [20.1, 59.9], [20.1, 60.1], [19.9, 59.9]]] } },
       { properties: { name: 'XX_Plain_2020', url: 'http://example.com/plain/ept.json' }, geometry: { type: 'Polygon', coordinates: [[[19.9, 59.9], [20.1, 59.9], [20.1, 60.1], [19.9, 59.9]]] } },
       { properties: { name: 'XX_Far_2019', url: 'https://example.com/far/ept.json' }, geometry: { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] } },
+      { properties: { name: 'XX_WorkUnit_1_B23', url: 'https://example.com/unit/ept.json' }, geometry: { type: 'Polygon', coordinates: [[[19.9, 59.9], [20.1, 59.9], [20.1, 60.1], [19.9, 59.9]]] } },
     ],
   };
 
@@ -133,8 +134,10 @@ describe('LiDAR discovery', () => {
     const { fetcher, requested } = fakeFetcher(route);
     const { candidates, failures } = await discover(fetcher, bbox);
     expect(failures).toEqual([]);
-    expect(candidates.map((c) => `${c.provider} ${c.id}`)).toEqual(['USGS XX_Here_2020', 'Flai data/XX/Agency/Scan_2022']);
-    const flai = candidates[1];
+    expect(candidates.map((c) => `${c.provider} ${c.id}`)).toEqual(['USGS XX_Here_2020', 'USGS XX_WorkUnit_1_B23', 'Flai data/XX/Agency/Scan_2022']);
+    // Work units since 2020 carry their year as a suffix.
+    expect(candidates.map((c) => c.projectYearHint)).toEqual([2020, 2023, 2022]);
+    const flai = candidates[2];
     expect(flai.format).toBe('COPC');
     expect(flai.tiles!.map((t) => t.url)).toEqual(['https://open-lidar-data.s3.eu-central-1.amazonaws.com/data/XX/Agency/Scan_2022/copc/inside.copc.laz']);
     expect(flai.tiles![0].horizontalCrs).toBe('EPSG:4326');

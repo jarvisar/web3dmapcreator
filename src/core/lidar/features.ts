@@ -14,6 +14,7 @@ import { constructionYear, topHeight } from './selection';
 import { area, bounds, buffer, Inside } from './shapes';
 import { checkSource, estimatedHeight, heightDecision, heightMetres, regionalTop, strongMeasurement, type Props, type SourcePart } from './source';
 import type { Observation } from './selection';
+import { BatchSurface, type SurfaceSettings } from './surface';
 
 export interface MetricFeature {
   id: string;
@@ -126,6 +127,8 @@ export interface ReconstructOptions {
   roofMode: RoofMode;
   surfaceScale?: [number, number];
   preferLidar: boolean;
+  /** Where measured roofs come from: the batch's surface, null when it has none. */
+  surface?: BatchSurface | null;
 }
 
 const SUPPLEMENT_REASONS = new Set([
@@ -155,7 +158,7 @@ export function reconstruct(
   let reason = early;
   const index = early === null ? new PointIndex(local) : null;
   if (index && props.lidar_surface_kind === 'rock') {
-    ({ record, reason } = measureRockSurface(footprint, index, options.surfaceScale));
+    ({ record, reason } = measureRockSurface(footprint, index, options.surfaceScale, options.surface));
   } else if (index) {
     ({ record, reason } = measureBuilding(footprint, index, options.minWidthM, options.minStepM, {
       roofPlanes: options.roofPlanes,
@@ -165,6 +168,7 @@ export function reconstruct(
       neighbours,
       heightTargets: options.roofMode === 'HEIGHT_ONLY' ? { feature: { id: feature.id, props }, parts: sourceParts } : undefined,
       preferLidar: options.preferLidar,
+      surface: options.surface,
     }));
   }
   // Source-shaped roofs stay useful when a whole-envelope fit is too
@@ -188,6 +192,8 @@ export interface BatchContext extends ReconstructOptions {
   partsByParent: Map<string, MultiPolygon[]>;
   sourcePartsByParent: Map<string, SourcePart[]>;
   neighboursById: Map<string, MultiPolygon[]>;
+  /** The cells measured roofs are cut from. Without them, each building's own returns make its surface. */
+  surfaceSettings?: SurfaceSettings;
   onProgress?: (done: number, total: number, name: string) => void | Promise<void>;
 }
 
@@ -205,6 +211,9 @@ export interface BatchResult {
  */
 export async function measureFeatures(features: MetricFeature[], points: Points, ctx: BatchContext): Promise<BatchResult> {
   const index = new PointIndex(points);
+  // One surface for the batch, so overlapping halos aren't composed twice.
+  const options: ReconstructOptions = { ...ctx };
+  if (ctx.roofMode === 'FACETED' && ctx.surfaceSettings) options.surface = BatchSurface.build(points, bounds(ctx.roi), ctx.surfaceSettings);
   const result: BatchResult = { records: new Map(), counts: {}, rejected: new Map(), observations: new Map() };
   const count = (reason: string) => (result.counts[reason] = (result.counts[reason] ?? 0) + 1);
   for (let position = 0; position < features.length; position++) {
@@ -265,7 +274,7 @@ export async function measureFeatures(features: MetricFeature[], points: Points,
       feature,
       local,
       early,
-      ctx,
+      options,
       ctx.partsByParent.get(feature.id) ?? [],
       ctx.neighboursById.get(feature.id) ?? [],
       ctx.sourcePartsByParent.get(feature.id) ?? [],

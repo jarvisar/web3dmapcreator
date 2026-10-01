@@ -97,7 +97,7 @@ Buildings and building parts follow the add-on's rules (`src/core/pipeline/build
 
 With `LiDAR` on, buildings are measured from public LiDAR surveys before the model is built (`src/core/lidar/`). It's a port of the add-on's LiDAR pipeline, limited to publishers a browser can read from directly.
 
-Surveys are found per provider, one module each in `sources/`: USGS 3DEP through Hobu's EPT mirror, NOAA, IGN, NRCan, swisstopo, several German states, Luxembourg, Scotland, Slovenia, the Basque Country, Trentino, Helsinki, Japanese prefectures, OpenTopography and Open LiDAR Data by Flai. [LiDAR sources](LIDAR_SOURCES.md) has the list, and the open surveys that couldn't be used. Each provider is only asked inside a box around its territory, and one that fails or takes over 90 s is reported while the others carry on. A survey can measure a building when its outline holds the whole footprint.
+Surveys are found per provider, one module each in `sources/`: USGS 3DEP through Hobu's EPT mirror, NOAA, KyFromAbove, Indiana, IGN, NRCan, swisstopo, several German states, Luxembourg, Scotland, Slovenia, the Basque Country, Trentino, Helsinki, Japanese prefectures, OpenTopography and Open LiDAR Data by Flai. [LiDAR sources](LIDAR_SOURCES.md) has the list, and the open surveys that couldn't be used. Each provider is only asked inside a box around its territory, and one that fails or takes over 90 s is reported while the others carry on. A survey can measure a building when its outline holds the whole footprint. Surveys that only come as whole files are offered rather than downloaded (`offers.ts`): the model is made without them and the action bar says what downloading them would add and cost.
 
 Reading (`read/`):
 
@@ -107,40 +107,44 @@ Reading (`read/`):
 - Points are cropped, noise and withheld returns dropped, and classes mapped to ground, building, vegetation and unclassified. Z units come from the header or the catalog. Without either, metres are assumed only outside regions with a height system in feet (the US, Ireland, Kuwait and the Cayman Islands).
 - LAZ is decompressed in WebAssembly by [laz-rs](https://github.com/tmontaigu/laz-rs) (`@voxelkloud/wasm-codecs`), skipping colour and intensity. Grids other than web Mercator go through proj4, with definitions for the national grids the providers use built in.
 
-Buildings are measured in 400 m batches, each read with a 30 m margin so every roof and the ground around it is whole. A read stops at 8 million points and the batch is split in two. Up to four batches run at once, each in a worker of its own (one fewer than the cores). Batch results are kept in the LiDAR cache, and the whole area's result is reused for a day if nothing failed. The workers' downloads go through the engine worker, which fetches each file once for all of them and keeps recent ones in memory, since every batch reads the same coarse EPT nodes. The `Chicago - The Loop (small)` preset measures 610 of its 1,308 buildings from about 790 MB in 3.5 to 4 minutes the first time.
+Buildings are measured in 400 m batches, each read with a 30 m margin so every roof and the ground around it is whole. A read stops at 8 million points and the batch is split in two. Up to four batches run at once, each in a worker of its own (one fewer than the cores). Batch results are kept in the LiDAR cache, and the whole area's result is reused for a day if nothing failed. The workers' downloads go through the engine worker, which fetches each file once for all of them and keeps recent ones in memory, since every batch reads the same coarse EPT nodes. The `Chicago - The Loop (small)` preset measures 610 of its 1,308 buildings from about 790 MB in 3.5 to 4 minutes the first time, and in about 70 s once the survey is downloaded.
 
 Measuring follows the add-on:
 
 - The ground is a plane fitted to ground returns within 25 m of the footprint, or a nearby ground height where no plane fits.
 - A building needs returns across its footprint and observed ground around it. Otherwise it keeps its mapped shape and the reason is counted.
-- The roof envelope starts from the second highest return in each cell. Cells are 0.035 mm printed, kept between 0.5 and 0.8 m. The grid is smoothed, filled and faired, then fitted with planes and triangulated (below), with the outline kept exact.
-- Where the envelope doesn't fit, it falls back to roof planes, flat terraces and finally a single height.
+- Where the roof can't be built from the surface (below), it falls back to roof planes, flat terraces and finally a single height.
 - `Measure > Heights only` keeps the mapped shapes and only corrects their heights.
 
 Where several surveys cover a building, one is picked by coverage, classification and capture date against the building's construction year. A measurement far from the mapped height is only used with `Prefer LiDAR on conflicts` on. With it off, mapped parts with more detail than the measurement are kept, like a tower on a podium measured as one flat top.
 
-From the faired grid on, the web app goes its own way. The add-on simplified a TIN of the grid with a quadric edge collapse priced against the faces as they were. That let a vertex slide down a wall a little at a time until a penthouse was a pyramid, made pitched roofs a crumple of facets, and left flat roofs a few centimetres off level here and there, which a slicer prints as speckled part-layers. Now (`regularize.ts`, `delatin.ts`, `coarsen.ts`):
+### Measured roofs
 
-- Planes are grown over the grid much like roofer (3D BAG) does on points: a cell joins a plane within 0.3 m of it when the slope of its 3 x 3 neighbourhood is within 25 degrees of the plane's. A second, looser pass (1.3 m, any slope) catches rough roofs, like one covered in plant or a lattice crown. Planes under 3 degrees are made exactly level.
-- Every cell then takes a plane or keeps its measured height, whichever costs least. Moving a cell costs how far it moves, square to the plane, and each cell edge between two labels costs a fixed amount, sized so a bump about 0.3 mm across and one 0.2 mm layer tall, printed, is the smallest that stays. Rooftop plant, parapets, chimneys and vents go, a penthouse stays. Raising a cell costs at most a layer, so a pit narrower than 0.3 mm closes however deep it is, as it would in the slicer. Ridges, hips and steps end up where the planes meet.
-- The grid is triangulated by greedy insertion (a port of Delatin) until every cell is within a cell's pitch of the TIN up and down on a flat part, and half a pitch across a wall, so a diagonal wall runs straight past the staircase of cells it crosses. Merging vertices along straight steps then removes most of what insertion put there.
-- Spires skip the tidying, keep their upper returns rather than the median, which rounds a tip off by metres, and are held to a quarter of the error.
-- Clipping to the footprint leaves a rim vertex every half metre along the walls, and one on a straight stretch of outline is removed when the roof around it stays within half a cell. The flat underside is triangulated from the outline instead of copying the roof's triangles.
+Roofs are cut from the same surface a LiDAR only model is built from (`lidar/surface.ts`). Each batch counts its returns into the cells a LiDAR only model of the area would have, at the same `Detail` or cell size, runs them through the same rules (`composeSurface`, `fairFaces`), and meshes each building from the cells around it with the same mesher and limits. Inside its walls, a measured building comes out the way it does in a LiDAR only model: rooftop plant, parapets, setbacks and spires as the survey saw them. The measurement uses the area's own frame, so the cells land exactly where a LiDAR only model's do.
 
-Relief narrower than about 0.3 mm doesn't print as anything but a blob, so it's left off rather than kept for the 3D view. At a larger print scale the same rules keep more of it. On the `Chicago - The Loop (small)` preset the buildings come to 298,000 triangles. The add-on's way took 1.15 million, and 326,000 with the thinned rim and the underside from the outline.
+Until October 2026 roofs had a pipeline of their own after the add-on's faired grid: planes grown over the grid, anything under 0.3 mm across and a 0.2 mm layer tall tidied away, then a Delatin triangulation. It printed clean, but next to a LiDAR only model of the same area the buildings looked bare, and the two kept drifting apart. That code is gone, and the git history has it.
+
+A map model needs a few things a LiDAR only model doesn't:
+
+- The building fills its mapped outline, since the roads and land cover stop there. Cells within 1.5 m inside the outline that stand under 2.5 m over the building's ground are the street, where the map's outline runs past the wall, and they take the height of the nearest roof cell. The roof is carried out past the outline the same way, so the cut along it goes through the roof and not halfway down a wall.
+- A taller mapped neighbour's facade standing inside the outline comes down to the roof behind it. Otherwise a metre of the tower next door stood along the edge of the roof, and counted towards the building's height.
+- Trees come off the roof, down to what the survey saw under them. Map models have trees of their own.
+- The cells never grow for a large area, since only one batch is gridded at a time. Where the survey is too sparse they grow the way a LiDAR only model's do.
+
+On the `Chicago - The Loop (small)` preset the buildings come to 530,000 triangles, from 385,000 with the old roofs.
 
 A measured roof is a solid of its own: the TIN on top, a flat underside and walls along the outline, standing on a prism down to the terrain. Section cuts clip the TIN with a constrained triangulation, so the pieces stay closed. Constrainautor can rescan forever when an outline grazes a TIN vertex, so its work is capped and a stuck cut is retried with the outline moved in by a millionth of its size. A Paris building on the model's edge used to hang generation there.
 
-Up to the faired grid, the measurement code was checked against the add-on's Python (algorithm 29) on the same point clouds. Given the same footprint and ground it gave the same grid, down to the order floats are summed in. That takes a few things another developer might want to tidy:
+The measurement's checks were ported from the add-on's Python (algorithm 29) and checked against it on the same point clouds. That takes a few things another developer might want to tidy:
 
-- `geos.ts` reproduces GEOS 3.13's minimum rotated rectangle and double-double line intersections, and CPython's `math.dist`. The measurement grid follows the rectangle's longest side, and opposite sides are equal to within rounding. A generic rectangle fit turned half of all grids by 180 degrees.
-- `centroid` and `rotate` follow GEOS and `shapely.affinity` operation for operation, and the envelope uses a single footprint as given rather than through Clipper, which rounds to 0.1 mm.
+- `geos.ts` reproduces GEOS 3.13's minimum rotated rectangle and double-double line intersections, and CPython's `math.dist`. The coverage grid follows the rectangle's longest side, and opposite sides are equal to within rounding. A generic rectangle fit turned half of all grids by 180 degrees.
+- `centroid` and `rotate` follow GEOS and `shapely.affinity` operation for operation.
 
 Buffers still come from Clipper rather than GEOS, so the 25 m ring the ground is fitted in has slightly different arcs, and the ground can come out up to 0.7 mm apart.
 
 ## LiDAR only models
 
-With `LiDAR only`, none of the above is used. The survey is read over the whole area into a grid of about 0.7 m cells, heights are decided per cell (haze and birds left out, holes filled, water flattened), and the grid is meshed into one closed solid in the terrain colour. Water is recessed in it, cut out for a thin layer of its own, or cut away, and Overture's water outlines smooth the shorelines where they agree with the survey. It's a port of the add-on's LiDAR Only mode with a few changes. [LiDAR only models](LIDAR_MODEL.md) has the details.
+With `LiDAR only`, nothing is measured per building. The survey is read over the whole area into a grid of about 0.7 m cells, heights are decided per cell (haze and birds left out, holes filled, water flattened), and the grid is meshed into one closed solid in the terrain colour. Water is recessed in it, cut out for a thin layer of its own, or cut away, and Overture's water outlines smooth the shorelines where they agree with the survey. It's a port of the add-on's LiDAR Only mode with a few changes. [LiDAR only models](LIDAR_MODEL.md) has the details.
 
 ## Meshes
 

@@ -4,6 +4,8 @@ Notes on how LiDAR only models are built, and the decisions that are easy to und
 
 The model is a digital surface model of the whole area: one height per grid cell, meshed into one closed solid in the terrain colour, and the water as a part of its own if you pick `Thin layer`. Nothing is traced per building, so towers, bridges, trees and the ground all come out of the same grid, and nothing depends on how well the city is mapped. The only map data it can use is Overture's water (see Water). The code is in `src/core/dsm/`.
 
+Measured buildings in map models are cut from this same surface (`lidar/surface.ts`, see [how it works](HOW_IT_WORKS.md#measured-roofs)), so a change to compose, `fairFaces` or the mesher shows up in both.
+
 ## The Grid
 
 The grid's vertices sit on the area's own rectangle in its rotated frame, with each cell centred on a vertex, so nothing is resampled between reading the survey and meshing it. A square area turned 90 degrees reads exactly the same cells as the unturned one.
@@ -22,7 +24,7 @@ Only streamed surveys (EPT and COPC) are read, through the same discovery and re
 
 Blocks are checkpointed in the LiDAR cache. A cancelled read picks up after the blocks it finished, and changing any setting that doesn't change the area or the cell size reads nothing again. A block whose read failed isn't kept, so the next Generate tries it again.
 
-A survey covering the whole area goes first so blocks don't mix years, then the same ranking as for buildings (newest first). Each cell takes its returns from the first survey whose outline holds it, even when it has none there: water and dark roofs return nothing, and another survey's returns would be another year's surface.
+A survey covering the whole area goes first so blocks don't mix years, then the same ranking as for buildings: newest first, unless an older one has 2.5 times the returns and is less than five years older. Each cell takes its returns from the first survey whose outline holds it, even when it has none there: water and dark roofs return nothing, and another survey's returns would be another year's surface.
 
 Every surface seen from above is kept (`surfaceClassTable`), including returns nobody classified, since whole surveys come that way. Noise, overlap, wires and towers are dropped. A provider's own class mapping only names ground, buildings and vegetation, so water and bridges keep their standard codes.
 
@@ -105,7 +107,7 @@ Tiles are simplified in the LiDAR workers with the points on their edges pinned,
 
 Next to Micropolitan's models, tall walls here came out ribbed: a facade in narrow vertical stripes, each shaded a little differently. Three things caused it.
 
-- Relief along a facade too narrow to print. The survey sees fins, pilasters and notches a metre or two across, and meshed faithfully each one is a pair of ribs. After compose, `fairFaces` straightens relief narrower than 0.3 mm printed where no height level moves more than 0.14 mm, the building caps' `fair` (`lidar/envelope.ts`) with the same sizes. It runs in `model.ts` rather than in compose, so compose still matches the add-on.
+- Relief along a facade too narrow to print. The survey sees fins, pilasters and notches a metre or two across, and meshed faithfully each one is a pair of ribs. After compose, `fairFaces` straightens relief narrower than 0.3 mm printed where no height level moves more than 0.14 mm, a row-major version of what the old building caps did. It runs in `model.ts` rather than in compose, so compose still matches the add-on.
 - A diagonal wall in one-cell stairs only just fits within one cell of a straight line, so with any noise along it the mesher kept a vertex at nearly every stair. Points beside a step of more than four cells may now be twice as far from the surface.
 - The foot of the wall. A wall is a band of steep triangles between its roof edge and its foot, and the foot is crooked from whatever stands along it (planters, canopies, a lower wing) as well as the stairs. A triangle from the roof edge down to a short stretch of crooked foot faces the way that stretch does, so a tall wall on a crooked foot is a fan of stripes from roof to street. After meshing, `straightenWalls` simplifies each roof edge to straight lines, moves the wall's foot onto a line parallel to it at the wall's median width, and collapses what's left in line. It doesn't move tree or rim vertices, and nothing moves if it would turn a triangle over.
 

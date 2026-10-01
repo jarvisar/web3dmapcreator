@@ -11,8 +11,9 @@ surfaces, roads/rail, optional schematic bridges and trees, and buildings with
 roofs from Overture Maps. It is a port of the Jarvizar City Model Blender
 add-on (separate repo `3dmapcreator`, not a dependency). Its LiDAR pipeline
 reads EPT, COPC and plain LAZ/LAS tiles (also inside ZIPs) straight from
-publishers that allow cross-origin requests (`docs/LIDAR_SOURCES.md`). The
-add-on's consent-gated staged downloads have no equivalent. `settings.modelSource = 'lidar'` (LiDAR only) builds the whole model from
+publishers that allow cross-origin requests (`docs/LIDAR_SOURCES.md`).
+Surveys that only come as whole files are offered and read once the user
+approves their tiles, like the add-on's staged downloads (`lidar/offers.ts`). `settings.modelSource = 'lidar'` (LiDAR only) builds the whole model from
 a survey instead, as one solid in the terrain colour, with the water as its
 own part if asked and Overture's water only for shorelines and holes
 (`src/core/dsm/`).
@@ -36,7 +37,7 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/geometry/` | Clipper2 wrappers (`polygon.ts`), prism mesher (`mesher.ts`, Delaunator + Constrainautor CDT with earcut fallback), edge/raster indexes, mesh validation |
 | `src/core/terrain/` | `HeightField`: the one grid every layer samples |
 | `src/core/dsm/` | LiDAR only models: `prepare.ts` reads a survey into a grid (`raster.ts`, `grid.ts`), `compose.ts`/`filters.ts` the height rules, `mesh.ts` RTIN and edge collapse, `model.ts` the `ModelSpec` |
-| `src/core/lidar/` | LiDAR: `sources/` one module per provider (`common.ts` has the shared catalog helpers), `read/` EPT, COPC, plain LAZ/LAS and ZIP reading (`ept.ts`, `tiles.ts`, `chunks.ts`, `zip.ts`) with an injected LAZ decoder and projector, measurement (`measure.ts`, `envelope.ts`, ground, planes, terraces, selection), roof surfaces (`regularize.ts`, `delatin.ts`, `coarsen.ts`, `rim.ts`), `prepare.ts` batching and checkpoints |
+| `src/core/lidar/` | LiDAR: `sources/` one module per provider (`common.ts` has the shared catalog helpers), `read/` EPT, COPC, plain LAZ/LAS and ZIP reading (`ept.ts`, `tiles.ts`, `chunks.ts`, `zip.ts`) with an injected LAZ decoder and projector, measurement (`measure.ts`, ground, planes, terraces, selection), roofs cut from the LiDAR only surface (`surface.ts`, `rim.ts`), `prepare.ts` batching and checkpoints |
 | `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges, `network/` tidy), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
 | `src/core/edit/` | Model editor: the edits document (`types.ts`, `keys.ts`), `EditSession` applying it to a generated model in the worker, road tiles, land fill, terrain and water after edits (`earth.ts`), added shapes and what they stand on (`stand.ts`), road lines for picking |
@@ -241,25 +242,30 @@ before bridges are split off):
 
 LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
 
-- Measurement is a port of the add-on's `lidar_*.py` (algorithm 29) up to the
-  faired roof raster. Tests use a numpy PCG64 copy, and `geos.ts`, `centroid`
-  and `rotate` follow GEOS 3.13 and Shapely to the bit (the grid follows the
-  minimum rotated rectangle, whose opposite sides tie). Don't swap any of
-  these for generic versions, or the raster drifts from the add-on's.
+- Measurement's checks (ground, coverage, contradictions, selection) are a
+  port of the add-on's `lidar_*.py` (algorithm 29). `geos.ts`, `centroid`
+  and `rotate` follow GEOS 3.13 and Shapely to the bit (the coverage grid
+  follows the minimum rotated rectangle, whose opposite sides tie). Don't
+  swap any of these for generic versions, or the checks drift from the add-on's.
 - Buffers are Clipper's, not GEOS's, so the 25 m ground ring differs at its
   arcs and the ground can move by up to ~0.7 mm.
-- The roof surface on the raster is the web app's own. `regularize.ts` grows
-  planes, then labels each cell with a plane or leaves it as measured,
-  trading how far cells move against boundary length. Anything under about
-  0.3 mm across and a 0.2 mm layer tall, printed, goes, and pits narrower
-  than 0.3 mm go at any depth. `delatin.ts` and `coarsen.ts` triangulate
-  within one cell up and down on flat roofs and half a cell across walls.
-  Don't bring back an edge collapse priced against the current faces: it let
-  vertices slide down walls until penthouses were pyramids. Spire cells skip
-  all of it, keep their upper returns and get a quarter of the error.
-- Records are measured in a metric frame at scale 1 and published in lon/lat.
+- Roofs are cut from the LiDAR only surface (`surface.ts`): each batch's
+  returns go into the area's LiDAR only cells (`BlockRaster`, same `Detail`
+  or cell size, `lidarModel`'s setting), through `composeSurface` and
+  `fairFaces`, and each building is meshed from its cells with
+  `surfaceLimits`, `wallDetail`, `meshGrid` and `straightenWalls`. Keep
+  the two on the same code, so a measured building looks the way it does in
+  a LiDAR only model. The old roofs (planes, a 0.3 mm x 0.2 mm tidy, Delatin)
+  looked bare next to it and were removed in October 2026.
+- What map models add: band cells under 2.5 m over the building's ground take
+  the nearest roof's height and the roof is carried past the outline
+  (`carryToOutline`, `spread`), so the walls stand on the mapped outline;
+  a taller mapped neighbour's facade inside it comes down (`neighbourFacades`);
+  trees are taken off (trees 'off'). Batch cells never grow for the area.
+- Records are measured in the area's own frame (rotation included) at scale 1,
+  so batch cells line up with a LiDAR only model's, and published in lon/lat.
   Generation projects them like any other feature.
-- A roof envelope is a `CapSolid` (TIN top, flat underside, boundary walls).
+- A measured roof is a `CapSolid` (TIN top, flat underside, boundary walls).
   Section cuts clip the TIN with `clipTin` (CDT arrangement), so caps stay
   closed. `capBoundary` rejects pinched TINs rather than welding them. The
   underside is triangulated from the outline (`undersideTriangles`), with
@@ -270,7 +276,7 @@ LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
   and null only when the triangulation failed, so a section that only the
   cap's box reaches isn't counted as a failure.
 - `thinRim` (not in the add-on) removes rim vertices on straight walls after
-  the envelope is clipped. It cut roof triangles about four times.
+  the roof is clipped to the footprint.
 - `src/core` has no LAZ or proj dependency. `src/worker/lidarCodecs.ts`
   installs laz-rs (`@voxelkloud/wasm-codecs`) and proj4 with `setLazDecoder`
   and `setProjector`, for the workers and scripts. Tests use a pass-through
@@ -324,6 +330,53 @@ LiDAR sources (`src/core/lidar/sources/`, notes in `docs/LIDAR_SOURCES.md`):
 - LiDAR only block checkpoints are keyed by the tiles each block reads, so a
   block read while a catalog lacked a tile isn't kept for good. EPT surveys
   have no tiles and keep their old keys.
+- Whole-file surveys (`staged`: format 'LAZ', which covers plain LAZ and
+  LAS, ZIP members and `whole` files) are never downloaded without the
+  user's approval, as in the add-on. EPT and COPC are read as before.
+  A staged survey that would be read becomes an offer (`offers.ts`): for
+  buildings nothing else measured (unless the rejection is one no survey
+  would change), or for ones it beats by the add-on's margins, five years
+  newer or twice as dense and two returns more (`advantage`). A LiDAR only
+  block offers it where it would fill 2% of the block nothing else does.
+  Approval is per tile (`tileKey`), kept in the LiDAR cache by the worker
+  (`approvedTiles`), so a larger area asks again for its new tiles only and
+  clearing the cache asks again for everything. The CLI's
+  `--download-tiles` approves everything.
+- Checkpoints with an offered survey in them are used without approval,
+  since they cost nothing. A LiDAR only block read without one is saved
+  under a key that marks it skipped, so approving it reads the block again.
+  Saved and session results with an offer stand until one of its tiles is
+  approved (`reopened`).
+- Before offering, one tile's header is read by range (`checkTile`) and a
+  survey that couldn't be read anyway is a failure instead:
+  OpenTopography's Indiana tiles have no height units and are 300 MB each.
+- A LiDAR only model with nothing to read but offers throws `OffersError`,
+  whose offers reach the UI with the error (`offeredTiles` in the client).
+- USGS's own LAZ (TNM) can't be read: `rockyweb.usgs.gov` has no CORS,
+  `prd-tnm` only holds link lists, and `s3://usgs-lidar` is requester pays.
+  NOAA's bucket is the US source of tiles instead: its EPTs, and for a
+  survey without one, the zipped tile index in `laz/<datum>/<id>/`.
+- 3DEP work units since 2020 have no year written out
+  (`CA_SanFrancisco_1_B23`), so the USGS provider reads it from the suffix
+  (`workUnitYear`). Only there: `projectYear` stays the add-on's. Their
+  points were flown within a year or two of it. Undated, 226 of them
+  ranked behind every older survey (Minneapolis read 2011 at 10 returns per
+  m² over 2022 at 64).
+- `rankSurveys` is newest first like the add-on, then moves a survey ahead
+  of ones less than five years newer with 2.5 times fewer returns per m²
+  and two fewer. The densities are points over a whole outline and run 2x
+  off: at twice, King County's 2016-17 survey (26 over the county, 14
+  downtown) beat Seattle's 2021 one. The rule isn't transitive, so it's a
+  pass that stops at the first survey it doesn't beat, not a comparator.
+- `settings.lidar.survey` picks a survey by hand (`choice.ts`), for LiDAR
+  buildings and LiDAR only models alike. It only moves that survey to the
+  front of every order (`chosenFirst`), ahead of whole-area coverage too,
+  so the others still fill in where it doesn't reach. A picked whole-file
+  survey is always offered. The worker lists the surveys under an area
+  without reading points (`findSurveys`, the `surveys` message), and every
+  prepared result carries what it found (`found`) for the same list. The
+  pick only enters a prepared result's key when set, so results saved
+  without one keep theirs. A survey search never counts as a stuck worker.
 
 LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
 
@@ -374,14 +427,13 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   over nothing (a pond) float when everything around is 30 m lower. Check
   changes on the regression areas' raw tops, not only Houston: glass towers,
   stepped roof edges and ledges are what drafts took by mistake.
-- Surveys: whole-area coverage first, then `rankOrder`. A cell belongs to the
+- Surveys: whole-area coverage first, then `rankSurveys`. A cell belongs to the
   first survey whose outline holds it, returns or not.
 - The mesher prices collapses by memoryless quadrics against the current
   faces (the add-on's, so stair walls straighten), and also checks every
   collapse against the grid (`GridBound`): no grid point further than half a
   cell from the surface (a cell beside a wall), square to it. Don't drop that check. Without it
-  vertices drift until penthouses are pyramids, the reason roof caps moved to
-  Delatin. Tiles are simplified in workers with edge points pinned, then the
+  vertices drift until penthouses are pyramids. Tiles are simplified in workers with edge points pinned, then the
   seams get their own pass.
 - Walls come out ribbed without two extra steps: `fairFaces` straightens
   facade relief under 0.3 mm printed before meshing (in `model.ts`, not

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { fixedCellLimit, gridCells, gridProblem, LARGEST_FIXED_CELLS, requestedCell } from '../../core/dsm/grid';
 import { effectiveScale } from '../../core/geo/area';
 import { modelFieldRange, type AreaSpec, type LidarCellMode, type LidarRoofMode, type LidarWaterMode, type ModelSettings, type SurfaceCategory, type TreeStyle, type WaterMode } from '../../core/settings';
+import type { SurveyChoice } from '../../core/engine/protocol';
 import type { ColourGroup } from '../../core/types';
 import { LayerDisclosure } from '../components/LayerDisclosure';
 import { CheckField, SelectField } from '../components/Fields';
@@ -11,7 +12,8 @@ import { NumberField } from '../components/NumberField';
 import { Segmented } from '../components/Segmented';
 import { formatInteger, formatNumber, keepUnits, listJoin } from '../lib/format';
 import { deviceMemoryGb, lidarCellLimit } from '../state/derived';
-import { patchSettings, resetSettingsSection, setLargeGrids, setModelSource, setSupports, toggleLayer, useApp } from '../state/store';
+import { findLidarSurveys } from '../state/actions';
+import { patchSettings, resetSettingsSection, setLargeGrids, setModelSource, setSupports, surveyAreaKey, toggleLayer, useApp } from '../state/store';
 import type { LayerKey, SettingsSection } from '../state/store';
 import { Section } from './Section';
 
@@ -593,19 +595,88 @@ function BuildingOptions({ buildings }: { buildings: ModelSettings['buildings'] 
   );
 }
 
-function LidarOptions({ lidar, scale }: { lidar: ModelSettings['lidar']; scale: number }) {
+function surveyText(s: SurveyChoice): string {
+  const parts = [
+    s.year ? String(s.year) : '',
+    s.densityM2 ? `${formatNumber(s.densityM2, s.densityM2 < 10 ? 1 : 0)} per m²` : '',
+    s.coverage < 0.99 ? `${Math.max(1, Math.round(s.coverage * 100))}% of the area` : '',
+    s.staged ? 'whole tiles' : '',
+  ].filter(Boolean);
+  return parts.length ? `${s.name} (${parts.join(', ')})` : s.name;
+}
+
+/** A name for a picked survey that isn't in the list, from its URL. */
+function surveyName(url: string): string {
+  const parts = url.replace(/[?#].*$/, '').split('/').filter((p) => p && !/^ept\.json$/i.test(p));
+  try {
+    return decodeURIComponent(parts[parts.length - 1] ?? url);
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Picking a survey by hand, for LiDAR buildings and LiDAR only models alike.
+ * The list comes from Find surveys or the last model of this area. A pick
+ * stays when the area moves, and does nothing where that survey isn't.
+ */
+function SurveyPicker({ settings, area }: { settings: ModelSettings; area: AreaSpec }) {
+  const chosen = settings.lidar.survey;
+  const search = useApp((state) => state.generation.surveys);
+  const here = search && search.key === surveyAreaKey(area) ? search : null;
+  const list = here?.status === 'done' ? here.list : [];
+  const listed = !chosen || list.some((s) => s.url === chosen);
+  const unanswered = here?.failures.length ? `, ${here.failures.length} ${here.failures.length === 1 ? "catalog didn't" : "catalogs didn't"} answer` : '';
+  const status = !here
+    ? ''
+    : here.status === 'searching'
+      ? 'Searching the catalogs'
+      : here.status === 'error'
+        ? `Couldn't search: ${here.error}`
+        : `${here.list.length ? `${here.list.length} found here` : 'None found here'}${unanswered}`;
+  return (
+    <>
+      <SelectField
+        label="Survey"
+        stacked
+        value={chosen}
+        onChange={(survey) => patchSettings('lidar', { survey })}
+        help="Automatic reads the newest survey with enough detail for each spot. A survey picked here is read first, and the others still fill in where it doesn't reach. Find surveys lists the surveys under this area without downloading any points. LiDAR buildings and LiDAR only models use the same pick."
+      >
+        <option value="">Automatic</option>
+        {!listed && <option value={chosen}>{`${surveyName(chosen)}${here?.status === 'done' ? ', not found here' : ''}`}</option>}
+        {list.map((s) => (
+          <option key={s.url} value={s.url}>
+            {surveyText(s)}
+          </option>
+        ))}
+      </SelectField>
+      <div className="survey-find">
+        <span role="status">{status}</span>
+        <button type="button" className="link-btn" disabled={here?.status === 'searching'} onClick={() => void findLidarSurveys()}>
+          {here?.status === 'done' ? 'Search again' : 'Find surveys'}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function LidarOptions({ settings, area, scale }: { settings: ModelSettings; area: AreaSpec; scale: number }) {
+  const lidar = settings.lidar;
   const envelope = lidar.roofMode === 'envelope';
   return (
     <>
+      <SurveyPicker settings={settings} area={area} />
       <SelectField
         label="Measure"
         value={lidar.roofMode}
         onChange={(roofMode) => patchSettings('lidar', { roofMode: roofMode as LidarRoofMode })}
-        help="Whole roofs rebuilds each building from its measured roof surface, with its setbacks, towers and roof shape. Heights only keeps the mapped shape and corrects heights that are far off."
+        help="Whole roofs rebuilds each building from the survey's surface, read and meshed the way a LiDAR only model is and cut to the mapped outline, with its setbacks, towers and roof shape. Heights only keeps the mapped shape and corrects heights that are far off."
       >
         <option value="envelope">Whole roofs</option>
         <option value="heights">Heights only</option>
       </SelectField>
+      {envelope && <RoofCellFields settings={settings} area={area} />}
       <NumberField
         label="Smallest footprint"
         value={lidar.minFootprintMm2}
@@ -633,6 +704,56 @@ function LidarOptions({ lidar, scale }: { lidar: ModelSettings['lidar']; scale: 
         onChange={(rockSurfaces) => patchSettings('lidar', { rockSurfaces })}
         help="Also measure mapped bare rock, such as outcrops and cliffs, and build its surface in the rock colour. Only mapped rock areas are measured."
       />
+    </>
+  );
+}
+
+/** The cell measured roofs are read in: a LiDAR Only model's setting, never grown for a large area. */
+function RoofCellFields({ settings, area }: { settings: ModelSettings; area: AreaSpec }) {
+  const lidar = settings.lidarModel;
+  const scale = effectiveScale(area, settings.scale);
+  let cell: number | null = null;
+  try {
+    cell = requestedCell(lidar, scale, 0, 0);
+  } catch {
+    cell = null;
+  }
+  return (
+    <>
+      <SelectField
+        label="Grid cells"
+        value={lidar.cellMode}
+        onChange={(cellMode) => patchSettings('lidarModel', { cellMode: cellMode as LidarCellMode })}
+        help="Roofs are read on the same grid as a LiDAR only model, and this is the same setting. Printed detail keeps the cells one size on the print, so they get larger in metres as the scale gets smaller. Metres reads the survey at the cell size you give, whatever the scale."
+      >
+        <option value="detail">Printed detail</option>
+        <option value="metres">Metres on the ground</option>
+      </SelectField>
+      {lidar.cellMode === 'metres' ? (
+        <NumberField
+          label="Cell size"
+          value={lidar.cellM}
+          onChange={(cellM) => patchSettings('lidarModel', { cellM })}
+          {...modelFieldRange('lidarModel', 'cellM')}
+          step={0.05}
+          decimals={2}
+          unit="m"
+          help="Size of one grid cell on the ground. Smaller keeps finer detail on the roofs but reads more of the survey and takes longer. 0.25 m is the finest, and only the densest surveys fill it. Cells grow where the survey is too sparse."
+          hint={cell !== null && scale > 0 ? `${formatNumber(cell * scale, 3)} mm printed` : undefined}
+        />
+      ) : (
+        <NumberField
+          label="Detail"
+          value={lidar.detailMm}
+          onChange={(detailMm) => patchSettings('lidarModel', { detailMm })}
+          {...modelFieldRange('lidarModel', 'detailMm')}
+          step={0.01}
+          decimals={3}
+          unit="mm"
+          help="Printed size of one grid cell. Smaller keeps finer detail on the roofs but reads more of the survey and takes longer. Surveys too sparse to fill the cells get larger ones."
+          hint={cell !== null ? `${formatNumber(cell, 2)} m cells` : undefined}
+        />
+      )}
     </>
   );
 }
@@ -769,9 +890,10 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
     <div className="lidar-model">
       <p className="layer-help">
         {keepUnits(
-          'Builds the whole model from a public LiDAR survey: the ground, buildings, trees and bridges as the survey saw them, in one piece and one colour, with the water in its own colour if you like. Covers the United States, Canada, France, Switzerland, Luxembourg, Slovenia, Scotland, much of Germany and Spain, Trentino, Helsinki, Tokyo and Yokohama, New Zealand, and more of Europe through Open LiDAR Data. Expect 75 MB to 1 GB of downloads per km² depending on the survey and the cell size, kept in the browser for next time, so start with a small area. Some surveys only come as whole tiles, so even a small area downloads a few of them.',
+          'Builds the whole model from a public LiDAR survey: the ground, buildings, trees and bridges as the survey saw them, in one piece and one colour, with the water in its own colour if you like. Covers the United States, Canada, France, Switzerland, Luxembourg, Slovenia, Scotland, much of Germany and Spain, Trentino, Helsinki, Tokyo and Yokohama, New Zealand, and more of Europe through Open LiDAR Data. Expect 75 MB to 1 GB of downloads per km² depending on the survey and the cell size, kept in the browser for next time, so start with a small area. Some surveys only come as whole tiles, which are only downloaded once you agree to.',
         )}
       </p>
+      <SurveyPicker settings={settings} area={area} />
       <SelectField
         label="Grid cells"
         value={lidar.cellMode}
@@ -1081,10 +1203,10 @@ export function LayersPanel() {
               on={buildings.enabled && lidar.enabled}
               onToggle={(enabled) => patchSettings('lidar', { enabled })}
               summary={!lidar.enabled ? 'Off' : !buildings.enabled ? 'Needs buildings' : lidar.roofMode === 'envelope' ? 'Whole roofs' : 'Heights only'}
-              help="Measures buildings from public LiDAR surveys and rebuilds each one from its scanned roof: setbacks, towers, domes and spires included. Covers the United States, Canada, France, Switzerland, Luxembourg, Slovenia, Scotland, much of Germany and Spain, Trentino, Helsinki, Tokyo and Yokohama, New Zealand, and more of Europe through Open LiDAR Data. Expect 150 MB to 1 GB of downloads per km² depending on the survey, kept in the browser for next time, so start with a small area. Buildings nothing covers keep their mapped shape."
+              help="Measures buildings from public LiDAR surveys and rebuilds each one from its scanned roof: setbacks, towers, domes and spires included. Covers the United States, Canada, France, Switzerland, Luxembourg, Slovenia, Scotland, much of Germany and Spain, Trentino, Helsinki, Tokyo and Yokohama, New Zealand, and more of Europe through Open LiDAR Data. Expect 150 MB to 1 GB of downloads per km² depending on the survey, kept in the browser for next time, so start with a small area. Surveys that only come as whole tiles are only downloaded once you agree to. Buildings nothing covers keep their mapped shape."
               resetKey="lidar"
             >
-              <LidarOptions lidar={lidar} scale={scale} />
+              <LidarOptions settings={settings} area={area} scale={scale} />
             </LayerRow>
 
             <LayerRow

@@ -37,7 +37,7 @@ export const berlin: Provider = {
         const square = squarePolygon(toLonLat, Number(match[1]) * 1000, Number(match[2]) * 1000, 1000);
         const box = ringBox(square);
         if (!overlaps(box, bbox)) continue;
-        tiles.push({ url, member: member.name, size, bbox: box, horizontalCrs: 'EPSG:25833' });
+        tiles.push({ url, member: member.name, size, bytes: member.compressedSize, bbox: box, horizontalCrs: 'EPSG:25833' });
         coverage.push(square);
       }
     }

@@ -10,6 +10,7 @@
 // batch or block in the same tile) only fetch and decode the chunks they need.
 
 import { Inflate, inflateSync } from 'fflate';
+import { Projection } from '../../geo/projection';
 import type { GeoBounds } from '../../types';
 import { emptyPoints, type Points } from '../points';
 import { decodeChunkTable, laszipChunkSize, type LazChunk } from './chunks';
@@ -74,9 +75,11 @@ function memorySource(key: string, bytes: Uint8Array): Source {
  * tile's own, or null for a ZIP that lacks the member asked for (a border
  * block holds fewer than its full set).
  */
-async function tileSource(fetcher: Fetcher, tile: PointTile, progress?: ReadOptions['progress']): Promise<{ source: Source; first: Uint8Array | null } | { stream: Uint8Array; name: string } | null> {
+async function tileSource(fetcher: Fetcher, tile: PointTile, progress?: ReadOptions['progress'], peek = false): Promise<{ source: Source; first: Uint8Array | null } | { stream: Uint8Array; name: string } | null> {
   const { url } = tile;
   let file: Source;
+  // Only a look at the header, so nothing that would download the file.
+  if (peek && tile.whole) return null;
   if (tile.whole) {
     // The server ignores Range, so the file comes whole (and is cached whole).
     file = memorySource(url, new Uint8Array(await fetcher.bytes(url)));
@@ -93,6 +96,7 @@ async function tileSource(fetcher: Fetcher, tile: PointTile, progress?: ReadOpti
   if (member.method === 0) {
     return { source: { key, size: member.size, range: (start, end) => file.range(base + start, base + end), tail: (start) => file.range(base + start, base + member.size) }, first: null };
   }
+  if (peek) return null;
   // In pieces, several at once: some servers are slow per connection
   // (Brandenburg's gives about 80 KB/s each), and pieces cache better.
   const compressed = new Uint8Array(member.compressedSize);
@@ -108,6 +112,21 @@ async function tileSource(fetcher: Fetcher, tile: PointTile, progress?: ReadOpti
   if (/\.las$/i.test(member.name)) return { stream: compressed, name: member.name };
   if (member.size > MAX_INFLATED) throw new Error(`${member.name} is too large to inflate (${Math.round(member.size / 1e6)} MB)`);
   return { source: memorySource(key, inflateSync(compressed, { out: new Uint8Array(member.size) })), first: null };
+}
+
+/**
+ * Throws what reading the tile would, about its coordinate system or height
+ * units, from its header alone. Tiles only read whole, or deflated in a ZIP,
+ * aren't looked at, since that takes the download this is meant to spare.
+ */
+export async function checkTile(fetcher: Fetcher, tile: PointTile, options: Pick<ReadOptions, 'verticalUnits' | 'classification'>): Promise<void> {
+  const found = await tileSource(fetcher, tile, undefined, true);
+  if (!found || 'stream' in found) return;
+  const opened = await openTile(found.source, found.first);
+  if (!opened.header.pointCount) return;
+  if (!wktOf(opened.vlrs) && opened.header.evlrCount) opened.vlrs = [...opened.vlrs, ...(await crsEvlrs(found.source, opened.header.evlrOffset, opened.header.evlrCount))];
+  const [w, s, e, n] = tile.bbox;
+  tileSetup(opened, tile, { west: w, south: s, east: e, north: n }, { ...options, frame: new Projection([(w + e) / 2, (s + n) / 2], 0, 1) });
 }
 
 // Deflate input fed to the inflater at a time.

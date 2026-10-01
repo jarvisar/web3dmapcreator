@@ -19,12 +19,13 @@ import { groundGrid } from '../core/edit/ground';
 import { roadLines } from '../core/edit/lines';
 import { EditSession, excludedParts, type EditUpdate } from '../core/edit/session';
 import { emptyEdits, hasEdits, sanitizeEdits } from '../core/edit/types';
-import type { EditRequest, ExportRequest, FromWorker, GenerateRequest, GenerateResult, LidarSummary, ProgressEvent, SurfaceSummary, ToWorker } from '../core/engine/protocol';
+import type { EditRequest, ExportRequest, FromWorker, GenerateRequest, GenerateResult, LidarSummary, ProgressEvent, SurfaceSummary, SurveyChoice, ToWorker } from '../core/engine/protocol';
 import { effectiveScale } from '../core/geo/area';
 import { Projection } from '../core/geo/projection';
 import { download } from '../core/svgmap/download';
 import { FontLoader } from '../core/svgmap/text/loadFont';
-import { prepareLidar, setCheckpointStore, type PreparedLidar } from '../core/lidar/prepare';
+import { findSurveys, lidarRequest, prepareLidar, setCheckpointStore, type PreparedLidar } from '../core/lidar/prepare';
+import { OffersError, reopened } from '../core/lidar/offers';
 import type { Failure } from '../core/lidar/sources';
 import { exportPlates } from '../core/export';
 import { BAMBU_MAX_PLATES } from '../core/export/sections';
@@ -34,7 +35,7 @@ import { dataBoundsFor, generateModel, type ModelSpec } from '../core/pipeline/g
 import { meshLayers, partsBounds } from '../core/pipeline/mesh';
 import { buildPlates } from '../core/pipeline/plates';
 import type { SourceFeature } from '../core/pipeline/source';
-import { printerByKey, sanitizeSettings } from '../core/settings';
+import { printerByKey, sanitizeSettings, type AreaSpec } from '../core/settings';
 import type { GeoBounds, ModelStats } from '../core/types';
 import { installLidarCodecs } from './lidarCodecs';
 import { lidarPool, lidarPoolSize, surfacePoolSize } from './lidarPool';
@@ -260,6 +261,27 @@ async function loadData(request: GenerateRequest, job: Running, report: (e: Prog
 const LIDAR_START = 0.3;
 const LIDAR_END = 0.6;
 
+const APPROVED_KEY = 'lidar-approved-tiles';
+
+/**
+ * Offered LiDAR tiles the user agreed to download, with any the request
+ * brings. They're kept in the LiDAR cache, so clearing it asks again.
+ */
+async function approvedTiles(request: GenerateRequest): Promise<Set<string>> {
+  const saved = await lidarCache.get(APPROVED_KEY).catch(() => undefined);
+  let list: unknown = [];
+  try {
+    if (saved) list = JSON.parse(new TextDecoder().decode(saved));
+  } catch {
+    list = [];
+  }
+  const approved = new Set(Array.isArray(list) ? list.filter((key): key is string => typeof key === 'string') : []);
+  const before = approved.size;
+  for (const key of request.approveTiles ?? []) if (typeof key === 'string' && key.length <= 2048) approved.add(key);
+  if (approved.size !== before) await lidarCache.put(APPROVED_KEY, new TextEncoder().encode(JSON.stringify([...approved])).buffer as ArrayBuffer).catch(() => undefined);
+  return approved;
+}
+
 /**
  * Measured buildings for the area. Preparation checkpoints each batch in the
  * LiDAR cache, and the last result is kept for the session, so changing a
@@ -267,10 +289,11 @@ const LIDAR_END = 0.6;
  */
 async function loadLidar(request: GenerateRequest, data: OvertureData, job: Running): Promise<PreparedLidar> {
   const { area, settings } = request;
-  const scale = effectiveScale(area, settings.scale);
   const bounds = dataBoundsFor(area);
-  const key = JSON.stringify([boundsKey(bounds), data.release, settings.lidar, scale, settings.buildings.heightScale]);
-  if (prepared?.key === key) return prepared.lidar;
+  const measure = lidarRequest(area, settings);
+  const key = JSON.stringify([boundsKey(bounds), data.release, measure]);
+  const approved = await approvedTiles(request);
+  if (prepared?.key === key && !reopened(prepared.lidar.offers, approved)) return prepared.lidar;
   prepared = null;
   const progress = job.progress;
   progress.begin('lidar', 'Preparing LiDAR buildings', LIDAR_START, LIDAR_END - LIDAR_START);
@@ -280,13 +303,14 @@ async function loadLidar(request: GenerateRequest, data: OvertureData, job: Runn
   try {
     lidar = await prepareLidar({
       bounds,
+      ...measure,
       buildings: data.features.building ?? [],
       parts: data.features.building_part ?? [],
       land: data.features.land ?? [],
-      settings: { ...settings.lidar, xyScale: scale, zScale: scale * settings.buildings.heightScale },
       signal: job.abort.signal,
       progress: (label, fraction, detail) => progress.checkpoint(fraction, detail, label),
       runner: pool ?? undefined,
+      approved,
     });
   } finally {
     pool?.close();
@@ -295,6 +319,22 @@ async function loadLidar(request: GenerateRequest, data: OvertureData, job: Runn
   // What did get read is checkpointed, so only the failures download again.
   if (!lidar.failures.length) prepared = { key, lidar };
   return lidar;
+}
+
+/** A warning when the survey picked by hand wasn't among those found here. */
+function missingChoice(survey: string, found: SurveyChoice[]): string | null {
+  if (!survey || !found.length || found.some((s) => s.url === survey || s.name === survey)) return null;
+  return "The LiDAR survey picked under Layers doesn't cover this area, so surveys were picked automatically.";
+}
+
+/** The surveys under an area, for picking one by hand. */
+async function listSurveys(id: number, area: AreaSpec) {
+  try {
+    const { surveys, failures } = await findSurveys(area);
+    post({ type: 'surveys', id, result: { surveys, failures: failures.map(lidarFailure) } });
+  } catch (error) {
+    post({ type: 'error', id, message: describe(error) });
+  }
 }
 
 /** A LiDAR failure as a warning: a catalog that couldn't be searched, or a survey that couldn't be read. */
@@ -313,6 +353,9 @@ function lidarSummary(lidar: PreparedLidar): LidarSummary {
     failures: lidar.failures.map((f) => `${f.source}: ${f.reason}`),
     downloadedBytes: lidar.downloadedBytes,
     reused: lidar.reused,
+    // A result saved before offers existed has none.
+    offers: lidar.offers ?? [],
+    found: lidar.found ?? [],
   };
 }
 
@@ -328,8 +371,9 @@ type Pool = ReturnType<typeof lidarPool>;
 async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | null): Promise<PreparedSurface> {
   const { area, settings } = request;
   const cell = requestedCell(settings.lidarModel, effectiveScale(area, settings.scale), area.widthM, area.heightM);
-  const key = JSON.stringify([area.center, area.rotationDeg, area.widthM, area.heightM, cell]);
-  if (surface?.key === key) {
+  const key = JSON.stringify([area.center, area.rotationDeg, area.widthM, area.heightM, cell, settings.lidar.survey]);
+  const approved = await approvedTiles(request);
+  if (surface?.key === key && !reopened(surface.prepared.offers, approved)) {
     const kept = surface.prepared;
     return { ...kept, layers: unpackLayers(kept.grid, kept.checkpoints), downloadedBytes: 0, reusedBlocks: kept.blocks };
   }
@@ -344,6 +388,8 @@ async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | 
     signal: job.abort.signal,
     progress: (label, fraction, detail) => progress.checkpoint(fraction, detail, label),
     runner: pool ?? undefined,
+    approved,
+    survey: settings.lidar.survey || undefined,
   });
   // A failed read leaves a hole, and a survey whose catalog failed can leave
   // half the area without one, so try again next time. Blocks that were read
@@ -382,6 +428,8 @@ function surfaceSummary(prepared: PreparedSurface): SurfaceSummary {
     failures: prepared.failures.map((f) => `${f.source}: ${f.reason}`),
     downloadedBytes: prepared.downloadedBytes,
     reused: prepared.reusedBlocks === prepared.blocks,
+    offers: prepared.offers,
+    found: prepared.found,
   };
 }
 
@@ -422,6 +470,8 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
     if (water instanceof Error) warnings.push(`Map water could not be downloaded, so the water is the survey's alone. ${describe(water)}`);
     if (meshed.failed) warnings.push('The LiDAR surface could not be closed into a solid. Try another area shape, or report this.');
     for (const failure of prepared.failures.slice(0, 3)) warnings.push(lidarFailure(failure));
+    const missing = missingChoice(request.settings.lidar.survey, prepared.found);
+    if (missing) warnings.push(missing);
     const result: GenerateResult = {
       parts: meshed.parts,
       bounds: partsBounds(meshed.parts),
@@ -495,10 +545,12 @@ async function generate(id: number, request: GenerateRequest) {
     lastMapData = true;
     if (lidar) {
       lastCredits = [...new Set(lidar.surveys.map((s) => `LiDAR: ${s.attribution}`))];
-      if (!lidar.surveys.length && lidar.candidates && !lidar.failures.length && !Object.keys(lidar.records).length) {
+      if (!lidar.surveys.length && lidar.candidates && !lidar.failures.length && !lidar.offers?.length && !Object.keys(lidar.records).length) {
         warnings.push('No LiDAR survey that a browser can read covers these buildings, so they keep their mapped shapes.');
       }
       for (const failure of lidar.failures.slice(0, 3)) warnings.push(lidarFailure(failure));
+      const missing = missingChoice(request.settings.lidar.survey, lidar.found ?? []);
+      if (missing) warnings.push(missing);
       const fallbacks = typeof spec.stats.lidar_geometry_fallbacks === 'number' ? spec.stats.lidar_geometry_fallbacks : 0;
       if (fallbacks) warnings.push(`${fallbacks} measured buildings could not be built cleanly and keep their mapped shapes.`);
     }
@@ -516,7 +568,7 @@ async function generate(id: number, request: GenerateRequest) {
     post({ type: 'generated', id, result }, [...partTransfers(meshed.parts), ...transfers]);
   } catch (error) {
     const cancelled = error instanceof CancelError || job.progress.cancelled || (error as Error)?.name === 'AbortError';
-    post({ type: 'error', id, message: cancelled ? 'Cancelled' : describe(error), cancelled });
+    post({ type: 'error', id, message: cancelled ? 'Cancelled' : describe(error), cancelled, offers: error instanceof OffersError ? error.offers : undefined });
   } finally {
     // If one download failed, stop the other one too.
     job.abort.abort();
@@ -534,7 +586,7 @@ async function generateLidarOnly(id: number, request: GenerateRequest) {
     await generateSurface(id, request, job);
   } catch (error) {
     const cancelled = error instanceof CancelError || job.progress.cancelled || (error as Error)?.name === 'AbortError';
-    post({ type: 'error', id, message: cancelled ? 'Cancelled' : describe(error), cancelled });
+    post({ type: 'error', id, message: cancelled ? 'Cancelled' : describe(error), cancelled, offers: error instanceof OffersError ? error.offers : undefined });
   } finally {
     job.abort.abort();
     if (running === job) running = null;
@@ -579,7 +631,7 @@ async function exportModel(id: number, request: ExportRequest) {
     post({ type: 'exported', id, result });
   } catch (error) {
     const cancelled = error instanceof CancelError || progress.cancelled;
-    post({ type: 'error', id, message: cancelled ? 'Cancelled' : describe(error), cancelled });
+    post({ type: 'error', id, message: cancelled ? 'Cancelled' : describe(error), cancelled, offers: error instanceof OffersError ? error.offers : undefined });
   } finally {
     exporting.delete(id);
   }
@@ -654,6 +706,7 @@ ctx.onmessage = (event) => {
   }
   if (message.type === 'generate') void generate(message.id, message.request);
   else if (message.type === 'export') void exportModel(message.id, message.request);
+  else if (message.type === 'surveys') void listSurveys(message.id, message.area);
   else if (message.type === 'edit') {
     // Only the newest edits matter: an older request still waiting is dropped.
     if (pendingEdit) post({ type: 'error', id: pendingEdit.id, message: 'Superseded', cancelled: true });

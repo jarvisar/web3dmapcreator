@@ -20,8 +20,23 @@
 // with those points pinned, then the seams get one more pass.
 
 import type { Tin } from '../geometry/tinclip';
+import { windowMax, windowMin } from './filters';
 
 export const TILE = 512;
+
+// The mesh may move the surface by half a grid cell, and merges an edge
+// while its quadric cost stays under this many cells squared, which
+// straightens a wall drawn in one-cell stairs. At a whole cell, rooftop plant
+// came out as pyramids and crowns lost their texture.
+const DEVIATION_CELLS = 0.5;
+const THRESHOLD_CELLS2 = 16;
+const MIN_GAP_CELLS = 0.02;
+// Points with a wall beside them (a step of this many cells) may be twice as
+// far from the surface. One cell is about all a diagonal wall drawn in
+// stairs leaves for straightening, so any noise along it kept a vertex at
+// every stair.
+export const WALL_STEP_CELLS = 4;
+const WALL_DETAIL = 2;
 
 export interface MeshLimits {
   /** Largest distance from a grid point to the surface, in mm. */
@@ -30,6 +45,20 @@ export interface MeshLimits {
   threshold: number;
   /** Least altitude of a triangle in plan, in mm. */
   minGap: number;
+}
+
+/** The limits for a grid of `cell` mm, for LiDAR only surfaces and measured roofs alike. */
+export function surfaceLimits(cell: number): MeshLimits {
+  return { deviation: DEVIATION_CELLS * cell, threshold: THRESHOLD_CELLS2 * cell * cell, minGap: MIN_GAP_CELLS * cell };
+}
+
+/** The mesher's detail, raised to WALL_DETAIL beside a step taller than `step` (trees keep theirs). */
+export function wallDetail(heights: Float32Array, detail: Float32Array, nx: number, ny: number, step: number): Float32Array {
+  const high = windowMax(heights, nx, ny, 1);
+  const low = windowMin(heights, nx, ny, 1);
+  const out = Float32Array.from(detail);
+  for (let i = 0; i < out.length; i++) if (detail[i] >= 1 && high[i] - low[i] > step) out[i] = WALL_DETAIL;
+  return out;
 }
 
 /** A height grid in model mm: point (i, j) at (x0 + i dx, y0 + j dy), index j * nx + i. */
@@ -964,7 +993,26 @@ export async function meshSurface(grid: HeightGrid, limits: MeshLimits, options:
     const only = results[0];
     return { vertices: only.positions, triangles: only.triangles };
   }
+  const collapser = stitchTiles(grid, limits, results);
+  while (!collapser.run(20000)) await options.progress?.(0.9);
+  await options.progress?.(1);
+  const out = collapser.result();
+  return { vertices: out.positions, triangles: out.triangles };
+}
 
+/** meshSurface in this thread, all at once, for small grids like a measured building's. */
+export function meshGrid(grid: HeightGrid, limits: MeshLimits, tile = TILE): Tin {
+  if (grid.nx < 2 || grid.ny < 2) throw new Error('A height grid needs at least 2 x 2 points');
+  const results = tileOrigins(grid, tile).map((origin) => simplifyTile(tileJob(grid, limits, origin, tile)));
+  if (results.length === 1) return { vertices: results[0].positions, triangles: results[0].triangles };
+  const collapser = stitchTiles(grid, limits, results);
+  collapser.run();
+  const out = collapser.result();
+  return { vertices: out.positions, triangles: out.triangles };
+}
+
+/** The tiles as one mesh, with a collapser over their seams left to run. */
+function stitchTiles(grid: HeightGrid, limits: MeshLimits, results: TileResult[]): Collapser {
   // Stitch: seam points keep their grid index, so neighbouring tiles share them.
   // Seam points get the first numbers, then each tile's own vertices.
   const shared = new Map<number, number>();
@@ -1015,11 +1063,7 @@ export async function meshSurface(grid: HeightGrid, limits: MeshLimits, options:
     detail[id] = grid.detail[j * grid.nx + i];
   }
   const bound: GridBound = { heights: grid.heights, detail: grid.detail, deviation: limits.deviation, nx: grid.nx, ny: grid.ny, x0: grid.x0, y0: grid.y0, dx: grid.dx, dy: grid.dy };
-  const collapser = new Collapser({ positions, triangles, side, pinned: new Uint8Array(count), detail, keys }, limits, bound, live);
-  while (!collapser.run(20000)) await options.progress?.(0.9);
-  await options.progress?.(1);
-  const out = collapser.result();
-  return { vertices: out.positions, triangles: out.triangles };
+  return new Collapser({ positions, triangles, side, pinned: new Uint8Array(count), detail, keys }, limits, bound, live);
 }
 
 // ------------------------------------------------------------------ walls

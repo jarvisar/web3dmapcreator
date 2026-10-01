@@ -7,10 +7,10 @@ import { geoPolygons, overlaps, ringBox, sphericalArea, type Candidate, type Pro
 
 export const USGS_CATALOG = 'https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson';
 
-// The catalog has no densities, and names alone put a sparse 2018 wildfire
-// survey ahead of a 2023 one with ten times the returns over San Francisco.
-// An EPT's ept.json has its point count, so points over the outline's area
-// is its density, near enough.
+// The catalog has no densities. An EPT's ept.json has its point count, so
+// points over the outline's area stands in for one. It's an average over the
+// whole outline: San Francisco's 2023 survey comes to 62 per m², and has 143
+// downtown.
 async function eptDensity(fetcher: Fetcher, candidate: Candidate): Promise<number | undefined> {
   try {
     const meta = (await fetcher.json(candidate.url)) as { points?: unknown };
@@ -19,6 +19,17 @@ async function eptDensity(fetcher: Fetcher, candidate: Candidate): Promise<numbe
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The year in a 3DEP work unit's name (CA_SanFrancisco_1_B23), which names
+ * since 2020 carry instead of a year written out. Without it they ranked as
+ * undated, behind every older survey. Their points were flown within a year
+ * or two of it: B20 over Hawaii in 2023, C23 in North Dakota in 2021.
+ */
+export function workUnitYear(name: string): number | null {
+  const match = /_[A-F](\d{2})$/.exec(name);
+  return match ? 2000 + Number(match[1]) : null;
 }
 
 export const usgs: Provider = {
@@ -42,7 +53,7 @@ export const usgs: Provider = {
         attribution: 'USGS 3DEP; EPT mirror by Hobu',
         license: 'Public domain',
         sourcePage: USGS_CATALOG,
-        projectYearHint: projectYear(name),
+        projectYearHint: projectYear(name) ?? workUnitYear(name),
       });
     }
     await Promise.all(out.map(async (candidate) => (candidate.densityM2 = await eptDensity(fetcher, candidate))));

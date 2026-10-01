@@ -162,7 +162,7 @@ function capHolders(cap: CapSolid, kind: string): Holder[] {
 }
 
 /** Height of a cap's surface at a point, or NaN off it. */
-function tinHeight(cap: CapSolid, x: number, y: number): number {
+export function tinHeight(cap: CapSolid, x: number, y: number): number {
   const v = cap.vertices;
   const t = cap.triangles;
   for (let i = 0; i < t.length; i += 3) {

@@ -1,8 +1,8 @@
-// Thinning a roof envelope's rim. Clipping the collapsed raster to the
-// footprint leaves a vertex wherever a raster edge crosses the outline,
-// about every half metre, or 0.035 mm printed. Along a straight wall they add
-// nothing but triangles: two wall triangles each, plus the roof and underside
-// around them. They made up most of a measured city's triangles.
+// Thinning a measured roof's rim. Clipping the meshed surface to the
+// footprint leaves a vertex wherever a mesh edge crosses the outline. Along
+// a straight wall they add nothing but triangles: two wall triangles each,
+// plus the roof and underside around them. They made up most of a measured
+// city's triangles.
 //
 // A rim vertex goes when it lies on a straight stretch of outline and the
 // roof around it stays within `tolerance` of where it was. Footprint corners
@@ -13,6 +13,11 @@ import type { Tin } from '../geometry/tinclip';
 
 /** Rim vertices closer than this to the line through their neighbours are on a straight wall. */
 const STRAIGHT_M = 1e-6;
+// A rim vertex stays when filling its place takes a triangle thinner than
+// this. Earcut fills a straight wall's vertices with slivers a trillionth of
+// a millimetre thin, and a later cut at the model's edge couldn't
+// triangulate around one.
+const MIN_ALTITUDE_M = 1e-4;
 
 export function thinRim(tin: Tin, tolerance: number): Tin {
   const v = tin.vertices;
@@ -95,7 +100,8 @@ export function thinRim(tin: Tin, tolerance: number): Tin {
     for (let i = 0; i < local.length; i += 3) {
       let [a, b, c] = [polygon[local[i]], polygon[local[i + 1]], polygon[local[i + 2]]];
       if (cross(a, b, c) < 0) [b, c] = [c, b];
-      if (cross(a, b, c) <= 0) return false;
+      const longest = Math.max(Math.hypot(x(b) - x(a), y(b) - y(a)), Math.hypot(x(c) - x(b), y(c) - y(b)), Math.hypot(x(a) - x(c), y(a) - y(c)));
+      if (!(cross(a, b, c) > MIN_ALTITUDE_M * longest)) return false;
       made.push([a, b, c]);
     }
     // Where the old triangles were, the new ones may not have moved the roof

@@ -1,15 +1,17 @@
 // End-to-end check in the installed Edge: generate the default area, look at
 // it in 3D and download it in every format. Needs a running server
 // (npm run dev or npm run preview).
-//   node scripts/e2e.mjs <url> <out-folder> [--all-formats] [--lidar-only [--cut-water | --water-layer] [--cell m]] [--again]
+//   node scripts/e2e.mjs <url> <out-folder> [--all-formats] [--lidar | --lidar-only [--cut-water | --water-layer]] [--cell m] [--again] [--approve]
 //   node scripts/e2e.mjs <url> <out-folder> --svg [--all-formats]
-// With --lidar-only, give a small area in the URL's share-link hash
-// (#a=lon,lat,width,height,rotation,shape): a fresh browser downloads its
-// LiDAR in full. With --svg it makes an SVG map of the default area instead,
+// With --lidar (LiDAR buildings in a map model) or --lidar-only, give a
+// small area in the URL's share-link hash (#a=lon,lat,width,height,rotation,shape):
+// a fresh browser downloads its LiDAR in full. With --svg it makes an SVG map of the default area instead,
 // and --all-formats downloads it for the plotter and print as well. Exits
 // with 1 when a step fails, a download is empty or the page logs an error.
 // --again presses Generate again and downloads once more, which a LiDAR only
 // model builds from the survey the worker kept, for comparing the two files.
+// An offer of whole-file LiDAR tiles is logged and screenshotted, and with
+// --approve its Download and regenerate button is pressed.
 import { chromium } from 'playwright-core';
 import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,8 +21,10 @@ const cellM = cellIndex > 0 ? process.argv[cellIndex + 1] : null;
 const args = process.argv.slice(2).filter((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--cell');
 const allFormats = process.argv.includes('--all-formats');
 const lidarOnly = process.argv.includes('--lidar-only');
+const lidar = process.argv.includes('--lidar');
 const svg = process.argv.includes('--svg');
 const again = process.argv.includes('--again');
+const approve = process.argv.includes('--approve');
 const [url = 'http://localhost:5173/', folder = 'out/e2e'] = args;
 mkdirSync(folder, { recursive: true });
 const browser = await chromium.launch({
@@ -101,6 +105,20 @@ if (svg) {
   await finish();
 }
 
+if (lidar) {
+  await page.locator('button[aria-controls="section-layers"]').click();
+  await page.getByRole('checkbox', { name: 'LiDAR buildings' }).check();
+  await page.locator('.layer-toggle', { hasText: 'LiDAR' }).click();
+  if (cellM) {
+    await page.getByRole('combobox', { name: /^grid cells$/i }).selectOption({ label: 'Metres on the ground' });
+    const input = page.getByRole('textbox', { name: /^cell size$/i });
+    await input.fill(cellM);
+    await input.press('Enter');
+  }
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: join(folder, '1-lidar.png') });
+}
+
 if (lidarOnly) {
   await page.locator('button[aria-controls="section-layers"]').click();
   await page.getByRole('radio', { name: 'LiDAR only' }).click();
@@ -122,6 +140,20 @@ await page.waitForTimeout(1000);
 await page.waitForFunction(() => !document.querySelector('[role="progressbar"]'), null, { timeout: 900000, polling: 1000 });
 await page.waitForTimeout(3000);
 console.log(`generated in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+const offer = page.locator('.offer-notice');
+if (await offer.count()) {
+  console.log(`offered: ${(await offer.innerText()).replace(/\s+/g, ' ')}`);
+  await page.screenshot({ path: join(folder, '2-offer.png') });
+  if (approve) {
+    const before = Date.now();
+    await offer.getByRole('button', { name: /download and regenerate/i }).click();
+    await page.waitForTimeout(1000);
+    await page.waitForFunction(() => !document.querySelector('[role="progressbar"]'), null, { timeout: 900000, polling: 1000 });
+    await page.waitForTimeout(3000);
+    console.log(`regenerated with the offered tiles in ${((Date.now() - before) / 1000).toFixed(1)} s`);
+    if (await page.locator('.offer-notice').count()) fail('still offered after approving');
+  }
+}
 await page.screenshot({ path: join(folder, '2-model.png') });
 await checkNoAlert('Generate');
 if (!(await page.getByRole('button', { name: 'Model details' }).isVisible())) {

@@ -1,5 +1,6 @@
 // Main-thread side of the generation worker.
 
+import type { AreaSpec } from '../settings';
 import type {
   EditRequest,
   EditUpdate,
@@ -8,16 +9,23 @@ import type {
   FromWorker,
   GenerateRequest,
   GenerateResult,
+  LidarOffer,
   ProgressEvent,
+  SurveyList,
   ToWorker,
 } from './protocol';
 
 interface Pending {
-  message: Extract<ToWorker, { type: 'generate' | 'export' | 'edit' }>;
+  message: Extract<ToWorker, { type: 'generate' | 'export' | 'edit' | 'surveys' }>;
   resolve: (value: never) => void;
   reject: (error: Error) => void;
   onProgress?: (event: ProgressEvent) => void;
   sentAt: number;
+}
+
+/** Offered LiDAR tiles a failed generation could go on with, once the user approves them. */
+export function offeredTiles(error: unknown): LidarOffer[] {
+  return (error as { offers?: LidarOffer[] } | null)?.offers ?? [];
 }
 
 export class CancelledError extends Error {
@@ -104,10 +112,14 @@ export class EngineClient {
         this.pending.delete(message.id);
         pending.resolve(message.update as never);
         return;
+      case 'surveys':
+        this.pending.delete(message.id);
+        pending.resolve(message.result as never);
+        return;
       case 'error':
         this.pending.delete(message.id);
         if (message.id === this.activeGenerate) this.activeGenerate = null;
-        pending.reject(message.cancelled ? new CancelledError() : new Error(message.message));
+        pending.reject(message.cancelled ? new CancelledError() : Object.assign(new Error(message.message), { offers: message.offers }));
         return;
     }
   }
@@ -128,7 +140,8 @@ export class EngineClient {
 
   generate(request: GenerateRequest, onProgress?: (event: ProgressEvent) => void): Promise<GenerateResult> {
     const now = performance.now();
-    const stuck = [...this.pending].filter(([, p]) => p.message.type !== 'generate' && now - p.sentAt > STUCK_MS).map(([id]) => id);
+    // A survey search only waits on catalogs, which can take a while, and never holds the worker.
+    const stuck = [...this.pending].filter(([, p]) => p.message.type !== 'generate' && p.message.type !== 'surveys' && now - p.sentAt > STUCK_MS).map(([id]) => id);
     if (stuck.length) this.replaceWorker(this.activeGenerate !== null ? [...stuck, this.activeGenerate] : stuck);
     else if (this.activeGenerate !== null) this.cancel();
     const id = this.nextId++;
@@ -146,6 +159,11 @@ export class EngineClient {
    */
   edit(request: EditRequest): Promise<EditUpdate> {
     return this.request<EditUpdate>({ type: 'edit', id: this.nextId++, request });
+  }
+
+  /** The LiDAR surveys found under an area, without reading any points. */
+  surveys(area: AreaSpec): Promise<SurveyList> {
+    return this.request<SurveyList>({ type: 'surveys', id: this.nextId++, area });
   }
 
   /** Cancel the running generation. The promise rejects with CancelledError. */

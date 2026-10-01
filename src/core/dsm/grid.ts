@@ -2,7 +2,10 @@
 // rectangle in its rotated frame (metres), each cell centred on a vertex, so
 // nothing is resampled between reading the survey and meshing it.
 
+import { rowCrossings } from '../geometry/scanline';
 import type { ModelSettings } from '../settings';
+import type { MultiPolygon } from '../types';
+import type { GridOrigin } from './raster';
 
 /** Printed size of one cell by default: about 0.71 m at 0.07 mm per metre, twice a USGS QL1 survey's return spacing. */
 export const DEFAULT_DETAIL_MM = 0.05;
@@ -113,6 +116,23 @@ export function blocks(grid: GridSpec): Block[] {
   const out: Block[] = [];
   for (let r = 0; r < grid.ny; r += stepY) {
     for (let c = 0; c < grid.nx; c += stepX) out.push({ rows: [r, Math.min(grid.ny, r + stepY)], columns: [c, Math.min(grid.nx, c + stepX)] });
+  }
+  return out;
+}
+
+/** Cells of a block whose centre lies in `shape`, one byte each. */
+export function cellsInside(shape: MultiPolygon, grid: GridOrigin, block: Block): Uint8Array {
+  const width = block.columns[1] - block.columns[0];
+  const height = block.rows[1] - block.rows[0];
+  const out = new Uint8Array(width * height);
+  const rows = rowCrossings(shape.flat(), grid.y0, grid.dy, block.rows[0], height);
+  for (let r = 0; r < height; r++) {
+    const xs = rows[r];
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const c0 = Math.max(block.columns[0], Math.ceil((xs[k] - grid.x0) / grid.dx));
+      const c1 = Math.min(block.columns[1], Math.ceil((xs[k + 1] - grid.x0) / grid.dx));
+      for (let c = c0; c < c1; c++) out[r * width + (c - block.columns[0])] = 1;
+    }
   }
   return out;
 }

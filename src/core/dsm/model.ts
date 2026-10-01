@@ -22,31 +22,12 @@ import { projectPolygons, type SourceFeature } from '../pipeline/source';
 import type { AreaSpec, ModelSettings } from '../settings';
 import type { ModelStats, MultiPolygon, Polygon, Ring } from '../types';
 import { compose, ISLAND_MIN_MM2, MAP_EDGE_M } from './compose';
-import { fairFaces, windowMax, windowMin } from './filters';
+import { FAIR_REACH_MM, FAIR_WINDOW_MM, fairFaces } from './filters';
 import { emptyLayers } from './layers';
-import { meshSurface, straightenWalls, type HeightGrid, type TileJob, type TileResult } from './mesh';
+import { meshSurface, straightenWalls, surfaceLimits, wallDetail, WALL_STEP_CELLS, type HeightGrid, type TileJob, type TileResult } from './mesh';
 import type { PreparedSurface } from './prepare';
 
-// The mesh may move the surface by half a grid cell, and merges an edge
-// while its quadric cost stays under this many cells squared, which
-// straightens a wall drawn in one-cell stairs. At a whole cell, rooftop plant
-// came out as pyramids and crowns lost their texture.
-const DEVIATION_CELLS = 0.5;
-const THRESHOLD_CELLS2 = 16;
-const MIN_GAP_CELLS = 0.02;
 const CLUTTER_M = 2;
-// Facade relief narrower than half the window, printed, is straightened
-// where it moves no more than the reach, the same as for building caps
-// (lidar/envelope.ts). Fins, pilasters and notches that narrow don't print,
-// and meshed they're a row of ribs.
-const FAIR_WINDOW_MM = 0.6;
-const FAIR_REACH_MM = 0.14;
-// Points with a wall beside them (a step of this many cells) may be twice as
-// far from the surface. One cell is about all a diagonal wall drawn in
-// stairs leaves for straightening, so any noise along it kept a vertex at
-// every stair.
-const WALL_STEP_CELLS = 4;
-const WALL_DETAIL = 2;
 // Land narrower than twice this beside cut water is opened away, as thin
 // land slabs are. Pieces under ISLAND_MIN_MM2 go, as compose does on the
 // grid, since the area's shape can cut off new ones.
@@ -89,15 +70,6 @@ interface CellGrid {
   y0: number;
   dx: number;
   dy: number;
-}
-
-/** The mesher's detail, raised to WALL_DETAIL beside a step taller than `step` (trees keep theirs). */
-function wallDetail(heights: Float32Array, detail: Float32Array, nx: number, ny: number, step: number): Float32Array {
-  const high = windowMax(heights, nx, ny, 1);
-  const low = windowMin(heights, nx, ny, 1);
-  const out = Float32Array.from(detail);
-  for (let i = 0; i < out.length; i++) if (detail[i] >= 1 && high[i] - low[i] > step) out[i] = WALL_DETAIL;
-  return out;
 }
 
 /** Calls `visit` with the runs of cells whose centre is inside the polygon (holes left out), as [from, to) indices. */
@@ -360,7 +332,7 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
 
   progress.begin('mesh', 'Meshing the LiDAR surface', 0.7, 0.2);
   const field: HeightGrid = { heights: result.heights, detail: result.detail, nx, ny, x0, y0, x1, y1, dx, dy };
-  const limits = { deviation: DEVIATION_CELLS * cell, threshold: THRESHOLD_CELLS2 * cell * cell, minGap: MIN_GAP_CELLS * cell };
+  const limits = surfaceLimits(cell);
   let tin: Tin = await meshSurface(field, limits, { runTile: input.runTile, concurrency: input.concurrency, progress: (fraction) => progress.checkpoint(fraction) });
   // Twice, since the first pass joins up roof edges the second can straighten further.
   for (let pass = 0; pass < 2; pass++) {

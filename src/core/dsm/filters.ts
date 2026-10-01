@@ -518,6 +518,12 @@ export function windowMin(z: Float32Array, nx: number, ny: number, radius: numbe
   return slide(z, nx, ny, radius, -1, out);
 }
 
+// Facade relief narrower than half the window, printed, is straightened
+// where it moves no more than the reach. Fins, pilasters and notches that
+// narrow don't print, and meshed they're a row of ribs.
+export const FAIR_WINDOW_MM = 0.6;
+export const FAIR_REACH_MM = 0.14;
+
 // Directions a face is followed along by fairFaces: across, up, and both diagonals.
 const ALONG: [number, number][] = [
   [1, 0],
@@ -528,8 +534,8 @@ const ALONG: [number, number][] = [
 
 /**
  * Straighten relief along steep faces narrower than half `window`, where no
- * height level moves further than `reach` in plan. It's the building caps'
- * fair() in lidar/envelope.ts, row-major and for a whole LiDAR only grid:
+ * height level moves further than `reach` in plan. It started as the old
+ * building caps' fair(), row-major and for a whole LiDAR only grid:
  * along a face the heights rise monotonically across it, so the median of a
  * line of cells along the face is the face's own position at every height.
  * Each steep cell takes the line of four directions whose heights vary

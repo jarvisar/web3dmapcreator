@@ -17,7 +17,9 @@ import { flai } from './flai';
 import { geonb } from './geonb';
 import { helsinki } from './helsinki';
 import { ign } from './ign';
+import { indiana } from './indiana';
 import { japan } from './japan';
+import { kyfromabove } from './kyfromabove';
 import { luxembourg } from './luxembourg';
 import { noaa } from './noaa';
 import { nrcan } from './nrcan';
@@ -38,7 +40,7 @@ export { USGS_CATALOG } from './usgs';
 
 // Registry order is the order candidates come out in, which ranking falls
 // back on, so it stays the same however the requests finish.
-export const PROVIDERS: Provider[] = [usgs, flai, ign, nrcan, swisstopo, nrw, rlp, brandenburg, berlin, luxembourg, scotland, slovenia, basque, trentino, helsinki, geonb, noaa, saoPaulo, japan, opentopography];
+export const PROVIDERS: Provider[] = [usgs, kyfromabove, indiana, flai, ign, nrcan, swisstopo, nrw, rlp, brandenburg, berlin, luxembourg, scotland, slovenia, basque, trentino, helsinki, geonb, noaa, saoPaulo, japan, opentopography];
 
 const TIMEOUT_MS = 90_000;
 

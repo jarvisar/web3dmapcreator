@@ -5,12 +5,12 @@
 
 import { union } from '../geometry/polygon';
 import type { MultiPolygon } from '../types';
-import { DEFAULT_SURFACE_SCALE, envelopeParameters, fitRoofEnvelope } from './envelope';
 import { groundAnchor } from './ground';
 import { occupiedArea, type Outcome } from './measure';
-import { median, quantile } from './numeric';
-import { xyz, type PointIndex } from './points';
+import { quantile } from './numeric';
+import type { PointIndex } from './points';
 import { area, bounds, buffer, Inside, pieces } from './shapes';
+import { DEFAULT_SURFACE_SCALE, surfaceAround, type BatchSurface } from './surface';
 
 export interface RockDomain {
   id: string;
@@ -69,12 +69,11 @@ export function rockDomains(polygons: { id: string; geometry: MultiPolygon }[]):
  * Validate coverage and use surrounding ground to align a measured relief.
  * A hillside cannot be one ground plane, so a low, balanced ground cell is
  * the alignment anchor, and every surface height keeps its measured
- * difference from it.
+ * difference from it. The surface itself is the batch's, as for buildings.
  */
-export function measureRockSurface(footprint: MultiPolygon, index: PointIndex, scale: [number, number] = DEFAULT_SURFACE_SCALE): Outcome {
+export function measureRockSurface(footprint: MultiPolygon, index: PointIndex, scale: [number, number] = DEFAULT_SURFACE_SCALE, surface?: BatchSurface | null): Outcome {
   const footprintArea = area(footprint);
   if (!footprint.length || footprintArea < 4) return { record: null, reason: 'invalid_or_small_footprint' };
-  if (footprintArea > 40000 * envelopeParameters(scale)[0] ** 2) return { record: null, reason: 'footprint_cell_budget' };
   const [x0, y0, x1, y1] = bounds(buffer(footprint, 25));
   const nearby = index.queryIndices(x0, y0, x1, y1);
   const anchor = groundAnchor(footprint, index);
@@ -113,31 +112,20 @@ export function measureRockSurface(footprint: MultiPolygon, index: PointIndex, s
   for (const i of rows) lowest = Math.min(lowest, p.z[i]);
   // A small offset below the surface gives the solid a positive base without changing any height.
   const datum = Math.min(anchor[2], lowest - 0.05);
-  const observations = xyz(rows.length);
-  rows.forEach((i, k) => {
-    observations.x[k] = p.x[i];
-    observations.y[k] = p.y[i];
-    observations.z[k] = p.z[i] - datum;
-  });
-  if (quantile(observations.z, 0.99) - quantile(observations.z, 0.01) < 0.05 / scale[1]) return { record: null, reason: 'no_printable_rock_relief' };
-  const samples = xyz(bands.length);
-  bands.forEach((band, k) => {
-    samples.x[k] = median(band.map((i) => p.x[i]));
-    samples.y[k] = median(band.map((i) => p.y[i]));
-    samples.z[k] = median(band.map((i) => p.z[i])) - datum;
-  });
-  const { fit, reason } = fitRoofEnvelope(footprint, samples, pitch, scale, observations);
+  const heights = Float64Array.from(rows, (i) => p.z[i] - datum);
+  if (quantile(heights, 0.99) - quantile(heights, 0.01) < 0.05 / scale[1]) return { record: null, reason: 'no_printable_rock_relief' };
+  const source = surface !== undefined ? surface : surfaceAround(footprint, p, scale);
+  const { fit, reason } = source ? source.fit(footprint, datum, [], 'rock') : { fit: null, reason: null };
   if (!fit) return { record: null, reason: reason ?? 'insufficient upper surface samples' };
   const least = Math.min(...coverage);
   return {
     record: {
       method: 'faceted_roof',
-      surfaceReconstruction: 'roof_envelope',
+      surfaceReconstruction: 'surface',
       surfaceKind: 'rock',
       heightM: fit.heightM,
       tiers: [],
       cap: fit.cap,
-      roofFitP95M: fit.roofFitP95M,
       surfaceDiagnostics: fit.diagnostics,
       groundM: datum,
       groundReference: 'surrounding_ground_anchor',

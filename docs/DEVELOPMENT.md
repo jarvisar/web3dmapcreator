@@ -26,7 +26,7 @@ The build goes to `build/`, not `dist/`. In this repository `dist/` held the Ble
 | `src/core/data/` | Overture GeoParquet reads, elevation tiles, HTTP retries and the IndexedDB cache |
 | `src/core/geometry/` | Polygon booleans (Clipper2), the prism mesher, spatial indexes, mesh checks |
 | `src/core/terrain/` | The shared terrain height grid |
-| `src/core/lidar/` | LiDAR: survey discovery, EPT and COPC reading, building measurement and roof envelopes |
+| `src/core/lidar/` | LiDAR: survey discovery, EPT and COPC reading, building measurement, and roofs cut from the LiDAR only surface |
 | `src/core/dsm/` | LiDAR only models: reading a survey into a grid, the height rules, the mesh and the model |
 | `src/core/pipeline/` | Generation: water, roads, bridges, land cover, buildings, trees, meshing, plates |
 | `src/core/export/` | Bambu Studio, PrusaSlicer, 3MF and STL writers |
@@ -93,7 +93,7 @@ With `--lidar`, point data and batch results are kept in `out/lidar-cache` (or `
 
 `npm test` covers the projection, the classifiers, linear referencing, water, roads, bridges, land cover, buildings and roofs (checked against the add-on's rules), the mesher, the exporters and the data layer against small parquet fixtures. The pipeline tests build models and check that every part is made of closed, consistently wound shells.
 
-The LiDAR tests run offline. The rectangle, centroid and rotation tests compare against Shapely output saved in `src/core/lidar/testdata/`. The envelope tests use point clouds from an exact copy of numpy's random generator (`src/core/lidar/test-helpers.ts`), as the add-on's did. Where the roof surface now works differently from the add-on, the test says so. The readers are tested against small synthetic EPT and COPC files with a pass-through decoder, and discovery against canned catalog answers.
+The LiDAR tests run offline. The rectangle, centroid and rotation tests compare against Shapely output saved in `src/core/lidar/testdata/`. Some measurement tests use point clouds from an exact copy of numpy's random generator (`src/core/lidar/test-helpers.ts`), as the add-on's did. The readers are tested against small synthetic EPT and COPC files with a pass-through decoder, and discovery against canned catalog answers.
 
 The SVG map tests render a saved OpenFreeMap tile of Canada Place in Vancouver (`src/core/svgmap/fixtures`) in every output mode, and cover the cleanup, layout, titles and tile stitching.
 
@@ -134,6 +134,6 @@ With LiDAR on:
 - `data.geo.admin.ch` for swisstopo's STAC and COPC files
 - `open-lidar-data.s3.eu-central-1.amazonaws.com` for Open LiDAR Data
 
-Staged LAZ downloads (TNM, the Environment Agency, most German states, PNOA) aren't read. They're whole files of tens to hundreds of MB, and some hosts, like `rockyweb.usgs.gov` and `geodaten.bayern.de`, send no CORS headers. If one is worth adding later, a CORS proxy that forwards `Range` and exposes `Content-Range` would be the way in.
+Surveys that only come as whole files are offered in the app and only downloaded once the user approves them. Hosts without CORS headers, like `rockyweb.usgs.gov` (USGS's staged LAZ) and `geodaten.bayern.de`, still can't be read at all. If one is worth adding later, a CORS proxy that forwards `Range` and exposes `Content-Range` would be the way in.
 
 The Azure copy of Overture's data doesn't send CORS headers, so the S3 copy is used.

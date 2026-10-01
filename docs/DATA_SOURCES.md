@@ -50,7 +50,9 @@ Only downloaded for LiDAR buildings (`LiDAR` on) and LiDAR only models. The surv
 | Source | Where | License |
 | --- | --- | --- |
 | [USGS 3DEP](https://www.usgs.gov/3d-elevation-program), through [Hobu's EPT mirror](https://github.com/hobuinc/usgs-lidar) | United States | Public domain |
-| [NOAA Digital Coast](https://coast.noaa.gov/digitalcoast/) | Hawaii and the US territories | Public domain, attribution requested |
+| [NOAA Digital Coast](https://coast.noaa.gov/digitalcoast/) | United States and its territories, mostly coasts and cities | Public domain, attribution requested. Some local surveys ask for credit to their agency, like NYC DoITT |
+| [KyFromAbove](https://kyfromabove.ky.gov/) | Kentucky | Public domain with attribution |
+| [IndianaMap elevation](https://registry.opendata.aws/in-elevation/) | Indiana's Lake Michigan shore | CC0 |
 | [NRCan CanElevation](https://open.canada.ca/data/en/dataset/7069387e-9986-4297-9f55-0288e9676947) | Canada | Open Government Licence - Canada |
 | [GeoNB](https://geonb.snb.ca/) | New Brunswick | Open Government Licence - New Brunswick |
 | [IGN LiDAR HD](https://geoservices.ign.fr/lidarhd) | France | Licence Ouverte 2.0 |

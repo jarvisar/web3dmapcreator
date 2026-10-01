@@ -161,6 +161,8 @@ export interface ModelSettings {
     minFootprintMm2: number;
     /** Also measure mapped bare rock. */
     rockSurfaces: boolean;
+    /** A survey to read first (its URL), for LiDAR buildings and LiDAR only models alike. Others still fill in where it doesn't reach. '' picks for each spot. */
+    survey: string;
   };
   /**
    * The LiDAR Only model: one solid in the terrain colour, and optionally the
@@ -275,7 +277,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
     landCoverScatter: true,
     avoidRoads: true,
   },
-  lidar: { enabled: false, roofMode: 'envelope', preferLidar: true, minFootprintMm2: 0.7, rockSurfaces: false },
+  lidar: { enabled: false, roofMode: 'envelope', preferLidar: true, minFootprintMm2: 0.7, rockSurfaces: false, survey: '' },
   lidarModel: { cellMode: 'detail', detailMm: 0.05, cellM: 0.5, trees: 'natural', keepClutter: true, waterDepthMm: 0.6, waterMode: 'recess', mapWater: true, heightScale: 1 },
   supports: true,
   rim: { enabled: false, heightMm: 1.5, widthMm: 2 },
@@ -590,6 +592,8 @@ export function sanitizeSettings(settings: unknown): ModelSettings {
   if (water.mode === 'layer' || water.mode === 'through') out.water.mode = water.mode;
   const lidar = isObject(source.lidar) ? source.lidar : {};
   if (lidar.roofMode === 'envelope' || lidar.roofMode === 'heights') out.lidar.roofMode = lidar.roofMode;
+  // Only ever compared with the surveys found, never fetched.
+  if (typeof lidar.survey === 'string' && lidar.survey.length <= 1024) out.lidar.survey = lidar.survey;
   const lidarModel = isObject(source.lidarModel) ? source.lidarModel : {};
   if (lidarModel.cellMode === 'detail' || lidarModel.cellMode === 'metres') out.lidarModel.cellMode = lidarModel.cellMode;
   const waterMode = lidarModel.waterMode;

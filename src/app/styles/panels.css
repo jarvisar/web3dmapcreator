@@ -908,3 +908,13 @@
   color: var(--text-2);
   font-size: 12px;
 }
+
+.survey-find {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -2px 0 8px;
+  color: var(--text-3);
+  font-size: 11px;
+}

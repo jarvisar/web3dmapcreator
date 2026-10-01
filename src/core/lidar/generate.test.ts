@@ -83,7 +83,7 @@ describe('LiDAR buildings in a model', () => {
     settings.terrain.resolution = 64;
     settings.lidar.enabled = true;
     const hills = { sample: (lon: number, lat: number) => 30 + 20 * Math.sin((lon - LON) * 500) + 10 * Math.cos((lat - LAT) * 400) };
-    const spec = await generateModel({ area, settings, data: data(), elevation: hills, lidar: { records: { b1: record }, rejected: {}, counts: {}, surveys: [], failures: [], candidates: 1, downloadedBytes: 0, reused: false } });
+    const spec = await generateModel({ area, settings, data: data(), elevation: hills, lidar: { records: { b1: record }, rejected: {}, counts: {}, surveys: [], failures: [], candidates: 1, downloadedBytes: 0, reused: false, offers: [], found: [] } });
     expect(spec.stats.lidar_buildings).toBe(1);
     expect(spec.stats.lidar_envelopes).toBe(1);
     const layer = spec.layers.find((l) => l.id === 'buildings')!;

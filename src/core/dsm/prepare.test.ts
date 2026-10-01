@@ -3,6 +3,7 @@ import type { ByteCache } from '../data/cache';
 import { Projection } from '../geo/projection';
 import { surfaceClassTable, type PointReceiver } from '../lidar/read/normalize';
 import { setLazDecoder } from '../lidar/read/laz';
+import { OffersError } from '../lidar/offers';
 import { discover, type Candidate } from '../lidar/sources';
 import { NumpyRandom } from '../lidar/test-helpers';
 import type { AreaSpec } from '../settings';
@@ -12,6 +13,7 @@ import { prepareSurface, setSurfaceStore, unpackLayers, type SurfaceJob, type Su
 import { BlockRaster, EMPTY_SHARE, occupiedCell, ProbeSink } from './raster';
 
 vi.mock('../lidar/sources', async (original) => ({ ...(await original<typeof import('../lidar/sources')>()), discover: vi.fn() }));
+vi.mock('../lidar/read/tiles', async (original) => ({ ...(await original<typeof import('../lidar/read/tiles')>()), checkTile: vi.fn(async () => undefined) }));
 
 setLazDecoder({ decodeFile: () => ({ records: new Uint8Array(), pointCount: 0, pointSize: 0 }), chunkDecoder: () => ({ decode: (chunk) => chunk, free: () => undefined }) });
 
@@ -266,6 +268,13 @@ function survey(name: string, year: number, box = [-180, -80, 180, 80]): Candida
   };
 }
 
+/** The same, as whole files: four 100 MB tiles around the area. */
+function tiled(name: string, year: number, box?: number[]): Candidate {
+  const [lon, lat] = area.center;
+  const tiles = [[-1, -1], [0, -1], [-1, 0], [0, 0]].map(([i, j]) => ({ url: `https://example.com/${name}/${i}_${j}.laz`, bbox: [lon + i * 0.01, lat + j * 0.01, lon + (i + 1) * 0.01, lat + (j + 1) * 0.01] as [number, number, number, number], size: 100e6 }));
+  return { ...survey(name, year, box), provider: 'Somewhere', url: `https://example.com/${name}/`, format: 'LAZ', tiles };
+}
+
 /** A runner that invents returns over each job's box: a 50 m tower 80 x 60 m in the middle, ground at 10 m, every 0.25 m. */
 function fakeRunner(calls: SurfaceJob[], height = 50): SurfaceRunner {
   return {
@@ -396,6 +405,40 @@ describe('prepareSurface', () => {
     expect(new Set(calls.map((c) => c.survey.name))).toEqual(new Set(['also dense']));
   });
 
+  it('reads a much denser survey ahead of one flown a little later, but not five years later', async () => {
+    const dense = { ...survey('dense', 2023), densityM2: 60 };
+    vi.mocked(discover).mockResolvedValue({ candidates: [{ ...survey('newer', 2025), densityM2: 20 }, dense], failures: [] });
+    let calls: SurfaceJob[] = [];
+    await prepareSurface({ area, cellM: 1, runner: fakeRunner(calls) });
+    expect(new Set(calls.map((c) => c.survey.name))).toEqual(new Set(['dense']));
+    vi.mocked(discover).mockResolvedValue({ candidates: [{ ...survey('newer', 2025), densityM2: 20 }, { ...dense, acquisitionEnd: '2019-05-01', projectYearHint: 2019 }], failures: [] });
+    calls = [];
+    await prepareSurface({ area, cellM: 1.02, runner: fakeRunner(calls) });
+    expect(new Set(calls.map((c) => c.survey.name))).toEqual(new Set(['newer']));
+  });
+
+  it('reads a survey picked by hand first, the others filling in where it does not reach', async () => {
+    const frame = new Projection(area.center, 0, 1);
+    const [middle] = frame.localToGeo(0, 0);
+    const west = survey('west', 2015, [-180, -80, middle, 80]);
+    vi.mocked(discover).mockResolvedValue({ candidates: [survey('whole', 2020), west], failures: [] });
+    const automatic = await prepareSurface({ area, cellM: 1, runner: fakeRunner([]) });
+    expect(automatic.surveys.map((s) => s.name)).toEqual(['whole']);
+    expect(automatic.found.map((s) => s.name)).toEqual(['whole', 'west']);
+    const picked = await prepareSurface({ area, cellM: 1, runner: fakeRunner([]), survey: west.url });
+    expect(picked.surveys.map((s) => s.name).sort()).toEqual(['west', 'whole']);
+    expect(picked.coverage).toBeGreaterThan(0.99);
+    expect(picked.found.map((s) => s.name)).toEqual(['whole', 'west']);
+  });
+
+  it('offers a whole-file survey picked by hand for every block it would be read for', async () => {
+    vi.mocked(discover).mockResolvedValue({ candidates: [survey('streamed', 2021), tiled('tiles', 2020)], failures: [] });
+    expect((await prepareSurface({ area, cellM: 1, runner: fakeRunner([]) })).offers).toEqual([]);
+    const picked = await prepareSurface({ area, cellM: 1, runner: fakeRunner([]), survey: 'https://example.com/tiles/' });
+    expect(picked.surveys.map((s) => s.name)).toEqual(['streamed']);
+    expect(picked.offers.map((o) => [o.name, o.reason, o.tiles.length])).toEqual([['tiles', 'chosen', 4]]);
+  });
+
   it('retries a block whose read failed, next time', async () => {
     vi.mocked(discover).mockResolvedValue({ candidates: [survey('survey', 2020)], failures: [] });
     const calls: SurfaceJob[] = [];
@@ -415,6 +458,51 @@ describe('prepareSurface', () => {
     const second = await prepareSurface({ area, cellM: 1, runner: fakeRunner(calls) });
     expect(second.failures).toEqual([]);
     expect(second.reusedBlocks).toBe(second.blocks - 1);
+  });
+
+  it('offers a whole-file survey instead of reading it, and reads it once approved', async () => {
+    vi.mocked(discover).mockResolvedValue({ candidates: [tiled('tiles', 2021)], failures: [] });
+    const calls: SurfaceJob[] = [];
+    const offered = await prepareSurface({ area, cellM: 1, runner: fakeRunner(calls) }).catch((error: OffersError) => error);
+    expect(offered).toBeInstanceOf(OffersError);
+    expect(calls).toEqual([]);
+    const [offer] = (offered as OffersError).offers;
+    expect(offer).toMatchObject({ name: 'tiles', reason: 'gap', bytes: 400e6, unsized: 0 });
+    expect(offer.tiles).toHaveLength(4);
+    const read = await prepareSurface({ area, cellM: 1, runner: fakeRunner(calls), approved: new Set(offer.tiles) });
+    expect(read.surveys.map((s) => s.name)).toEqual(['tiles']);
+    expect(read.offers).toEqual([]);
+    expect(read.coverage).toBeGreaterThan(0.99);
+    // Blocks read with it are kept, and cost nothing to use without approval.
+    const count = calls.length;
+    const again = await prepareSurface({ area, cellM: 1, runner: fakeRunner(calls) });
+    expect(calls.length).toBe(count);
+    expect(again.reusedBlocks).toBe(again.blocks);
+    expect(again.offers).toEqual([]);
+  });
+
+  it('reads a streamed survey in place of a whole-file one, and offers that only when much newer', async () => {
+    vi.mocked(discover).mockResolvedValue({ candidates: [survey('streamed', 2012), tiled('tiles', 2024)], failures: [] });
+    const calls: SurfaceJob[] = [];
+    const result = await prepareSurface({ area, cellM: 1, runner: fakeRunner(calls) });
+    expect(new Set(calls.map((c) => c.survey.name))).toEqual(new Set(['streamed']));
+    expect(result.surveys.map((s) => s.name)).toEqual(['streamed']);
+    expect(result.offers.map((o) => [o.name, o.reason, o.tiles.length])).toEqual([['tiles', 'newer', 4]]);
+    vi.mocked(discover).mockResolvedValue({ candidates: [survey('recent', 2021), tiled('tiles', 2024)], failures: [] });
+    expect((await prepareSurface({ area, cellM: 1, runner: fakeRunner([]) })).offers).toEqual([]);
+  });
+
+  it('offers a whole-file survey for the part nothing else covers', async () => {
+    const frame = new Projection(area.center, 0, 1);
+    const [middle] = frame.localToGeo(0, 0);
+    vi.mocked(discover).mockResolvedValue({ candidates: [survey('west', 2020, [-180, -80, middle, 80]), tiled('tiles', 2015)], failures: [] });
+    const result = await prepareSurface({ area, cellM: 1, runner: fakeRunner([]) });
+    expect(result.surveys.map((s) => s.name)).toEqual(['west']);
+    expect(result.coverage).toBeLessThan(0.7);
+    expect(result.offers.map((o) => [o.name, o.reason])).toEqual([['tiles', 'gap']]);
+    const filled = await prepareSurface({ area, cellM: 1, runner: fakeRunner([]), approved: new Set(result.offers[0].tiles) });
+    expect(filled.surveys.map((s) => s.name)).toContain('tiles');
+    expect(filled.coverage).toBeGreaterThan(0.99);
   });
 
   it('says when no survey covers the area', async () => {

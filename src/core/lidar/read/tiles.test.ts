@@ -11,7 +11,7 @@ import type { LazChunk } from './chunks';
 import { crsFromEpsg, lonLatTransforms } from './crs';
 import type { Fetcher } from './fetcher';
 import { setLazDecoder } from './laz';
-import { readTiles } from './tiles';
+import { checkTile, readTiles } from './tiles';
 
 vi.mock('./chunks', async (original) => ({
   ...(await original<typeof import('./chunks')>()),
@@ -262,5 +262,29 @@ describe('tiles in ZIPs', () => {
     const { fetcher } = fakeFetcher({ [zipUrl]: zip });
     const { points: read } = await readTiles(fetcher, [{ url: zipUrl, bbox: entry().bbox, size: zip.length }], everything, { frame });
     expect(read.count).toBe(5);
+  });
+});
+
+describe('checking a tile before offering it', () => {
+  // Inside the US, where heights can't be assumed to be metres.
+  const american = [-90, 38, -89, 39] as [number, number, number, number];
+
+  it('reads the header by range and throws what reading it would', async () => {
+    const { fetcher, requested } = fakeFetcher({ [url]: tile(points, 2) });
+    await expect(checkTile(fetcher, { url, bbox: american }, {})).rejects.toThrow(/vertical units/);
+    await checkTile(fetcher, { url, bbox: american }, { verticalUnits: 'us-ft' });
+    await checkTile(fetcher, entry(), {});
+    expect(requested.every((r) => /#\d+-\d+$/.test(r))).toBe(true);
+  });
+
+  it("leaves alone a tile it would have to download, whole or deflated", async () => {
+    const zipUrl = 'https://example.com/tiles/block.zip';
+    const zip = zipSync({ 'west.laz': [tile(points, 2), { level: 6 }] });
+    const zipped = fakeFetcher({ [zipUrl]: zip });
+    await checkTile(zipped.fetcher, { url: zipUrl, bbox: american, size: zip.length }, {});
+    expect(zipped.requested).not.toContain(zipUrl);
+    const whole = fakeFetcher({ [url]: tile(points) });
+    await checkTile(whole.fetcher, { url, bbox: american, whole: true }, {});
+    expect(whole.requested).toEqual([]);
   });
 });

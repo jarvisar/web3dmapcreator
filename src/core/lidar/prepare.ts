@@ -5,10 +5,11 @@
 // batch is checkpointed, so changing an unrelated setting, or preparing an
 // overlapping area, reuses it without downloading or measuring again.
 
+import { areaGeoBounds, effectiveScale } from '../geo/area';
 import { Projection } from '../geo/projection';
 import { difference, intersection, multiArea, union } from '../geometry/polygon';
 import type { SourceFeature } from '../pipeline/source';
-import type { GeoBounds, MultiPolygon, Polygon, Ring } from '../types';
+import type { GeoBounds, LonLat, MultiPolygon, Polygon, Ring } from '../types';
 import { measureFeatures, type MetricFeature } from './features';
 import type { Points } from './points';
 import { publish, type PublishedRecord } from './publish';
@@ -19,9 +20,14 @@ import { lazDecoder } from './read/laz';
 import { ALGORITHM_VERSION, type LidarRecord } from './records';
 import { rockDomains, shortHash } from './rock';
 import { chooseMeasurement, projectYear, type Observation } from './selection';
+import { cellSize, DEFAULT_DETAIL_MM, requestedCell } from '../dsm/grid';
+import type { AreaSpec, ModelSettings } from '../settings';
 import { area, bounds, boxShape, buffer, centroid, intersects, keepStart } from './shapes';
-import { discover, type Candidate, type Failure } from './sources';
+import { chosenFirst, isChosen, surveyChoice, type SurveyChoice } from './choice';
+import { advantage, approves, makeOffer, reopened, staged, tilesIn, type Approval, type LidarOffer } from './offers';
+import { discover, type Candidate, type Failure, type Tile } from './sources';
 import { measuredProps, type SourcePart } from './source';
+import type { SurfaceSettings } from './surface';
 
 export interface PrepareSettings {
   roofMode: 'envelope' | 'heights';
@@ -31,10 +37,35 @@ export interface PrepareSettings {
   /** Printed mm per ground metre, horizontal and vertical (height scale included). */
   xyScale: number;
   zScale: number;
+  /** The cell measured roofs are cut from, metres: a LiDAR Only model's (requestedCell), never grown for the area. */
+  cellM?: number;
+  /** A survey to read first: its URL, or its name (`isChosen`). */
+  survey?: string;
+}
+
+/** The area, so measured roofs follow the cells of a LiDAR Only model of it. */
+export interface PrepareArea {
+  center: LonLat;
+  rotationDeg: number;
+  widthM: number;
+  heightM: number;
+}
+
+/** What prepareLidar takes from a model's area and settings. */
+export function lidarRequest(area: AreaSpec, settings: ModelSettings): { area: PrepareArea; settings: PrepareSettings } {
+  const scale = effectiveScale(area, settings.scale);
+  return {
+    area: { center: area.center, rotationDeg: area.rotationDeg, widthM: area.widthM, heightM: area.heightM },
+    // The cell a LiDAR Only model asks for, but never grown for a large
+    // area: only one batch at a time is gridded.
+    settings: { ...settings.lidar, xyScale: scale, zScale: scale * settings.buildings.heightScale, cellM: requestedCell(settings.lidarModel, scale, 0, 0) },
+  };
 }
 
 export interface PrepareInput {
   bounds: GeoBounds;
+  /** Measures in the area's own frame when given, or one centred on `bounds`. */
+  area?: PrepareArea;
   buildings: SourceFeature[];
   parts: SourceFeature[];
   land?: SourceFeature[];
@@ -43,6 +74,8 @@ export interface PrepareInput {
   progress?: (label: string, fraction: number, detail?: string) => Promise<void> | void;
   /** Where batches are read and measured. By default one at a time in this thread. */
   runner?: BatchRunner;
+  /** Tiles of whole-file surveys the user agreed to download. Other whole-file surveys are only offered. */
+  approved?: Approval;
 }
 
 export interface SurveyUse {
@@ -64,6 +97,10 @@ export interface PreparedLidar {
   candidates: number;
   downloadedBytes: number;
   reused: boolean;
+  /** Whole-file surveys that would have measured buildings, waiting for the user's approval. */
+  offers: LidarOffer[];
+  /** Every survey found under the area, in the order they'd be picked without a choice. */
+  found: SurveyChoice[];
 }
 
 // Measurements read a 25 m ground halo; acquisition keeps a 30 m margin.
@@ -148,7 +185,8 @@ export function clipRingToBox(ring: Ring, [w, s, e, n]: [number, number, number,
 // Ranking of surveys for one building, after the add-on's metadata_order:
 // newest acquisition first, then coverage, resolution and classification,
 // EPT before COPC before plain LAZ (read whole) on ties, the original
-// publisher before a mirror.
+// publisher before a mirror. `rankSurveys` then moves much denser surveys
+// ahead of slightly newer ones, which the add-on doesn't.
 export interface Ranked {
   candidate: Candidate;
   coverage: MultiPolygon;
@@ -180,6 +218,65 @@ export function rankOrder(a: Ranked, b: Ranked): number {
   return a.candidate.url < b.candidate.url ? -1 : a.candidate.url > b.candidate.url ? 1 : 0;
 }
 
+// Less than five years newer and with 2.5 times fewer returns per m² (and
+// two fewer) loses: about the add-on's margins for paying for an upgrade,
+// taken the other way. San Francisco's 2023 survey, 62 per m² over its
+// outline, stays ahead of NOAA's 2025 Bay-Delta survey at 20. The densities
+// are points over a whole outline and can be 2x off where it matters: the
+// same 2023 survey has 143 per m² downtown, and King County's 2016-17 one
+// averages 26 but has 14 in downtown Seattle, where the 2021 survey has 12.
+// At twice, that older one won. Both densities have to be known, so an
+// undated or unmeasured survey never moves.
+const DENSER_YEARS = 5;
+const DENSER_RATIO = 2.5;
+const DENSER_GAIN = 2;
+
+function denserThanNewer(older: Candidate, newer: Candidate): boolean {
+  const [a, b] = [older.densityM2, newer.densityM2];
+  if (!a || !b || a < DENSER_RATIO * b || a - b < DENSER_GAIN) return false;
+  const days = acquisitionOrdinal(newer) - acquisitionOrdinal(older);
+  return days > 0 && days < DENSER_YEARS * 365.25;
+}
+
+/**
+ * Surveys best first: by `compare`, then each one moved up past the slightly
+ * newer surveys it's much denser than, within `group`. The rule isn't
+ * transitive (three surveys can beat each other in a circle), so it's a pass
+ * that stops at the first survey one doesn't beat, not a sort comparator.
+ */
+export function rankSurveys(list: Ranked[], compare: (a: Ranked, b: Ranked) => number = rankOrder, group: (a: Ranked, b: Ranked) => boolean = () => true): Ranked[] {
+  const out = [...list].sort(compare);
+  for (let i = 1; i < out.length; i++) {
+    for (let j = i; j > 0 && group(out[j - 1], out[j]) && denserThanNewer(out[j].candidate, out[j - 1].candidate); j--) {
+      [out[j - 1], out[j]] = [out[j], out[j - 1]];
+    }
+  }
+  return out;
+}
+
+/**
+ * The surveys found under an area, for picking one by hand, without reading
+ * any points. Ones covering the whole area come first, as a LiDAR only model
+ * reads them.
+ */
+export async function findSurveys(spec: AreaSpec, signal?: AbortSignal): Promise<{ surveys: SurveyChoice[]; failures: Failure[] }> {
+  const frame = new Projection(spec.center, spec.rotationDeg, 1);
+  const rect = boxShape(-spec.widthM / 2, -spec.heightM / 2, spec.widthM / 2, spec.heightM / 2);
+  const query = areaGeoBounds(spec);
+  const found = await discover(new Fetcher(signal), query);
+  const box: [number, number, number, number] = [query.west, query.south, query.east, query.north];
+  const ranked: Ranked[] = [];
+  for (const candidate of found.candidates) {
+    const clipped = candidate.coverage.map((polygon) => polygon.map((ring) => clipRingToBox(ring, box)).filter((ring) => ring.length >= 3)).filter((p) => p.length);
+    const coverage = intersection(toMetric(clipped, frame), rect);
+    if (!coverage.length) continue;
+    ranked.push({ candidate, coverage, catalogCoverage: multiArea(coverage) / multiArea(rect) });
+  }
+  const tier = (r: Ranked) => (r.catalogCoverage >= 0.99 ? 0 : 1);
+  const order = rankSurveys(ranked, (a, b) => tier(a) - tier(b) || rankOrder(a, b), (a, b) => tier(a) === tier(b));
+  return { surveys: order.map(surveyChoice), failures: found.failures };
+}
+
 
 export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> {
   const { bounds: bbox, settings } = input;
@@ -193,7 +290,9 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
   const xyScale = heightOnly ? 0.07 : settings.xyScale;
   const zScale = heightOnly ? 0.077 : settings.zScale;
   const minFootprintM2 = settings.minFootprintMm2 / settings.xyScale ** 2;
-  const frame = new Projection([(bbox.west + bbox.east) / 2, (bbox.south + bbox.north) / 2], 0, 1);
+  const frame = input.area ? new Projection(input.area.center, input.area.rotationDeg, 1) : new Projection([(bbox.west + bbox.east) / 2, (bbox.south + bbox.north) / 2], 0, 1);
+  const cellM = settings.cellM ?? cellSize(DEFAULT_DETAIL_MM, settings.xyScale, 0, 0);
+  const surface: SurfaceSettings | undefined = heightOnly ? undefined : { cellM, widthM: input.area?.widthM, heightM: input.area?.heightM, xyScale, zScale };
 
   // ------------------------------------------------------------ footprints
   const geometries = new Map<string, MultiPolygon>();
@@ -217,9 +316,8 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
       features.push({ id: domain.id, props: { lidar_surface_kind: 'rock', source_land_ids: domain.members }, geometry: domain.geometry });
     }
   }
-  const [bx0, by0] = frame.toLocal(bbox.west, bbox.south);
-  const [bx1, by1] = frame.toLocal(bbox.east, bbox.north);
-  const selection = boxShape(Math.min(bx0, bx1), Math.min(by0, by1), Math.max(bx0, bx1), Math.max(by0, by1));
+  // The bounds' corners, which a turned frame doesn't keep square to its axes.
+  const selection: MultiPolygon = [[[frame.toLocal(bbox.west, bbox.south), frame.toLocal(bbox.east, bbox.south), frame.toLocal(bbox.east, bbox.north), frame.toLocal(bbox.west, bbox.north)]]];
   const inArea = features.filter((f) => intersects(f.geometry, selection));
   const rejected: Record<string, string> = {};
   const counts: Record<string, number> = {};
@@ -256,6 +354,8 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
   const request = {
     algorithm: ALGORITHM_VERSION,
     bbox: [bbox.west, bbox.south, bbox.east, bbox.north].map((v) => v.toFixed(7)),
+    frame: [...frame.center.map((v) => v.toFixed(7)), frame.rotationDeg],
+    surface: surface ? [surface.cellM, surface.widthM ?? null, surface.heightM ?? null] : null,
     xyScale: Math.round(xyScale * 1e10) / 1e10,
     zScale: Math.round(zScale * 1e10) / 1e10,
     roofMode: settings.roofMode,
@@ -264,12 +364,15 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
     rock: settings.rockSurfaces && !heightOnly,
     footprints: digest(features.map((f) => [f.id, f.geometry, measuredProps(f.props)])),
     parts: digest([...sourcePartsByParent].map(([k, v]) => [k, v.map((p) => [p.id, measuredProps(p.props), p.geometry])])),
+    // Only when there is one, so results saved without a choice keep their keys.
+    ...(settings.survey ? { survey: settings.survey } : {}),
   };
   const requestKey = `prepared:${digest(request)}`;
   const previous = await loadJson<PreparedLidar & { saved: number }>(requestKey);
-  if (previous && Date.now() - previous.saved < DAY_MS) return { ...previous, reused: true, downloadedBytes: 0 };
+  // Not once a tile it offered has been approved: that's what the next run is for.
+  if (previous && Date.now() - previous.saved < DAY_MS && !reopened(previous.offers, input.approved)) return { ...previous, offers: previous.offers ?? [], found: previous.found ?? [], reused: true, downloadedBytes: 0 };
   const fetcher = new Fetcher(input.signal);
-  const result: PreparedLidar = { records: {}, rejected, counts, surveys: [], failures: [], candidates: inArea.length, downloadedBytes: 0, reused: false };
+  const result: PreparedLidar = { records: {}, rejected, counts, surveys: [], failures: [], candidates: inArea.length, downloadedBytes: 0, reused: false, offers: [], found: [] };
   if (!eligible.length) {
     saveJson(requestKey, { ...result, saved: Date.now() });
     return result;
@@ -351,10 +454,12 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
     const usable = ranked.filter((r) => multiArea(difference(f.geometry, r.coverage)) <= 1e-6);
     const key = usable.map((r) => r.candidate.url).join('|');
     let order = rankings.get(key);
-    if (!order) rankings.set(key, (order = [...usable].sort(rankOrder)));
+    if (!order) rankings.set(key, (order = chosenFirst(rankSurveys(usable), settings.survey)));
     orders.set(f.id, order);
   }
-  const globalRank = new Map([...ranked].sort(rankOrder).map((r, i) => [r.candidate.url, i]));
+  const automatic = rankSurveys(ranked);
+  result.found = automatic.map(surveyChoice);
+  const globalRank = new Map(chosenFirst(automatic, settings.survey).map((r, i) => [r.candidate.url, i]));
 
   // ------------------------------------------------------------ acquisition
   const alternatives = new Map<string, LidarRecord[]>();
@@ -366,6 +471,9 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
   const total = eligible.length;
   // The default runner shares the discovery fetcher, which counts its bytes.
   const runner: BatchRunner = input.runner ?? { concurrency: 1, run: async (job, report) => ({ outcome: await runBatch(job, fetcher, report), downloaded: 0 }) };
+  // Batches a whole-file survey would have read without approval. Their
+  // buildings go on to their next survey as if it had failed.
+  const pending: { survey: Candidate; ids: string[]; tiles: Tile[] }[] = [];
   for (;;) {
     const groups = new Map<string, MetricFeature[]>();
     for (const f of eligible) {
@@ -393,7 +501,7 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
     const lane = async () => {
       while (queue.length) {
         const batch = queue.shift()!;
-        const context = { frame, halo, settings: { ...settings, xyScale, zScale }, partsByParent, sourcePartsByParent, neighboursById, runner, progress: (label: string, detail?: string) => progress(label, 0.08 + 0.9 * (done / total), detail) };
+        const context = { frame, halo, settings: { ...settings, xyScale, zScale }, surface, partsByParent, sourcePartsByParent, neighboursById, runner, approved: input.approved, progress: (label: string, detail?: string) => progress(label, 0.08 + 0.9 * (done / total), detail) };
         const outcome = await measureBatch(batch, survey, context).catch((error: unknown) => {
           if ((error as Error)?.name === 'BudgetExceeded' && batch.length > 1) {
             queue.unshift(...splitBatch(batch));
@@ -408,6 +516,10 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
         if (outcome === null) continue;
         done += batch.length;
         if (!outcome) continue;
+        if (outcome.pending) {
+          pending.push({ survey, ids: batch.map((f) => f.id), tiles: outcome.pending });
+          continue;
+        }
         result.downloadedBytes += outcome.downloaded;
         for (const f of batch) {
           const record = outcome.records[f.id];
@@ -428,10 +540,11 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
 
   // ------------------------------------------------------------ selection
   await progress('Choosing one survey per building', 0.99);
+  const waiting = new Set(pending.flatMap((p) => p.ids));
   for (const f of eligible) {
     const candidates = alternatives.get(f.id);
     if (!candidates) {
-      if (!rejected[f.id]) rejected[f.id] = orders.get(f.id)!.length ? 'no_compatible_measurement' : 'no_survey_coverage';
+      if (!rejected[f.id]) rejected[f.id] = waiting.has(f.id) ? 'tiles_not_downloaded' : orders.get(f.id)!.length ? 'no_compatible_measurement' : 'no_survey_coverage';
       continue;
     }
     const { record, audit } = chooseMeasurement(candidates, observations.get(f.id) ?? [], f.geometry, settings.preferLidar);
@@ -450,10 +563,50 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
   }
   for (const reason of Object.values(rejected)) if (reason !== 'footprint_below_minimum') count(reason);
   result.surveys = [...used.values()];
+  if (pending.length) {
+    await progress('Sizing LiDAR tiles to offer', 0.995);
+    result.offers = await stagedOffers(pending, result, ranked, input.approved, fetcher, settings.survey);
+  }
   result.downloadedBytes += fetcher.downloaded + (runner.downloaded?.() ?? 0);
   // Keep the result only when every survey was read: a failed read is retried next time.
   if (!result.failures.length) saveJson(requestKey, { ...result, saved: Date.now() });
   return result;
+}
+
+// Rejections no other survey would change, from the add-on's
+// SOURCE_INDEPENDENT_REJECTIONS.
+const SOURCE_INDEPENDENT = new Set(['invalid_or_small_footprint', 'elevated_or_underground', 'incomplete_footprint_or_ground_halo']);
+
+/**
+ * Whole-file surveys worth asking about: for buildings nothing else measured,
+ * or ones it beats by a wide margin (`advantage`). Each comes with every tile
+ * its batches need, so approving it reads those batches in full next time.
+ */
+async function stagedOffers(pending: { survey: Candidate; ids: string[]; tiles: Tile[] }[], result: PreparedLidar, ranked: Ranked[], approved: Approval | undefined, fetcher: Fetcher, chosen?: string): Promise<LidarOffer[]> {
+  const surveys = new Map(ranked.map((r) => [r.candidate.url, r.candidate]));
+  const wanted = new Map<string, { survey: Candidate; tiles: Tile[]; buildings: Set<string>; reasons: Set<LidarOffer['reason']> }>();
+  for (const { survey, ids, tiles } of pending) {
+    let used = false;
+    for (const id of ids) {
+      const from = result.records[id]?.sourceUrl;
+      const current = from ? surveys.get(from) : undefined;
+      // One the user picked is always offered: it's why they picked it.
+      const reason = isChosen(survey, chosen) ? 'chosen' : current ? advantage(survey, current) : SOURCE_INDEPENDENT.has(result.rejected[id]) ? null : 'gap';
+      if (!reason) continue;
+      const entry = wanted.get(survey.url) ?? { survey, tiles: [], buildings: new Set<string>(), reasons: new Set<LidarOffer['reason']>() };
+      wanted.set(survey.url, entry);
+      entry.buildings.add(id);
+      entry.reasons.add(reason);
+      used = true;
+    }
+    if (used) wanted.get(survey.url)!.tiles.push(...tiles.filter((t) => !approves(approved, [t])));
+  }
+  const offers = await Promise.all(
+    [...wanted.values()].map(({ survey, tiles, buildings, reasons }) =>
+      makeOffer(fetcher, survey, tiles, reasons.has('chosen') ? 'chosen' : reasons.has('gap') ? 'gap' : reasons.has('newer') ? 'newer' : 'denser', result.failures, [...buildings].filter((id) => !id.startsWith('rock:')).length),
+    ),
+  );
+  return offers.filter((o): o is LidarOffer => o !== null);
 }
 
 function splitBatch(batch: MetricFeature[]): MetricFeature[][] {
@@ -476,8 +629,11 @@ export interface BatchOutcome {
 export interface BatchJob {
   batch: MetricFeature[];
   survey: Candidate;
-  /** Centre of the measurement frame, which has no rotation and scale 1. */
+  /** Centre and rotation of the measurement frame, which has scale 1. */
   origin: [number, number];
+  rotationDeg: number;
+  /** The cells measured roofs are cut from. */
+  surface?: SurfaceSettings;
   query: GeoBounds;
   roi: MultiPolygon;
   settings: PrepareSettings;
@@ -500,15 +656,17 @@ interface BatchContext {
   frame: Projection;
   halo: MultiPolygon;
   settings: PrepareSettings;
+  surface?: SurfaceSettings;
   partsByParent: Map<string, MultiPolygon[]>;
   sourcePartsByParent: Map<string, SourcePart[]>;
   neighboursById: Map<string, MultiPolygon[]>;
   runner: BatchRunner;
+  approved?: Approval;
   progress: BatchProgress;
 }
 
 /** One batch of buildings against one survey, from a checkpoint when there is one. */
-async function measureBatch(batch: MetricFeature[], survey: Candidate, ctx: BatchContext): Promise<BatchOutcome & { downloaded: number }> {
+async function measureBatch(batch: MetricFeature[], survey: Candidate, ctx: BatchContext): Promise<BatchOutcome & { downloaded: number; pending?: Tile[] }> {
   const { frame, settings } = ctx;
   // Whole roofs and their ground, never past the selection's own halo.
   const [x0, y0, x1, y1] = bounds(union(...batch.map((f) => f.geometry)));
@@ -533,17 +691,24 @@ async function measureBatch(batch: MetricFeature[], survey: Candidate, ctx: Batc
     batch.map((f) => (ctx.sourcePartsByParent.get(f.id) ?? []).map((p) => [p.id, measuredProps(p.props), p.geometry])),
     [query.west, query.south, query.east, query.north],
     [settings.xyScale, settings.zScale, settings.roofMode, settings.preferLidar],
+    [frame.center, frame.rotationDeg, ctx.surface ?? null],
   ])}`;
   const cached = await loadJson<{ records: Record<string, ReturnType<typeof publish>>; rejected: Record<string, string>; observations: Record<string, Observation> }>(key);
   if (cached) {
     await ctx.progress(`Reusing measurements from ${survey.name}`, `${batch.length} buildings`);
     return { records: Object.fromEntries(Object.entries(cached.records).map(([id, r]) => [id, unpublish(r, frame)])), rejected: cached.rejected, observations: cached.observations, downloaded: 0 };
   }
+  if (staged(survey)) {
+    const tiles = tilesIn(survey, [query.west, query.south, query.east, query.north]);
+    if (!approves(ctx.approved, tiles)) return { records: {}, rejected: {}, observations: {}, downloaded: 0, pending: tiles };
+  }
   const pick = <T>(lookup: Map<string, T>) => new Map(batch.flatMap((f) => (lookup.has(f.id) ? [[f.id, lookup.get(f.id)!] as const] : [])));
   const job: BatchJob = {
     batch,
     survey,
     origin: [frame.center[0], frame.center[1]],
+    rotationDeg: frame.rotationDeg,
+    surface: ctx.surface,
     query,
     roi: batchRoi,
     settings,
@@ -559,10 +724,12 @@ async function measureBatch(batch: MetricFeature[], survey: Candidate, ctx: Batc
 /** Read one batch's points and measure its buildings. */
 export async function runBatch(job: BatchJob, fetcher: Fetcher, progress: BatchProgress): Promise<BatchOutcome> {
   const { batch, survey, settings } = job;
-  const frame = new Projection(job.origin, 0, 1);
+  const frame = new Projection(job.origin, job.rotationDeg ?? 0, 1);
   await progress(`Reading ${survey.name}`, `${batch.length} buildings`);
   const readOptions = {
     frame,
+    // Finer than usual for cells under 0.7 m, read as a LiDAR Only model reads them.
+    resolutionM: job.surface ? Math.min(0.35, job.surface.cellM / 2) : undefined,
     verticalUnits: survey.verticalUnits,
     classification: survey.classification,
     progress: (message: string) => progress(`Reading ${survey.name}`, message),
@@ -591,6 +758,7 @@ export async function runBatch(job: BatchJob, fetcher: Fetcher, progress: BatchP
     partsByParent: job.partsByParent,
     sourcePartsByParent: job.sourcePartsByParent,
     neighboursById: job.neighboursById,
+    surfaceSettings: job.surface,
     onProgress: (position, count, name) => progress(heightOnly ? 'Measuring building heights' : 'Reconstructing roofs', `${Math.min(position + 1, count)} of ${count}${name ? `: ${name}` : ''}`),
   });
   for (const [id, record] of measured.records) {

@@ -3,7 +3,7 @@
 
 import { create } from 'zustand';
 import { hasEdits, mergeEdits, type ModelEdits } from '../../core/edit/types';
-import type { LidarSummary, ProgressEvent, SurfaceSummary } from '../../core/engine/protocol';
+import type { LidarOffer, LidarSummary, ProgressEvent, SurfaceSummary, SurveyChoice } from '../../core/engine/protocol';
 import {
   DEFAULT_AREA,
   DEFAULT_EXPORT,
@@ -109,6 +109,19 @@ export interface GenerationState {
   error: string | null;
   result: ResultMeta | null;
   stale: boolean;
+  /** LiDAR tiles the last generation offered, for the area and settings in `key`. */
+  offers: { key: string; list: LidarOffer[] } | null;
+  /** LiDAR surveys found under the area in `key` (surveyAreaKey), from a search or the last generation. */
+  surveys: SurveySearch | null;
+}
+
+export interface SurveySearch {
+  key: string;
+  status: 'searching' | 'done' | 'error';
+  list: SurveyChoice[];
+  /** Catalogs that couldn't be searched. */
+  failures: string[];
+  error?: string;
 }
 
 export interface ExportState {
@@ -339,6 +352,8 @@ function initialState(): AppState {
       error: null,
       result: null,
       stale: false,
+      offers: null,
+      surveys: null,
     },
     exporting: { status: 'idle', progress: null, error: null, last: null },
     toasts: [],
@@ -353,6 +368,11 @@ const get = useApp.getState;
 
 // Keyed by the scale it works out to, so trading a fixed scale for a fitted
 // size that gives the same one (the scale and size locks) isn't a change.
+/** What decides which surveys are under an area. Its shape doesn't, since surveys are found for its rectangle. */
+export function surveyAreaKey(area: AreaSpec): string {
+  return JSON.stringify([area.center, area.widthM, area.heightM, area.rotationDeg]);
+}
+
 export function snapshotKey(area: AreaSpec, settings: ModelSettings): string {
   const scale = Number(effectiveScale(area, settings.scale).toPrecision(12));
   return JSON.stringify([area, { ...settings, scale }]);
@@ -853,6 +873,10 @@ export function patchExporting(patch: Partial<ExportState>): void {
 
 export function dismissExportError(): void {
   patchExporting({ error: null });
+}
+
+export function dismissOffers(): void {
+  patchGeneration({ offers: null });
 }
 
 export function dismissGenerationError(): void {

@@ -1,7 +1,7 @@
 // Generate and export: the calls into the engine and what they do to the state.
 
-import { CancelledError } from '../../core/engine/client';
-import type { GenerateResult, ProgressEvent } from '../../core/engine/protocol';
+import { CancelledError, offeredTiles } from '../../core/engine/client';
+import type { GenerateResult, LidarOffer, ProgressEvent } from '../../core/engine/protocol';
 import { cloneSettings } from '../../core/settings';
 import { downloadBlob, NARROW_QUERY } from '../lib/browser';
 import { formatBytes } from '../lib/format';
@@ -15,6 +15,7 @@ import {
   patchExporting,
   patchGeneration,
   snapshotKey,
+  surveyAreaKey,
   toast,
   useApp,
 } from './store';
@@ -82,7 +83,8 @@ function toMeta(result: GenerateResult, key: string): ResultMeta {
   };
 }
 
-export async function generateModel(): Promise<void> {
+/** With `approveTiles`, offered LiDAR tiles the user agreed to download (LidarOffer.tiles). */
+export async function generateModel(options: { approveTiles?: string[] } = {}): Promise<void> {
   const state = useApp.getState();
   // The worker would do both at once, and a cancel could take the export down with it.
   if (state.generation.status === 'running' || state.exporting.status === 'running') return;
@@ -97,7 +99,7 @@ export async function generateModel(): Promise<void> {
   const key = snapshotKey(area, settings);
   patchGeneration({ status: 'running', progress: null, startedAt: Date.now(), error: null, cancelling: false });
   try {
-    const request = { area, settings, edits: structuredClone(state.edits), editsVersion: nextEditVersion(), baseUrl: document.baseURI, maxCells: lidarCellLimit(state.ui.largeGrids) };
+    const request = { area, settings, edits: structuredClone(state.edits), editsVersion: nextEditVersion(), baseUrl: document.baseURI, maxCells: lidarCellLimit(state.ui.largeGrids), approveTiles: options.approveTiles };
     const result = await getEngine().generate(request, (event) => {
       if (id === run) queueProgress(event, 'generation');
     });
@@ -112,6 +114,8 @@ export async function generateModel(): Promise<void> {
     setModelParts(result.parts, data, result.edit, result.modelId);
     setNotes(result.edit?.notes ?? {});
     const meta = toMeta(result, key);
+    // What generating found is as good as a search, for picking a survey.
+    const found = result.lidar?.found ?? result.surface?.found ?? [];
     const narrow = window.matchMedia(NARROW_QUERY).matches;
     useApp.setState((current) => ({
       generation: {
@@ -122,6 +126,8 @@ export async function generateModel(): Promise<void> {
         error: null,
         result: meta,
         stale: key !== snapshotKey(current.area, current.settings),
+        offers: offersFor(key, result.lidar?.offers ?? result.surface?.offers),
+        surveys: found.length ? { key: surveyAreaKey(area), status: 'done', list: found, failures: [] } : current.generation.surveys,
       },
       ui: {
         ...current.ui,
@@ -145,7 +151,26 @@ export async function generateModel(): Promise<void> {
       patchGeneration({ status: hasResult ? 'done' : 'idle', progress: null, cancelling: false });
       return;
     }
-    patchGeneration({ status: 'error', error: describe(error), progress: null, cancelling: false });
+    patchGeneration({ status: 'error', error: describe(error), progress: null, cancelling: false, offers: offersFor(key, offeredTiles(error)) });
+  }
+}
+
+function offersFor(key: string, list: LidarOffer[] | undefined) {
+  return list?.length ? { key, list } : null;
+}
+
+/** Lists the LiDAR surveys under the area, for picking one by hand. Nothing is downloaded but their catalogs. */
+export async function findLidarSurveys(): Promise<void> {
+  const area = structuredClone(useApp.getState().area);
+  const key = surveyAreaKey(area);
+  patchGeneration({ surveys: { key, status: 'searching', list: [], failures: [] } });
+  // Another search or a generate may have taken over, or the area moved on.
+  const current = () => useApp.getState().generation.surveys?.key === key;
+  try {
+    const result = await getEngine().surveys(area);
+    if (current()) patchGeneration({ surveys: { key, status: 'done', list: result.surveys, failures: result.failures } });
+  } catch (error) {
+    if (current() && !(error instanceof CancelledError)) patchGeneration({ surveys: { key, status: 'error', list: [], failures: [], error: describe(error) } });
   }
 }
 

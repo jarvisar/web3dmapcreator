@@ -15,13 +15,18 @@
 // --lidar-records path.json (write the measured records, for comparing runs),
 // --lidar-threads n (batches read and measured at once, 1 to stay in this thread),
 // --lidar-only (the whole model from a LiDAR survey, no map data), --detail mm (its
-// printed cell size), --cell m (its cell size on the ground instead), --max-cells n
+// printed cell size, and measured roofs' with --lidar), --cell m (the cell size on
+// the ground instead), --max-cells n
 // (the most cells for --cell, by default what this machine's memory allows), --cut-water
 // (cut large water through the base, or away in a LiDAR only model),
 // --water-layer (a LiDAR only model's water as a thin layer),
 // --no-map-water (a LiDAR only model's water from the survey alone), --surface-out
 // dir (write its grid layers as raw binaries), --reread (read its blocks again
 // instead of from their checkpoints, after changing how blocks are read),
+// --download-tiles (read surveys that only come as whole files, which are
+// otherwise only listed as offers, as the app does until the user agrees),
+// --survey url|name (read that LiDAR survey first, the others fill in where
+// it doesn't reach, and list every survey found),
 // --options path.json (an options file exported from the app with its map area:
 // the area, settings, colours, export options and 3D edits, which the other
 // flags override), --no-edits (leave the options file's edits out).
@@ -38,7 +43,9 @@ import { fetchRaceways, withRaceways } from '../src/core/data/raceways';
 import { exportPlates } from '../src/core/export';
 import { BAMBU_MAX_PLATES } from '../src/core/export/sections';
 import { areaFromBounds, effectiveScale, parseBoundsText } from '../src/core/geo/area';
-import { prepareLidar, type PreparedLidar } from '../src/core/lidar/prepare';
+import type { SurveyChoice } from '../src/core/lidar/choice';
+import { describeOffer, OffersError } from '../src/core/lidar/offers';
+import { lidarRequest, prepareLidar, type PreparedLidar } from '../src/core/lidar/prepare';
 import { lidarPoolSize, surfacePoolSize } from '../src/worker/lidarPool';
 import { setUpLidar, threadPool } from './lidar-node';
 import { Progress } from '../src/core/pipeline/context';
@@ -162,6 +169,7 @@ async function main() {
   }
   if (flag('water-layer')) settings.lidarModel.waterMode = 'layer';
   if (flag('no-map-water')) settings.lidarModel.mapWater = false;
+  if (arg('survey')) settings.lidar.survey = arg('survey')!;
   settings = sanitizeSettings(settings);
   if (settings.modelSource === 'lidar') return lidarOnly(area, settings);
 
@@ -190,18 +198,18 @@ async function main() {
   if (settings.lidar.enabled && settings.buildings.enabled) {
     const cacheDir = arg('lidar-cache') ?? 'out/lidar-cache';
     setUpLidar(cacheDir);
-    const scale = effectiveScale(area, settings.scale);
     const threads = Number(arg('lidar-threads') ?? lidarPoolSize());
     const pool = threads > 1 ? threadPool(threads, cacheDir) : null;
     try {
       lidar = await prepareLidar({
         bounds,
+        ...lidarRequest(area, settings),
         buildings: data.features.building ?? [],
         parts: data.features.building_part ?? [],
         land: data.features.land ?? [],
-        settings: { ...settings.lidar, xyScale: scale, zScale: scale * settings.buildings.heightScale },
         progress: (label) => log(label),
         runner: pool ?? undefined,
+        approved: flag('download-tiles') ? 'all' : undefined,
       });
     } finally {
       pool?.close();
@@ -210,6 +218,8 @@ async function main() {
     console.log(`lidar: ${measured} of ${lidar.candidates} buildings measured, ${(lidar.downloadedBytes / 1e6).toFixed(1)} MB in ${((performance.now() - t1) / 1000).toFixed(1)} s${lidar.reused ? ' (reused)' : ''}`);
     for (const survey of lidar.surveys) console.log(`  ${survey.provider} ${survey.name}: ${survey.buildings} buildings`);
     for (const failure of lidar.failures) console.log(`  failed: ${failure.source}: ${failure.reason}`);
+    for (const offer of lidar.offers) console.log(`  offered (${offer.reason}, ${offer.buildings} buildings, --download-tiles to read): ${describeOffer(offer)}`);
+    if (settings.lidar.survey) listFound(settings.lidar.survey, lidar.found);
     if (arg('lidar-records')) {
       mkdirSync(dirname(arg('lidar-records')!), { recursive: true });
       writeFileSync(arg('lidar-records')!, JSON.stringify(lidar));
@@ -284,13 +294,15 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
         })
       : Promise.resolve(undefined);
     const maxCells = settings.lidarModel.cellMode !== 'metres' ? undefined : arg('max-cells') ? Number(arg('max-cells')) : fixedCellLimit(reportedMemoryGb(totalmem()));
-    const surface = await prepareSurface({ area, cellM: cell, maxCells, progress: (label, _fraction, detail) => log(label, detail), runner: pool ?? undefined });
+    const surface = await prepareSurface({ area, cellM: cell, maxCells, progress: (label, _fraction, detail) => log(label, detail), runner: pool ?? undefined, approved: flag('download-tiles') ? 'all' : undefined, survey: settings.lidar.survey || undefined });
     const mapWater = await water;
     const t1 = performance.now();
     const { grid } = surface;
     console.log(`lidar: ${grid.nx} x ${grid.ny} cells of ${grid.cell} m (asked ${surface.requestedCellM} m), ${Math.round(surface.coverage * 100)}% with returns, ${surface.points.toLocaleString('en-US')} returns (${surface.noise.toLocaleString('en-US')} floating left out), ${(surface.downloadedBytes / 1e6).toFixed(1)} MB in ${((t1 - t0) / 1000).toFixed(1)} s, ${surface.reusedBlocks} of ${surface.blocks} blocks reused`);
     for (const s of surface.surveys) console.log(`  ${s.provider} ${s.name} (${s.year ?? 'year unknown'}): ${s.points.toLocaleString('en-US')} returns in ${s.blocks} blocks`);
     for (const failure of surface.failures) console.log(`  failed: ${failure.source}: ${failure.reason}`);
+    for (const offer of surface.offers) console.log(`  offered (${offer.reason}, --download-tiles to read): ${describeOffer(offer)}`);
+    if (settings.lidar.survey) listFound(settings.lidar.survey, surface.found);
     if (arg('surface-out')) {
       const dir = arg('surface-out')!;
       mkdirSync(dir, { recursive: true });
@@ -344,7 +356,15 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
   }
 }
 
+/** The surveys found, as `--survey` takes them, and whether the one asked for was among them. */
+function listFound(survey: string, found: SurveyChoice[]): void {
+  if (!found.some((s) => s.url === survey || s.name === survey)) console.log(`  --survey ${survey} wasn't found here, so surveys were picked automatically`);
+  console.log('  surveys found, in automatic order:');
+  for (const s of found) console.log(`    ${s.name} (${s.year ?? 'year unknown'}, ${s.densityM2 ? `${s.densityM2.toFixed(1)} per m²` : 'density unknown'}, ${Math.round(s.coverage * 100)}%${s.staged ? ', whole tiles' : ''})  ${s.url}`);
+}
+
 main().catch((error) => {
-  console.error(error);
+  if (error instanceof OffersError) console.error(`${error.message} Pass --download-tiles to read them.`);
+  else console.error(error);
   process.exit(1);
 });

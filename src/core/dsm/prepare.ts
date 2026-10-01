@@ -10,18 +10,19 @@ import { lidarCache, type ByteCache } from '../data/cache';
 import { areaGeoBounds } from '../geo/area';
 import { Projection } from '../geo/projection';
 import { intersection, multiArea } from '../geometry/polygon';
-import { rowCrossings } from '../geometry/scanline';
-import { digest, rankOrder, toMetric, clipRingToBox, type BatchProgress, type Ranked } from '../lidar/prepare';
+import { digest, rankOrder, rankSurveys, toMetric, clipRingToBox, type BatchProgress, type Ranked } from '../lidar/prepare';
 import { readTiles } from '../lidar/read/tiles';
 import { readEpt } from '../lidar/read/ept';
 import { Fetcher } from '../lidar/read/fetcher';
 import { lazDecoder } from '../lidar/read/laz';
+import { chosenFirst, isChosen, surveyChoice, type SurveyChoice } from '../lidar/choice';
+import { advantage, approves, makeOffer, OffersError, describeOffer, staged, tilesIn, type Approval, type LidarOffer } from '../lidar/offers';
 import { projectYear } from '../lidar/selection';
 import { boxShape } from '../lidar/shapes';
-import { discover, type Candidate, type Failure } from '../lidar/sources';
+import { discover, type Candidate, type Failure, type Tile } from '../lidar/sources';
 import type { AreaSpec } from '../settings';
-import type { GeoBounds, LonLat, MultiPolygon } from '../types';
-import { blockExtent, blocks, gridProblem, gridSpec, type Block, type GridSpec } from './grid';
+import type { GeoBounds, LonLat } from '../types';
+import { blockExtent, blocks, cellsInside, gridProblem, gridSpec, type Block, type GridSpec } from './grid';
 import { emptyLayers, type SurfaceLayers } from './layers';
 import { BlockRaster, MARGIN, occupiedCell, ProbeSink, type BlockLayers, type GridOrigin } from './raster';
 
@@ -108,6 +109,10 @@ export interface PreparedSurface {
   downloadedBytes: number;
   blocks: number;
   reusedBlocks: number;
+  /** Whole-file surveys that would have filled cells, waiting for the user's approval. */
+  offers: LidarOffer[];
+  /** Every survey found under the area, in the order they'd be read without a choice. */
+  found: SurveyChoice[];
 }
 
 export interface SurfaceInput {
@@ -119,6 +124,10 @@ export interface SurfaceInput {
   signal?: AbortSignal;
   progress?: (label: string, fraction: number, detail?: string) => Promise<void> | void;
   runner?: SurfaceRunner;
+  /** Tiles of whole-file surveys the user agreed to download. Other whole-file surveys are only offered. */
+  approved?: Approval;
+  /** A survey to read first: its URL, or its name (`isChosen`). */
+  survey?: string;
 }
 
 export function surveyYear(c: Candidate): number | null {
@@ -246,25 +255,6 @@ export function unpackLayers(grid: GridSpec, checkpoints: ArrayBuffer[]): Surfac
   return layers;
 }
 
-// ------------------------------------------------------------------ cells
-
-/** Cells of a block whose centre lies in `shape`, one byte each. */
-export function cellsInside(shape: MultiPolygon, grid: GridOrigin, block: Block): Uint8Array {
-  const width = block.columns[1] - block.columns[0];
-  const height = block.rows[1] - block.rows[0];
-  const out = new Uint8Array(width * height);
-  const rows = rowCrossings(shape.flat(), grid.y0, grid.dy, block.rows[0], height);
-  for (let r = 0; r < height; r++) {
-    const xs = rows[r];
-    for (let k = 0; k + 1 < xs.length; k += 2) {
-      const c0 = Math.max(block.columns[0], Math.ceil((xs[k] - grid.x0) / grid.dx));
-      const c1 = Math.min(block.columns[1], Math.ceil((xs[k + 1] - grid.x0) / grid.dx));
-      for (let c = c0; c < c1; c++) out[r * width + (c - block.columns[0])] = 1;
-    }
-  }
-  return out;
-}
-
 /** The lon/lat box around a rectangle of the area's frame. */
 function geoBox(frame: Projection, [x0, y0, x1, y1]: [number, number, number, number]): GeoBounds {
   const corners = [frame.localToGeo(x0, y0), frame.localToGeo(x1, y0), frame.localToGeo(x1, y1), frame.localToGeo(x0, y1), frame.localToGeo((x0 + x1) / 2, y0), frame.localToGeo((x0 + x1) / 2, y1), frame.localToGeo(x0, (y0 + y1) / 2), frame.localToGeo(x1, (y0 + y1) / 2)];
@@ -274,6 +264,98 @@ function geoBox(frame: Projection, [x0, y0, x1, y1]: [number, number, number, nu
     east: Math.max(...corners.map((c) => c[0])),
     north: Math.max(...corners.map((c) => c[1])),
   };
+}
+
+// A block counts as a gap for an offered survey when this share of it is
+// left with no survey: less is usually two outlines disagreeing at an edge.
+const GAP_SHARE = 0.02;
+
+/** Cells of a block each survey claims, in order, until it's covered. */
+function claims(surveys: Ranked[], grid: GridSpec, block: Block, blockBox: ReturnType<typeof boxShape>): Map<string, Uint8Array> {
+  const size = (block.columns[1] - block.columns[0]) * (block.rows[1] - block.rows[0]);
+  const claimed = new Uint8Array(size);
+  let count = 0;
+  const out = new Map<string, Uint8Array>();
+  for (const survey of surveys) {
+    const whole = multiArea(intersection(blockBox, survey.coverage)) >= 0.999 * multiArea(blockBox);
+    const inside = whole ? new Uint8Array(size).fill(1) : cellsInside(survey.coverage, grid, block);
+    let any = false;
+    for (let k = 0; k < size; k++) {
+      if (claimed[k]) inside[k] = 0;
+      else if (inside[k]) any = true;
+    }
+    if (!any) continue;
+    for (let k = 0; k < size; k++) {
+      if (!inside[k]) continue;
+      claimed[k] = 1;
+      count++;
+    }
+    out.set(survey.candidate.url, inside);
+    if (count >= COVERED * size) break;
+  }
+  return out;
+}
+
+interface Skipped {
+  survey: Candidate;
+  /** Its tiles over the block that weren't approved. */
+  tiles: Tile[];
+  size: number;
+  /** Cells nothing read took instead. */
+  gap: number;
+  /** Its cells that each survey read took instead, by URL. */
+  takenBy: Map<string, number>;
+}
+
+/** What skipping `blocked` surveys leaves a block with: their cells that others took, and those nothing took. */
+function skippedCells(surveys: Ranked[], blocked: Ranked[], grid: GridSpec, block: Block, blockBox: ReturnType<typeof boxShape>, geo: GeoBounds, approved: Approval | undefined): Skipped[] {
+  const all = claims(surveys, grid, block, blockBox);
+  const readable = claims(surveys.filter((r) => !blocked.includes(r)), grid, block, blockBox);
+  const out: Skipped[] = [];
+  for (const r of blocked) {
+    const mask = all.get(r.candidate.url);
+    if (!mask) continue;
+    let gap = 0;
+    const takenBy = new Map<string, number>();
+    for (let k = 0; k < mask.length; k++) {
+      if (!mask[k]) continue;
+      let owner = '';
+      for (const [url, cells] of readable) {
+        if (!cells[k]) continue;
+        owner = url;
+        break;
+      }
+      if (owner) takenBy.set(owner, (takenBy.get(owner) ?? 0) + 1);
+      else gap++;
+    }
+    const tiles = tilesIn(r.candidate, [geo.west, geo.south, geo.east, geo.north]).filter((t) => !approves(approved, [t]));
+    out.push({ survey: r.candidate, tiles, size: mask.length, gap, takenBy });
+  }
+  return out;
+}
+
+/**
+ * Offered surveys: for blocks they'd fill where nothing else could, or for
+ * every block they'd have been read for when they beat what was read there
+ * by a wide margin (`advantage`).
+ */
+async function surfaceOffers(skipped: Skipped[], surveys: Map<string, Ranked>, fetcher: Fetcher, failures: Failure[], chosen?: string): Promise<LidarOffer[]> {
+  const bySurvey = new Map<string, Skipped[]>();
+  for (const s of skipped) bySurvey.set(s.survey.url, [...(bySurvey.get(s.survey.url) ?? []), s]);
+  const offers: Promise<LidarOffer | null>[] = [];
+  for (const list of bySurvey.values()) {
+    const survey = list[0].survey;
+    const gaps = list.filter((s) => s.gap >= GAP_SHARE * s.size);
+    const taken = new Map<string, number>();
+    for (const s of list) for (const [url, cells] of s.takenBy) taken.set(url, (taken.get(url) ?? 0) + cells);
+    const instead = [...taken].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const better = instead ? advantage(survey, surveys.get(instead)!.candidate) : null;
+    // One the user picked is offered for every block it would be read for.
+    const picked = isChosen(survey, chosen);
+    if (!picked && !gaps.length && !better) continue;
+    offers.push(makeOffer(fetcher, survey, (picked || better ? list : gaps).flatMap((s) => s.tiles), picked ? 'chosen' : gaps.length ? 'gap' : better!, failures));
+  }
+  return (await Promise.all(offers)).filter((o): o is LidarOffer => o !== null);
 }
 
 /** The survey without what a worker doesn't need: its outline, and tiles away from the block. */
@@ -318,7 +400,14 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
   // Then one dense enough to fill the cells, since a sparse survey only gives
   // a model of blobs however new it is, and among those the usual ranking.
   const fill = (r: Ranked) => (r.candidate.densityM2 ? Math.min(1, r.candidate.densityM2 / (FILLED / requested ** 2)) : 1);
-  const order = ranked.sort((a, b) => (a.catalogCoverage >= 0.99 ? 0 : 1) - (b.catalogCoverage >= 0.99 ? 0 : 1) || fill(b) - fill(a) || rankOrder(a, b));
+  const tier = (r: Ranked) => (r.catalogCoverage >= 0.99 ? 0 : 1);
+  const automatic = rankSurveys(
+    ranked,
+    (a, b) => tier(a) - tier(b) || fill(b) - fill(a) || rankOrder(a, b),
+    (a, b) => tier(a) === tier(b) && fill(a) === fill(b),
+  );
+  // A chosen survey goes first even when it covers part of the area.
+  const order = chosenFirst(automatic, input.survey);
   if (!order.length) {
     const reason = failures.length ? ` (${failures[0].source}: ${failures[0].reason})` : '';
     throw new Error(`No LiDAR survey that a browser can read covers this area${reason}.`);
@@ -329,7 +418,10 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
   // ------------------------------------------------------------ cell size
   // Measured on up to three blocks near the middle that one survey covers.
   let densityM2: number | null = null;
-  const probeKey = `surface-probe:${digest([VERSION, PROBE_VERSION, area.center, area.rotationDeg, area.widthM, area.heightM, requested, order[0].candidate.url])}`;
+  // Whole-file surveys are only read where their tiles were approved.
+  const readableIn = (r: Ranked, geo: GeoBounds) => !staged(r.candidate) || approves(input.approved, tilesIn(r.candidate, [geo.west, geo.south, geo.east, geo.north]));
+  const probed0 = order.find((r) => readableIn(r, query)) ?? order[0];
+  const probeKey = `surface-probe:${digest([VERSION, PROBE_VERSION, area.center, area.rotationDeg, area.widthM, area.heightM, requested, probed0.candidate.url])}`;
   const probed = await load(probeKey);
   if (probed) {
     const saved = JSON.parse(new TextDecoder().decode(probed)) as { cell: number; density: number | null };
@@ -346,7 +438,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     let measured = false;
     for (const block of near.slice(0, 3)) {
       const extent = blockExtent(grid, block);
-      const covering = order.find((r) => multiArea(intersection(boxShape(...extent), r.coverage)) >= 0.999 * (extent[2] - extent[0]) * (extent[3] - extent[1]));
+      const covering = order.find((r) => readableIn(r, geoBox(frame, extent)) && multiArea(intersection(boxShape(...extent), r.coverage)) >= 0.999 * (extent[2] - extent[0]) * (extent[3] - extent[1]));
       if (!covering) continue;
       const job: SurfaceJob = { ...origin, survey: slim(covering.candidate, geoBox(frame, extent)), query: geoBox(frame, extent), grid, block, resolutionM: Math.max(0.1, requested / 2), probe: requested };
       const outcome = await runner.surface(job, (_label, detail) => progress("Measuring the survey's point density", 0.07, detail)).catch((error: Error) => {
@@ -383,6 +475,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
   let done = 0;
   const resolutionM = Math.max(0.1, grid.cell / 2);
   const identity = [VERSION, area.center, area.rotationDeg, area.widthM, area.heightM, grid.cell];
+  const skipped: Skipped[] = [];
 
   const readBlock = async (block: Block, index: number) => {
     const extent = blockExtent(grid, block, MARGIN * grid.dx);
@@ -392,8 +485,16 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     // A tiled survey's tiles count too, so one read while its catalog lacked a
     // tile isn't kept for good. EPT surveys have none, and keep their keys.
     const reads = surveys.map((r) => (r.candidate.tiles ? [r.candidate.url, slim(r.candidate, geo).tiles!.map((t) => (t.member ? `${t.url}#${t.member}` : t.url))] : r.candidate.url));
-    const key = `surface-block:${digest([identity, block.rows, block.columns, reads])}`;
-    const saved = await load(key);
+    const blocked = surveys.filter((r) => !readableIn(r, geo));
+    let key = `surface-block:${digest([identity, block.rows, block.columns, reads])}`;
+    let saved = await load(key);
+    // A block read before with an offered survey stays as it was read. Otherwise
+    // it's read without it, under a key that says so, which an approval changes.
+    if (!saved && blocked.length) {
+      key = `surface-block:${digest([identity, block.rows, block.columns, reads.map((read, i) => (blocked.includes(surveys[i]) ? ['offered', surveys[i].candidate.url] : read))])}`;
+      saved = await load(key);
+      skipped.push(...skippedCells(surveys, blocked, grid, block, blockBox, geo, input.approved));
+    }
     const checkpoint = saved ? decodeBlock(saved) : null;
     let piece: BlockLayers;
     let blockPoints = 0;
@@ -416,6 +517,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
       let claimedCount = 0;
       let failed = false;
       for (const survey of surveys) {
+        if (blocked.includes(survey)) continue;
         const whole = multiArea(intersection(blockBox, survey.coverage)) >= 0.999 * multiArea(blockBox);
         const inside = whole ? new Uint8Array(size).fill(1) : cellsInside(survey.coverage, grid, block);
         let any = false;
@@ -477,6 +579,10 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
 
   let covered = 0;
   for (let k = 0; k < layers.count.length; k++) if (layers.count[k]) covered++;
+  const offers = skipped.length ? await surfaceOffers(skipped, byUrl, fetcher, failures, input.survey) : [];
+  if (!covered && offers.length) {
+    throw new OffersError(`The LiDAR here only comes as whole tiles, which aren't downloaded without asking: ${offers.map(describeOffer).join('; ')}.`, offers);
+  }
   if (!covered) {
     const reason = failures.length ? ` (${failures[0].source}: ${failures[0].reason})` : '';
     throw new Error(`The LiDAR surveys returned no points for this area${reason}.`);
@@ -495,6 +601,8 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     downloadedBytes: fetcher.downloaded + (runner.downloaded?.() ?? 0),
     blocks: all.length,
     reusedBlocks,
+    offers,
+    found: automatic.map(surveyChoice),
   };
 }
 

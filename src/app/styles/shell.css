@@ -588,3 +588,14 @@
     display: none;
   }
 }
+
+.offer-notice .alert-text {
+  max-height: none;
+}
+
+.offer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
