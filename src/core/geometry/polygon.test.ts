@@ -206,6 +206,31 @@ describe('openSharp', () => {
     expect(nearest(round, [4, 0])).toBeGreaterThan(0.03);
   });
 
+  it('grows nothing back into a neck it cut, and leaves no points touching', () => {
+    // A vertex two pieces share.
+    const touching = (mp: MultiPolygon) => {
+      const all = mp.flatMap((p) => [...new Set(p.flat().map(([x, y]) => `${Math.round(x * SCALE)},${Math.round(y * SCALE)}`))]);
+      return new Set(all).size < all.length;
+    };
+    // Two blocks joined by a neck 0.1 mm wide and long.
+    const neck = union(rectangle(0, 0, 2, 2), rectangle(2, 0.95, 2.1, 1.05), rectangle(2.1, 0, 4, 2));
+    const opened = openSharp(neck, 0.1, false);
+    expect(opened).toHaveLength(2);
+    // Only the round opening's own bump at each end, 0.013 mm.
+    expect(intersection(opened, rectangle(2.02, 0.9, 2.08, 1.1))).toEqual([]);
+    // Blocks meeting at a corner, as water cells do diagonally, come apart.
+    const diagonal = [...rectangle(0, 0, 1, 1), ...rectangle(1, 1, 2, 2)];
+    const parted = openSharp(diagonal, 0.1, false);
+    expect(parted).toHaveLength(2);
+    expect(touching(parted)).toBe(false);
+    // A pier 0.5 mm wide keeps the square corners of its end, either way.
+    const pier = union(rectangle(0, 0, 5, 3), rectangle(5, 1, 7, 1.5));
+    for (const snap of [true, false]) {
+      const kept = openSharp(pier, 0.1, snap);
+      for (const corner of [[7, 1], [7, 1.5]] as Vec2[]) expect(nearest(kept, corner)).toBeLessThan(1e-3);
+    }
+  });
+
   it('never grows past what it opened', () => {
     const next = random(5);
     const parts: MultiPolygon[] = [];

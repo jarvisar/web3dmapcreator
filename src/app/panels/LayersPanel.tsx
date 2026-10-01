@@ -1011,7 +1011,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
         label="Water"
         value={lidar.waterMode}
         onChange={(waterMode) => patchSettings('lidarModel', { waterMode: waterMode as LidarWaterMode })}
-        help="Recessed sinks rivers, lakes and the sea into the model in the terrain colour. Thin layer prints them as a part of their own in the water colour, on a floor of terrain, so the colour only changes in the top few layers. Cut away leaves openings through the base. Water narrower than about 0.4 mm printed, or up on a roof, stays recessed."
+        help="Recessed sinks rivers, lakes and the sea into the model in the terrain colour. Thin layer prints them as a part of their own in the water colour, on a floor of terrain, so the colour only changes in the top few layers. Cut away leaves openings through the base. Water narrower than about 0.4 mm printed, or up on a roof, stays recessed. Beside a layer or a cut, land narrower than 0.2 mm printed, like a thin pier, goes to the water."
       >
         <option value="recess">Recessed</option>
         <option value="layer">Thin layer</option>
@@ -1052,7 +1052,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
           step={500}
           decimals={0}
           unit="m²"
-          help="Water at least this large is cut away, and smaller water stays recessed. Bridges stay as solid walls, and islands print as separate pieces. Shared with map models."
+          help="Water at least this large is cut away, and smaller water stays recessed. Bridges stay as solid walls. Islands print as separate pieces, and ones under 4 mm² are left out. Shared with map models."
         />
       )}
       <CheckField

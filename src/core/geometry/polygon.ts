@@ -19,6 +19,7 @@ import {
 import earcut from 'earcut';
 import type { MultiPolygon, Polygon, Ring, Vec2 } from '../types';
 import { clipToRect, pathBounds } from './clipRect';
+import { EdgeIndex } from './edgeindex';
 
 export const SCALE = 10000;
 /** Model-space distance below which two points are the same, in mm. */
@@ -551,16 +552,91 @@ export function offsetPolygons(mp: MultiPolygon, delta: number, join: 'round' | 
 /**
  * Parts narrower than 2 * `delta` taken away, keeping corners. A plain round
  * opening rounded every corner a road or building cut into land cover.
- * Grown back mitred, then kept inside `mp`, since a mitre can run past a
- * short edge the shrink ate. Corners under about 40 degrees (the miter
- * limit of 3) still come back squared off. It grows back two units more so
- * edges kept land on `mp`'s own: rounded, they fell a unit inside, and left
- * hairlines along everything that cut it.
+ * Corners under about 40 degrees don't come back sharp either way.
+ *
+ * With `snap`, for land cover's micron, it grows back mitred two units past
+ * and is kept inside `mp`, so edges land on `mp`'s own (rounded, they fell a
+ * unit inside and left hairlines along everything that cut it). A mitre
+ * also grows a point into each neck the shrink cut, up to three times
+ * `delta`, so this is only for openings too small for that to matter.
+ *
+ * Without, for larger ones, it grows back round and puts back the point of
+ * each convex corner of `mp` the rounding circle fits into. Points grown
+ * into necks met in pinches, and a LiDAR only cut then fell back to pulling
+ * the land in by a micron all round. It isn't kept inside `mp` either, which
+ * kept every point where `mp` touched itself, like a slit of water meeting
+ * the shore, so it can reach a unit past it.
  */
-export function openSharp(mp: MultiPolygon, delta: number): MultiPolygon {
+export function openSharp(mp: MultiPolygon, delta: number, snap = true): MultiPolygon {
   const shrunk = offsetPolygons(mp, -delta, 'round');
   if (!shrunk.length) return [];
-  return intersection(offsetPolygons(shrunk, delta + 2 / SCALE, 'miter'), mp);
+  let out: MultiPolygon;
+  if (snap) {
+    out = intersection(offsetPolygons(shrunk, delta + 2 / SCALE, 'miter'), mp);
+  } else {
+    const grown = offsetPolygons(shrunk, delta, 'round');
+    const corners = cornerPoints(mp, shrunk, delta);
+    out = corners.length ? union(grown, corners) : grown;
+  }
+  // Every piece the opening keeps holds a circle of radius delta. Smaller
+  // ones are scraps of a neighbour the regrowth reached by a unit, which
+  // touched the rest at a point where the two outlines met.
+  return out.filter((polygon) => polygonArea(polygon) >= 0.9 * Math.PI * delta * delta);
+}
+
+// Corners sharper than this (1 / sin of half the angle) stay rounded, as a mitre limit of 3 would.
+const SHARP_LIMIT = 3;
+
+/**
+ * A kite over each convex corner of `mp` a circle of radius `r` fits into,
+ * from the corner to the circle's centre. The centre has to be inside
+ * `shrunk` too: its arcs are chords inside the true ones, and a circle that
+ * only just fit left the kite touching the opening at a point.
+ */
+function cornerPoints(mp: MultiPolygon, shrunk: MultiPolygon, r: number): Polygon[] {
+  const index = new EdgeIndex(mp, Math.max(8 * r, 1));
+  const inner = new EdgeIndex(shrunk, Math.max(8 * r, 1));
+  const out: Polygon[] = [];
+  for (const polygon of mp) {
+    polygon.forEach((ring, k) => {
+      const n = ring.length;
+      if (n < 3) return;
+      // The inside is left of an outer ring running counter-clockwise and of a hole running clockwise.
+      const side = ringArea(ring) > 0 === (k === 0) ? 1 : -1;
+      for (let i = 0; i < n; i++) {
+        const [px, py] = ring[(i + n - 1) % n];
+        const [vx, vy] = ring[i];
+        const [nx, ny] = ring[(i + 1) % n];
+        if (((vx - px) * (ny - vy) - (vy - py) * (nx - vx)) * side <= 0) continue;
+        const l1 = Math.hypot(px - vx, py - vy);
+        const l2 = Math.hypot(nx - vx, ny - vy);
+        const ax = (px - vx) / l1;
+        const ay = (py - vy) / l1;
+        const bx = (nx - vx) / l2;
+        const by = (ny - vy) / l2;
+        const half = Math.acos(Math.max(-1, Math.min(1, ax * bx + ay * by))) / 2;
+        const sin = Math.sin(half);
+        // Too sharp, or so blunt the rounding is under a unit.
+        if (sin * SHARP_LIMIT < 1 || r * (1 / sin - 1) < 1 / SCALE) continue;
+        const reach = r / Math.tan(half);
+        if (reach > l1 || reach > l2) continue;
+        const mx = ax + bx;
+        const my = ay + by;
+        const ml = Math.hypot(mx, my);
+        const cx = vx + (mx / ml) * (r / sin);
+        const cy = vy + (my / ml) * (r / sin);
+        // Another edge nearer than the corner's own two: the circle doesn't fit.
+        if (index.distance(cx, cy, r) < r * (1 - 1e-6)) continue;
+        if (!inner.contains(cx + (mx / ml) * (4 / SCALE), cy + (my / ml) * (4 / SCALE))) continue;
+        // Land just past the point is another piece touching it there, as
+        // cells meeting diagonally do. The rounding parted them, so leave it.
+        if (index.contains(vx - (mx / ml) * (4 / SCALE), vy - (my / ml) * (4 / SCALE))) continue;
+        const kite: Ring = [[vx, vy], [vx + bx * reach, vy + by * reach], [cx, cy], [vx + ax * reach, vy + ay * reach]];
+        out.push([ringArea(kite) < 0 ? kite.reverse() : kite]);
+      }
+    });
+  }
+  return out;
 }
 
 /**

@@ -9,7 +9,7 @@
 import { areaModelRing, effectiveScale } from '../geo/area';
 import { Projection } from '../geo/projection';
 import { capBoundary } from '../geometry/cap';
-import { clipToBox, difference, intersection, offsetPolygons, ringArea, ringBounds, simplifyPolygons, union } from '../geometry/polygon';
+import { clipToBox, difference, intersection, offsetPolygons, openSharp, ringArea, ringBounds, simplifyPolygons, union } from '../geometry/polygon';
 import { rowCrossings } from '../geometry/scanline';
 import type { CapSolid, Layer, PrismSolid } from '../geometry/solid';
 import { clipTin, type Tin } from '../geometry/tinclip';
@@ -28,9 +28,10 @@ import { meshSurface, straightenWalls, surfaceLimits, wallDetail, WALL_STEP_CELL
 import type { PreparedSurface } from './prepare';
 
 const CLUTTER_M = 2;
-// Land narrower than twice this beside cut water is opened away, as thin
-// land slabs are. Pieces under ISLAND_MIN_MM2 go, as compose does on the
-// grid, since the area's shape can cut off new ones.
+// Land narrower than twice this beside cut water is opened away: it would
+// print as a wall too thin to stand between water. Pieces under
+// ISLAND_MIN_MM2 go, as compose does on the grid, since the area's shape
+// can cut off new ones.
 const SLIVER_MM = 0.1;
 // The cut outline may run this many cells off the cells it follows. Each
 // stretch of it is a flat panel of bank wall, and at three quarters of a cell
@@ -226,13 +227,16 @@ export function maskOutline(mask: Uint8Array, nx: number, ny: number, x0: number
 
 /**
  * The area's shape less the cut water, with land too thin to print opened
- * away and pieces under `minIsland` mm² left out. Land well clear of the
- * water keeps the shape's own corners.
+ * away and pieces under `minIsland` mm² left out. The opening keeps corners
+ * (rounded, every bank corner lost 0.1 mm), and land well clear of the water
+ * keeps the shape's own. It isn't kept inside `land`, since that keeps every
+ * point where the water's outline touched itself, and a pinched region made
+ * the cut fall back to pulling the land in by a micron all round.
  */
 function landRegion(crop: Ring, water: MultiPolygon, minIsland: number): MultiPolygon {
   const shape: MultiPolygon = [[crop]];
   const land = difference(shape, water);
-  const opened = offsetPolygons(offsetPolygons(land, -SLIVER_MM, 'round'), SLIVER_MM, 'round');
+  const opened = openSharp(land, SLIVER_MM, false);
   const clear = difference(shape, offsetPolygons(water, 2 * SLIVER_MM, 'round'));
   // Holes are cut water and all stay.
   return union(opened, clear).filter((polygon) => Math.abs(ringArea(polygon[0])) >= minIsland);

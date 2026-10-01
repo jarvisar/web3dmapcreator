@@ -423,7 +423,8 @@ describe('EditSession', () => {
     const trail = spec.edit!.roads.filter((p) => p.sourceId === 'trail').map((p) => ({ points: p.points, width: p.widthMm }));
     const inForest = intersection(bufferLines(trail), spec.edit!.land!.regions.forest!);
     const slab = forest.solids.filter((s) => s.key !== 'lf:forest').map((s) => (s as PrismSolid).polygon);
-    expect(multiArea(difference(inForest, forest.solids.map((s) => (s as PrismSolid).polygon)))).toBeLessThan(1e-4);
+    // Only hairlines where the fill and the slab were rounded apart, a unit wide.
+    expect(offsetPolygons(difference(inForest, forest.solids.map((s) => (s as PrismSolid).polygon)), -0.0005)).toEqual([]);
     expect(multiArea(intersection(filled.map((s) => s.polygon), slab))).toBeLessThan(1e-4);
     const { plates } = await buildPlates(edited, { multiPlate: false, sectionWidthMm: 200, sectionHeightMm: 200, bedWidth: 256, bedDepth: 256 });
     const part = plates[0].parts.find((p) => p.id === 'land-forest')!;

@@ -473,7 +473,11 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   prism per piece, at the lowest level of the water it holds. `clipBand` only triangulates the triangles near the outline, and
   a triangle counts as near when an outline edge crosses its box, so both
   triangles on any edge the outline touches are near. Keep it that way or
-  the two parts won't meet.
+  the two parts won't meet. The land region (`landRegion`) mustn't touch
+  itself at a point: `cutSurface` then falls back to pulling it in by a
+  micron all round, a slot along every shore. Its opening keeps corners by
+  putting back points only where the rounding circle fits (`openSharp`
+  without `snap`), since a mitre grew points into cut necks that met.
 - `lidarModel.waterMode` 'cut' is the add-on's `cut_water` (`cutWater`):
   survey water of at least `water.cutMinAreaM2` (shared with map models),
   water within 40 m counting as one body across bridges, opened to 0.4 mm

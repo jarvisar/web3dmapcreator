@@ -138,7 +138,7 @@ export function shapeBeaches(hf: HeightField, input: BeachInput): Beaches | null
   if (fill.length) {
     // Opened with the sand it joins, so a strip too thin to print is only
     // kept when sand backs it.
-    const opened = openSharp(union(backing, fill), FILL_SLIVER_MM);
+    const opened = openSharp(union(backing, fill), FILL_SLIVER_MM, false);
     fill = intersection(fill, opened).filter(
       (polygon) => polygonArea(polygon) >= MINIMUM_FILL_MM2 && touches(sand, polygon) && touches(wet, polygon),
     );
