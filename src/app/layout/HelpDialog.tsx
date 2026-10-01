@@ -9,11 +9,11 @@ import { REPO_URL } from './TopBar';
 const STEPS = [
   {
     title: 'Choose an area',
-    text: 'Search for a place, pick a preset, or drag the box on the map. Drag a corner to resize it and the round handle to rotate it.',
+    text: 'Search for a place, pick a preset, or drag the box on the map. Drag a corner to resize it and the round handle to rotate it. Under Area, the lock next to the scale keeps it as it is. Unlock it to keep the printed size instead, so resizing the box changes the scale and a new scale resizes the box.',
   },
   {
     title: 'Pick what to make',
-    text: 'At the top of the settings, pick 3D model or SVG map. For a model, check the printed size under Print size and pick your printer, then the layers and colours. For an SVG map, pick a size like a plaque, a sheet of paper or a coaster, then Laser, Plotter or Print under Output. The box on the map becomes the map inside the border, with the piece and its title drawn around it.',
+    text: 'At the top of the settings, pick 3D model or SVG map. For a model, check the scale and printed size under Area and pick your printer under Print size, then the layers and colours. For an SVG map, pick a size like a plaque, a sheet of paper or a coaster, then Laser, Plotter or Print under Output. The box on the map becomes the map inside the border, with the piece and its title drawn around it.',
   },
   {
     title: 'Generate',
@@ -52,7 +52,7 @@ const SVG_TIPS = [
   'For a laser, filled areas engrave, lines score and the edge cuts. Every layer has its own colour so it can have its own process. The LightBurn layer palette puts each layer on its own LightBurn layer.',
   'For a plotter, each pen colour is a numbered layer (1 - pen #000000) that AxiDraw, vpype and saxi split on. The single-line Hershey fonts are made for pens.',
   'The preview shows how much of the road network the cleanup kept. Below 97% a warning appears, since streets were removed and not just doubled lines.',
-  'With Fixed scale, the default, the box on the map takes its size from the piece and the scale (0.05 mm per metre to start, 1:20,000), and keeps that scale while you try other places or piece sizes. Pick Fit the area to size the box yourself.',
+  'The scale starts locked at 0.05 mm per metre (1:20,000), so the box on the map takes its size from the piece and the scale, and keeps that scale while you try other places or piece sizes. Unlock it under Area to size the box yourself. The piece always keeps its size.',
   'The wood preview is only a rough idea of how the fills burn. Test your settings on scrap.',
   'To draw a route in its own colour, press the route button over the preview and click the roads, paths or railways it follows. Each click adds a road or drops it again, and Along the road picks up the rest of the street. Each route is its own layer in the SVG.',
 ];

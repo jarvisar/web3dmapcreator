@@ -4,18 +4,18 @@ import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&ur
 import type { IControl } from 'maplibre-gl';
 import { CircleAlert, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { areaGeoBounds, modelSizeMm, validateArea } from '../../core/geo/area';
+import { areaGeoBounds, effectiveScale, modelSizeMm, validateArea } from '../../core/geo/area';
 import type { AreaSpec } from '../../core/settings';
 import type { LabelSettings } from '../../core/svgmap/text/label';
 import { Segmented } from '../components/Segmented';
 import { areaHint } from '../lib/area';
-import { formatInteger, formatMmPair, formatSizePair } from '../lib/format';
-import { dismissMapHint, setArea, setBasemap, setLabel, useApp } from '../state/store';
+import { formatMmPair, formatRatio, formatSizePair } from '../lib/format';
+import { areaResizable, dismissMapHint, setArea, setBasemap, setLabel, useApp } from '../state/store';
 import type { AppState, BasemapKey } from '../state/store';
 import { useLabelArtwork } from '../svgmap/labelArtwork';
 import { type TitleDrag, type TitleGrip, dragTitle, droppedLabel, titleHandles } from '../svgmap/labelDrag';
 import { pieceOverlay } from '../svgmap/overlay';
-import { pieceLayout } from '../svgmap/piece';
+import { pieceLayout, pieceProduct } from '../svgmap/piece';
 import { AreaEditor, type TitleDragPhase } from './AreaEditor';
 import { BASEMAPS, flattenBuildings } from './basemaps';
 import { registerMap } from './mapHandle';
@@ -26,11 +26,14 @@ setWorkerUrl(maplibreWorkerUrl);
 
 function areaLabel(state: AppState): string {
   const { area } = state;
+  // The same three things for both: the area, the scale and the size, an SVG
+  // map's being its piece.
   if (state.output === 'svg') {
-    return `${formatSizePair(area.widthM, area.heightM)} · 1:${formatInteger(state.svg.scale)}${state.svg.scaleLocked ? ', fixed' : ''}`;
+    const piece = pieceProduct(state.svg.product, area.shape);
+    return `${formatSizePair(area.widthM, area.heightM)} · ${formatRatio(1000 / state.svg.scale)} · ${formatMmPair(piece.width, piece.height)}`;
   }
   const size = modelSizeMm(area, state.settings.scale);
-  return `${formatSizePair(area.widthM, area.heightM)} · ${formatMmPair(size.width, size.depth)}`;
+  return `${formatSizePair(area.widthM, area.heightM)} · ${formatRatio(effectiveScale(area, state.settings.scale))} · ${formatMmPair(size.width, size.depth)}`;
 }
 
 function padding(container: HTMLElement) {
@@ -98,7 +101,7 @@ export function MapView({ active }: { active: boolean }) {
   const piece = useApp((state) => state.svg.product);
   const border = useApp((state) => state.svg.border);
   const label = useApp((state) => state.svg.label);
-  const locked = useApp((state) => state.svg.scaleLocked);
+  const resizable = useApp((state) => areaResizable(state));
   const customFontId = useApp((state) => state.customFontId);
   const layout = useMemo(() => (svg ? pieceLayout(piece, shape, border).layout : null), [svg, piece, shape, border]);
   // The title while it's dragged on the map. It's only stored when let go.
@@ -206,10 +209,10 @@ export function MapView({ active }: { active: boolean }) {
     const editor = editorRef.current;
     if (!editor) return;
     editor.setAspect(layout ? layout.window.h / layout.window.w : null);
-    editor.setResizable(!(svg && locked));
+    editor.setResizable(resizable);
     const handles = titleSelected && artwork ? titleHandles(shownLabel, artwork) : [];
     editor.setPiece(layout ? pieceOverlay(layout, artwork, handles, titleSelected) : null);
-  }, [svg, layout, artwork, locked, titleSelected, shownLabel]);
+  }, [svg, layout, artwork, resizable, titleSelected, shownLabel]);
 
   // The first style is set when the map is created. Later changes swap it.
   const firstStyle = useRef(true);
@@ -240,7 +243,7 @@ export function MapView({ active }: { active: boolean }) {
       </div>
       {!hintDismissed && (
         <div className="map-hint floating" role="note">
-          <span>{areaHint(svg && locked)}</span>
+          <span>{areaHint(resizable)}</span>
           <button type="button" className="icon-btn icon-btn-sm" aria-label="Dismiss tip" onClick={dismissMapHint}>
             <X size={14} aria-hidden="true" />
           </button>

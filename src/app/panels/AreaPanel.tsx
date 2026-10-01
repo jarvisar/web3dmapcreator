@@ -2,21 +2,33 @@ import { fieldRange } from '../../core/svgmap/limits';
 import { ClipboardPaste, Copy, Link, RotateCcw, Scan, TriangleAlert, CircleAlert } from 'lucide-react';
 import { useId } from 'react';
 import { areaGeoBounds, areaKm2, effectiveScale, parseBoundsText, validateArea, MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
-import type { AreaShape } from '../../core/settings';
+import { type AreaShape, modelFieldRange } from '../../core/settings';
 import { ShapeIcon } from '../components/Icons';
+import { LockButton } from '../components/LockButton';
 import { NumberField, NumberInput, StackedNumber } from '../components/NumberField';
 import { SliderField } from '../components/Fields';
 import { Segmented } from '../components/Segmented';
 import { SHAPES, SHAPE_LABELS, areaForBounds, constrainSize } from '../lib/area';
 import { copyText, readClipboardText } from '../lib/browser';
-import { formatInteger, formatNumber, formatRatio, formatSizePair } from '../lib/format';
+import { formatMmPair, formatNumber, formatRatio, formatSizePair } from '../lib/format';
 import { areaForView } from '../map/mapHandle';
 import { printedSize } from '../state/derived';
 import { editsForArea, picksForArea } from '../state/linkScope';
 import { getEditData } from '../state/model';
 import { shareUrl } from '../state/shareLink';
-import { patchSettings, setArea, setScaleLocked, setSizeUnit, setSvgScale, toast, useApp } from '../state/store';
+import {
+  areaResizable,
+  setArea,
+  scaleLocked,
+  setPrintedSide,
+  setScale,
+  setScaleLock,
+  setSizeUnit,
+  toast,
+  useApp,
+} from '../state/store';
 import type { SizeUnit } from '../state/store';
+import { pieceProduct } from '../svgmap/piece';
 import { writeHashNow } from '../state/sync';
 import { PlaceSearch } from './PlaceSearch';
 import { PresetsMenu } from './PresetsMenu';
@@ -65,22 +77,60 @@ function SizeInput({ label, valueM, unit, mmPerMetre, rimMm, onChange, disabled 
   );
 }
 
-// An SVG map's size: the width of the map window on the ground, or the scale
-// that gives on the piece. The scale is kept as 1:n but typed in mm per metre
-// like a model's. A fixed scale sizes the box on the map from the piece.
-function SvgSize({ unit, onWidth }: { unit: SizeUnit; onWidth: (metres: number) => void }) {
+// Common scales. Each list has its output's default: 1:14,286 is the
+// add-on's 0.07 mm per metre exactly, and SVG maps start at 1:20,000.
+const RATIOS = { model: [5000, 10000, 14286, 25000, 50000], svg: [5000, 10000, 20000, 25000, 50000] };
+const ratioScale = (ratio: number) => (ratio === 14286 ? 0.07 : 1000 / ratio);
+
+// The area on the map, the scale and the printed size go together, with a
+// lock on the scale (scaleLocked in the store). Models and SVG maps share
+// these controls, an SVG map's size being its piece, set under Size.
+function ScaleAndSize() {
+  const output = useApp((state) => state.output);
   const area = useApp((state) => state.area);
-  const scale = useApp((state) => state.svg.scale);
-  const locked = useApp((state) => state.svg.scaleLocked);
-  const shown = unit === 'mm' ? 'km' : unit;
+  const unit = useApp((state) => state.ui.sizeUnit);
+  const scale = useApp((state) => state.settings.scale);
+  const rim = useApp((state) => state.settings.rim);
+  const svgScale = useApp((state) => state.svg.scale);
+  const svgLocked = useApp((state) => state.svg.scaleLocked);
+  const product = useApp((state) => state.svg.product);
+  const svg = output === 'svg';
+  const lockState = { output, svg: { scaleLocked: svgLocked }, settings: { scale } };
+  const locked = scaleLocked(lockState);
+  const resizable = areaResizable(lockState);
+  const mmPerMetre = svg ? 1000 / svgScale : effectiveScale(area, scale);
+  const shown = unit === 'm' ? 'm' : 'km';
+  const round = area.shape === 'circle';
   const ratio = fieldRange('scale');
-  const covers = `${formatRatio(1000 / scale)}, the map covers ${formatSizePair(area.widthM, area.heightM)}.`;
+  const range = svg ? { min: 1000 / ratio.max, max: 1000 / ratio.min } : modelFieldRange('scale', 'mmPerMetre');
+  const printed = printedSize(area, { scale, rim });
+  const rimX = printed.width - area.widthM * mmPerMetre;
+  const rimY = printed.depth - area.heightM * mmPerMetre;
+  const piece = pieceProduct(product, area.shape);
+
+  const setSide = (side: 'width' | 'height', metres: number) =>
+    setArea(
+      (current) => {
+        const [w, h] = constrainSize(current.shape, side === 'width' ? metres : current.widthM, side === 'height' ? metres : current.heightM, side);
+        return { ...current, widthM: w, heightM: h };
+      },
+      { focus: 'if-needed' },
+    );
+  // SizeInput hands back metres at the current scale.
+  const setPrinted = (side: 'width' | 'height') => (metres: number) => setPrintedSide(side, metres * mmPerMetre);
+
+  const hint = !locked
+    ? `${svg ? 'The piece keeps its size' : 'The printed size stays as it is'}, so resizing the box on the map changes the scale, and a new scale resizes the box.`
+    : svg
+      ? 'The scale is locked and the piece keeps its size, so the box on the map only moves and turns. Unlock the scale to resize it.'
+      : 'The scale is locked, so resizing the box on the map or a new scale changes the printed size. Unlock it to keep the printed size instead.';
+
   return (
     <div className="field-group">
       <div className="group-label-row">
         <span className="group-label">Size</span>
         <Segmented
-          label="Size unit"
+          label="Area unit"
           size="sm"
           value={shown}
           onChange={setSizeUnit}
@@ -90,41 +140,54 @@ function SvgSize({ unit, onWidth }: { unit: SizeUnit; onWidth: (metres: number) 
           ]}
         />
       </div>
-      <Segmented
-        label="Scale mode"
-        value={locked ? 'fixed' : 'fit'}
-        stretch
-        onChange={(mode) => setScaleLocked(mode === 'fixed')}
-        options={[
-          { value: 'fixed', label: 'Fixed scale' },
-          { value: 'fit', label: 'Fit the area' },
-        ]}
-      />
-      <div className="size-grid">
-        <SizeInput
-          label={area.shape === 'circle' ? 'Diameter' : 'Width'}
-          valueM={area.widthM}
-          unit={shown}
-          mmPerMetre={1}
-          rimMm={0}
-          onChange={onWidth}
-          disabled={locked}
-        />
-        <StackedNumber
-          label="Scale"
-          value={1000 / scale}
-          onChange={(mmPerMetre) => setSvgScale(1000 / mmPerMetre)}
-          min={1000 / ratio.max}
-          max={1000 / ratio.min}
-          step={0.005}
-          decimals={4}
-          unit="mm/m"
-        />
+      <div className="scale-grid">
+        <SizeInput label={round ? 'Diameter' : 'Width'} valueM={area.widthM} unit={shown} mmPerMetre={1} rimMm={0} onChange={(m) => setSide('width', m)} disabled={!resizable} />
+        {round ? (
+          <span />
+        ) : (
+          // An SVG map's height follows its piece.
+          <SizeInput label="Height" valueM={area.heightM} unit={shown} mmPerMetre={1} rimMm={0} onChange={(m) => setSide('height', m)} disabled={!resizable || svg} />
+        )}
+        <span />
+
+        <StackedNumber label="Scale" value={mmPerMetre} onChange={setScale} {...range} step={0.005} decimals={4} unit="mm/m" />
+        <div className="size-field">
+          <span className="size-label">Ratio</span>
+          <span className="size-readout">{formatRatio(mmPerMetre)}</span>
+        </div>
+        <LockButton locked={locked} onChange={setScaleLock} what="the scale" />
+
+        {svg ? (
+          <div className="size-field size-span">
+            <span className="size-label">Piece</span>
+            <span className="size-readout">{formatMmPair(piece.width, piece.height)}</span>
+          </div>
+        ) : (
+          <>
+            <SizeInput label={round ? 'Printed diameter' : 'Printed width'} valueM={area.widthM} unit="mm" mmPerMetre={mmPerMetre} rimMm={rimX} onChange={setPrinted('width')} />
+            {round ? (
+              <span />
+            ) : (
+              <SizeInput label="Printed height" valueM={area.heightM} unit="mm" mmPerMetre={mmPerMetre} rimMm={rimY} onChange={setPrinted('height')} />
+            )}
+          </>
+        )}
+        <span />
+      </div>
+      <div className="chips" role="group" aria-label="Common scales">
+        {RATIOS[output].map((r) => {
+          const value = ratioScale(r);
+          const selected = Math.abs(mmPerMetre - value) < 1e-6;
+          return (
+            <button key={r} type="button" className={`chip-btn${selected ? ' is-selected' : ''}`} aria-pressed={selected} onClick={() => setScale(value)}>
+              {formatRatio(value)}
+            </button>
+          );
+        })}
       </div>
       <p className="field-hint">
-        {locked
-          ? `${covers} The box on the map takes its size from the piece and the scale, so it only moves and turns.`
-          : `${covers} Resizing the box on the map changes the scale.`}
+        {hint}
+        {!svg && rim.enabled ? ' Printed sizes include the rim.' : ''}
       </p>
     </div>
   );
@@ -134,35 +197,12 @@ export function AreaPanel() {
   const output = useApp((state) => state.output);
   const area = useApp((state) => state.area);
   const placeName = useApp((state) => state.placeName);
-  const unit = useApp((state) => state.ui.sizeUnit);
   const scale = useApp((state) => state.settings.scale);
-  const rim = useApp((state) => state.settings.rim);
   const svgScale = useApp((state) => state.svg.scale);
   const svg = output === 'svg';
   const problem = validateArea(area);
   const km2 = areaKm2(area);
-  const mmPerMetre = effectiveScale(area, scale);
-  const printed = printedSize(area, { scale, rim });
-  const rimX = printed.width - area.widthM * mmPerMetre;
-  const rimY = printed.depth - area.heightM * mmPerMetre;
-
-  function setSize(side: 'width' | 'height', metres: number) {
-    setArea(
-      (current) => {
-        const width = side === 'width' ? metres : current.widthM;
-        const height = side === 'height' ? metres : current.heightM;
-        const [w, h] = constrainSize(current.shape, width, height, side);
-        return { ...current, widthM: w, heightM: h };
-      },
-      { focus: 'if-needed' },
-    );
-    // Fit to size would rescale the model to the new area. Keep the scale
-    // instead, so the printed size stays what was typed.
-    if (!svg && unit === 'mm' && scale.mode === 'fit') {
-      const next = useApp.getState().area;
-      patchSettings('scale', { fitMm: Math.min(2000, Math.max(20, mmPerMetre * Math.max(next.widthM, next.heightM))) });
-    }
-  }
+  const mmPerMetre = svg ? 1000 / svgScale : effectiveScale(area, scale);
 
   function setShape(shape: AreaShape) {
     setArea((current) => {
@@ -230,7 +270,7 @@ export function AreaPanel() {
     <Section
       id="area"
       title="Area"
-      summary={areaSummary(placeName, area.shape, area.widthM, area.heightM, svg ? ` · 1:${formatInteger(svgScale)}` : '')}
+      summary={areaSummary(placeName, area.shape, area.widthM, area.heightM, ` · ${formatRatio(mmPerMetre)}`)}
     >
       <div className="search-row">
         <PlaceSearch inputId={SEARCH_ID} />
@@ -257,63 +297,7 @@ export function AreaPanel() {
         />
       </div>
 
-      {svg ? (
-        <SvgSize unit={unit} onWidth={(m) => setSize('width', m)} />
-      ) : (
-        <div className="field-group">
-          <div className="group-label-row">
-            <span className="group-label">Size</span>
-            <Segmented
-              label="Size unit"
-              size="sm"
-              value={unit}
-              onChange={setSizeUnit}
-              options={[
-                { value: 'mm', label: 'mm', title: 'Printed size', ariaLabel: 'Printed size in mm' },
-                { value: 'km', label: 'km' },
-                { value: 'm', label: 'm' },
-              ]}
-            />
-          </div>
-          <div className="size-grid">
-            {area.shape === 'circle' ? (
-              <SizeInput
-                label="Diameter"
-                valueM={area.widthM}
-                unit={unit}
-                mmPerMetre={mmPerMetre}
-                rimMm={rimX}
-                onChange={(m) => setSize('width', m)}
-              />
-            ) : (
-              <>
-                <SizeInput
-                  label="Width"
-                  valueM={area.widthM}
-                  unit={unit}
-                  mmPerMetre={mmPerMetre}
-                  rimMm={rimX}
-                  onChange={(m) => setSize('width', m)}
-                />
-                <SizeInput
-                  label="Height"
-                  valueM={area.heightM}
-                  unit={unit}
-                  mmPerMetre={mmPerMetre}
-                  rimMm={rimY}
-                  onChange={(m) => setSize('height', m)}
-                />
-              </>
-            )}
-          </div>
-          {unit === 'mm' && (
-            <p className="field-hint">
-              Printed size at {formatRatio(mmPerMetre)}
-              {rim.enabled ? ', rim included' : ''}. Changing it resizes the area on the map.
-            </p>
-          )}
-        </div>
-      )}
+      <ScaleAndSize />
 
       <NumberField
         label="Rotation"

@@ -8,7 +8,7 @@ import { useState } from 'react';
 import { cancelExport, cancelGeneration, exportModel, generateModel } from '../state/actions';
 import { FORMAT_EXTENSIONS, filamentCount, generationProblem, hiddenDownloadParts, modelSize, resultGroups } from '../state/derived';
 import { getEditData } from '../state/model';
-import { dismissExportError, dismissGenerationError, dismissMapHint, setView, useApp } from '../state/store';
+import { areaResizable, dismissExportError, dismissGenerationError, dismissMapHint, setView, useApp } from '../state/store';
 import { downloadSvg, generateSvg, svgProblem, useSvgKey } from '../svgmap/actions';
 import { cancelRender, renderFraction, useSvgRender } from '../svgmap/render';
 
@@ -274,7 +274,7 @@ export function ActionBar() {
   const hintDismissed = useApp((state) => state.ui.mapHintDismissed);
   const view = useApp((state) => state.ui.view);
   const drawerOpen = useApp((state) => state.ui.drawerOpen);
-  const locked = useApp((state) => state.output === 'svg' && state.svg.scaleLocked);
+  const resizable = useApp((state) => areaResizable(state));
   const idle = useApp((state) => state.generation.result === null && state.generation.status !== 'running');
   const svgIdle = useSvgRender((state) => state.result === null && state.status !== 'working');
   const phone = useMediaQuery(PHONE_QUERY);
@@ -283,7 +283,7 @@ export function ActionBar() {
     <div className="action-bar">
       {showHint && (
         <div className="action-hint" role="note">
-          <span>{areaHint(locked)}</span>
+          <span>{areaHint(resizable)}</span>
           <button type="button" className="icon-btn icon-btn-sm" aria-label="Dismiss tip" onClick={dismissMapHint}>
             <X size={14} aria-hidden="true" />
           </button>

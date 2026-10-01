@@ -235,6 +235,37 @@
   text-align: left;
 }
 
+/* Area, scale and printed size, with the scale's lock at the end of its row */
+.scale-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px;
+  align-items: end;
+  gap: 8px;
+}
+
+.size-span {
+  grid-column: span 2;
+}
+
+.size-readout {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.lock-btn {
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  color: var(--text-3);
+}
+
+.lock-btn.is-locked {
+  color: var(--accent);
+}
+
 .area-facts {
   display: flex;
   flex-wrap: wrap;

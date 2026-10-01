@@ -12,7 +12,7 @@ This is the web version of my Blender add-on. It runs the same generation rules,
 
 1. Search for a place, pick one of the `Presets`, or drag the box on the map. Drag a corner to resize it and the round handle to rotate it.
 2. Pick `3D model` or `SVG map` at the top of the settings.
-3. For a model, pick a shape (rectangle, rounded, circle or hexagon) and check the printed size under `Print size`. The default scale is 0.07 mm per metre, so a 2 km wide area prints 140 mm wide.
+3. For a model, pick a shape (rectangle, rounded, circle or hexagon) and check the scale and printed size under `Area`. The default scale is 0.07 mm per metre, so a 2 km wide area prints 140 mm wide. Unlock the scale to keep the printed size instead: then resizing the area changes the scale, and a new scale makes the area bigger or smaller.
 4. Turn layers on or off under `Layers`, and pick filament colours under `Colours`. The Bambu PLA Basic and Matte colours are built in. Turn on `LiDAR` to measure buildings from a public survey where one covers the area, or pick `LiDAR only` at the top of `Layers` to build everything from the survey (see below).
 5. Click `Generate model`. The map data downloads first, which takes a few seconds for a small area.
 6. Look the model over in the 3D view, then click `Download`.
@@ -40,7 +40,7 @@ Edits follow the map features, not the mesh, so they stay when you change settin
 
 ![The Chicago Loop as an SVG map on a 5 x 7 in plaque, in the laser preview](docs/images/svg-map.png)
 
-Pick the piece under `Size`: a plaque, a sheet of paper, a coaster or your own size. The box on the map becomes the map inside the piece's border, with the margin, border and title drawn around it. By default the scale is fixed at 0.05 mm per metre (1:20,000), set under `Area`, and the box takes its size from the piece and the scale. Switch to `Fit the area` to resize the box yourself and let the scale follow.
+Pick the piece under `Size`: a plaque, a sheet of paper, a coaster or your own size. The box on the map becomes the map inside the piece's border, with the margin, border and title drawn around it. By default the scale is locked at 0.05 mm per metre (1:20,000), set under `Area`, and the box takes its size from the piece and the scale. Unlock it to resize the box yourself and let the scale follow.
 
 Click `Generate SVG` to open the preview, which keeps up with the settings while it's open, then `Download .svg`. `Output` switches between a laser (fills engrave, lines score and the edge cuts, one colour per layer), a pen plotter (everything is a stroke, one numbered layer per pen) and print (coloured themes). The file is sized in millimetres, so check the imported size in your laser software.
 

@@ -12,7 +12,7 @@ Tiles store coordinates to about half a metre, so at large scales (under about 1
 
 The area on the map is the piece's map window, the part inside the margin and border. Its proportions and corner radius come from the piece, and its width sets the scale: 1:n is the window's width on the ground over its width on the piece. `src/app/svgmap/piece.ts` does the fitting whenever the area or the piece changes.
 
-`Fixed scale`, the default, works the other way round: the width comes from the scale, so you give it the piece size and a scale and the box on the map is sized for you. The corner handles go away, and a new piece or place keeps the scale and changes the area. The scale is typed in mm per metre like a model's and kept as 1:n (`svg.scale`, with `scaleLocked` for fixed). It starts at 0.05 mm per metre, 1:20,000. With `Fit the area`, presets and pasted bounds grow the window until it covers them, and `Fit to map view` fits it inside the view.
+With the scale locked, the default, it works the other way round: the width comes from the scale, so you give it the piece size and a scale and the box on the map is sized for you. The corner handles go away, and a new piece or place keeps the scale and changes the area. The scale is typed in mm per metre like a model's and kept as 1:n (`svg.scale`, with `scaleLocked` for the lock). It starts at 0.05 mm per metre, 1:20,000. Unlocked, presets and pasted bounds grow the window until it covers them, and `Fit to map view` fits it inside the view.
 
 The shape is shared with 3D models, so a round coaster is a circular model too. Hexagons weren't in SVGmap and were added here so both outputs take the same shapes.
 

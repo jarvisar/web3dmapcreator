@@ -11,6 +11,7 @@ import {
   DEFAULT_SETTINGS,
   MIN_SECTION_MM,
   cloneSettings,
+  modelFieldRange,
   printerByKey,
 } from '../../core/settings';
 import type {
@@ -30,7 +31,8 @@ import type { LabelSettings } from '../../core/svgmap/text/label';
 import { mergePicks, type Picks } from '../../core/svgmap/routes';
 import type { FeatureFilters } from '../../core/svgmap/tiles/schema';
 import type { ColourGroup, MaterialRole, ModelStats } from '../../core/types';
-import { normalizeArea } from '../lib/area';
+import { effectiveScale } from '../../core/geo/area';
+import { constrainSize, normalizeArea, scaleArea } from '../lib/area';
 import { type PieceFit, areaShapeOf, fitAreaToPiece, pieceLayout } from '../svgmap/piece';
 import { useSvgRender } from '../svgmap/render';
 import { type CleanupPreset, type LaserPalette, type PieceSize, type SvgSettings, cleanupForPreset, defaultSvgSettings } from '../svgmap/settings';
@@ -340,8 +342,11 @@ export const useApp = create<AppState>()(() => initialState());
 const set = useApp.setState;
 const get = useApp.getState;
 
+// Keyed by the scale it works out to, so trading a fixed scale for a fitted
+// size that gives the same one (the scale and size locks) isn't a change.
 export function snapshotKey(area: AreaSpec, settings: ModelSettings): string {
-  return JSON.stringify([area, settings]);
+  const scale = Number(effectiveScale(area, settings.scale).toPrecision(12));
+  return JSON.stringify([area, { ...settings, scale }]);
 }
 
 function withStale(generation: GenerationState, area: AreaSpec, settings: ModelSettings): GenerationState {
@@ -431,6 +436,72 @@ export function patchSettings<K extends SettingsSection>(key: K, patch: Partial<
     const settings = { ...state.settings, [key]: { ...state.settings[key], ...patch } } as ModelSettings;
     return { settings, generation: withStale(state.generation, state.area, settings) };
   });
+}
+
+// ---------------------------------------------------------- scale and size
+
+// The area on the map, the scale and the printed size go together, with one
+// lock, on the scale. Locked, the scale stays: a model's printed size follows
+// the area, and an SVG map's piece can't, so its box only moves and turns.
+// Unlocked, the printed size (or piece) stays and the scale follows the area,
+// the same for both. Models keep the modes they always had: a fixed scale is
+// the lock on, fitting to a size the lock off.
+export function scaleLocked(state: { output: Output; svg: { scaleLocked: boolean }; settings: { scale: Pick<ModelSettings['scale'], 'mode'> } }): boolean {
+  return state.output === 'svg' ? state.svg.scaleLocked : state.settings.scale.mode === 'fixed';
+}
+
+// Whether the box on the map can be resized: not with the scale and the piece both fixed.
+export function areaResizable(state: Parameters<typeof scaleLocked>[0]): boolean {
+  return !(state.output === 'svg' && scaleLocked(state));
+}
+
+const clampTo = (value: number, { min, max }: { min: number; max: number }) => Math.min(max, Math.max(min, value));
+
+// Toggling the lock never changes a model: it switches to the scale or the
+// size it works out to now.
+export function setScaleLock(locked: boolean): void {
+  const { output, area, settings } = get();
+  if (output === 'svg') {
+    setScaleLocked(locked);
+    return;
+  }
+  const now = effectiveScale(area, settings.scale);
+  if (locked) patchSettings('scale', { mode: 'fixed', mmPerMetre: clampTo(now, modelFieldRange('scale', 'mmPerMetre')) });
+  else patchSettings('scale', { mode: 'fit', fitMm: clampTo(now * Math.max(area.widthM, area.heightM), modelFieldRange('scale', 'fitMm')) });
+}
+
+// A typed scale. With the scale unlocked the printed size stays, so the area
+// grows or shrinks around its centre, as far as the area limits allow. Locked,
+// a model's printed size follows. Presets, links and options set the scale
+// and area together and don't come through here.
+export function setScale(mmPerMetre: number): void {
+  const { output, area, settings } = get();
+  if (output === 'svg') {
+    setSvgScale(1000 / mmPerMetre);
+    return;
+  }
+  const now = effectiveScale(area, settings.scale);
+  if (settings.scale.mode === 'fixed') patchSettings('scale', { mmPerMetre });
+  else if (now > 0 && mmPerMetre > 0 && mmPerMetre !== now) setArea((current) => scaleArea(current, now / mmPerMetre), { focus: 'if-needed' });
+}
+
+// A model's printed width or height typed, in mm without the rim. With the
+// scale locked the area follows, otherwise the scale does.
+export function setPrintedSide(side: 'width' | 'height', mm: number): void {
+  const { area, settings } = get();
+  if (settings.scale.mode === 'fit') {
+    const scale = mm / (side === 'width' ? area.widthM : area.heightM);
+    patchSettings('scale', { fitMm: clampTo(scale * Math.max(area.widthM, area.heightM), modelFieldRange('scale', 'fitMm')) });
+    return;
+  }
+  const metres = mm / settings.scale.mmPerMetre;
+  setArea(
+    (current) => {
+      const [w, h] = constrainSize(current.shape, side === 'width' ? metres : current.widthM, side === 'height' ? metres : current.heightM, side);
+      return { ...current, widthM: w, heightM: h };
+    },
+    { focus: 'if-needed' },
+  );
 }
 
 export function setModelSource(modelSource: ModelSource): void {

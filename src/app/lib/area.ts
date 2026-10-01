@@ -11,9 +11,9 @@ export const SHAPES: AreaShape[] = ['rectangle', 'rounded', 'circle', 'hexagon']
 
 export const AREA_HINT = 'Drag the box to move it. Drag a corner to resize it, or the round handle to rotate it.';
 
-/** With an SVG map's scale fixed the corners can't resize the area. */
-export function areaHint(locked: boolean): string {
-  return locked ? 'Drag the box to move it, or the round handle to rotate it. Pick Fit the area under Size to resize it.' : AREA_HINT;
+/** With an SVG map's scale locked the corners can't resize the area. */
+export function areaHint(resizable: boolean): string {
+  return resizable ? AREA_HINT : 'Drag the box to move it, or the round handle to rotate it. Unlock the scale under Area to resize it.';
 }
 
 export const SHAPE_LABELS: Record<AreaShape, string> = {
@@ -68,6 +68,17 @@ export function constrainSize(
     return [w, roundSide(w * HEX_RATIO)];
   }
   return [clampSide(width), clampSide(height)];
+}
+
+/**
+ * The area grown or shrunk around its centre by factor. Held to the side
+ * limits as a whole, so it keeps its proportions when it reaches one.
+ */
+export function scaleArea(area: AreaSpec, factor: number): AreaSpec {
+  const least = Math.max(MIN_SIDE_M / area.widthM, MIN_SIDE_M / area.heightM);
+  const most = Math.min(MAX_SIDE_M / area.widthM, MAX_SIDE_M / area.heightM);
+  const f = Math.min(most, Math.max(least, factor));
+  return { ...area, widthM: area.widthM * f, heightM: area.heightM * f };
 }
 
 /** A valid, tidy copy: sizes in range and tight around the shape, rotation normalised. */

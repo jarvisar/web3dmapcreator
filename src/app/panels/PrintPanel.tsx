@@ -5,19 +5,11 @@ import { modelFieldRange, PRINTERS } from '../../core/settings';
 import type { Printer } from '../../core/settings';
 import { NumberField } from '../components/NumberField';
 import { SelectField } from '../components/Fields';
-import { Segmented } from '../components/Segmented';
 import { formatMmPair, formatNumber, formatRatio } from '../lib/format';
 import { bedFit } from '../state/derived';
 import type { BedFit } from '../state/derived';
-import { patchExport, patchSettings, useApp } from '../state/store';
+import { patchExport, patchSettings, setPrintedSide, useApp } from '../state/store';
 import { Section } from './Section';
-
-const RATIOS = [5000, 10000, 14286, 25000, 50000];
-
-function ratioScale(ratio: number): number {
-  // 1:14,286 is the add-on's 0.07 mm per metre exactly.
-  return ratio === 14286 ? 0.07 : 1000 / ratio;
-}
 
 const VENDORS: Printer['vendor'][] = ['Bambu Lab', 'Prusa', 'Other'];
 
@@ -52,6 +44,8 @@ export function PrintPanel() {
   const maxPlates = bambu ? BAMBU_MAX_PLATES : MAX_SECTIONS;
 
   const summary = `${formatRatio(mmPerMetre)} · ${formatMmPair(fit.width, fit.depth)} · ${fitSummary(fit)}`;
+  // The longer side, without the rim, as Fit to size always took it.
+  const fitBed = () => setPrintedSide(area.widthM >= area.heightM ? 'width' : 'height', Math.min(fit.printer.width, fit.printer.depth) - 20);
 
   return (
     <Section
@@ -60,76 +54,11 @@ export function PrintPanel() {
       summary={summary}
       badge={!fit.fits ? <span className="badge-dot badge-dot-warning" title="Larger than the bed" /> : undefined}
     >
-      <Segmented
-        label="Scale mode"
-        value={scale.mode}
-        stretch
-        onChange={(mode) => patchSettings('scale', { mode })}
-        options={[
-          { value: 'fixed', label: 'Fixed scale' },
-          { value: 'fit', label: 'Fit to size' },
-        ]}
-      />
-
-      {scale.mode === 'fixed' ? (
-        <>
-          <NumberField
-            label="Scale"
-            value={scale.mmPerMetre}
-            onChange={(mmPerMetre) => patchSettings('scale', { mmPerMetre })}
-            {...modelFieldRange('scale', 'mmPerMetre')}
-            step={0.005}
-            decimals={4}
-            unit="mm/m"
-            help="Printed millimetres per real metre. At 0.07 (1:14,286) a 6.5 m street prints 0.455 mm wide, about the narrowest line a 0.4 mm nozzle prints well. The model is whatever size that makes."
-            hint={
-              <span>
-                {formatRatio(scale.mmPerMetre)} · a {formatNumber(roads.minWidthMm, 2)} mm road is {formatNumber(roads.minWidthMm / scale.mmPerMetre, 1)} m real
-              </span>
-            }
-          />
-          <div className="chips" role="group" aria-label="Common scales">
-            {RATIOS.map((ratio) => {
-              const value = ratioScale(ratio);
-              const selected = Math.abs(scale.mmPerMetre - value) < 1e-6;
-              return (
-                <button
-                  key={ratio}
-                  type="button"
-                  className={`chip-btn${selected ? ' is-selected' : ''}`}
-                  aria-pressed={selected}
-                  onClick={() => patchSettings('scale', { mmPerMetre: value })}
-                >
-                  {formatRatio(value)}
-                </button>
-              );
-            })}
-          </div>
-        </>
-      ) : (
-        <NumberField
-          label="Longest side"
-          value={scale.fitMm}
-          onChange={(fitMm) => patchSettings('scale', { fitMm })}
-          {...modelFieldRange('scale', 'fitMm')}
-          step={5}
-          decimals={1}
-          unit="mm"
-          help="Printed length of the longer side of the area. The scale then depends on the area. Large areas at a small scale lose detail: roads stay at the printable minimum width, so footpaths print as wide as main roads."
-          hint={
-            <span>
-              Works out to {formatRatio(mmPerMetre)}.{' '}
-              <button
-                type="button"
-                className="link-btn"
-                onClick={() => patchSettings('scale', { fitMm: Math.min(fit.printer.width, fit.printer.depth) - 20 })}
-              >
-                Fit the {fit.printer.model.replace(/^Bambu Lab /, '')} bed
-              </button>
-            </span>
-          }
-        />
-      )}
+      <p className="field-hint">
+        The scale and the printed size are set under Area. At {formatRatio(mmPerMetre)} a {formatNumber(roads.minWidthMm, 2)} mm road is{' '}
+        {formatNumber(roads.minWidthMm / mmPerMetre, 1)} m real. Large areas at a small scale lose detail: roads stay at the printable minimum
+        width, so footpaths print as wide as main roads.
+      </p>
 
       <SelectField
         label="Printer"
@@ -179,6 +108,12 @@ export function PrintPanel() {
           </p>
         )}
       </div>
+      <p className="field-hint">
+        <button type="button" className="link-btn" onClick={fitBed}>
+          Fit the {fit.printer.model.replace(/^Bambu Lab /, '')} bed
+        </button>
+        , leaving 10 mm around it. {scale.mode === 'fixed' ? 'The area grows or shrinks to match.' : 'The scale follows.'}
+      </p>
       {tiny && <p className="field-hint">The print would be less than 25 mm across. Details this small may not print.</p>}
 
       <NumberField
