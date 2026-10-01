@@ -888,8 +888,17 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
   };
   // How far the tops within FLAT_REACH_M spread, holes left out.
   const reach = Math.max(1, Math.round(FLAT_REACH_M / Math.min(dx, dy)));
-  const high = windowMax(Float32Array.from(top, (z) => (z === z ? z : -Infinity)), nx, ny, reach);
-  const low = windowMin(Float32Array.from(top, (z) => (z === z ? z : Infinity)), nx, ny, reach);
+  // Filled and slid in place. Float32Array.from with a map function built a
+  // list of every value first, about 55 bytes a cell.
+  const high = new Float32Array(n);
+  const low = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const z = top[i];
+    high[i] = z === z ? z : -Infinity;
+    low[i] = z === z ? z : Infinity;
+  }
+  windowMax(high, nx, ny, reach, high);
+  windowMin(low, nx, ny, reach, low);
   const filedAsGround = (j: number, z: number) => {
     const g = layers.ground[j];
     return g === g && top[j] - g < LEVEL_M && Math.abs(top[j] - z) <= LEVEL_M && high[j] - low[j] <= LEVEL_M;

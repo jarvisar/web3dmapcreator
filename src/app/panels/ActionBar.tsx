@@ -103,7 +103,8 @@ function ModelActions() {
   const hidden = useApp((state) => state.ui.hiddenParts);
   const edits = useApp((state) => state.edits);
   const shownBounds = useApp((state) => state.ui.shownBounds);
-  const problem = generationProblem(area, settings);
+  const largeGrids = useApp((state) => state.ui.largeGrids);
+  const problem = generationProblem(area, settings, largeGrids);
   const running = status === 'running';
 
   let summary = '';

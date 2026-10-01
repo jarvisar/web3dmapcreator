@@ -17,6 +17,8 @@ export interface GenerateRequest {
   editsVersion?: number;
   /** Where the app is served from, to load fonts for text shapes. */
   baseUrl?: string;
+  /** The most cells a LiDAR only grid given in metres may have on this machine (fixedCellLimit). */
+  maxCells?: number;
 }
 
 export interface EditRequest {

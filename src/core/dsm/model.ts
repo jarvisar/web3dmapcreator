@@ -23,6 +23,7 @@ import type { AreaSpec, ModelSettings } from '../settings';
 import type { ModelStats, MultiPolygon, Polygon, Ring } from '../types';
 import { compose, ISLAND_MIN_MM2, MAP_EDGE_M } from './compose';
 import { fairFaces, windowMax, windowMin } from './filters';
+import { emptyLayers } from './layers';
 import { meshSurface, straightenWalls, type HeightGrid, type TileJob, type TileResult } from './mesh';
 import type { PreparedSurface } from './prepare';
 
@@ -72,6 +73,12 @@ export interface SurfaceModelInput {
   concurrency?: number;
   /** Mapped water (lidarModel.mapWater): its shorelines for cuts and layers, and water where the survey has no returns. */
   mapWater?: SourceFeature[];
+  /**
+   * Takes `surface.layers` off once compose is done, so they can go while
+   * meshing, which is where memory peaks. For a caller that doesn't hold
+   * them anywhere else and can rebuild them from `surface.checkpoints`.
+   */
+  releaseLayers?: boolean;
 }
 
 /** The grid in model mm: vertex (i, j) at (x0 + i dx, y0 + j dy). */
@@ -259,37 +266,28 @@ function landRegion(crop: Ring, water: MultiPolygon, minIsland: number): MultiPo
   return union(opened, clear).filter((polygon) => Math.abs(ringArea(polygon[0])) >= minIsland);
 }
 
-/** The surface cut to a region, pulled a micron apart where two outlines only meet at a point. */
-function cutSurface(tin: Tin, region: MultiPolygon): Tin {
-  let clipped = clipTin(tin, region);
-  if (clipped && !capBoundary(clipped)) clipped = clipTin(tin, offsetPolygons(region, -1e-3, 'miter'));
-  if (!clipped?.triangles.length || !capBoundary(clipped)) throw new Error('The LiDAR surface could not be cut to the area shape. Try the rectangle shape.');
-  return clipped;
+/** What meshing needs from compose. */
+interface Composed {
+  heights: Float32Array;
+  cut: Uint8Array;
+  waterTop: Float32Array | null;
+  /** The mesher's detail, raised beside walls (wallDetail). */
+  detail: Float32Array;
+  groundMaxMm: number;
+  counts: Record<string, number>;
 }
 
-export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec> {
-  const { area, settings, surface } = input;
-  const progress = input.progress ?? new Progress();
-  const mmPerMetre = effectiveScale(area, settings.scale);
-  const crop = areaModelRing(area, mmPerMetre);
-  const { layers, grid } = surface;
-  const { nx, ny } = layers;
-  // The same expressions areaModelRing uses, so a rectangle's surface ends exactly on its outline.
-  const x1 = (area.widthM * mmPerMetre) / 2;
-  const y1 = (area.heightM * mmPerMetre) / 2;
-  const x0 = -x1;
-  const y0 = -y1;
-  const dx = (x1 - x0) / (nx - 1);
-  const dy = (y1 - y0) / (ny - 1);
-  const rectangle = area.shape === 'rectangle' || (area.shape === 'rounded' && area.cornerRadius <= 0);
-  const stats: ModelStats = {};
-  const warnings: string[] = [];
-  const cells: CellGrid = { nx, ny, x0, y0, dx, dy };
-
-  progress.begin('terrain', 'Finding ground, water and trees', 0.62, 0.08);
-  await progress.checkpoint();
+/**
+ * compose and the passes over its heights before meshing. Kept out of
+ * surfaceModel, which as an async function holds its locals over every
+ * await: the masks, compose's water and its own detail would stay for as
+ * long as meshing takes.
+ */
+function composeHeights(input: SurfaceModelInput, mmPerMetre: number, crop: Ring, rectangle: boolean, cells: CellGrid, mapOutline: MultiPolygon | null, stats: ModelStats): Composed {
+  const { area, settings } = input;
+  const { layers, grid } = input.surface;
+  const { nx, ny } = cells;
   const inside = rectangle ? undefined : cellsIn([[crop]], cells);
-  const mapOutline = input.mapWater?.length ? mappedWater(input.mapWater, area, mmPerMetre, cells) : null;
   const mapped = mapOutline ? cellsIn(mapOutline, cells) : undefined;
   const coast = input.mapWater?.some(coastal) ? cellsIn(mappedWater(input.mapWater.filter(coastal), area, mmPerMetre, cells), cells) : undefined;
   const lidar = settings.lidarModel;
@@ -317,15 +315,51 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
     coast,
   );
   for (const [key, value] of Object.entries(result.counts)) stats[`lidar_model_${key}`] = value;
-  const cell = Math.min(dx, dy);
+  const cell = Math.min(cells.dx, cells.dy);
   const n = nx * ny;
   const keep = new Uint8Array(n);
   for (let i = 0; i < n; i++) keep[i] = result.water[i] | result.cut[i] | (result.detail[i] < 1 ? 1 : 0);
   stats.lidar_model_faired_cells = fairFaces(result.heights, nx, ny, cell, FAIR_WINDOW_MM, FAIR_REACH_MM, keep);
   const detail = wallDetail(result.heights, result.detail, nx, ny, WALL_STEP_CELLS * cell);
+  return { heights: result.heights, cut: result.cut, waterTop: result.waterTop, detail, groundMaxMm: result.groundMaxMm, counts: result.counts };
+}
+
+/** The surface cut to a region, pulled a micron apart where two outlines only meet at a point. */
+function cutSurface(tin: Tin, region: MultiPolygon): Tin {
+  let clipped = clipTin(tin, region);
+  if (clipped && !capBoundary(clipped)) clipped = clipTin(tin, offsetPolygons(region, -1e-3, 'miter'));
+  if (!clipped?.triangles.length || !capBoundary(clipped)) throw new Error('The LiDAR surface could not be cut to the area shape. Try the rectangle shape.');
+  return clipped;
+}
+
+export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec> {
+  const { area, settings, surface } = input;
+  const progress = input.progress ?? new Progress();
+  const mmPerMetre = effectiveScale(area, settings.scale);
+  const crop = areaModelRing(area, mmPerMetre);
+  const { grid } = surface;
+  const { nx, ny } = surface.layers;
+  // The same expressions areaModelRing uses, so a rectangle's surface ends exactly on its outline.
+  const x1 = (area.widthM * mmPerMetre) / 2;
+  const y1 = (area.heightM * mmPerMetre) / 2;
+  const x0 = -x1;
+  const y0 = -y1;
+  const dx = (x1 - x0) / (nx - 1);
+  const dy = (y1 - y0) / (ny - 1);
+  const rectangle = area.shape === 'rectangle' || (area.shape === 'rounded' && area.cornerRadius <= 0);
+  const stats: ModelStats = {};
+  const warnings: string[] = [];
+  const cells: CellGrid = { nx, ny, x0, y0, dx, dy };
+
+  progress.begin('terrain', 'Finding ground, water and trees', 0.62, 0.08);
+  await progress.checkpoint();
+  const mapOutline = input.mapWater?.length ? mappedWater(input.mapWater, area, mmPerMetre, cells) : null;
+  const result = composeHeights(input, mmPerMetre, crop, rectangle, cells, mapOutline, stats);
+  if (input.releaseLayers) surface.layers = emptyLayers(0, 0);
+  const cell = Math.min(dx, dy);
 
   progress.begin('mesh', 'Meshing the LiDAR surface', 0.7, 0.2);
-  const field: HeightGrid = { heights: result.heights, detail, nx, ny, x0, y0, x1, y1, dx, dy };
+  const field: HeightGrid = { heights: result.heights, detail: result.detail, nx, ny, x0, y0, x1, y1, dx, dy };
   const limits = { deviation: DEVIATION_CELLS * cell, threshold: THRESHOLD_CELLS2 * cell * cell, minGap: MIN_GAP_CELLS * cell };
   let tin: Tin = await meshSurface(field, limits, { runTile: input.runTile, concurrency: input.concurrency, progress: (fraction) => progress.checkpoint(fraction) });
   // Twice, since the first pass joins up roof edges the second can straighten further.

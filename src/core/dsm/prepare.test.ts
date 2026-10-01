@@ -6,8 +6,9 @@ import { setLazDecoder } from '../lidar/read/laz';
 import { discover, type Candidate } from '../lidar/sources';
 import { NumpyRandom } from '../lidar/test-helpers';
 import type { AreaSpec } from '../settings';
-import { cellSize, gridCells, gridProblem, MAX_CELLS, MAX_FIXED_CELLS, requestedCell } from './grid';
-import { prepareSurface, setSurfaceStore, type SurfaceJob, type SurfaceOutcome, type SurfaceRunner } from './prepare';
+import { cellSize, fixedCellLimit, gridCells, gridProblem, LARGEST_FIXED_CELLS, MAX_CELLS, MAX_FIXED_CELLS, reportedMemoryGb, requestedCell } from './grid';
+import { COUNT_LAYERS, FLOAT_LAYERS, type SurfaceLayers } from './layers';
+import { prepareSurface, setSurfaceStore, unpackLayers, type SurfaceJob, type SurfaceOutcome, type SurfaceRunner } from './prepare';
 import { BlockRaster, EMPTY_SHARE, occupiedCell, ProbeSink } from './raster';
 
 vi.mock('../lidar/sources', async (original) => ({ ...(await original<typeof import('../lidar/sources')>()), discover: vi.fn() }));
@@ -220,10 +221,28 @@ describe('cellSize', () => {
 
   it('allows a larger grid for a cell in metres, up to a hard limit', () => {
     expect(gridProblem(1000, 1000, 0.25)).toMatch(/too large/);
-    expect(gridProblem(1000, 1000, 0.25, true)).toBeNull();
-    expect(gridProblem(2000, 2000, 0.25, true)).toMatch(/64\.0 million cells.*16 million.*1\.0 km²/);
-    expect(gridProblem(2000, 2000, 0.5, true)).toBeNull();
+    expect(gridProblem(1000, 1000, 0.25, MAX_FIXED_CELLS)).toBeNull();
+    expect(gridProblem(2000, 2000, 0.25, MAX_FIXED_CELLS)).toMatch(/64\.0 million cells.*16 million.*1\.0 km²/);
+    expect(gridProblem(2000, 2000, 0.5, MAX_FIXED_CELLS)).toBeNull();
     expect(gridCells(2000, 2000, 0.5)).toBeGreaterThan(MAX_FIXED_CELLS);
+    expect(gridProblem(2000, 2000, 0.25, 64_000_000)).toBeNull();
+    expect(gridProblem(2000, 2000, 0.25, 32_000_000)).toMatch(/limit on this computer is 32 million.*2\.0 km²/);
+  });
+
+  it('sets the limit for a cell in metres from the memory the machine reports', () => {
+    expect(fixedCellLimit(null)).toBe(MAX_FIXED_CELLS);
+    expect(fixedCellLimit(2)).toBe(8_000_000);
+    expect(fixedCellLimit(4)).toBe(8_000_000);
+    expect(fixedCellLimit(8)).toBe(MAX_FIXED_CELLS);
+    expect(fixedCellLimit(16)).toBe(32_000_000);
+    expect(fixedCellLimit(32)).toBe(64_000_000);
+    expect(fixedCellLimit(64)).toBe(64_000_000);
+    expect(fixedCellLimit(null, true)).toBe(LARGEST_FIXED_CELLS);
+    expect(fixedCellLimit(4, true)).toBe(LARGEST_FIXED_CELLS);
+    // As navigator.deviceMemory rounds: 31.2 GB reports 32.
+    expect(reportedMemoryGb(31.2 * 2 ** 30)).toBe(32);
+    expect(reportedMemoryGb(15.9 * 2 ** 30)).toBe(16);
+    expect(reportedMemoryGb(7.7 * 2 ** 30)).toBe(8);
   });
 });
 
@@ -307,6 +326,27 @@ describe('prepareSurface', () => {
     expect(calls.length).toBe(reads);
     expect(again.reusedBlocks).toBe(again.blocks);
     expect(Array.from(again.layers.top)).toEqual(Array.from(result.layers.top));
+  });
+
+  it('rebuilds the layers exactly from its block checkpoints, read or reused', async () => {
+    vi.mocked(discover).mockResolvedValue({ candidates: [survey('survey', 2020)], failures: [] });
+    const bytes = (a: ArrayBufferView) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+    const same = (a: SurfaceLayers, b: SurfaceLayers) => {
+      expect([b.nx, b.ny]).toEqual([a.nx, a.ny]);
+      for (const name of [...FLOAT_LAYERS, ...COUNT_LAYERS]) expect(bytes(b[name])).toEqual(bytes(a[name]));
+    };
+    const read = await prepareSurface({ area, cellM: 1, runner: fakeRunner([]) });
+    expect(read.checkpoints.length).toBe(read.blocks);
+    expect(read.blocks).toBeGreaterThan(1);
+    same(read.layers, unpackLayers(read.grid, read.checkpoints));
+    const reused = await prepareSurface({ area, cellM: 1, runner: fakeRunner([]) });
+    expect(reused.reusedBlocks).toBe(reused.blocks);
+    same(read.layers, unpackLayers(reused.grid, reused.checkpoints));
+    // Without a store nothing is saved, but the checkpoints are still made.
+    setSurfaceStore(null);
+    const unsaved = await prepareSurface({ area, cellM: 1, runner: fakeRunner([]) });
+    same(read.layers, unpackLayers(unsaved.grid, unsaved.checkpoints));
+    expect(() => unpackLayers(read.grid, read.checkpoints.slice(1))).toThrow();
   });
 
   it('grows the cell a sparse survey cannot fill, and remembers that', async () => {

@@ -7,7 +7,7 @@ import { downloadBlob, NARROW_QUERY } from '../lib/browser';
 import { formatBytes } from '../lib/format';
 import { kindOf, objectOf } from '../../core/edit/keys';
 import type { ModelEdits } from '../../core/edit/types';
-import { fileBase, generationProblem } from './derived';
+import { fileBase, generationProblem, lidarCellLimit } from './derived';
 import { flushEdits, nextEditVersion, setNotes } from './editActions';
 import { getEngine, onWorkerReplaced } from './engine';
 import { setModelParts, type EditData } from './model';
@@ -86,7 +86,7 @@ export async function generateModel(): Promise<void> {
   const state = useApp.getState();
   // The worker would do both at once, and a cancel could take the export down with it.
   if (state.generation.status === 'running' || state.exporting.status === 'running') return;
-  const problem = generationProblem(state.area, state.settings);
+  const problem = generationProblem(state.area, state.settings, state.ui.largeGrids);
   if (problem) {
     patchGeneration({ status: 'error', error: problem });
     return;
@@ -97,7 +97,7 @@ export async function generateModel(): Promise<void> {
   const key = snapshotKey(area, settings);
   patchGeneration({ status: 'running', progress: null, startedAt: Date.now(), error: null, cancelling: false });
   try {
-    const request = { area, settings, edits: structuredClone(state.edits), editsVersion: nextEditVersion(), baseUrl: document.baseURI };
+    const request = { area, settings, edits: structuredClone(state.edits), editsVersion: nextEditVersion(), baseUrl: document.baseURI, maxCells: lidarCellLimit(state.ui.largeGrids) };
     const result = await getEngine().generate(request, (event) => {
       if (id === run) queueProgress(event, 'generation');
     });

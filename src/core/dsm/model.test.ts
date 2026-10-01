@@ -42,7 +42,7 @@ function prepared(area: AreaSpec): PreparedSurface {
       else layers.ground[k] = z;
     }
   }
-  return { layers, grid, requestedCellM: 1, densityM2: 10, coverage: 1, points: 0, noise: 0, surveys: [], failures: [], downloadedBytes: 0, blocks: 1, reusedBlocks: 0 };
+  return { layers, checkpoints: [], grid, requestedCellM: 1, densityM2: 10, coverage: 1, points: 0, noise: 0, surveys: [], failures: [], downloadedBytes: 0, blocks: 1, reusedBlocks: 0 };
 }
 
 function lidarSettings(patch: (s: ModelSettings) => void = () => undefined): ModelSettings {
@@ -109,6 +109,21 @@ describe('surfaceModel', () => {
     expect(z0).toBe(0);
     // Base, then the river 2 m and 0.6 mm below its bank, and the tower 40 m over the street.
     expect(z1).toBeGreaterThan(1.3 + 0.6 + 0.5 * 42 - 0.5);
+  });
+
+  it('builds the same model when it lets the survey layers go after compose', async () => {
+    const settings = lidarSettings((s) => (s.lidarModel.waterMode = 'layer'));
+    const kept = prepared(area('circle'));
+    const released = prepared(area('circle'));
+    const a = await meshLayers((await surfaceModel({ area: area('circle'), settings, surface: kept })).layers);
+    const b = await meshLayers((await surfaceModel({ area: area('circle'), settings, surface: released, releaseLayers: true })).layers);
+    expect(kept.layers.top.length).toBeGreaterThan(0);
+    expect(released.layers.top.length).toBe(0);
+    expect(b.parts.map((p) => p.name)).toEqual(a.parts.map((p) => p.name));
+    for (let k = 0; k < a.parts.length; k++) {
+      expect(Array.from(b.parts[k].positions)).toEqual(Array.from(a.parts[k].positions));
+      expect(Array.from(b.parts[k].indices)).toEqual(Array.from(a.parts[k].indices));
+    }
   });
 
   it('cuts round and six-sided areas and still closes them', async () => {

@@ -45,22 +45,38 @@ export function tinBounds(tin: Tin): Box {
 export function capBoundary(tin: Tin): [number, number][] | null {
   const t = tin.triangles;
   const n = tin.vertices.length / 3;
-  const directed = new Set<number>();
+  // Each vertex's outgoing edges, in flat arrays. A Set of edge keys stops at
+  // 2^24 entries in Chrome and 2^23 in Node, which a LiDAR only surface
+  // passed at about 5.6 and 2.8 million triangles.
+  const start = new Int32Array(n + 1);
+  for (let i = 0; i < t.length; i++) start[t[i] + 1]++;
+  for (let v = 0; v < n; v++) start[v + 1] += start[v];
+  const to = new Int32Array(t.length);
+  const end = start.slice(0, n);
+  const has = (a: number, b: number, upTo: number) => {
+    for (let j = start[a]; j < upTo; j++) if (to[j] === b) return true;
+    return false;
+  };
   for (let i = 0; i < t.length; i += 3) {
     for (let k = 0; k < 3; k++) {
-      const key = t[i + k] * n + t[i + ((k + 1) % 3)];
-      if (directed.has(key)) return null;
-      directed.add(key);
+      const a = t[i + k];
+      const b = t[i + ((k + 1) % 3)];
+      if (has(a, b, end[a])) return null;
+      to[end[a]++] = b;
     }
   }
+  // In the order the edges first appear, which is the order the boundary
+  // came out in when this was a Set.
   const boundary: [number, number][] = [];
   const outgoing = new Uint32Array(n);
-  for (const key of directed) {
-    const a = Math.floor(key / n);
-    const b = key - a * n;
-    if (directed.has(b * n + a)) continue;
-    boundary.push([a, b]);
-    if (++outgoing[a] > 1) return null;
+  for (let i = 0; i < t.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      const a = t[i + k];
+      const b = t[i + ((k + 1) % 3)];
+      if (has(b, a, start[b + 1])) continue;
+      boundary.push([a, b]);
+      if (++outgoing[a] > 1) return null;
+    }
   }
   return boundary;
 }

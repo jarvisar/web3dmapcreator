@@ -137,6 +137,8 @@ export interface UiState {
   sizeUnit: SizeUnit;
   mapHintDismissed: boolean;
   previewLook: PreviewLook;
+  /** LiDAR only grids given in metres may go past what this machine's reported memory allows (core/dsm/grid.ts). Kept on this machine only. */
+  largeGrids: boolean;
   /** The 3D viewer is editing the model. */
   editMode: boolean;
   tool: EditTool;
@@ -319,6 +321,7 @@ function initialState(): AppState {
       sizeUnit: saved.sizeUnit ?? 'mm',
       mapHintDismissed: saved.mapHintDismissed ?? false,
       previewLook: saved.previewLook ?? 'material',
+      largeGrids: saved.largeGrids ?? false,
       editMode: false,
       tool: 'select',
       selection: [],
@@ -815,6 +818,10 @@ export function setSizeUnit(sizeUnit: SizeUnit): void {
 
 export function setPreviewLook(previewLook: PreviewLook): void {
   patchUi({ previewLook });
+}
+
+export function setLargeGrids(largeGrids: boolean): void {
+  patchUi({ largeGrids });
 }
 
 export function dismissMapHint(): void {

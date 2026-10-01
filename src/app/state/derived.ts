@@ -1,6 +1,6 @@
 // Values computed from the state: colour groups in use, bed fit, summaries.
 
-import { gridProblem, requestedCell } from '../../core/dsm/grid';
+import { fixedCellLimit, gridProblem, requestedCell } from '../../core/dsm/grid';
 import { areaModelRing, effectiveScale } from '../../core/geo/area';
 import { MAX_SECTIONS, sectionCount } from '../../core/export/sections';
 import { COLOUR_GROUPS, PALETTE_PRESETS, printerByKey } from '../../core/settings';
@@ -173,17 +173,29 @@ export function bedFit(area: AreaSpec, settings: ModelSettings, exportSettings: 
   return { printer, width, depth, fits: straight || turned, rotated: !straight && turned, cols, rows, plates };
 }
 
-/** Why the model cannot be generated from this area and these settings, or null. */
-export function generationProblem(area: AreaSpec, settings: ModelSettings): string | null {
-  return validateArea(area) ?? settingsProblem(settings) ?? lidarModelProblem(area, settings);
+/** The machine's memory in GB as the browser reports it (Chrome, a power of two up to 32), or null. */
+export function deviceMemoryGb(): number | null {
+  const value = typeof navigator === 'undefined' ? undefined : (navigator as Navigator & { deviceMemory?: unknown }).deviceMemory;
+  return typeof value === 'number' && value > 0 ? value : null;
 }
 
-function lidarModelProblem(area: AreaSpec, settings: ModelSettings): string | null {
+/** The most cells a LiDAR only grid given in metres may have here, `largeGrids` being the UI's override. */
+export function lidarCellLimit(largeGrids: boolean): number {
+  return fixedCellLimit(deviceMemoryGb(), largeGrids);
+}
+
+/** Why the model cannot be generated from this area and these settings, or null. */
+export function generationProblem(area: AreaSpec, settings: ModelSettings, largeGrids = false): string | null {
+  return validateArea(area) ?? settingsProblem(settings) ?? lidarModelProblem(area, settings, largeGrids);
+}
+
+function lidarModelProblem(area: AreaSpec, settings: ModelSettings, largeGrids: boolean): string | null {
   if (settings.modelSource !== 'lidar') return null;
   const scale = effectiveScale(area, settings.scale);
   if (!(scale > 0)) return null;
   const lidar = settings.lidarModel;
-  return gridProblem(area.widthM, area.heightM, requestedCell(lidar, scale, area.widthM, area.heightM), lidar.cellMode === 'metres');
+  const limit = lidar.cellMode === 'metres' ? lidarCellLimit(largeGrids) : undefined;
+  return gridProblem(area.widthM, area.heightM, requestedCell(lidar, scale, area.widthM, area.heightM), limit);
 }
 
 function settingsProblem(settings: ModelSettings): string | null {

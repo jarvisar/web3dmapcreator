@@ -11,9 +11,10 @@ import { fetchDem, type DemMosaic } from '../core/data/dem';
 import type { OvertureData } from '../core/data/features';
 import { fetchOverture } from '../core/data/overture';
 import { fetchRaceways, withRaceways, type Raceways } from '../core/data/raceways';
-import { requestedCell } from '../core/dsm/grid';
+import { MAX_FIXED_CELLS, requestedCell } from '../core/dsm/grid';
 import { surfaceModel } from '../core/dsm/model';
-import { prepareSurface, type PreparedSurface } from '../core/dsm/prepare';
+import { emptyLayers } from '../core/dsm/layers';
+import { prepareSurface, unpackLayers, type PreparedSurface } from '../core/dsm/prepare';
 import { groundGrid } from '../core/edit/ground';
 import { roadLines } from '../core/edit/lines';
 import { EditSession, excludedParts, type EditUpdate } from '../core/edit/session';
@@ -65,6 +66,7 @@ let overture: { key: string; data: OvertureData } | null = null;
 let raceways: { key: string; found: Raceways } | null = null;
 let elevation: { key: string; dem: DemMosaic } | null = null;
 let prepared: { key: string; lidar: PreparedLidar } | null = null;
+// Kept as its block checkpoints, not its layers (unpackLayers).
 let surface: { key: string; prepared: PreparedSurface } | null = null;
 
 setCheckpointStore(lidarCache);
@@ -313,13 +315,18 @@ type Pool = ReturnType<typeof lidarPool>;
 /**
  * The survey read into a grid for the area. Blocks are checkpointed in the
  * LiDAR cache and the last grid is kept for the session, so changing a
- * setting other than the area, scale or detail builds straight away.
+ * setting other than the area, scale or detail builds straight away. The
+ * session keeps the blocks packed, about a fifth of the layers, so the
+ * layers can go while the model is meshed (releaseLayers).
  */
 async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | null): Promise<PreparedSurface> {
   const { area, settings } = request;
   const cell = requestedCell(settings.lidarModel, effectiveScale(area, settings.scale), area.widthM, area.heightM);
   const key = JSON.stringify([area.center, area.rotationDeg, area.widthM, area.heightM, cell]);
-  if (surface?.key === key) return { ...surface.prepared, downloadedBytes: 0, reusedBlocks: surface.prepared.blocks };
+  if (surface?.key === key) {
+    const kept = surface.prepared;
+    return { ...kept, layers: unpackLayers(kept.grid, kept.checkpoints), downloadedBytes: 0, reusedBlocks: kept.blocks };
+  }
   // Let the last grid go before the next one comes in.
   surface = null;
   const progress = job.progress;
@@ -327,7 +334,7 @@ async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | 
   const result = await prepareSurface({
     area,
     cellM: cell,
-    fixed: settings.lidarModel.cellMode === 'metres',
+    maxCells: settings.lidarModel.cellMode === 'metres' ? (request.maxCells ?? MAX_FIXED_CELLS) : undefined,
     signal: job.abort.signal,
     progress: (label, fraction, detail) => progress.checkpoint(fraction, detail, label),
     runner: pool ?? undefined,
@@ -335,7 +342,7 @@ async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | 
   // A failed read leaves a hole, and a survey whose catalog failed can leave
   // half the area without one, so try again next time. Blocks that were read
   // come from their checkpoints.
-  if (!result.failures.length) surface = { key, prepared: result };
+  if (!result.failures.length) surface = { key, prepared: { ...result, layers: emptyLayers(0, 0) } };
   return result;
 }
 
@@ -395,6 +402,7 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
       runTile: pool ? (tile) => pool.tile(tile) : undefined,
       concurrency: pool?.concurrency ?? 1,
       mapWater: mapWater?.features,
+      releaseLayers: true,
     });
     timings.generate = (performance.now() - t1) / 1000;
     const t2 = performance.now();
@@ -615,6 +623,11 @@ function describe(error: unknown): string {
   if (error instanceof Error) {
     if (error.name === 'NetworkError' || /Failed to fetch|NetworkError|network/i.test(error.message)) {
       return 'Could not reach the map data server. Check your connection and try again.';
+    }
+    // What a typed array the browser can't find memory for throws. Running
+    // out of the JS heap closes the tab instead, with nothing to catch.
+    if (error instanceof RangeError && /allocation failed|Invalid typed array length|Invalid array buffer length/i.test(error.message)) {
+      return 'The browser ran out of memory building this model. Try a smaller area, or larger cells for a LiDAR only model.';
     }
     return error.message || error.name;
   }

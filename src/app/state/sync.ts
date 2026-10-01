@@ -60,7 +60,8 @@ export function startSync(): void {
       state.ui.showBed !== previous.ui.showBed ||
       state.ui.sizeUnit !== previous.ui.sizeUnit ||
       state.ui.mapHintDismissed !== previous.ui.mapHintDismissed ||
-      state.ui.previewLook !== previous.ui.previewLook
+      state.ui.previewLook !== previous.ui.previewLook ||
+      state.ui.largeGrids !== previous.ui.largeGrids
     ) {
       clearTimeout(saveTimer);
       saveTimer = window.setTimeout(save, 300);

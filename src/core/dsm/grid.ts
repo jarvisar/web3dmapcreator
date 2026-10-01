@@ -11,10 +11,21 @@ export const MAX_CELL_M = 5;
 // Past this, composing and meshing take minutes and too much memory for a
 // browser tab, so large areas get larger cells instead.
 export const MAX_CELLS = 8_000_000;
-// A cell given in metres never grows for the area, so this is a hard limit.
-// San Francisco's 0.25 m grid doubled to 16.5 million cells peaked at 2.1 GB
-// composing and meshing in one thread, against 1.2 GB for 8.3 million.
+// A cell given in metres never grows for the area, so the grid has a hard
+// limit instead, from the memory the machine has. This one is for a machine
+// that doesn't say (Firefox, Safari).
 export const MAX_FIXED_CELLS = 16_000_000;
+// GB of memory (navigator.deviceMemory, a power of two up to 32 in Chrome)
+// and the cells allowed from there up. San Francisco's 0.25 m grid repeated
+// to 33 and 66 million cells peaked at 3.5 and 6.9 GB in Edge, composing and
+// meshing with the tile workers. Chrome holds about 16 GB of typed arrays
+// per tab, whatever the machine has.
+const FIXED_TIERS: [memoryGb: number, cells: number][] = [
+  [32, 64_000_000],
+  [16, 32_000_000],
+  [8, 16_000_000],
+];
+const SMALL_MACHINE_CELLS = 8_000_000;
 /** Blocks read, checkpointed and resumed one at a time. */
 export const BLOCK_M = 256;
 
@@ -47,18 +58,34 @@ export function requestedCell(choice: CellChoice, mmPerMetre: number, widthM: nu
   return Math.round(Math.min(Math.max(choice.cellM, MIN_CELL_M), MAX_CELL_M) * 100) / 100;
 }
 
+/** The most cells a grid given in metres may have with this much memory in GB, null when the machine doesn't say. `larger` takes the largest tier anyway. */
+export function fixedCellLimit(memoryGb: number | null, larger = false): number {
+  if (larger) return FIXED_TIERS[0][1];
+  if (memoryGb === null || !(memoryGb > 0)) return MAX_FIXED_CELLS;
+  for (const [gb, cells] of FIXED_TIERS) if (memoryGb >= gb) return cells;
+  return SMALL_MACHINE_CELLS;
+}
+
+/** The GB navigator.deviceMemory would report for this many bytes of memory: the nearest power of two, for scripts. */
+export function reportedMemoryGb(bytes: number): number {
+  return 2 ** Math.round(Math.log2(bytes / 2 ** 30));
+}
+
+/** The most cells allowed whatever the machine says (`larger` in fixedCellLimit). */
+export const LARGEST_FIXED_CELLS = FIXED_TIERS[0][1];
+
 export function gridCells(widthM: number, heightM: number, cell: number): number {
   return (Math.round(widthM / cell) + 1) * (Math.round(heightM / cell) + 1);
 }
 
-/** Why an area is too large for a LiDAR only model at this cell size, or null. `fixed` is a cell given in metres. */
-export function gridProblem(widthM: number, heightM: number, cell: number, fixed = false): string | null {
+/** Why an area is too large for a LiDAR only model at this cell size, or null. `fixedLimit` is the limit for a cell given in metres (fixedCellLimit). */
+export function gridProblem(widthM: number, heightM: number, cell: number, fixedLimit?: number): string | null {
   const cells = gridCells(widthM, heightM, cell);
-  if (fixed) {
-    // A little over, so a 2 km square at 0.5 m (4001 x 4001 points) passes.
-    if (cells <= MAX_FIXED_CELLS * 1.01) return null;
-    const km2 = (MAX_FIXED_CELLS * cell * cell) / 1e6;
-    return `At ${cell} m cells this area is ${(cells / 1e6).toFixed(1)} million cells, and the limit is ${MAX_FIXED_CELLS / 1e6} million. Use larger cells, or an area under about ${km2 < 10 ? km2.toFixed(1) : Math.round(km2)} km².`;
+  if (fixedLimit !== undefined) {
+    // A little over, so a 2 km square at 0.5 m (4001 x 4001 points) passes 16 million.
+    if (cells <= fixedLimit * 1.01) return null;
+    const km2 = (fixedLimit * cell * cell) / 1e6;
+    return `At ${cell} m cells this area is ${(cells / 1e6).toFixed(1)} million cells, and the limit on this computer is ${fixedLimit / 1e6} million. Use larger cells, or an area under about ${km2 < 10 ? km2.toFixed(1) : Math.round(km2)} km².`;
   }
   // Cells stop growing at MAX_CELL_M, so a big enough area still passes MAX_CELLS.
   if (cells <= MAX_CELLS * 1.05) return null;

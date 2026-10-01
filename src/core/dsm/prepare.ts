@@ -90,7 +90,10 @@ export interface SurfaceSurvey {
 }
 
 export interface PreparedSurface {
+  /** Empty (0 x 0) once surfaceModel has let them go (`releaseLayers`). */
   layers: SurfaceLayers;
+  /** Every block as its checkpoint (encodeBlock), in blocks(grid) order: the layers at about a fifth of their size (unpackLayers). */
+  checkpoints: ArrayBuffer[];
   grid: GridSpec;
   requestedCellM: number;
   /** Returns per m² on land, when the density was measured. */
@@ -111,8 +114,8 @@ export interface SurfaceInput {
   area: AreaSpec;
   /** Cell size asked for, in metres. It grows where the survey is too sparse to fill it. */
   cellM: number;
-  /** The cell was given in metres rather than grown for the area, so the grid may be up to MAX_FIXED_CELLS. */
-  fixed?: boolean;
+  /** The most cells for a cell given in metres (fixedCellLimit). Without it the cell was grown for the area to stay under MAX_CELLS. */
+  maxCells?: number;
   signal?: AbortSignal;
   progress?: (label: string, fraction: number, detail?: string) => Promise<void> | void;
   runner?: SurfaceRunner;
@@ -217,6 +220,32 @@ function save(key: string, data: ArrayBuffer): void {
   store?.put(key, data).catch(() => undefined);
 }
 
+/** Copies one block's layers into the grid's. */
+function placeBlock(layers: SurfaceLayers, grid: GridSpec, piece: BlockLayers): void {
+  const [r0, r1] = piece.rows;
+  const [c0, c1] = piece.columns;
+  const width = c1 - c0;
+  for (let r = r0; r < r1; r++) {
+    const from = (r - r0) * width;
+    const to = r * grid.nx + c0;
+    for (const name of FLOATS) layers[name].set(piece[name].subarray(from, from + width), to);
+    for (const name of COUNTS) layers[name].set(piece[name].subarray(from, from + width), to);
+  }
+}
+
+/** The grid's layers again from its block checkpoints (PreparedSurface.checkpoints), exactly as they were read. */
+export function unpackLayers(grid: GridSpec, checkpoints: ArrayBuffer[]): SurfaceLayers {
+  const all = blocks(grid);
+  if (checkpoints.length !== all.length) throw new Error('The saved LiDAR grid does not match its blocks');
+  const layers = emptyLayers(grid.nx, grid.ny);
+  for (let k = 0; k < all.length; k++) {
+    const checkpoint = decodeBlock(checkpoints[k]);
+    if (!checkpoint) throw new Error('A saved LiDAR block could not be read back');
+    placeBlock(layers, grid, checkpoint.layers);
+  }
+  return layers;
+}
+
 // ------------------------------------------------------------------ cells
 
 /** Cells of a block whose centre lies in `shape`, one byte each. */
@@ -263,7 +292,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
   };
   const frame = new Projection(area.center, area.rotationDeg, 1);
   const requested = input.cellM;
-  const problem = gridProblem(area.widthM, area.heightM, requested, input.fixed);
+  const problem = gridProblem(area.widthM, area.heightM, requested, input.maxCells);
   if (problem) throw new Error(problem);
   let grid = gridSpec(area.widthM, area.heightM, requested);
   const fetcher = new Fetcher(input.signal);
@@ -337,6 +366,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
   // ---------------------------------------------------------------- blocks
   const layers = emptyLayers(grid.nx, grid.ny);
   const all = blocks(grid);
+  const checkpoints: ArrayBuffer[] = new Array(all.length);
   const used = new Map<string, SurfaceSurvey>();
   const byUrl = new Map(order.map((r) => [r.candidate.url, r]));
   const note = (url: string, points: number) => {
@@ -354,7 +384,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
   const resolutionM = Math.max(0.1, grid.cell / 2);
   const identity = [VERSION, area.center, area.rotationDeg, area.widthM, area.heightM, grid.cell];
 
-  const readBlock = async (block: Block) => {
+  const readBlock = async (block: Block, index: number) => {
     const extent = blockExtent(grid, block, MARGIN * grid.dx);
     const blockBox = boxShape(...extent);
     const surveys = order.filter((r) => intersection(blockBox, r.coverage).length);
@@ -366,6 +396,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     let blockNoise = 0;
     let sources: [string, number][] = [];
     if (checkpoint) {
+      checkpoints[index] = saved!;
       piece = checkpoint.layers;
       blockPoints = checkpoint.points;
       blockNoise = checkpoint.noise;
@@ -420,29 +451,26 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
         note(survey.candidate.url, outcome.points);
         if (claimedCount >= COVERED * size) break;
       }
+      const packed = encodeBlock(piece, blockPoints, sources, blockNoise);
+      checkpoints[index] = packed;
       // A failed read is tried again next time rather than kept with a hole.
-      if (!failed) save(key, encodeBlock(piece, blockPoints, sources, blockNoise));
+      if (!failed) save(key, packed);
     }
     points += blockPoints;
     noise += blockNoise;
-    const [r0, r1] = block.rows;
-    const [c0, c1] = block.columns;
-    const width = c1 - c0;
-    for (let r = r0; r < r1; r++) {
-      const from = (r - r0) * width;
-      const to = r * grid.nx + c0;
-      for (const name of FLOATS) layers[name].set(piece[name].subarray(from, from + width), to);
-      for (const name of COUNTS) layers[name].set(piece[name].subarray(from, from + width), to);
-    }
+    placeBlock(layers, grid, piece);
     done++;
     await progress(`Reading LiDAR block ${Math.min(done + 1, all.length)} of ${all.length}`, 0.1 + (0.9 * done) / all.length, `${points.toLocaleString('en-US')} returns`);
   };
 
-  const queue = [...all];
+  let next = 0;
   const lane = async () => {
-    while (queue.length) await readBlock(queue.shift()!);
+    while (next < all.length) {
+      const index = next++;
+      await readBlock(all[index], index);
+    }
   };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(runner.concurrency, queue.length)) }, lane));
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(runner.concurrency, all.length)) }, lane));
 
   let covered = 0;
   for (let k = 0; k < layers.count.length; k++) if (layers.count[k]) covered++;
@@ -452,6 +480,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
   }
   return {
     layers,
+    checkpoints,
     grid,
     requestedCellM: requested,
     densityM2,

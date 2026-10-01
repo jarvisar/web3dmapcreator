@@ -296,9 +296,16 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   touching projection or rasterizing.
 - The cell is `Detail` over the scale, grown to stay under `MAX_CELLS`, or
   `lidarModel.cellM` with `cellMode` 'metres', which never grows for the
-  area (`requestedCell`). That grid is held to `MAX_FIXED_CELLS` instead:
-  16.5 million cells peaked at 2.1 GB composing and meshing in one thread.
-  Both grow for a sparse survey.
+  area (`requestedCell`). That grid is held to `fixedCellLimit` instead, from
+  `navigator.deviceMemory` (64 million cells at 32 GB peaked at 6.9 GB in
+  Edge), and `ui.largeGrids` lifts it. Both grow for a sparse survey.
+- Memory peaks in meshing. surfaceModel lets the survey layers go after
+  compose (`releaseLayers`) and the worker keeps the block checkpoints to
+  build them again (`unpackLayers`), so don't read `surface.layers` past
+  compose or hold them anywhere else. Sets and Maps stop at 2^24 entries in
+  Chrome and 2^23 in Node: nothing keyed by every edge or vertex of the
+  surface (`capBoundary` uses flat arrays), and no `Float32Array.from(grid,
+  fn)` on a grid, which lists every value first.
 - `compose.ts` is a port of the add-on's `dsm_model.compose` and matches it on
   its prepared Chicago, Philadelphia and Boston grids (float32 flips 1 to 3
   cells per grid on exact thresholds). Keep the rules and their order. The

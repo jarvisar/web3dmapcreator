@@ -15,7 +15,8 @@
 // --lidar-records path.json (write the measured records, for comparing runs),
 // --lidar-threads n (batches read and measured at once, 1 to stay in this thread),
 // --lidar-only (the whole model from a LiDAR survey, no map data), --detail mm (its
-// printed cell size), --cell m (its cell size on the ground instead), --cut-water
+// printed cell size), --cell m (its cell size on the ground instead), --max-cells n
+// (the most cells for --cell, by default what this machine's memory allows), --cut-water
 // (cut large water through the base, or away in a LiDAR only model),
 // --water-layer (a LiDAR only model's water as a thin layer),
 // --no-map-water (a LiDAR only model's water from the survey alone), --surface-out
@@ -26,8 +27,9 @@
 // flags override), --no-edits (leave the options file's edits out).
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { totalmem } from 'node:os';
 import { dirname, join } from 'node:path';
-import { requestedCell } from '../src/core/dsm/grid';
+import { fixedCellLimit, reportedMemoryGb, requestedCell } from '../src/core/dsm/grid';
 import { surfaceModel } from '../src/core/dsm/model';
 import { prepareSurface, setSurfaceStore } from '../src/core/dsm/prepare';
 import { fetchDem } from '../src/core/data/dem';
@@ -281,7 +283,8 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
           return data.features.water ?? [];
         })
       : Promise.resolve(undefined);
-    const surface = await prepareSurface({ area, cellM: cell, fixed: settings.lidarModel.cellMode === 'metres', progress: (label, _fraction, detail) => log(label, detail), runner: pool ?? undefined });
+    const maxCells = settings.lidarModel.cellMode !== 'metres' ? undefined : arg('max-cells') ? Number(arg('max-cells')) : fixedCellLimit(reportedMemoryGb(totalmem()));
+    const surface = await prepareSurface({ area, cellM: cell, maxCells, progress: (label, _fraction, detail) => log(label, detail), runner: pool ?? undefined });
     const mapWater = await water;
     const t1 = performance.now();
     const { grid } = surface;
@@ -300,7 +303,7 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
     }
     const progress = new Progress((e) => log(e.label));
     const spec = await withEdits(
-      await surfaceModel({ area, settings, surface, progress, runTile: pool ? (tile) => pool.tile(tile) : undefined, concurrency: pool?.concurrency ?? 1, mapWater }),
+      await surfaceModel({ area, settings, surface, progress, runTile: pool ? (tile) => pool.tile(tile) : undefined, concurrency: pool?.concurrency ?? 1, mapWater, releaseLayers: true }),
       settings,
       area,
     );

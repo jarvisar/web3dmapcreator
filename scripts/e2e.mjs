@@ -1,13 +1,15 @@
 // End-to-end check in the installed Edge: generate the default area, look at
 // it in 3D and download it in every format. Needs a running server
 // (npm run dev or npm run preview).
-//   node scripts/e2e.mjs <url> <out-folder> [--all-formats] [--lidar-only [--cut-water | --water-layer] [--cell m]]
+//   node scripts/e2e.mjs <url> <out-folder> [--all-formats] [--lidar-only [--cut-water | --water-layer] [--cell m]] [--again]
 //   node scripts/e2e.mjs <url> <out-folder> --svg [--all-formats]
 // With --lidar-only, give a small area in the URL's share-link hash
 // (#a=lon,lat,width,height,rotation,shape): a fresh browser downloads its
 // LiDAR in full. With --svg it makes an SVG map of the default area instead,
 // and --all-formats downloads it for the plotter and print as well. Exits
 // with 1 when a step fails, a download is empty or the page logs an error.
+// --again presses Generate again and downloads once more, which a LiDAR only
+// model builds from the survey the worker kept, for comparing the two files.
 import { chromium } from 'playwright-core';
 import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -18,6 +20,7 @@ const args = process.argv.slice(2).filter((a, i, all) => !a.startsWith('--') && 
 const allFormats = process.argv.includes('--all-formats');
 const lidarOnly = process.argv.includes('--lidar-only');
 const svg = process.argv.includes('--svg');
+const again = process.argv.includes('--again');
 const [url = 'http://localhost:5173/', folder = 'out/e2e'] = args;
 mkdirSync(folder, { recursive: true });
 const browser = await chromium.launch({
@@ -132,6 +135,17 @@ await page.screenshot({ path: join(folder, '3-details.png') });
 await page.getByRole('button', { name: 'Model details' }).click();
 
 await download('default');
+
+if (again) {
+  const before = Date.now();
+  await page.getByRole('button', { name: /generate again/i }).click();
+  await page.waitForTimeout(1000);
+  await page.waitForFunction(() => !document.querySelector('[role="progressbar"]'), null, { timeout: 900000, polling: 1000 });
+  await page.waitForTimeout(3000);
+  console.log(`generated again in ${((Date.now() - before) / 1000).toFixed(1)} s`);
+  await checkNoAlert('Generate again');
+  await download('again');
+}
 
 if (allFormats) {
   // Open the Export section and try each format, then multi-plate.

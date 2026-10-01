@@ -81,7 +81,7 @@ function Banner() {
   const running = useApp((state) => state.generation.status === 'running');
   const label = useApp((state) => state.generation.progress?.label ?? 'Starting');
   const percent = useApp((state) => Math.round((state.generation.progress?.fraction ?? 0) * 100));
-  const problem = useApp((state) => generationProblem(state.area, state.settings));
+  const problem = useApp((state) => generationProblem(state.area, state.settings, state.ui.largeGrids));
   const exporting = useApp((state) => state.exporting.status === 'running');
   const exportable = useApp((state) => state.generation.result?.exportable ?? true);
   if (running) {

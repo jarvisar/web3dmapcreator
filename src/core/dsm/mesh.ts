@@ -156,8 +156,13 @@ export function rtinBlock(heights: ArrayLike<number>, detail: ArrayLike<number> 
 /** The grid a surface must stay near, with each point's own allowance. */
 export interface GridBound {
   heights: ArrayLike<number>;
-  /** Largest distance square to the surface at each point, in mm. */
-  tolerance: ArrayLike<number>;
+  /**
+   * Each point's largest distance square to the surface, in mm, is
+   * `deviation` times its detail, rounded to a float32. That was a float32
+   * array of the whole grid, made again for every pass.
+   */
+  detail: ArrayLike<number>;
+  deviation: number;
   nx: number;
   ny: number;
   x0: number;
@@ -670,7 +675,7 @@ export class Collapser {
         if (wc < eps) continue;
         const k = j * g.nx + i;
         const surface = az + gx * (px - ax) + gy * (py - ay);
-        if (Math.abs(surface - g.heights[k]) * square > g.tolerance[k]) return false;
+        if (Math.abs(surface - g.heights[k]) * square > Math.fround(g.deviation * g.detail[k])) return false;
       }
     }
     return true;
@@ -886,11 +891,10 @@ export function simplifyTile(job: TileJob): TileResult {
     pinned[v] = seam ? 1 : 0;
     keys[v] = seam ? j * nx + i : -1;
   }
-  const tolerance = new Float32Array(job.detail.length);
-  for (let k = 0; k < tolerance.length; k++) tolerance[k] = limits.deviation * job.detail[k];
   const bound: GridBound = {
     heights: job.heights,
-    tolerance,
+    detail: job.detail,
+    deviation: limits.deviation,
     nx: pw,
     ny: ph,
     x0: coordinate(i0, nx, job.x0, job.x1, job.dx),
@@ -903,24 +907,27 @@ export function simplifyTile(job: TileJob): TileResult {
   return collapser.result();
 }
 
-export function tileJobs(grid: HeightGrid, limits: MeshLimits, tile = TILE): TileJob[] {
-  const jobs: TileJob[] = [];
-  const { nx, ny } = grid;
-  for (let j0 = 0; j0 < ny - 1; j0 += tile) {
-    for (let i0 = 0; i0 < nx - 1; i0 += tile) {
-      const pw = Math.min(nx - i0, tile + 1);
-      const ph = Math.min(ny - j0, tile + 1);
-      const heights = new Float32Array(pw * ph);
-      const detail = new Float32Array(pw * ph);
-      for (let lj = 0; lj < ph; lj++) {
-        const from = (j0 + lj) * nx + i0;
-        heights.set(grid.heights.subarray(from, from + pw), lj * pw);
-        detail.set(grid.detail.subarray(from, from + pw), lj * pw);
-      }
-      jobs.push({ i0, j0, pw, ph, heights, detail, nx, ny, x0: grid.x0, y0: grid.y0, x1: grid.x1, y1: grid.y1, dx: grid.dx, dy: grid.dy, limits });
-    }
+/** Where each tile starts, row by row. */
+export function tileOrigins(grid: HeightGrid, tile = TILE): [number, number][] {
+  const origins: [number, number][] = [];
+  for (let j0 = 0; j0 < grid.ny - 1; j0 += tile) {
+    for (let i0 = 0; i0 < grid.nx - 1; i0 += tile) origins.push([i0, j0]);
   }
-  return jobs;
+  return origins;
+}
+
+export function tileJob(grid: HeightGrid, limits: MeshLimits, [i0, j0]: [number, number], tile = TILE): TileJob {
+  const { nx, ny } = grid;
+  const pw = Math.min(nx - i0, tile + 1);
+  const ph = Math.min(ny - j0, tile + 1);
+  const heights = new Float32Array(pw * ph);
+  const detail = new Float32Array(pw * ph);
+  for (let lj = 0; lj < ph; lj++) {
+    const from = (j0 + lj) * nx + i0;
+    heights.set(grid.heights.subarray(from, from + pw), lj * pw);
+    detail.set(grid.detail.subarray(from, from + pw), lj * pw);
+  }
+  return { i0, j0, pw, ph, heights, detail, nx, ny, x0: grid.x0, y0: grid.y0, x1: grid.x1, y1: grid.y1, dx: grid.dx, dy: grid.dy, limits };
 }
 
 export interface MeshOptions {
@@ -936,20 +943,23 @@ export interface MeshOptions {
 /** The surface of a height grid as a TIN covering its rectangle exactly. */
 export async function meshSurface(grid: HeightGrid, limits: MeshLimits, options: MeshOptions = {}): Promise<Tin & { rtin?: number }> {
   if (grid.nx < 2 || grid.ny < 2) throw new Error('A height grid needs at least 2 x 2 points');
-  const jobs = tileJobs(grid, limits, options.tile ?? TILE);
+  const tile = options.tile ?? TILE;
+  const origins = tileOrigins(grid, tile);
   const run = options.runTile ?? (async (job: TileJob) => simplifyTile(job));
-  const results: TileResult[] = new Array(jobs.length);
+  const results: TileResult[] = new Array(origins.length);
   let next = 0;
   let done = 0;
+  // Each tile is copied out of the grid as it comes up. Copied all at once,
+  // the copies doubled the heights and detail for as long as meshing took.
   const lane = async () => {
-    while (next < jobs.length) {
+    while (next < origins.length) {
       const k = next++;
-      results[k] = await run(jobs[k]);
+      results[k] = await run(tileJob(grid, limits, origins[k], tile));
       done++;
-      await options.progress?.((0.85 * done) / jobs.length);
+      await options.progress?.((0.85 * done) / origins.length);
     }
   };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(options.concurrency ?? 1, jobs.length)) }, lane));
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(options.concurrency ?? 1, origins.length)) }, lane));
   if (results.length === 1) {
     const only = results[0];
     return { vertices: only.positions, triangles: only.triangles };
@@ -1004,9 +1014,7 @@ export async function meshSurface(grid: HeightGrid, limits: MeshLimits, options:
     side[id] = (x === grid.x0 ? WEST : 0) | (x === grid.x1 ? EAST : 0) | (y === grid.y0 ? SOUTH : 0) | (y === grid.y1 ? NORTH : 0);
     detail[id] = grid.detail[j * grid.nx + i];
   }
-  const tolerance = new Float32Array(grid.heights.length);
-  for (let k = 0; k < tolerance.length; k++) tolerance[k] = limits.deviation * grid.detail[k];
-  const bound: GridBound = { heights: grid.heights, tolerance, nx: grid.nx, ny: grid.ny, x0: grid.x0, y0: grid.y0, dx: grid.dx, dy: grid.dy };
+  const bound: GridBound = { heights: grid.heights, detail: grid.detail, deviation: limits.deviation, nx: grid.nx, ny: grid.ny, x0: grid.x0, y0: grid.y0, dx: grid.dx, dy: grid.dy };
   const collapser = new Collapser({ positions, triangles, side, pinned: new Uint8Array(count), detail, keys }, limits, bound, live);
   while (!collapser.run(20000)) await options.progress?.(0.9);
   await options.progress?.(1);
@@ -1296,9 +1304,7 @@ export function straightenWalls(tin: Tin, grid: HeightGrid, limits: MeshLimits, 
     if (!moved[v]) continue;
     for (const t of facesOf(v)) for (let k = 0; k < 3; k++) live[tri[3 * t + k]] = 1;
   }
-  const tolerance = new Float32Array(grid.heights.length);
-  for (let k = 0; k < tolerance.length; k++) tolerance[k] = limits.deviation * grid.detail[k];
-  const bound: GridBound = { heights: grid.heights, tolerance, nx: grid.nx, ny: grid.ny, x0: grid.x0, y0: grid.y0, dx: grid.dx, dy: grid.dy };
+  const bound: GridBound = { heights: grid.heights, detail: grid.detail, deviation: limits.deviation, nx: grid.nx, ny: grid.ny, x0: grid.x0, y0: grid.y0, dx: grid.dx, dy: grid.dy };
   const collapser = new Collapser({ positions: pos, triangles: Uint32Array.from(tri), side, pinned: new Uint8Array(nv), detail, keys: new Int32Array(nv).fill(-1) }, limits, bound, live);
   collapser.run();
   const out = collapser.result();

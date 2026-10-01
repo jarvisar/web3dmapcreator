@@ -15,6 +15,7 @@
 
 import { normalizeArea } from '../src/app/lib/area';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { totalmem } from 'node:os';
 import { join } from 'node:path';
 import { PRESET_GROUPS } from '../src/app/data/presets';
 import { encodeOptions } from '../src/app/state/options';
@@ -24,7 +25,7 @@ import { fetchDem } from '../src/core/data/dem';
 import { setByteCache } from '../src/core/data/http';
 import { fetchOverture } from '../src/core/data/overture';
 import { fetchRaceways, withRaceways } from '../src/core/data/raceways';
-import { requestedCell } from '../src/core/dsm/grid';
+import { fixedCellLimit, reportedMemoryGb, requestedCell } from '../src/core/dsm/grid';
 import { surfaceModel } from '../src/core/dsm/model';
 import { prepareSurface } from '../src/core/dsm/prepare';
 import { roadLines } from '../src/core/edit/lines';
@@ -91,8 +92,9 @@ async function build(area: ReturnType<typeof areaFromBounds>, settings: ModelSet
     try {
       const scale = effectiveScale(area, settings.scale);
       const cell = requestedCell(settings.lidarModel, scale, area.widthM, area.heightM);
-      const surface = await prepareSurface({ area, cellM: cell, fixed: settings.lidarModel.cellMode === 'metres', runner: pool });
-      return await surfaceModel({ area, settings, surface, progress, runTile: (tile) => pool.tile(tile), concurrency: pool.concurrency });
+      const maxCells = settings.lidarModel.cellMode === 'metres' ? fixedCellLimit(reportedMemoryGb(totalmem())) : undefined;
+      const surface = await prepareSurface({ area, cellM: cell, maxCells, runner: pool });
+      return await surfaceModel({ area, settings, surface, progress, runTile: (tile) => pool.tile(tile), concurrency: pool.concurrency, releaseLayers: true });
     } finally {
       pool.close();
     }

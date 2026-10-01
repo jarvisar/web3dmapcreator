@@ -44,6 +44,8 @@
 
 **A LiDAR only shoreline follows the scanned cells instead of a smooth line.** Overture's outline is only used where it runs within 3 m of the survey's shore, easing back to the survey's line by 6 m. Past that the survey decides, which keeps the bridges, piers and boats Overture's water runs under. On sea and lake beaches it goes further, up to 60 m, but only over bare ground within 1.5 m of the water's level, so a beach behind a seawall or a jetty keeps the survey's line. Check that `Water outlines from map data` is on, and see the warnings in case the map water couldn't be downloaded.
 
+**The browser ran out of memory building a LiDAR only model.** A grid in metres can go up to 64 million cells on a computer the browser reports 32 GB for, and that takes about 7 GB in the tab. Close other heavy tabs, or use larger cells or a smaller area. With `Allow larger grids` on, the tab can also just close if the computer runs out.
+
 **A LiDAR only model is slow the first time.** It reads the survey over the whole area, but only as finely as the cells need. That came to about 75 MB per km² for Philadelphia's 2015 survey, 125 for Paris and 450 for San Francisco's densest survey at 0.25 m cells. A 600 m circle in downtown Chicago read 101 MB and took 30 seconds on a desktop. What's read is kept in the browser (up to 1 GB), so changing anything that doesn't change the area or the cell size builds again in seconds.
 
 ## SVG maps

@@ -1,6 +1,6 @@
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { gridCells, gridProblem, MAX_FIXED_CELLS, requestedCell } from '../../core/dsm/grid';
+import { fixedCellLimit, gridCells, gridProblem, LARGEST_FIXED_CELLS, requestedCell } from '../../core/dsm/grid';
 import { effectiveScale } from '../../core/geo/area';
 import { modelFieldRange, type AreaSpec, type LidarCellMode, type LidarRoofMode, type LidarWaterMode, type ModelSettings, type SurfaceCategory, type TreeStyle, type WaterMode } from '../../core/settings';
 import type { ColourGroup } from '../../core/types';
@@ -10,7 +10,8 @@ import { HelpTip } from '../components/HelpTip';
 import { NumberField } from '../components/NumberField';
 import { Segmented } from '../components/Segmented';
 import { formatInteger, formatNumber, keepUnits, listJoin } from '../lib/format';
-import { patchSettings, resetSettingsSection, setModelSource, setSupports, toggleLayer, useApp } from '../state/store';
+import { deviceMemoryGb, lidarCellLimit } from '../state/derived';
+import { patchSettings, resetSettingsSection, setLargeGrids, setModelSource, setSupports, toggleLayer, useApp } from '../state/store';
 import type { LayerKey, SettingsSection } from '../state/store';
 import { Section } from './Section';
 
@@ -759,6 +760,11 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
   const scale = effectiveScale(area, settings.scale);
   const grown = lidar.cellMode === 'detail' && cell !== null && scale > 0 && cell > lidar.detailMm / scale + 0.006;
   const cells = cell !== null ? gridCells(area.widthM, area.heightM, cell) : 0;
+  const largeGrids = useApp((state) => state.ui.largeGrids);
+  const memory = deviceMemoryGb();
+  const reported = fixedCellLimit(memory);
+  const limit = lidarCellLimit(largeGrids);
+  const millions = (count: number) => `${formatNumber(count / 1e6, 1)} million`;
   return (
     <div className="lidar-model">
       <p className="layer-help">
@@ -770,7 +776,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
         label="Grid cells"
         value={lidar.cellMode}
         onChange={(cellMode) => patchSettings('lidarModel', { cellMode: cellMode as LidarCellMode })}
-        help="Printed detail keeps the cells one size on the print, so they get larger in metres as the scale gets smaller, and large areas get larger cells to stay under 8 million. Metres reads the survey at the cell size you give, whatever the area or scale, up to 16 million cells."
+        help={`Printed detail keeps the cells one size on the print, so they get larger in metres as the scale gets smaller, and large areas get larger cells to stay under 8 million. Metres reads the survey at the cell size you give, whatever the area or scale, up to ${millions(limit)} cells on this computer.`}
       >
         <option value="detail">Printed detail</option>
         <option value="metres">Metres on the ground</option>
@@ -787,7 +793,7 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
           help="Size of one grid cell on the ground. Smaller keeps finer detail but reads more of the survey, takes longer and needs more memory. 0.25 m is the finest, and only the densest surveys fill it. Cells still grow where the survey is too sparse."
           hint={
             cell !== null && scale > 0
-              ? `${formatNumber(cell * scale, 3)} mm printed · ${cells >= 1e6 ? `${formatNumber(cells / 1e6, 1)} million` : formatInteger(cells)} cells${gridProblem(area.widthM, area.heightM, cell, true) ? `, over the ${MAX_FIXED_CELLS / 1e6} million limit` : ''}`
+              ? `${formatNumber(cell * scale, 3)} mm printed · ${cells >= 1e6 ? millions(cells) : formatInteger(cells)} cells${gridProblem(area.widthM, area.heightM, cell, limit) ? `, over the ${millions(limit)} limit` : ''}`
               : undefined
           }
         />
@@ -802,6 +808,14 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
           unit="mm"
           help="Printed size of one grid cell. Smaller keeps finer detail but reads more of the survey and takes longer. Large areas get larger cells, and so do surveys too sparse to fill them."
           hint={cell !== null ? `${formatNumber(cell, 2)} m cells${grown ? ', larger for this area' : ''}` : undefined}
+        />
+      )}
+      {lidar.cellMode === 'metres' && reported < LARGEST_FIXED_CELLS && (
+        <CheckField
+          label="Allow larger grids"
+          checked={largeGrids}
+          onChange={setLargeGrids}
+          help={`${memory === null ? "This browser doesn't say how much memory the computer has" : `This browser reports about ${memory} GB of memory`}, so grids stop at ${millions(reported)} cells. Turn this on to allow up to ${millions(LARGEST_FIXED_CELLS)} on a computer with 32 GB or more. A grid that size takes about 7 GB in this tab, and the tab closes if the computer runs out. Only kept in this browser.`}
         />
       )}
       <SelectField
