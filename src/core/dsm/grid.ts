@@ -2,6 +2,8 @@
 // rectangle in its rotated frame (metres), each cell centred on a vertex, so
 // nothing is resampled between reading the survey and meshing it.
 
+import type { ModelSettings } from '../settings';
+
 /** Printed size of one cell by default: about 0.71 m at 0.07 mm per metre, twice a USGS QL1 survey's return spacing. */
 export const DEFAULT_DETAIL_MM = 0.05;
 export const MIN_CELL_M = 0.25;
@@ -9,8 +11,14 @@ export const MAX_CELL_M = 5;
 // Past this, composing and meshing take minutes and too much memory for a
 // browser tab, so large areas get larger cells instead.
 export const MAX_CELLS = 8_000_000;
+// A cell given in metres never grows for the area, so this is a hard limit.
+// San Francisco's 0.25 m grid doubled to 16.5 million cells peaked at 2.1 GB
+// composing and meshing in one thread, against 1.2 GB for 8.3 million.
+export const MAX_FIXED_CELLS = 16_000_000;
 /** Blocks read, checkpointed and resumed one at a time. */
 export const BLOCK_M = 256;
+
+type CellChoice = Pick<ModelSettings['lidarModel'], 'cellMode' | 'detailMm' | 'cellM'>;
 
 export interface GridSpec {
   /** The rectangle, centred on the area: vertex (i, j) at (x0 + i dx, y0 + j dy). */
@@ -32,10 +40,27 @@ export function cellSize(detailMm: number, mmPerMetre: number, widthM: number, h
   return Math.round(Math.min(cell, MAX_CELL_M) * 100) / 100;
 }
 
-/** Why an area is too large for a LiDAR only model at this cell size, or null. */
-export function gridProblem(widthM: number, heightM: number, cell: number): string | null {
+/** The cell asked for in metres: worked out from the printed detail, or the one given, whatever the area or scale. */
+export function requestedCell(choice: CellChoice, mmPerMetre: number, widthM: number, heightM: number): number {
+  if (choice.cellMode !== 'metres') return cellSize(choice.detailMm, mmPerMetre, widthM, heightM);
+  if (!(choice.cellM > 0)) throw new Error('The cell size must be more than zero');
+  return Math.round(Math.min(Math.max(choice.cellM, MIN_CELL_M), MAX_CELL_M) * 100) / 100;
+}
+
+export function gridCells(widthM: number, heightM: number, cell: number): number {
+  return (Math.round(widthM / cell) + 1) * (Math.round(heightM / cell) + 1);
+}
+
+/** Why an area is too large for a LiDAR only model at this cell size, or null. `fixed` is a cell given in metres. */
+export function gridProblem(widthM: number, heightM: number, cell: number, fixed = false): string | null {
+  const cells = gridCells(widthM, heightM, cell);
+  if (fixed) {
+    // A little over, so a 2 km square at 0.5 m (4001 x 4001 points) passes.
+    if (cells <= MAX_FIXED_CELLS * 1.01) return null;
+    const km2 = (MAX_FIXED_CELLS * cell * cell) / 1e6;
+    return `At ${cell} m cells this area is ${(cells / 1e6).toFixed(1)} million cells, and the limit is ${MAX_FIXED_CELLS / 1e6} million. Use larger cells, or an area under about ${km2 < 10 ? km2.toFixed(1) : Math.round(km2)} km².`;
+  }
   // Cells stop growing at MAX_CELL_M, so a big enough area still passes MAX_CELLS.
-  const cells = (Math.round(widthM / cell) + 1) * (Math.round(heightM / cell) + 1);
   if (cells <= MAX_CELLS * 1.05) return null;
   const side = Math.floor((Math.sqrt(MAX_CELLS) * MAX_CELL_M) / 1000);
   return `This area is too large for a LiDAR only model. Keep it under about ${side} km across.`;

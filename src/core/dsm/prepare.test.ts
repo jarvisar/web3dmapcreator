@@ -6,7 +6,7 @@ import { setLazDecoder } from '../lidar/read/laz';
 import { discover, type Candidate } from '../lidar/sources';
 import { NumpyRandom } from '../lidar/test-helpers';
 import type { AreaSpec } from '../settings';
-import { cellSize, gridProblem, MAX_CELLS } from './grid';
+import { cellSize, gridCells, gridProblem, MAX_CELLS, MAX_FIXED_CELLS, requestedCell } from './grid';
 import { prepareSurface, setSurfaceStore, type SurfaceJob, type SurfaceOutcome, type SurfaceRunner } from './prepare';
 import { BlockRaster, EMPTY_SHARE, occupiedCell, ProbeSink } from './raster';
 
@@ -208,6 +208,22 @@ describe('cellSize', () => {
   it('refuses an area past what the largest cells keep under the limit', () => {
     expect(gridProblem(6000, 6000, cellSize(0.05, 0.07, 6000, 6000))).toBeNull();
     expect(gridProblem(20000, 20000, cellSize(0.05, 0.07, 20000, 20000))).toMatch(/too large/);
+  });
+
+  it('takes a cell in metres as given, whatever the area or scale', () => {
+    const metres = { cellMode: 'metres' as const, detailMm: 0.05, cellM: 0.25 };
+    expect(requestedCell(metres, 0.07, 1000, 1000)).toBe(0.25);
+    expect(requestedCell(metres, 0.01, 6000, 6000)).toBe(0.25);
+    expect(requestedCell({ ...metres, cellM: 0.1 }, 1, 100, 100)).toBe(0.25);
+    expect(requestedCell({ ...metres, cellMode: 'detail' }, 0.07, 6000, 6000)).toBe(cellSize(0.05, 0.07, 6000, 6000));
+  });
+
+  it('allows a larger grid for a cell in metres, up to a hard limit', () => {
+    expect(gridProblem(1000, 1000, 0.25)).toMatch(/too large/);
+    expect(gridProblem(1000, 1000, 0.25, true)).toBeNull();
+    expect(gridProblem(2000, 2000, 0.25, true)).toMatch(/64\.0 million cells.*16 million.*1\.0 km²/);
+    expect(gridProblem(2000, 2000, 0.5, true)).toBeNull();
+    expect(gridCells(2000, 2000, 0.5)).toBeGreaterThan(MAX_FIXED_CELLS);
   });
 });
 

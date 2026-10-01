@@ -1,6 +1,6 @@
 // Values computed from the state: colour groups in use, bed fit, summaries.
 
-import { cellSize, gridProblem } from '../../core/dsm/grid';
+import { gridProblem, requestedCell } from '../../core/dsm/grid';
 import { areaModelRing, effectiveScale } from '../../core/geo/area';
 import { MAX_SECTIONS, sectionCount } from '../../core/export/sections';
 import { COLOUR_GROUPS, PALETTE_PRESETS, printerByKey } from '../../core/settings';
@@ -182,13 +182,18 @@ function lidarModelProblem(area: AreaSpec, settings: ModelSettings): string | nu
   if (settings.modelSource !== 'lidar') return null;
   const scale = effectiveScale(area, settings.scale);
   if (!(scale > 0)) return null;
-  return gridProblem(area.widthM, area.heightM, cellSize(settings.lidarModel.detailMm, scale, area.widthM, area.heightM));
+  const lidar = settings.lidarModel;
+  return gridProblem(area.widthM, area.heightM, requestedCell(lidar, scale, area.widthM, area.heightM), lidar.cellMode === 'metres');
 }
 
 function settingsProblem(settings: ModelSettings): string | null {
   if (settings.scale.mode === 'fixed' && !(settings.scale.mmPerMetre > 0)) return 'The scale must be more than zero.';
   if (settings.scale.mode === 'fit' && !(settings.scale.fitMm > 0)) return 'The printed size must be more than zero.';
-  if (settings.modelSource === 'lidar') return settings.lidarModel.detailMm > 0 ? null : 'The detail must be more than zero.';
+  if (settings.modelSource === 'lidar') {
+    const lidar = settings.lidarModel;
+    if (lidar.cellMode === 'metres') return lidar.cellM > 0 ? null : 'The cell size must be more than zero.';
+    return lidar.detailMm > 0 ? null : 'The detail must be more than zero.';
+  }
   if (settings.roads.enabled && settings.roads.minWidthMm > settings.roads.maxWidthMm) {
     return 'The minimum road width is larger than the maximum road width.';
   }

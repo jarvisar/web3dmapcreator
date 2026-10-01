@@ -24,7 +24,7 @@ import { fetchDem } from '../src/core/data/dem';
 import { setByteCache } from '../src/core/data/http';
 import { fetchOverture } from '../src/core/data/overture';
 import { fetchRaceways, withRaceways } from '../src/core/data/raceways';
-import { cellSize } from '../src/core/dsm/grid';
+import { requestedCell } from '../src/core/dsm/grid';
 import { surfaceModel } from '../src/core/dsm/model';
 import { prepareSurface } from '../src/core/dsm/prepare';
 import { roadLines } from '../src/core/edit/lines';
@@ -90,8 +90,8 @@ async function build(area: ReturnType<typeof areaFromBounds>, settings: ModelSet
     const pool = threadPool(surfacePoolSize(), cacheDir);
     try {
       const scale = effectiveScale(area, settings.scale);
-      const cell = cellSize(settings.lidarModel.detailMm, scale, area.widthM, area.heightM);
-      const surface = await prepareSurface({ area, cellM: cell, runner: pool });
+      const cell = requestedCell(settings.lidarModel, scale, area.widthM, area.heightM);
+      const surface = await prepareSurface({ area, cellM: cell, fixed: settings.lidarModel.cellMode === 'metres', runner: pool });
       return await surfaceModel({ area, settings, surface, progress, runTile: (tile) => pool.tile(tile), concurrency: pool.concurrency });
     } finally {
       pool.close();

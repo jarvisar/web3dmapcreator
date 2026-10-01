@@ -111,6 +111,8 @@ export interface SurfaceInput {
   area: AreaSpec;
   /** Cell size asked for, in metres. It grows where the survey is too sparse to fill it. */
   cellM: number;
+  /** The cell was given in metres rather than grown for the area, so the grid may be up to MAX_FIXED_CELLS. */
+  fixed?: boolean;
   signal?: AbortSignal;
   progress?: (label: string, fraction: number, detail?: string) => Promise<void> | void;
   runner?: SurfaceRunner;
@@ -261,7 +263,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
   };
   const frame = new Projection(area.center, area.rotationDeg, 1);
   const requested = input.cellM;
-  const problem = gridProblem(area.widthM, area.heightM, requested);
+  const problem = gridProblem(area.widthM, area.heightM, requested, input.fixed);
   if (problem) throw new Error(problem);
   let grid = gridSpec(area.widthM, area.heightM, requested);
   const fetcher = new Fetcher(input.signal);

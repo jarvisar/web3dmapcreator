@@ -1,8 +1,8 @@
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { cellSize } from '../../core/dsm/grid';
+import { gridCells, gridProblem, MAX_FIXED_CELLS, requestedCell } from '../../core/dsm/grid';
 import { effectiveScale } from '../../core/geo/area';
-import { modelFieldRange, type AreaSpec, type LidarRoofMode, type LidarWaterMode, type ModelSettings, type SurfaceCategory, type TreeStyle, type WaterMode } from '../../core/settings';
+import { modelFieldRange, type AreaSpec, type LidarCellMode, type LidarRoofMode, type LidarWaterMode, type ModelSettings, type SurfaceCategory, type TreeStyle, type WaterMode } from '../../core/settings';
 import type { ColourGroup } from '../../core/types';
 import { LayerDisclosure } from '../components/LayerDisclosure';
 import { CheckField, SelectField } from '../components/Fields';
@@ -744,10 +744,10 @@ function RimOptions({ rim }: { rim: ModelSettings['rim'] }) {
   );
 }
 
-/** The grid cell a LiDAR Only model reads, which grows past the detail for large areas. */
+/** The grid cell a LiDAR Only model reads. Worked out from the detail, it grows for large areas. */
 function lidarCell(area: AreaSpec, settings: ModelSettings): number | null {
   try {
-    return cellSize(settings.lidarModel.detailMm, effectiveScale(area, settings.scale), area.widthM, area.heightM);
+    return requestedCell(settings.lidarModel, effectiveScale(area, settings.scale), area.widthM, area.heightM);
   } catch {
     return null;
   }
@@ -757,25 +757,53 @@ function LidarModelOptions({ settings, area }: { settings: ModelSettings; area: 
   const lidar = settings.lidarModel;
   const cell = lidarCell(area, settings);
   const scale = effectiveScale(area, settings.scale);
-  const grown = cell !== null && scale > 0 && cell > lidar.detailMm / scale + 0.006;
+  const grown = lidar.cellMode === 'detail' && cell !== null && scale > 0 && cell > lidar.detailMm / scale + 0.006;
+  const cells = cell !== null ? gridCells(area.widthM, area.heightM, cell) : 0;
   return (
     <div className="lidar-model">
       <p className="layer-help">
         {keepUnits(
-          'Builds the whole model from a public LiDAR survey: the ground, buildings, trees and bridges as the survey saw them, in one piece and one colour, with the water in its own colour if you like. Covers the United States (USGS 3DEP), France (IGN), Canada (NRCan), Switzerland (swisstopo) and much of Europe (Open LiDAR Data). Expect 75 to 450 MB of downloads per km² depending on the survey and Detail, kept in the browser for next time, so start with a small area.',
+          'Builds the whole model from a public LiDAR survey: the ground, buildings, trees and bridges as the survey saw them, in one piece and one colour, with the water in its own colour if you like. Covers the United States (USGS 3DEP), France (IGN), Canada (NRCan), Switzerland (swisstopo) and much of Europe (Open LiDAR Data). Expect 75 to 450 MB of downloads per km² depending on the survey and the cell size, kept in the browser for next time, so start with a small area.',
         )}
       </p>
-      <NumberField
-        label="Detail"
-        value={lidar.detailMm}
-        onChange={(detailMm) => patchSettings('lidarModel', { detailMm })}
-        {...modelFieldRange('lidarModel', 'detailMm')}
-        step={0.01}
-        decimals={3}
-        unit="mm"
-        help="Printed size of one grid cell. Smaller keeps finer detail but reads more of the survey and takes longer. Large areas get larger cells, and so do surveys too sparse to fill them."
-        hint={cell !== null ? `${formatNumber(cell, 2)} m cells${grown ? ', larger for this area' : ''}` : undefined}
-      />
+      <SelectField
+        label="Grid cells"
+        value={lidar.cellMode}
+        onChange={(cellMode) => patchSettings('lidarModel', { cellMode: cellMode as LidarCellMode })}
+        help="Printed detail keeps the cells one size on the print, so they get larger in metres as the scale gets smaller, and large areas get larger cells to stay under 8 million. Metres reads the survey at the cell size you give, whatever the area or scale, up to 16 million cells."
+      >
+        <option value="detail">Printed detail</option>
+        <option value="metres">Metres on the ground</option>
+      </SelectField>
+      {lidar.cellMode === 'metres' ? (
+        <NumberField
+          label="Cell size"
+          value={lidar.cellM}
+          onChange={(cellM) => patchSettings('lidarModel', { cellM })}
+          {...modelFieldRange('lidarModel', 'cellM')}
+          step={0.05}
+          decimals={2}
+          unit="m"
+          help="Size of one grid cell on the ground. Smaller keeps finer detail but reads more of the survey, takes longer and needs more memory. 0.25 m is the finest, and only the densest surveys fill it. Cells still grow where the survey is too sparse."
+          hint={
+            cell !== null && scale > 0
+              ? `${formatNumber(cell * scale, 3)} mm printed · ${cells >= 1e6 ? `${formatNumber(cells / 1e6, 1)} million` : formatInteger(cells)} cells${gridProblem(area.widthM, area.heightM, cell, true) ? `, over the ${MAX_FIXED_CELLS / 1e6} million limit` : ''}`
+              : undefined
+          }
+        />
+      ) : (
+        <NumberField
+          label="Detail"
+          value={lidar.detailMm}
+          onChange={(detailMm) => patchSettings('lidarModel', { detailMm })}
+          {...modelFieldRange('lidarModel', 'detailMm')}
+          step={0.01}
+          decimals={3}
+          unit="mm"
+          help="Printed size of one grid cell. Smaller keeps finer detail but reads more of the survey and takes longer. Large areas get larger cells, and so do surveys too sparse to fill them."
+          hint={cell !== null ? `${formatNumber(cell, 2)} m cells${grown ? ', larger for this area' : ''}` : undefined}
+        />
+      )}
       <SelectField
         label="Trees"
         value={lidar.trees}

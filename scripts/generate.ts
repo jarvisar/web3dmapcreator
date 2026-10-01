@@ -15,8 +15,9 @@
 // --lidar-records path.json (write the measured records, for comparing runs),
 // --lidar-threads n (batches read and measured at once, 1 to stay in this thread),
 // --lidar-only (the whole model from a LiDAR survey, no map data), --detail mm (its
-// printed cell size), --cut-water (cut large water through the base, or away in a
-// LiDAR only model), --water-layer (a LiDAR only model's water as a thin layer),
+// printed cell size), --cell m (its cell size on the ground instead), --cut-water
+// (cut large water through the base, or away in a LiDAR only model),
+// --water-layer (a LiDAR only model's water as a thin layer),
 // --no-map-water (a LiDAR only model's water from the survey alone), --surface-out
 // dir (write its grid layers as raw binaries), --reread (read its blocks again
 // instead of from their checkpoints, after changing how blocks are read),
@@ -26,7 +27,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { cellSize } from '../src/core/dsm/grid';
+import { requestedCell } from '../src/core/dsm/grid';
 import { surfaceModel } from '../src/core/dsm/model';
 import { prepareSurface, setSurfaceStore } from '../src/core/dsm/prepare';
 import { fetchDem } from '../src/core/data/dem';
@@ -149,6 +150,10 @@ async function main() {
   if (flag('lidar')) settings.lidar.enabled = true;
   if (flag('lidar-only')) settings.modelSource = 'lidar';
   if (arg('detail')) settings.lidarModel.detailMm = Number(arg('detail'));
+  if (arg('cell')) {
+    settings.lidarModel.cellMode = 'metres';
+    settings.lidarModel.cellM = Number(arg('cell'));
+  }
   if (flag('cut-water')) {
     settings.water.mode = 'through';
     settings.lidarModel.waterMode = 'cut';
@@ -269,14 +274,14 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
   const threads = Number(arg('lidar-threads') ?? surfacePoolSize());
   const pool = threads > 1 ? threadPool(threads, cacheDir) : null;
   try {
-    const cell = cellSize(settings.lidarModel.detailMm, scale, area.widthM, area.heightM);
+    const cell = requestedCell(settings.lidarModel, scale, area.widthM, area.heightM);
     const water = settings.lidarModel.mapWater
       ? fetchOverture({ bounds: dataBoundsFor(area), types: ['water'], keep: dataPlan(settings, dataBoundsFor(area)).keep }).then((data) => {
           console.log(`map water: ${data.features.water?.length ?? 0} features, ${(data.bytes / 1e6).toFixed(1)} MB, release ${data.release}`);
           return data.features.water ?? [];
         })
       : Promise.resolve(undefined);
-    const surface = await prepareSurface({ area, cellM: cell, progress: (label, _fraction, detail) => log(label, detail), runner: pool ?? undefined });
+    const surface = await prepareSurface({ area, cellM: cell, fixed: settings.lidarModel.cellMode === 'metres', progress: (label, _fraction, detail) => log(label, detail), runner: pool ?? undefined });
     const mapWater = await water;
     const t1 = performance.now();
     const { grid } = surface;

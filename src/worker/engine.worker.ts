@@ -11,7 +11,7 @@ import { fetchDem, type DemMosaic } from '../core/data/dem';
 import type { OvertureData } from '../core/data/features';
 import { fetchOverture } from '../core/data/overture';
 import { fetchRaceways, withRaceways, type Raceways } from '../core/data/raceways';
-import { cellSize } from '../core/dsm/grid';
+import { requestedCell } from '../core/dsm/grid';
 import { surfaceModel } from '../core/dsm/model';
 import { prepareSurface, type PreparedSurface } from '../core/dsm/prepare';
 import { groundGrid } from '../core/edit/ground';
@@ -317,7 +317,7 @@ type Pool = ReturnType<typeof lidarPool>;
  */
 async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | null): Promise<PreparedSurface> {
   const { area, settings } = request;
-  const cell = cellSize(settings.lidarModel.detailMm, effectiveScale(area, settings.scale), area.widthM, area.heightM);
+  const cell = requestedCell(settings.lidarModel, effectiveScale(area, settings.scale), area.widthM, area.heightM);
   const key = JSON.stringify([area.center, area.rotationDeg, area.widthM, area.heightM, cell]);
   if (surface?.key === key) return { ...surface.prepared, downloadedBytes: 0, reusedBlocks: surface.prepared.blocks };
   // Let the last grid go before the next one comes in.
@@ -327,6 +327,7 @@ async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | 
   const result = await prepareSurface({
     area,
     cellM: cell,
+    fixed: settings.lidarModel.cellMode === 'metres',
     signal: job.abort.signal,
     progress: (label, fraction, detail) => progress.checkpoint(fraction, detail, label),
     runner: pool ?? undefined,

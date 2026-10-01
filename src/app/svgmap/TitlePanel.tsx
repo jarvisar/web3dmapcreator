@@ -10,7 +10,7 @@ import { Segmented } from '../components/Segmented';
 import { Section } from '../panels/Section';
 import { setCustomFont, setLabel, setSvgStyle, useApp } from '../state/store';
 import { checkFont, storeFont } from './customFont';
-import { RESET_OFFSET, labelMoved } from './labelDrag';
+import { AUTOFIT_HELP, RESET_OFFSET, boxResized, labelMoved } from './labelDrag';
 
 const POSITIONS: { value: LabelPosition; label: string }[] = [
   { value: 'lower_right', label: 'Bottom right' },
@@ -149,7 +149,7 @@ export function TitlePanel() {
               label="Position"
               value={label.position}
               onChange={(position) => set({ position: position as LabelPosition, offsetX: 0, offsetY: 0 })}
-              help="Where the box starts. You can also drag the title on the map or in the preview."
+              help="Where the box starts. You can also click the title on the map or in the preview to drag it somewhere else or resize it."
             >
               {POSITIONS.map((p) => (
                 <option key={p.value} value={p.value}>
@@ -158,11 +158,21 @@ export function TitlePanel() {
               ))}
             </SelectField>
           )}
-          {labelMoved(label) && (
-            <button type="button" className="btn btn-sm align-start" onClick={() => set(RESET_OFFSET)}>
-              <RotateCcw size={14} aria-hidden="true" />
-              Reset the position
-            </button>
+          {(labelMoved(label) || boxResized(label)) && (
+            <div className="action-grid">
+              {labelMoved(label) && (
+                <button type="button" className="btn btn-sm" onClick={() => set(RESET_OFFSET)}>
+                  <RotateCcw size={14} aria-hidden="true" />
+                  Reset the position
+                </button>
+              )}
+              {boxResized(label) && (
+                <button type="button" className="btn btn-sm" onClick={() => set({ boxWidth: 0, boxHeight: 0 })}>
+                  <RotateCcw size={14} aria-hidden="true" />
+                  Fit the box to the text
+                </button>
+              )}
+            </div>
           )}
           <SelectField label="Font" value={label.font} onChange={(id) => chooseFont('font', id)} stacked help="Single-line fonts draw each letter as one stroke, the way a pen writes. You can also load a TTF, OTF or WOFF file.">
             <FontOptions customName={customFontName} />
@@ -184,6 +194,7 @@ export function TitlePanel() {
             }}
           />
           <SliderField label="Size" value={label.size} onChange={(size) => set({ size })} {...fieldRange('label.size')} step={5} format={percent} />
+          <CheckField label="Autofit text" checked={label.autofit} onChange={(autofit) => set({ autofit })} help={AUTOFIT_HELP[label.style]} />
           <SelectField label="Lettering" value={lettering} onChange={(m) => setSvgStyle({ fillModes: { ...fillModes, text: m as FillMode } })}>
             {modes.map((m) => (
               <option key={m} value={m}>

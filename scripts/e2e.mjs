@@ -1,7 +1,7 @@
 // End-to-end check in the installed Edge: generate the default area, look at
 // it in 3D and download it in every format. Needs a running server
 // (npm run dev or npm run preview).
-//   node scripts/e2e.mjs <url> <out-folder> [--all-formats] [--lidar-only [--cut-water | --water-layer]]
+//   node scripts/e2e.mjs <url> <out-folder> [--all-formats] [--lidar-only [--cut-water | --water-layer] [--cell m]]
 //   node scripts/e2e.mjs <url> <out-folder> --svg [--all-formats]
 // With --lidar-only, give a small area in the URL's share-link hash
 // (#a=lon,lat,width,height,rotation,shape): a fresh browser downloads its
@@ -12,7 +12,9 @@ import { chromium } from 'playwright-core';
 import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const cellIndex = process.argv.indexOf('--cell');
+const cellM = cellIndex > 0 ? process.argv[cellIndex + 1] : null;
+const args = process.argv.slice(2).filter((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--cell');
 const allFormats = process.argv.includes('--all-formats');
 const lidarOnly = process.argv.includes('--lidar-only');
 const svg = process.argv.includes('--svg');
@@ -101,6 +103,12 @@ if (lidarOnly) {
   await page.getByRole('radio', { name: 'LiDAR only' }).click();
   const water = process.argv.includes('--cut-water') ? 'Cut away' : process.argv.includes('--water-layer') ? 'Thin layer' : null;
   if (water) await page.getByRole('combobox', { name: /^water$/i }).selectOption({ label: water });
+  if (cellM) {
+    await page.getByRole('combobox', { name: /^grid cells$/i }).selectOption({ label: 'Metres on the ground' });
+    const input = page.getByRole('textbox', { name: /^cell size$/i });
+    await input.fill(cellM);
+    await input.press('Enter');
+  }
   await page.waitForTimeout(300);
   await page.screenshot({ path: join(folder, '1-lidar-only.png') });
 }

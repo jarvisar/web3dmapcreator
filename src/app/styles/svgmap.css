@@ -87,6 +87,28 @@
   vector-effect: non-scaling-stroke;
 }
 
+.piece-title-selected {
+  fill: none;
+  stroke: var(--map-accent);
+  stroke-width: 2;
+}
+
+/* Smaller than the area's handles, since eight of them sit on a title */
+.area-handle.title-handle {
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+}
+
+.area-handle.title-handle .area-handle-dot {
+  width: 10px;
+  height: 10px;
+}
+
+.area-handle.title-handle[hidden] {
+  display: none;
+}
+
 .piece-title-fill {
   fill: rgb(0 0 0 / 0.75);
 }
@@ -132,16 +154,23 @@
   cursor: grabbing;
 }
 
-.svg-stage.is-over-title,
-.svg-stage.is-moving-title {
-  cursor: move;
-}
-
-.title-grab {
+.title-grab,
+.title-frame {
   fill: none;
   stroke: var(--accent);
   stroke-width: 1.5;
   stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.title-frame {
+  stroke-dasharray: none;
+}
+
+.title-handle {
+  fill: #fff;
+  stroke: var(--accent);
+  stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
 

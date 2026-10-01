@@ -294,6 +294,11 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   on each vertex. Nothing is resampled between reading and meshing. A square
   area turned 90 degrees reads identical cells, which is a good check after
   touching projection or rasterizing.
+- The cell is `Detail` over the scale, grown to stay under `MAX_CELLS`, or
+  `lidarModel.cellM` with `cellMode` 'metres', which never grows for the
+  area (`requestedCell`). That grid is held to `MAX_FIXED_CELLS` instead:
+  16.5 million cells peaked at 2.1 GB composing and meshing in one thread.
+  Both grow for a sparse survey.
 - `compose.ts` is a port of the add-on's `dsm_model.compose` and matches it on
   its prepared Chicago, Philadelphia and Boston grids (float32 flips 1 to 3
   cells per grid on exact thresholds). Keep the rules and their order. The
@@ -613,7 +618,11 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
   that spot (`offsetX/Y`, `bandOffsetX/Y`), and the layout returns the
   offset it ended up at once clamped, which is what a drop stores. Drags
   lay the title out on the main thread (`layoutWith` from
-  `useLabelArtwork`) and only write the store when let go.
+  `useLabelArtwork`) and only write the store when let go. Resize handles
+  (`labelDrag.ts`) set `size`, `boxWidth`/`boxHeight` (along the text, at
+  100%) or `bandHeight`, then move the result so the opposite side stays
+  put. Across a side handle the offset is left alone, or a box flush with
+  the bottom came away from it as its height followed the shrinking text.
 
 ## Verification
 

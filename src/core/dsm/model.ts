@@ -375,7 +375,7 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
   if (surface.coverage < 0.5) warnings.push('Much of the area has no LiDAR returns. It may be water, or outside the survey.');
   if (grid.cell > surface.requestedCellM + 1e-9) {
     warnings.push(
-      `The survey is too sparse for ${surface.requestedCellM.toFixed(2)} m cells, so the model uses ${grid.cell.toFixed(2)} m cells. A smaller Detail value won't add points the survey doesn't have.`,
+      `The survey is too sparse for ${surface.requestedCellM.toFixed(2)} m cells, so the model uses ${grid.cell.toFixed(2)} m cells. Smaller cells won't add points the survey doesn't have.`,
     );
   }
   for (const failure of surface.failures.slice(0, 3)) warnings.push(`LiDAR from ${failure.source} could not be read: ${failure.reason}`);

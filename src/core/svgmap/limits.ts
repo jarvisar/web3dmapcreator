@@ -90,6 +90,9 @@ export const LIMITS: Record<string, Limit> = {
   'label.offsetY': { min: -1, max: 1 },
   'label.bandOffsetX': { min: -1, max: 1 },
   'label.bandOffsetY': { min: -1, max: 1 },
+  // 0 sizes the box to the text.
+  'label.boxWidth': { min: 0, max: 2000 },
+  'label.boxHeight': { min: 0, max: 2000 },
 };
 
 function limitKey(path: readonly string[]): string[] {

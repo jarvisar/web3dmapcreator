@@ -60,8 +60,12 @@ describe('title layout', () => {
     expect(turned.knockout[3]).toBeCloseTo(upright.knockout[2], 9);
   });
 
-  it('refuses a title too big for the piece', () => {
-    expect(() => layoutBoxLabel(plaque, { ...DEFAULT_LABEL, size: 1000 }, textGeometry(montserrat, 'CHICAGO'))).toThrow(LabelError);
+  it('shrinks a title too big for the piece until it fits', () => {
+    const artwork = layoutBoxLabel(plaque, { ...DEFAULT_LABEL, size: 1000 }, textGeometry(montserrat, 'CHICAGO'));
+    const limit = insetShape(plaque.labelAnchor, DEFAULT_LABEL.gap);
+    expect(artwork.scale).toBeLessThan(1);
+    expect(artwork.knockout[2]).toBeCloseTo(limit.w, 3);
+    expect(() => layoutBoxLabel(plaque, { ...DEFAULT_LABEL, gap: 60 }, textGeometry(montserrat, 'CHICAGO'))).toThrow(LabelError);
   });
 
   it('fits a title band with a subtitle at the bottom', () => {
@@ -74,9 +78,70 @@ describe('title layout', () => {
   });
 
   it('reports a problem instead of throwing', () => {
-    const { artwork, error } = buildLabel(plaque, { ...DEFAULT_LABEL, size: 1000 }, montserrat, montserrat);
+    const { artwork, error } = buildLabel(plaque, { ...DEFAULT_LABEL, gap: 60 }, montserrat, montserrat);
     expect(artwork).toBeNull();
     expect(error).toMatch(/does not fit/);
+  });
+});
+
+describe('resized titles', () => {
+  const text = () => textGeometry(montserrat, 'CHICAGO');
+  const textSize = (artwork: { text: Parameters<typeof geometryBounds>[0] }) => {
+    const b = geometryBounds(artwork.text)!;
+    return [b[2] - b[0], b[3] - b[1]];
+  };
+  const auto = layoutBoxLabel(plaque, DEFAULT_LABEL, text());
+
+  it('takes a set width and fits the height to the text', () => {
+    const wide = layoutBoxLabel(plaque, { ...DEFAULT_LABEL, boxWidth: 80 }, text());
+    expect(wide.knockout[2]).toBeCloseTo(80, 9);
+    expect(wide.knockout[3]).toBeCloseTo(auto.knockout[3], 9);
+    expect(textSize(wide)[0]).toBeCloseTo(textSize(auto)[0], 9);
+  });
+
+  it('shrinks the text to a box too small for it', () => {
+    const narrow = layoutBoxLabel(plaque, { ...DEFAULT_LABEL, boxWidth: 30 }, text());
+    expect(narrow.knockout[2]).toBeCloseTo(30, 9);
+    expect(textSize(narrow)[0]).toBeLessThan(30 - 2 * DEFAULT_LABEL.paddingX);
+    // The height follows the smaller text.
+    expect(narrow.knockout[3]).toBeLessThan(auto.knockout[3]);
+  });
+
+  it('fills a box with autofit', () => {
+    const s = { ...DEFAULT_LABEL, boxWidth: 120, boxHeight: 30, autofit: true };
+    const filled = layoutBoxLabel(plaque, s, text());
+    expect(filled.knockout[2]).toBeCloseTo(120, 9);
+    expect(filled.knockout[3]).toBeCloseTo(30, 9);
+    const [w, h] = textSize(filled);
+    // One side of the text meets the padding, less the text's share of the box.
+    const roomW = (120 - 2 * (DEFAULT_LABEL.paddingX + DEFAULT_LABEL.borderWidth)) * DEFAULT_LABEL.textScale;
+    const roomH = (30 - 2 * (DEFAULT_LABEL.paddingY + DEFAULT_LABEL.borderWidth)) * DEFAULT_LABEL.textScale;
+    expect(Math.max(w / roomW, h / roomH)).toBeCloseTo(1, 6);
+    expect(w).toBeGreaterThan(textSize(auto)[0]);
+  });
+
+  it('scales a set box with the size', () => {
+    const half = layoutBoxLabel(plaque, { ...DEFAULT_LABEL, boxWidth: 80, size: 50 }, text());
+    expect(half.knockout[2]).toBeCloseTo(40, 9);
+  });
+
+  it('turns a set box with the text', () => {
+    const turned = layoutBoxLabel(plaque, { ...DEFAULT_LABEL, boxWidth: 80, rotation: 90 }, text());
+    expect(turned.knockout[3]).toBeCloseTo(80, 9);
+  });
+
+  it('refuses a box too small for its padding', () => {
+    expect(() => layoutBoxLabel(plaque, { ...DEFAULT_LABEL, boxWidth: 3 }, text())).toThrow(LabelError);
+  });
+
+  it('grows band text to fill the band with autofit', () => {
+    const s = { ...DEFAULT_LABEL, style: 'band' as const, bandHeight: 30 };
+    const set = buildLabel(plaque, s, montserrat, montserrat).artwork!;
+    const filled = buildLabel(plaque, { ...s, autofit: true }, montserrat, montserrat).artwork!;
+    expect(set.scale).toBe(1);
+    expect(filled.scale).toBeGreaterThan(1);
+    expect(textSize(filled)[1]).toBeGreaterThan(textSize(set)[1] * 1.5);
+    for (const ring of filled.text.rings) for (const p of ring) expect(inside(filled.knockout, p)).toBe(true);
   });
 });
 

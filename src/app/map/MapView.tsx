@@ -13,7 +13,7 @@ import { formatInteger, formatMmPair, formatSizePair } from '../lib/format';
 import { dismissMapHint, setArea, setBasemap, setLabel, useApp } from '../state/store';
 import type { AppState, BasemapKey } from '../state/store';
 import { useLabelArtwork } from '../svgmap/labelArtwork';
-import { draggedLabel, offsetPatch } from '../svgmap/labelDrag';
+import { type TitleDrag, type TitleGrip, dragTitle, droppedLabel, titleHandles } from '../svgmap/labelDrag';
 import { pieceOverlay } from '../svgmap/overlay';
 import { pieceLayout } from '../svgmap/piece';
 import { AreaEditor, type TitleDragPhase } from './AreaEditor';
@@ -102,28 +102,35 @@ export function MapView({ active }: { active: boolean }) {
   const customFontId = useApp((state) => state.customFontId);
   const layout = useMemo(() => (svg ? pieceLayout(piece, shape, border).layout : null), [svg, piece, shape, border]);
   // The title while it's dragged on the map. It's only stored when let go.
+  // Pressing it selects it, which shows its handles.
   const [dragged, setDragged] = useState<LabelSettings | null>(null);
-  const { artwork, error: labelError, layoutWith } = useLabelArtwork(svg, layout, dragged ?? label, customFontId);
+  const [titleSelected, setTitleSelected] = useState(false);
+  const shownLabel = dragged ?? label;
+  const { artwork, error: labelError, layoutWith } = useLabelArtwork(svg, layout, shownLabel, customFontId);
   const latest = useRef({ layout, label, artwork, layoutWith });
   latest.current = { layout, label, artwork, layoutWith };
-  const grab = useRef<{ from: [number, number]; to: LabelSettings | null } | null>(null);
+  const grab = useRef<{ drag: TitleDrag; to: LabelSettings | null } | null>(null);
+  useEffect(() => {
+    if (!artwork) setTitleSelected(false);
+  }, [artwork]);
 
-  const onTitleDrag = (phase: TitleDragPhase, dx: number, dy: number) => {
+  const onTitleDrag = (phase: TitleDragPhase, dx: number, dy: number, grip: TitleGrip = 'move') => {
     const { layout: at, label: stored, artwork: shown, layoutWith: relayout } = latest.current;
     if (phase === 'start') {
-      grab.current = shown ? { from: shown.offset, to: null } : null;
+      grab.current = shown ? { drag: { grip, label: stored, artwork: shown }, to: null } : null;
+      setTitleSelected(true);
       return;
     }
     const g = grab.current;
     if (phase === 'move') {
-      if (!at || !g) return;
-      g.to = draggedLabel(at, stored, g.from, dx, dy);
+      if (!at || !g || !relayout) return;
+      g.to = dragTitle(at, g.drag, dx, dy, relayout);
       setDragged(g.to);
       return;
     }
     grab.current = null;
     const placed = phase === 'end' && g?.to && relayout ? relayout(g.to) : null;
-    if (placed) setLabel(offsetPatch(stored, placed));
+    if (g?.to && placed) setLabel(droppedLabel(g.to, placed));
     setDragged(null);
   };
   const titleDrag = useRef(onTitleDrag);
@@ -164,7 +171,8 @@ export function MapView({ active }: { active: boolean }) {
       onDragStart: () => {
         if (!useApp.getState().ui.mapHintDismissed) dismissMapHint();
       },
-      onTitleDrag: (phase, dx, dy) => titleDrag.current(phase, dx, dy),
+      onTitleDrag: (phase, dx, dy, grip) => titleDrag.current(phase, dx, dy, grip),
+      onTitleBlur: () => setTitleSelected(false),
     });
     editorRef.current = editor;
     editor.setLabel(areaLabel(initial));
@@ -199,8 +207,9 @@ export function MapView({ active }: { active: boolean }) {
     if (!editor) return;
     editor.setAspect(layout ? layout.window.h / layout.window.w : null);
     editor.setResizable(!(svg && locked));
-    editor.setPiece(layout ? pieceOverlay(layout, artwork) : null);
-  }, [svg, layout, artwork, locked]);
+    const handles = titleSelected && artwork ? titleHandles(shownLabel, artwork) : [];
+    editor.setPiece(layout ? pieceOverlay(layout, artwork, handles, titleSelected) : null);
+  }, [svg, layout, artwork, locked, titleSelected, shownLabel]);
 
   // The first style is set when the map is created. Later changes swap it.
   const firstStyle = useRef(true);

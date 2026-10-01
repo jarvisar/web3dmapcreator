@@ -19,6 +19,9 @@ export interface LabelSettings {
   subtitleFont: string;
   // Percent. Scales the lettering, and for the box also the padding and outline.
   size: number;
+  // Grow or shrink the text to fill a resized box, or the band. Off, text
+  // keeps its size and only shrinks when there isn't room for it.
+  autofit: boolean;
   // Box
   position: LabelPosition;
   rotation: 0 | 90 | 180 | 270;
@@ -34,6 +37,10 @@ export interface LabelSettings {
   // inside the border. 0 leaves it where the position puts it.
   offsetX: number;
   offsetY: number;
+  // A box resized on screen, along the text and at 100% size. 0 sizes that
+  // side to the text.
+  boxWidth: number;
+  boxHeight: number;
   // Band
   bandPosition: 'bottom' | 'top';
   bandHeight: number;
@@ -62,6 +69,7 @@ export const DEFAULT_LABEL: LabelSettings = {
   font: 'montserrat',
   subtitleFont: '',
   size: 100,
+  autofit: false,
   position: 'lower_right',
   rotation: 0,
   textHeight: 7.776,
@@ -74,6 +82,8 @@ export const DEFAULT_LABEL: LabelSettings = {
   gap: 1.0,
   offsetX: 0,
   offsetY: 0,
+  boxWidth: 0,
+  boxHeight: 0,
   bandPosition: 'bottom',
   bandHeight: 20,
   bandAlign: 'center',
@@ -102,6 +112,9 @@ export interface LabelArtwork {
   // The offset it ended up at once kept inside the border. A drag stores
   // this, so what's saved is what's drawn.
   offset: [number, number];
+  // How far it was scaled from its set size to fit: the whole box when it
+  // was too big for the piece, the text in a band. 1 when it fit as set.
+  scale: number;
 }
 
 export class LabelError extends Error {}
@@ -129,23 +142,47 @@ export function layoutBoxLabel(layout: Layout, s: LabelSettings, text: TextGeome
   const maxWidth = s.maxWidth * k;
   const padX = s.paddingX * k;
   const padY = s.paddingY * k;
-  const border = s.boxBorder ? s.borderWidth * k : 0;
+  let border = s.boxBorder ? s.borderWidth * k : 0;
 
-  const boxScale = Math.min(textHeight / rawH, maxWidth / rawW);
-  const textScale = boxScale * s.textScale;
-  const textW = rawW * textScale;
-  const textH = rawH * textScale;
-  let boxW = rawW * boxScale + 2 * (padX + border);
-  let boxH = rawH * boxScale + 2 * (padY + border);
+  // boxScale is the room for the text inside the padding, and the text takes
+  // textScale of it. A resized side is set, and the text shrinks to fit it,
+  // or with autofit grows to fill it. A side that wasn't resized follows the
+  // text.
+  const setW = s.boxWidth > 0 ? s.boxWidth * k : 0;
+  const setH = s.boxHeight > 0 ? s.boxHeight * k : 0;
+  const room = Math.min(setW ? (setW - 2 * (padX + border)) / rawW : Infinity, setH ? (setH - 2 * (padY + border)) / rawH : Infinity);
+  if (!(room > 0)) throw new LabelError('The title box is too small for its padding. Make it bigger or reduce the padding.');
+  const natural = Math.min(textHeight / rawH, maxWidth / rawW);
+  let boxScale = s.autofit && Number.isFinite(room) ? room : Math.min(natural, room);
+  let boxW = setW || rawW * boxScale + 2 * (padX + border);
+  let boxH = setH || rawH * boxScale + 2 * (padY + border);
   const rotation = ((s.rotation % 360) + 360) % 360;
   if (rotation === 90 || rotation === 270) [boxW, boxH] = [boxH, boxW];
 
   const anchor = layout.labelAnchor;
   const limit = insetShape(anchor, s.gap);
-  const centres = boxCentres(limit, boxW, boxH);
+  let centres = boxCentres(limit, boxW, boxH);
+  // Too big for the piece: shrink the whole box, padding and all, until it fits.
+  let scale = 1;
   if (centres.length === 0) {
-    throw new LabelError('The title does not fit inside the border. Make it smaller or shorten the text.');
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 30; i++) {
+      const m = (lo + hi) / 2;
+      if (boxCentres(limit, boxW * m, boxH * m).length > 0) lo = m;
+      else hi = m;
+    }
+    if (lo < 0.02) throw new LabelError('The title does not fit inside the border. Make the border smaller or the piece bigger.');
+    scale = lo;
+    boxW *= scale;
+    boxH *= scale;
+    boxScale *= scale;
+    border *= scale;
+    centres = boxCentres(limit, boxW, boxH);
   }
+  const textScale = boxScale * s.textScale;
+  const textW = rawW * textScale;
+  const textH = rawH * textScale;
   const left0 = limit.x + boxW / 2;
   const top0 = limit.y + boxH / 2;
   const right0 = limit.x + limit.w - boxW / 2;
@@ -220,7 +257,7 @@ export function layoutBoxLabel(layout: Layout, s: LabelSettings, text: TextGeome
         ],
       ]
     : [];
-  return { knockout: [left, top, boxW, boxH], text: lettering, frame, frameWidth: border, offset };
+  return { knockout: [left, top, boxW, boxH], text: lettering, frame, frameWidth: border, offset, scale };
 }
 
 // Rows the band fit tries. A 20 mm band gets them 0.1 mm apart.
@@ -316,7 +353,8 @@ export function layoutBandLabel(
   // The largest text, up to the set heights, that fits somewhere in the band.
   // On a round piece that's by the band's straight edge.
   const widest = Math.min(window.w, anchor.w) - 2 * padX;
-  let fit = Math.min(1, (availableH - gap) / naturalH, (widest * s.bandMaxWidth) / 100 / blockWidth(1));
+  // Autofit lets it grow past them to fill the band.
+  let fit = Math.min(s.autofit ? Infinity : 1, (availableH - gap) / naturalH, (widest * s.bandMaxWidth) / 100 / blockWidth(1));
   if (!(fit > 0)) throw new LabelError('The title band is too narrow here for any text.');
   if (!tops(fit)) {
     let lo = 0;
@@ -391,6 +429,7 @@ export function layoutBandLabel(
     frame,
     frameWidth: s.dividerWidth,
     offset: [(x - baseX) / anchor.w, (y - baseY) / height],
+    scale: fit,
   };
 }
 

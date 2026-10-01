@@ -14,11 +14,14 @@ import { Projection } from '../../core/geo/projection';
 import type { AreaSpec } from '../../core/settings';
 import type { LonLat } from '../../core/types';
 import { LATITUDE_LIMIT, constrainSize, normalizeRotation, snapRotation, wrapLongitude } from '../lib/area';
+import { type TitleGrip, type TitleHandle, resizeCursor, spacedHandles } from '../svgmap/labelDrag';
 import type { PieceOverlay } from '../svgmap/overlay';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const ROTATE_OFFSET = 30;
 const LABEL_GAP = 12;
+// Pixels between a title's handles on screen, a little under their hit area.
+const TITLE_HANDLE_GAP = 22;
 const EDGE = 8;
 
 type DragKind = 'move' | 'resize' | 'rotate' | 'title';
@@ -41,15 +44,21 @@ interface Drag {
   grab?: LonLat;
   grabAngle?: number;
   handle?: HTMLElement;
-  // Where a title drag started, in map pixels.
+  // Where a title drag started, in map pixels, and what of the title it holds.
   from?: [number, number];
+  grip?: TitleGrip;
 }
 
 export interface AreaEditorOptions {
   onChange: (area: AreaSpec) => void;
   onDragStart?: () => void;
-  /** The SVG map's title dragged by (dx, dy) piece millimetres since it was grabbed. */
-  onTitleDrag?: (phase: TitleDragPhase, dx: number, dy: number) => void;
+  /**
+   * The SVG map's title, or one of its handles, dragged by (dx, dy) piece
+   * millimetres since it was grabbed. grip comes with 'start'.
+   */
+  onTitleDrag?: (phase: TitleDragPhase, dx: number, dy: number, grip?: TitleGrip) => void;
+  /** A press on the map away from the title, which lets go of it. */
+  onTitleBlur?: () => void;
 }
 
 function svg<K extends keyof SVGElementTagNameMap>(tag: K, className: string): SVGElementTagNameMap[K] {
@@ -87,6 +96,8 @@ export class AreaEditor {
   private piece: PieceOverlay | null = null;
   // Piece millimetres to map pixels, as an SVG matrix.
   private pieceMatrix = [1, 0, 0, 1, 0, 0];
+  // The selected title's handles, made as the piece asks for them.
+  private titleHandles = new Map<TitleHandle, HTMLButtonElement>();
   private screen: number[] = [];
   private drag: Drag | null = null;
   private lastDown: { id: number; type: string } | null = null;
@@ -174,11 +185,13 @@ export class AreaEditor {
 
   /** The piece around an SVG map's window, drawn over the map. null removes it. */
   setPiece(piece: PieceOverlay | null): void {
-    if (piece?.markup === this.piece?.markup && piece?.window.join() === this.piece?.window.join()) {
-      this.piece = piece;
+    const same = piece?.markup === this.piece?.markup && piece?.window.join() === this.piece?.window.join();
+    this.piece = piece;
+    this.syncTitleHandles();
+    if (same) {
+      this.placeTitleHandles();
       return;
     }
-    this.piece = piece;
     this.pieceGroup.innerHTML = piece ? piece.markup : '';
     this.layout();
   }
@@ -217,6 +230,43 @@ export class AreaEditor {
     el.innerHTML = '<span class="area-handle-dot" aria-hidden="true"></span>';
     this.element.appendChild(el);
     return el;
+  }
+
+  // Handles only a pointer can use. The Title section has the same settings.
+  private syncTitleHandles(): void {
+    const spots = this.piece?.handles ?? [];
+    for (const [id, el] of this.titleHandles) {
+      if (spots.some((spot) => spot.id === id)) continue;
+      el.remove();
+      this.titleHandles.delete(id);
+    }
+    for (const spot of spots) {
+      if (this.titleHandles.has(spot.id)) continue;
+      const el = this.makeHandle('title-handle', spot.label);
+      el.tabIndex = -1;
+      el.setAttribute('aria-hidden', 'true');
+      el.addEventListener('pointerdown', (event) => this.onTitleHandleDown(event, spot.id));
+      this.titleHandles.set(spot.id, el);
+    }
+  }
+
+  private placeTitleHandles(): void {
+    const piece = this.piece;
+    if (!piece || this.titleHandles.size === 0) return;
+    const [a, b, c, d, e, f] = this.pieceMatrix;
+    const toScreen = (x: number, y: number): [number, number] => [a * x + c * y + e, b * x + d * y + f];
+    // None on a title too small on screen to grab them apart from it.
+    const k = Math.sqrt(Math.abs(a * d - b * c));
+    const tiny = !piece.title || Math.max(piece.title[2], piece.title[3]) * k < 24;
+    const shown = new Set(tiny ? [] : spacedHandles(piece.handles, toScreen, TITLE_HANDLE_GAP).map((spot) => spot.id));
+    for (const spot of piece.handles) {
+      const el = this.titleHandles.get(spot.id);
+      if (!el) continue;
+      el.hidden = !shown.has(spot.id);
+      const [x, y] = toScreen(spot.x, spot.y);
+      el.style.transform = `translate(${x}px, ${y}px)`;
+      el.style.cursor = resizeCursor(a * spot.dx + c * spot.dy, b * spot.dx + d * spot.dy);
+    }
   }
 
   private readonly layout = (): void => {
@@ -294,6 +344,7 @@ export class AreaEditor {
       const f = center.y - b * cx - d * cy;
       this.pieceGroup.setAttribute('transform', `matrix(${a} ${b} ${c} ${d} ${e} ${f})`);
       this.pieceMatrix = [a, b, c, d, e, f];
+      this.placeTitleHandles();
       // The margin and border reach past the window, so keep the label clear of them.
       const [x0, y0, w0, h0] = this.piece.canvas;
       for (const [u, v] of [
@@ -372,6 +423,7 @@ export class AreaEditor {
   private readonly onMapMouseDown = (event: MapMouseEvent): void => {
     if (this.drag || event.originalEvent.button !== 0) return;
     const title = this.overTitle(event.point.x, event.point.y);
+    if (!title) this.options.onTitleBlur?.();
     if (!title && !this.contains(event.point.x, event.point.y)) return;
     event.preventDefault();
     const id = this.lastDown?.type === 'mouse' ? this.lastDown.id : 1;
@@ -387,6 +439,7 @@ export class AreaEditor {
     }
     if (this.drag) return;
     const title = this.overTitle(event.point.x, event.point.y);
+    if (!title) this.options.onTitleBlur?.();
     if (!title && !this.contains(event.point.x, event.point.y)) return;
     event.preventDefault();
     const touch = event.originalEvent.touches[0];
@@ -408,7 +461,28 @@ export class AreaEditor {
     this.beginDrag(kind, event.pointerId, event.clientX, event.clientY, corner, handle);
   }
 
-  private beginDrag(kind: DragKind, pointerId: number, clientX: number, clientY: number, corner?: Corner, handle?: HTMLElement): void {
+  private onTitleHandleDown(event: PointerEvent, grip: TitleHandle): void {
+    if ((event.pointerType === 'mouse' && event.button !== 0) || this.drag) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const handle = event.currentTarget as HTMLElement;
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      // Best effort, as for the area's handles.
+    }
+    this.beginDrag('title', event.pointerId, event.clientX, event.clientY, undefined, handle, grip);
+  }
+
+  private beginDrag(
+    kind: DragKind,
+    pointerId: number,
+    clientX: number,
+    clientY: number,
+    corner?: Corner,
+    handle?: HTMLElement,
+    grip: TitleGrip = 'move',
+  ): void {
     const rect = this.map.getCanvasContainer().getBoundingClientRect();
     const start: AreaSpec = { ...this.area, center: [this.area.center[0], this.area.center[1]] };
     const drag: Drag = {
@@ -429,6 +503,7 @@ export class AreaEditor {
       drag.grabAngle = this.bearingFromCenter(start, x, y);
     } else if (kind === 'title') {
       drag.from = [x, y];
+      drag.grip = grip;
     }
     this.drag = drag;
     window.addEventListener('pointermove', this.onDragMove);
@@ -439,7 +514,7 @@ export class AreaEditor {
     document.documentElement.classList.add('is-area-dragging');
     if (kind === 'move') this.map.getCanvas().style.cursor = 'grabbing';
     this.options.onDragStart?.();
-    if (kind === 'title') this.options.onTitleDrag?.('start', 0, 0);
+    if (kind === 'title') this.options.onTitleDrag?.('start', 0, 0, grip);
   }
 
   private readonly onDragMove = (event: PointerEvent): void => {

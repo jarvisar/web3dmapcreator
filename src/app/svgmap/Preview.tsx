@@ -5,7 +5,10 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { OutputGroup, RenderResult } from '../../core/svgmap/result';
 import type { ElementId } from '../../core/svgmap/settings';
 import { fmt, polylineD } from '../../core/svgmap/svg/format';
+import { shapePathD } from '../../core/svgmap/layout/shapes';
 import type { LabelArtwork, LabelSettings } from '../../core/svgmap/text/label';
+import { geometryBounds } from '../../core/svgmap/text/outline';
+import { CheckField } from '../components/Fields';
 import { Segmented } from '../components/Segmented';
 import { ToolButton } from '../components/ToolButton';
 import { COARSE_QUERY, useMediaQuery } from '../lib/browser';
@@ -13,7 +16,22 @@ import { formatBytes, formatInteger, formatNumber, formatSeconds } from '../lib/
 import { type PreviewLook, setLabel, setPreviewLook, useApp } from '../state/store';
 import { renderSvgNow, svgProblem, useSvgKey } from './actions';
 import { useLabelArtwork } from './labelArtwork';
-import { draggedLabel, offsetPatch, titleAt } from './labelDrag';
+import {
+  type HandleSpot,
+  AUTOFIT_HELP,
+  RESET_OFFSET,
+  type TitleDrag,
+  type TitleGrip,
+  boxResized,
+  dragTitle,
+  droppedLabel,
+  handleAt,
+  labelMoved,
+  resizeCursor,
+  spacedHandles,
+  titleAt,
+  titleHandles,
+} from './labelDrag';
 import { pieceLayout } from './piece';
 import { renderFraction, useSvgRender } from './render';
 import { PickIndex, PickOverlay, RouteCard } from './RoutePicker';
@@ -88,24 +106,97 @@ const PreviewContent = memo(function PreviewContent(props: { result: RenderResul
 
 // The title laid out on the main thread, drawn while it's dragged and until
 // the render with it in its new place comes back. Fills are drawn solid even
-// when the file hatches them.
-function TitleGhost(props: { artwork: LabelArtwork; style: LabelSettings['style']; result: RenderResult; look: PreviewLook; outline: boolean }) {
-  const { artwork, style, result, look, outline } = props;
+// when the file hatches them. A band covers the map only inside the window,
+// or it painted over the border at its ends.
+function TitleGhost(props: { artwork: LabelArtwork; style: LabelSettings['style']; result: RenderResult; look: PreviewLook; windowD: string | null }) {
+  const { artwork, style, result, look, windowD } = props;
   const material = result.mode === 'laser' && look === 'material';
   const ink = (element: ElementId) => (material ? BURN : (result.groups.find((g) => g.element === element)?.color ?? '#222'));
   const [x, y, w, h] = artwork.knockout;
   const rings = artwork.text.rings.map((ring) => polylineD(ring, true)).join('');
   const strokes = artwork.text.strokes.map((stroke) => polylineD(stroke)).join('');
+  const band = style === 'band' && windowD;
   return (
     <g pointerEvents="none">
-      {style === 'box' && <rect x={fmt(x)} y={fmt(y)} width={fmt(w)} height={fmt(h)} fill={backgroundOf(result, look)} />}
+      {band && (
+        <clipPath id="preview-title-window">
+          <path d={windowD} />
+        </clipPath>
+      )}
+      {(style === 'box' || band) && (
+        <rect x={fmt(x)} y={fmt(y)} width={fmt(w)} height={fmt(h)} fill={backgroundOf(result, look)} clipPath={band ? 'url(#preview-title-window)' : undefined} />
+      )}
       {artwork.frame.map((segment, i) => (
         <path key={i} d={polylineD(segment)} fill="none" stroke={ink('frame')} strokeWidth={Math.max(artwork.frameWidth, 0.1)} />
       ))}
       {rings && <path d={rings} fill={ink('text')} />}
       {strokes && <path d={strokes} fill="none" stroke={ink('text')} strokeWidth={0.3} strokeLinecap="round" strokeLinejoin="round" />}
-      {outline && <rect className="title-grab" x={fmt(x)} y={fmt(y)} width={fmt(w)} height={fmt(h)} />}
     </g>
+  );
+}
+
+// Handles in screen pixels, and how far from one a press still takes it.
+// Fingers get further.
+const HANDLE_SIZE = 9;
+const HANDLE_GAP = 18;
+const HANDLE_REACH = 9;
+const HANDLE_REACH_TOUCH = 16;
+
+// The outline of the title under the pointer or selected, with its handles
+// when selected. unit is millimetres per screen pixel.
+function TitleFrame(props: { artwork: LabelArtwork; label: LabelSettings; handles: HandleSpot[]; selected: boolean; unit: number }) {
+  const { artwork, label, handles, selected, unit } = props;
+  const [x, y, w, h] = artwork.knockout;
+  const text = label.style === 'band' && handles.length > 1 ? geometryBounds(artwork.text) : null;
+  const s = HANDLE_SIZE * unit;
+  return (
+    <g pointerEvents="none">
+      <rect className={selected ? 'title-frame' : 'title-grab'} x={fmt(x)} y={fmt(y)} width={fmt(w)} height={fmt(h)} />
+      {text && <rect className="title-grab" x={fmt(text[0])} y={fmt(text[1])} width={fmt(text[2] - text[0])} height={fmt(text[3] - text[1])} />}
+      {handles.map((handle) => (
+        <rect key={handle.id} className="title-handle" data-handle={handle.id} x={fmt(handle.x - s / 2)} y={fmt(handle.y - s / 2)} width={fmt(s)} height={fmt(s)} />
+      ))}
+    </g>
+  );
+}
+
+function TitleCard({ label, onClose }: { label: LabelSettings; onClose: () => void }) {
+  const box = label.style === 'box';
+  const resized = boxResized(label);
+  const moved = labelMoved(label);
+  return (
+    <section className="viewer-card floating inspector" aria-label="Title">
+      <header className="viewer-card-header">
+        <h3>Title</h3>
+        <button type="button" className="icon-btn icon-btn-sm" aria-label="Let go of the title" onClick={onClose}>
+          <X size={14} aria-hidden="true" />
+        </button>
+      </header>
+      <div className="inspector-body">
+        <p className="inspector-intro">
+          {box
+            ? 'Drag the title to move it, a corner to resize it, or a side to resize the box.'
+            : label.autofit
+              ? 'Drag the text to move it, or the edge to resize the band.'
+              : 'Drag the text to move it, its corners to resize it, or the edge to resize the band.'}
+        </p>
+        <CheckField label="Autofit text" checked={label.autofit} onChange={(autofit) => setLabel({ autofit })} help={AUTOFIT_HELP[label.style]} />
+        {(resized || moved) && (
+          <div className="inspector-actions">
+            {resized && (
+              <button type="button" className="btn btn-sm" onClick={() => setLabel({ boxWidth: 0, boxHeight: 0 })}>
+                Fit the box to the text
+              </button>
+            )}
+            {moved && (
+              <button type="button" className="btn btn-sm" onClick={() => setLabel(RESET_OFFSET)}>
+                Reset the position
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -193,9 +284,9 @@ export function SvgPreview() {
   const pressed = useRef<{ point: Point; moved: boolean } | null>(null);
   const index = useMemo(() => (result?.pick ? new PickIndex(result.pick) : null), [result]);
 
-  // Moving the title. It's laid out here as it's dragged and only stored when
-  // let go, and the moved one is drawn over the result until the render
-  // catches up (`placing`).
+  // Moving and resizing the title. Pressing it selects it and shows its
+  // handles. It's laid out here as it's dragged and only stored when let go,
+  // and drawn over the result until the render catches up (`placing`).
   const shape = useApp((state) => state.area.shape);
   const product = useApp((state) => state.svg.product);
   const border = useApp((state) => state.svg.border);
@@ -203,14 +294,24 @@ export function SvgPreview() {
   const customFontId = useApp((state) => state.customFontId);
   const layout = useMemo(() => pieceLayout(product, shape, border).layout, [product, shape, border]);
   const [dragged, setDragged] = useState<LabelSettings | null>(null);
-  const title = useLabelArtwork(Boolean(result), layout, dragged ?? label, customFontId);
-  const titleGrab = useRef<{ pointerId: number; start: Point; from: [number, number]; to: LabelSettings | null } | null>(null);
-  const [overTitle, setOverTitle] = useState(false);
+  const shown = dragged ?? label;
+  const title = useLabelArtwork(Boolean(result), layout, shown, customFontId);
+  const titleGrab = useRef<{ pointerId: number; start: Point; drag: TitleDrag; to: LabelSettings | null; cursor: string } | null>(null);
+  const [titleSelected, setTitleSelected] = useState(false);
+  const [hoverCursor, setHoverCursor] = useState<string | null>(null);
   const [placing, setPlacing] = useState(false);
   useEffect(() => {
     if (!stale) setPlacing(false);
   }, [stale, result, placing]);
   const ghost = (dragged !== null || placing) && title.artwork !== null;
+  const unit = box && size.w > 0 ? box.w / size.w : 1;
+  const handles = useMemo(() => {
+    if (!titleSelected || picking || !title.artwork) return [];
+    return spacedHandles(titleHandles(shown, title.artwork), (x, y) => [x / unit, y / unit], HANDLE_GAP);
+  }, [titleSelected, picking, title.artwork, shown, unit]);
+  useEffect(() => {
+    if (!title.artwork) setTitleSelected(false);
+  }, [title.artwork]);
   // Line numbers belong to one render.
   useEffect(() => {
     setSelected([]);
@@ -283,13 +384,26 @@ export function SvgPreview() {
       // A second finger puts the title back and pinches instead.
       cancelTitleDrag();
     } else if (pointers.current.size === 1 && !picking && e.button === 0 && title.artwork) {
-      const at = pieceAt(point);
-      if (at && titleAt(title.artwork, at.x, at.y)) {
-        titleGrab.current = { pointerId: e.pointerId, start: point, from: title.artwork.offset, to: null };
+      const grip = gripAt(point);
+      if (grip) {
+        titleGrab.current = { pointerId: e.pointerId, start: point, drag: { grip, label, artwork: title.artwork }, to: null, cursor: cursorFor(grip) };
+        setTitleSelected(true);
         return;
       }
     }
     restart();
+  };
+  // A handle of the selected title, or the title itself, under a stage point.
+  const gripAt = (point: Point): TitleGrip | null => {
+    const at = pieceAt(point);
+    if (!at || !title.artwork) return null;
+    const handle = handleAt(handles, at.x, at.y, (at.reach * (coarse ? HANDLE_REACH_TOUCH : HANDLE_REACH)) / 8);
+    if (handle) return handle;
+    return titleAt(title.artwork, at.x, at.y) ? 'move' : null;
+  };
+  const cursorFor = (grip: TitleGrip) => {
+    const spot = handles.find((h) => h.id === grip);
+    return spot ? resizeCursor(spot.dx, spot.dy) : 'move';
   };
   const cancelTitleDrag = () => {
     titleGrab.current = null;
@@ -300,15 +414,15 @@ export function SvgPreview() {
     if (grab && grab.pointerId === e.pointerId) {
       const point = stagePoint(e);
       pointers.current.set(e.pointerId, point);
-      if (!layout || !box || size.w === 0) return;
+      if (!layout || !box || size.w === 0 || !title.layoutWith) return;
       const k = box.w / size.w;
-      grab.to = draggedLabel(layout, label, grab.from, (point[0] - grab.start[0]) * k, (point[1] - grab.start[1]) * k);
+      grab.to = dragTitle(layout, grab.drag, (point[0] - grab.start[0]) * k, (point[1] - grab.start[1]) * k, title.layoutWith);
       setDragged(grab.to);
       return;
     }
     if (!picking && !pointers.current.size) {
-      const at = pieceAt(stagePoint(e));
-      setOverTitle(Boolean(at && titleAt(title.artwork, at.x, at.y)));
+      const grip = gripAt(stagePoint(e));
+      setHoverCursor(grip ? cursorFor(grip) : null);
     }
     if (picking && index && !pointers.current.size) {
       const at = pieceAt(stagePoint(e));
@@ -334,8 +448,8 @@ export function SvgPreview() {
       titleGrab.current = null;
       pressed.current = null;
       const placed = e.type !== 'pointercancel' && grab.to && title.layoutWith ? title.layoutWith(grab.to) : null;
-      if (placed) {
-        setLabel(offsetPatch(label, placed));
+      if (grab.to && placed) {
+        setLabel(droppedLabel(grab.to, placed));
         setPlacing(true);
       }
       setDragged(null);
@@ -345,6 +459,8 @@ export function SvgPreview() {
     restart();
     const press = pressed.current;
     pressed.current = null;
+    // A click off the title lets go of it.
+    if (!picking && press && !press.moved && e.type !== 'pointercancel') setTitleSelected(false);
     if (!picking || !index || !press || press.moved || e.type === 'pointercancel') return;
     const at = pieceAt(press.point);
     if (!at) return;
@@ -355,8 +471,9 @@ export function SvgPreview() {
     setSelected((current) => (current.includes(line) ? current.filter((l) => l !== line) : [...current, line]));
   };
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (titleGrab.current && e.key === 'Escape') {
-      cancelTitleDrag();
+    if ((titleGrab.current || titleSelected) && e.key === 'Escape') {
+      if (titleGrab.current) cancelTitleDrag();
+      else setTitleSelected(false);
       e.preventDefault();
       return;
     }
@@ -404,7 +521,8 @@ export function SvgPreview() {
     <div className="svg-preview" role="region" aria-label="SVG preview">
       <div
         ref={ref}
-        className={`svg-stage${dragging ? ' is-dragging' : ''}${dragged ? ' is-moving-title' : !picking && overTitle ? ' is-over-title' : ''}`}
+        className={`svg-stage${dragging ? ' is-dragging' : ''}`}
+        style={{ cursor: titleGrab.current?.cursor ?? (picking ? undefined : (hoverCursor ?? undefined)) }}
         role="img"
         tabIndex={result ? 0 : -1}
         aria-label={
@@ -418,15 +536,17 @@ export function SvgPreview() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onPointerLeave={() => setOverTitle(false)}
+        onPointerLeave={() => setHoverCursor(null)}
         onDoubleClick={fit}
       >
         {result && box && (
           <svg viewBox={`${box.x} ${box.y} ${box.w} ${h}`} preserveAspectRatio="xMidYMid meet">
             <PreviewContent result={result} look={look} hideTitle={ghost} />
-            {ghost && title.artwork && <TitleGhost artwork={title.artwork} style={(dragged ?? label).style} result={result} look={look} outline={dragged !== null} />}
-            {!ghost && !picking && overTitle && title.artwork && (
-              <rect className="title-grab" x={fmt(title.artwork.knockout[0])} y={fmt(title.artwork.knockout[1])} width={fmt(title.artwork.knockout[2])} height={fmt(title.artwork.knockout[3])} />
+            {ghost && title.artwork && (
+              <TitleGhost artwork={title.artwork} style={shown.style} result={result} look={look} windowD={layout ? shapePathD(layout.window) : null} />
+            )}
+            {!picking && title.artwork && (titleSelected || hoverCursor) && (
+              <TitleFrame artwork={title.artwork} label={shown} handles={handles} selected={titleSelected} unit={box.w / Math.max(size.w, 1)} />
             )}
             {picking && index && <PickOverlay index={index} selected={selected} hover={hoverLine} unit={box.w / Math.max(size.w, 1)} routes={routes} />}
           </svg>
@@ -500,6 +620,7 @@ export function SvgPreview() {
             />
           )}
           {picking && card === null && <RouteCard index={index} selected={selected} onSelect={setSelected} onClose={() => setPicking(false)} />}
+          {!picking && card === null && titleSelected && title.artwork && <TitleCard label={label} onClose={() => setTitleSelected(false)} />}
           {card === 'info' && (
             <section className="viewer-card floating info-card" aria-label="SVG details">
               <header className="viewer-card-header">
@@ -531,9 +652,11 @@ export function SvgPreview() {
             ? coarse
               ? 'Tap roads to pick them · Tap again to drop one'
               : 'Click roads to pick them · Click again to drop one · Esc clears · Drag to move'
-            : coarse
-              ? `Drag to move · Pinch to zoom${title.artwork ? ' · Drag the title to place it' : ''}`
-              : `Drag to move · Scroll to zoom · Double-click to fit${title.artwork ? ' · Drag the title to place it' : ''}`}
+            : titleSelected
+              ? `Drag the handles to resize the title · ${coarse ? 'Tap the map' : 'Click the map or press Esc'} to let go`
+              : coarse
+                ? `Drag to move · Pinch to zoom${title.artwork ? ' · Tap the title to move or resize it' : ''}`
+                : `Drag to move · Scroll to zoom · Double-click to fit${title.artwork ? ' · Click the title to move or resize it' : ''}`}
         </div>
       )}
       {!result && (

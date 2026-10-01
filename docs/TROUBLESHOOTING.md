@@ -34,7 +34,7 @@
 
 **"No LiDAR survey that a browser can read covers this area."** A LiDAR only model needs a streamed survey over the area: the US, France, Canada and Switzerland, and other countries where Open LiDAR Data has a dataset. Switch back to `Map data` elsewhere.
 
-**Flat patches, smeared edges or bumpy roofs in a LiDAR only model.** Glass, dark roofs and water return few points, and a sparse survey leaves gaps between its scan lines. Those cells take their neighbours' heights. When `Model details` shows larger cells than `Detail` asks for, the survey is too sparse for it, and a smaller `Detail` won't add points the survey doesn't have.
+**Flat patches, smeared edges or bumpy roofs in a LiDAR only model.** Glass, dark roofs and water return few points, and a sparse survey leaves gaps between its scan lines. Those cells take their neighbours' heights. When `Model details` shows larger cells than you asked for, the survey is too sparse for them, and smaller cells won't add points the survey doesn't have.
 
 **Needles standing over a LiDAR only model.** Some surveys leave haze, cloud or birds in the air unclassified. Returns floating over an empty band 30 m tall, too few to be a roof, are left out, which cleared downtown Houston's. A thin one next to a tower or just under a roof's height can stay, since that's what a ledge or a wall looks like. Model details shows how many were left out.
 
@@ -44,7 +44,7 @@
 
 **A LiDAR only shoreline follows the scanned cells instead of a smooth line.** Overture's outline is only used where it runs within 3 m of the survey's shore, easing back to the survey's line by 6 m. Past that the survey decides, which keeps the bridges, piers and boats Overture's water runs under. On sea and lake beaches it goes further, up to 60 m, but only over bare ground within 1.5 m of the water's level, so a beach behind a seawall or a jetty keeps the survey's line. Check that `Water outlines from map data` is on, and see the warnings in case the map water couldn't be downloaded.
 
-**A LiDAR only model is slow the first time.** It reads the survey over the whole area, but only as finely as the cells need. That came to about 75 MB per km² for Philadelphia's 2015 survey, 125 for Paris and 450 for San Francisco's densest survey at 0.25 m cells. A 600 m circle in downtown Chicago read 101 MB and took 30 seconds on a desktop. What's read is kept in the browser (up to 1 GB), so changing anything but the area, the scale or `Detail` builds again in seconds.
+**A LiDAR only model is slow the first time.** It reads the survey over the whole area, but only as finely as the cells need. That came to about 75 MB per km² for Philadelphia's 2015 survey, 125 for Paris and 450 for San Francisco's densest survey at 0.25 m cells. A 600 m circle in downtown Chicago read 101 MB and took 30 seconds on a desktop. What's read is kept in the browser (up to 1 GB), so changing anything that doesn't change the area or the cell size builds again in seconds.
 
 ## SVG maps
 

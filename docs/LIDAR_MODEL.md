@@ -10,13 +10,15 @@ The grid's vertices sit on the area's own rectangle in its rotated frame, with e
 
 The cell is `Detail` over the print scale, 0.71 m by default. Before the real read, up to three blocks near the middle are probed and the cell grows in 5% steps until at most 3% of the cells on land are empty. Returns come in scan lines, so the average density isn't enough to go on: without this, every empty cell beside a wall takes the street's height and roof edges come out notched. Past 8 million cells the cells grow as well, since composing and meshing a bigger grid takes minutes and more memory than a tab should use.
 
+With `Grid cells` set to `Metres on the ground` the cell is taken as given instead, 0.25 to 5 m, whatever the area or scale. It still grows for a sparse survey but never for the area, so the grid has a hard limit of 16 million cells and a larger area is refused with the area that would fit. San Francisco's 0.25 m grid doubled to 16.5 million cells peaked at 2.1 GB composing and meshing in one thread, against 1.2 GB for the 8.3 million of the original, so memory grows about in step with the cells.
+
 Land here is 2 m squares with a return that isn't filed as water. The add-on counts any return, and Lake Michigan's scattered water returns made the Chicago lakefront's probe grow its cells from 0.71 to 2.08 m.
 
 ## Reading
 
 Only streamed surveys (EPT and COPC) are read, through the same discovery and readers as LiDAR buildings. The grid is read in blocks of about 256 m, up to eight at a time in workers. A block's returns are counted into its cells as they're decoded, so no block holds its point cloud (`raster.ts`). Each cell keeps its second highest return once floating returns are out (below), the same without vegetation-like returns, the mean ground and water heights, and four counts (`layers.ts`).
 
-Blocks are checkpointed in the LiDAR cache. A cancelled read picks up after the blocks it finished, and changing any setting except the area, the scale or `Detail` reads nothing again. A block whose read failed isn't kept, so the next Generate tries it again.
+Blocks are checkpointed in the LiDAR cache. A cancelled read picks up after the blocks it finished, and changing any setting that doesn't change the area or the cell size reads nothing again. A block whose read failed isn't kept, so the next Generate tries it again.
 
 A survey covering the whole area goes first so blocks don't mix years, then the same ranking as for buildings (newest first). Each cell takes its returns from the first survey whose outline holds it, even when it has none there: water and dark roofs return nothing, and another survey's returns would be another year's surface.
 
