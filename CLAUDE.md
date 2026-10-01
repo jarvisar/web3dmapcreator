@@ -572,7 +572,9 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
   same for both outputs (`scaleLocked` and `setScaleLock` in the store). A
   model's lock is its `scale.mode`, and switching it carries the scale it
   works out to across, so it never changes the model. `snapshotKey` keys on
-  that effective scale for the same reason.
+  that effective scale for the same reason. The area is shared, but each
+  output keeps its own size (`areaSizes`, saved): `setOutput` remembers the
+  one it leaves and gives back the one it switches to, at the shared centre.
 - Area sizes are rounded to the centimetre (`lib/area.ts`), not the metre,
   so a typed 1:5,000 on a small piece stays 1:5,000.
 - The box on the map uses the ENU `Projection`, the engine Web Mercator at

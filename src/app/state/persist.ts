@@ -16,6 +16,7 @@ import {
   PRINTERS,
   sanitizeSettings,
 } from '../../core/settings';
+import { MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
 import type { AreaSpec, ExportSettings, ModelSettings, Palette } from '../../core/settings';
 import { emptyEdits, hasEdits, sanitizeEdits, type ModelEdits } from '../../core/edit/types';
 import { sanitizeLines, sanitizeRoutes, type Picks } from '../../core/svgmap/routes';
@@ -31,6 +32,8 @@ const KEY = STORAGE_KEY;
 export interface SavedState {
   output?: 'model' | 'svg';
   area?: AreaSpec;
+  /** The size each output had when it was last left. */
+  areaSizes?: Partial<Record<'model' | 'svg', { widthM: number; heightM: number }>>;
   settings?: ModelSettings;
   palette?: Palette;
   exportSettings?: ExportSettings;
@@ -169,6 +172,7 @@ export function loadSaved(): SavedState {
   return {
     output: raw.output === 'svg' || raw.output === 'model' ? raw.output : undefined,
     area: readArea(raw.area),
+    areaSizes: readAreaSizes(raw.areaSizes),
     settings: readSettings(raw.settings),
     palette: readPalette(raw.palette, raw.palettePreset),
     exportSettings: readExport(raw.exportSettings),
@@ -285,10 +289,24 @@ function write(key: string, values: unknown[] | null, text: () => string): boole
   }
 }
 
+function readAreaSizes(raw: unknown): SavedState['areaSizes'] {
+  if (!isObject(raw)) return undefined;
+  const out: NonNullable<SavedState['areaSizes']> = {};
+  for (const output of ['model', 'svg'] as const) {
+    const size = raw[output];
+    if (!isObject(size)) continue;
+    const { widthM, heightM } = size;
+    const side = (v: unknown): v is number => typeof v === 'number' && v >= MIN_SIDE_M && v <= MAX_SIDE_M;
+    if (side(widthM) && side(heightM)) out[output] = { widthM, heightM };
+  }
+  return out;
+}
+
 export function saveState(
   state: {
     output: 'model' | 'svg';
     area: AreaSpec;
+    areaSizes?: SavedState['areaSizes'];
     settings: ModelSettings;
     palette: Palette;
     exportSettings: ExportSettings;
@@ -307,6 +325,7 @@ export function saveState(
     hash,
     output: state.output,
     area: state.area,
+    areaSizes: state.areaSizes,
     settings: state.settings,
     palette: state.palette,
     palettePreset: matchingPreset(state.palette)?.key,

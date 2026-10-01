@@ -162,10 +162,14 @@ export interface Toast {
   action?: { label: string; run: () => void };
 }
 
+export type AreaSizes = Partial<Record<Output, { widthM: number; heightM: number }>>;
+
 export interface AppState {
   /** What to make: a 3D model or an SVG map. */
   output: Output;
   area: AreaSpec;
+  /** The area's size each output had when it was last left, given back when it's picked again. */
+  areaSizes: AreaSizes;
   settings: ModelSettings;
   palette: Palette;
   exportSettings: ExportSettings;
@@ -290,6 +294,7 @@ function initialState(): AppState {
   return {
     output,
     area,
+    areaSizes: saved.areaSizes ?? {},
     settings: saved.settings ?? cloneSettings(DEFAULT_SETTINGS),
     palette: saved.palette ?? structuredClone(DEFAULT_PALETTE),
     exportSettings: saved.exportSettings ?? { ...DEFAULT_EXPORT },
@@ -416,11 +421,22 @@ export function setArea(next: AreaSpec | ((area: AreaSpec) => AreaSpec), options
 export function setOutput(output: Output): void {
   set((state) => {
     if (state.output === output) return {};
-    const { area, svg } = fitForOutput(output, state.area, state.svg);
+    // Each output keeps its own size, wherever the area has moved since. The
+    // place, rotation and shape are shared. Without this, a model came back
+    // at the size the SVG map's piece and scale had made, not the one set.
+    const areaSizes = { ...state.areaSizes, [state.output]: { widthM: state.area.widthM, heightM: state.area.heightM } };
+    const kept = areaSizes[output];
+    let requested = state.area;
+    if (kept) {
+      const [widthM, heightM] = constrainSize(requested.shape, kept.widthM, kept.heightM, 'smaller');
+      requested = { ...requested, widthM, heightM };
+    }
+    const { area, svg } = fitForOutput(output, requested, state.svg);
     const view = state.ui.view === 'result' && !hasResult({ output, generation: state.generation }) ? 'map' : state.ui.view;
     return {
       output,
       area,
+      areaSizes,
       svg,
       generation: withStale(state.generation, area, state.settings),
       ui: { ...state.ui, view },
