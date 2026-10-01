@@ -56,7 +56,7 @@
 
 **The imported size is wrong.** The file is sized in millimetres. Check the size your laser software imports against the one shown in the preview.
 
-**The area can't be resized.** The scale is locked. Unlock it next to `Scale` under `Area`.
+**The area can't be resized.** The scale is locked. Unlock it next to `Scale` under `Size`.
 
 **A loaded font doesn't work.** Fonts can be TTF, OTF or WOFF. WOFF2 files can't be read.
 

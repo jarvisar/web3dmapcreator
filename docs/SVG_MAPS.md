@@ -10,7 +10,7 @@ Tiles store coordinates to about half a metre, so at large scales (under about 1
 
 ## The piece and the area
 
-The area on the map is the piece's map window, the part inside the margin and border. Its proportions and corner radius come from the piece, and its width sets the scale: 1:n is the window's width on the ground over its width on the piece. `src/app/svgmap/piece.ts` does the fitting whenever the area or the piece changes.
+The area on the map is the piece's map window, the part inside the margin and border. Its proportions and corner radius come from the piece, and its width sets the scale: 1:n is the window's width on the ground over its width on the piece. `src/app/svgmap/piece.ts` does the fitting whenever the area or the piece changes. A margin moves the window on the piece, and the area moves with it (`setPieceSize`), so a bigger margin only crops its own side of the map.
 
 With the scale locked, the default, it works the other way round: the width comes from the scale, so you give it the piece size and a scale and the box on the map is sized for you. The corner handles go away, and a new piece or place keeps the scale and changes the area. The scale is typed in mm per metre like a model's and kept as 1:n (`svg.scale`, with `scaleLocked` for the lock). It starts at 0.05 mm per metre, 1:20,000. Unlocked, presets and pasted bounds grow the window until it covers them, and `Fit to map view` fits it inside the view.
 

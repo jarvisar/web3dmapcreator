@@ -565,10 +565,10 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
 - In SVG mode the area is the piece's map window: `fitAreaToPiece` gives it
   the window's proportions and corner radius and sets `svg.scale` (1:n) from
   its width, or its width from the scale when `scaleLocked` (the scale
-  lock under Area, on by default at 0.05 mm/m). The panel shows the scale in
+  lock under Size, on by default at 0.05 mm/m). The panel shows the scale in
   mm/m but it's stored as 1:n. Every area or piece change goes through it in
   the store. The shape is shared with 3D, and so is the size block
-  (`ScaleAndSize` in `AreaPanel.tsx`): one lock, on the scale, meaning the
+  (`ScaleAndSize.tsx`, in both outputs' Size sections): one lock, on the scale, meaning the
   same for both outputs (`scaleLocked` and `setScaleLock` in the store). A
   model's lock is its `scale.mode`, and switching it carries the scale it
   works out to across, so it never changes the model. `snapshotKey` keys on

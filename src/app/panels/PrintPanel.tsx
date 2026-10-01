@@ -9,6 +9,7 @@ import { formatMmPair, formatNumber, formatRatio } from '../lib/format';
 import { bedFit } from '../state/derived';
 import type { BedFit } from '../state/derived';
 import { patchExport, patchSettings, setPrintedSide, useApp } from '../state/store';
+import { ScaleAndSize } from './ScaleAndSize';
 import { Section } from './Section';
 
 const VENDORS: Printer['vendor'][] = ['Bambu Lab', 'Prusa', 'Other'];
@@ -45,19 +46,24 @@ export function PrintPanel() {
 
   const summary = `${formatRatio(mmPerMetre)} · ${formatMmPair(fit.width, fit.depth)} · ${fitSummary(fit)}`;
   // The longer side, without the rim, as Fit to size always took it.
-  const fitBed = () => setPrintedSide(area.widthM >= area.heightM ? 'width' : 'height', Math.min(fit.printer.width, fit.printer.depth) - 20);
+  const fitBed = () => {
+    const longest = Math.min(fit.printer.width, fit.printer.depth) - 20;
+    // Unlocked, the area stays and the scale follows, as Fit to size always did.
+    if (scale.mode === 'fit') patchSettings('scale', { fitMm: longest });
+    else setPrintedSide(area.widthM >= area.heightM ? 'width' : 'height', longest);
+  };
 
   return (
     <Section
       id="print"
-      title="Print size"
+      title="Size"
       summary={summary}
       badge={!fit.fits ? <span className="badge-dot badge-dot-warning" title="Larger than the bed" /> : undefined}
     >
+      <ScaleAndSize />
       <p className="field-hint">
-        The scale and the printed size are set under Area. At {formatRatio(mmPerMetre)} a {formatNumber(roads.minWidthMm, 2)} mm road is{' '}
-        {formatNumber(roads.minWidthMm / mmPerMetre, 1)} m real. Large areas at a small scale lose detail: roads stay at the printable minimum
-        width, so footpaths print as wide as main roads.
+        At {formatRatio(mmPerMetre)} a {formatNumber(roads.minWidthMm, 2)} mm road is {formatNumber(roads.minWidthMm / mmPerMetre, 1)} m real. Large
+        areas at a small scale lose detail: roads stay at the printable minimum width, so footpaths print as wide as main roads.
       </p>
 
       <SelectField

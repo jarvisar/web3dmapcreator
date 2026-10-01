@@ -6,7 +6,7 @@ Everything runs in the browser. The page starts a Web Worker that downloads the 
 
 ## Units and scale
 
-One model unit is one printed millimetre. The default scale is 0.07 mm per real metre (about 1:14,286), the scale the Blender add-on used. At that scale a 6.5 m residential street prints 0.455 mm wide, which is just over one line of a 0.4 mm nozzle. With the scale unlocked under `Area` the printed size stays put and the scale follows the area instead (`scale.mode` `fit`, from the longest side). Models and SVG maps share these controls: the lock means the same in both, but an SVG piece never follows the area, so with its scale locked the box only moves and turns.
+One model unit is one printed millimetre. The default scale is 0.07 mm per real metre (about 1:14,286), the scale the Blender add-on used. At that scale a 6.5 m residential street prints 0.455 mm wide, which is just over one line of a 0.4 mm nozzle. With the scale unlocked under `Size` the printed size stays put and the scale follows the area instead (`scale.mode` `fit`, from the longest side). Models and SVG maps share these controls: the lock means the same in both, but an SVG piece never follows the area, so with its scale locked the box only moves and turns.
 
 Coordinates go from WGS84 through a local East/North/Up frame centred on the area, then get rotated so the area's own "up" is +Y, then scaled. Every layer goes through that one projection (`src/core/geo/projection.ts`). The area itself is defined in metres around a centre, so a 2 km square is a 2 km square anywhere on the globe.
 

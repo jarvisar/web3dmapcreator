@@ -32,6 +32,7 @@ import { mergePicks, type Picks } from '../../core/svgmap/routes';
 import type { FeatureFilters } from '../../core/svgmap/tiles/schema';
 import type { ColourGroup, MaterialRole, ModelStats } from '../../core/types';
 import { effectiveScale } from '../../core/geo/area';
+import { Projection } from '../../core/geo/projection';
 import { constrainSize, normalizeArea, scaleArea } from '../lib/area';
 import { type PieceFit, areaShapeOf, fitAreaToPiece, pieceLayout } from '../svgmap/piece';
 import { useSvgRender } from '../svgmap/render';
@@ -485,16 +486,13 @@ export function setScale(mmPerMetre: number): void {
   else if (now > 0 && mmPerMetre > 0 && mmPerMetre !== now) setArea((current) => scaleArea(current, now / mmPerMetre), { focus: 'if-needed' });
 }
 
-// A model's printed width or height typed, in mm without the rim. With the
-// scale locked the area follows, otherwise the scale does.
+// A model's printed width or height typed, in mm without the rim. Only that
+// side changes, so the area follows at the same scale, locked or not. Letting
+// the scale follow while unlocked changed the other side too.
 export function setPrintedSide(side: 'width' | 'height', mm: number): void {
   const { area, settings } = get();
-  if (settings.scale.mode === 'fit') {
-    const scale = mm / (side === 'width' ? area.widthM : area.heightM);
-    patchSettings('scale', { fitMm: clampTo(scale * Math.max(area.widthM, area.heightM), modelFieldRange('scale', 'fitMm')) });
-    return;
-  }
-  const metres = mm / settings.scale.mmPerMetre;
+  const scale = effectiveScale(area, settings.scale);
+  const metres = mm / scale;
   setArea(
     (current) => {
       const [w, h] = constrainSize(current.shape, side === 'width' ? metres : current.widthM, side === 'height' ? metres : current.heightM, side);
@@ -502,6 +500,10 @@ export function setPrintedSide(side: 'width' | 'height', mm: number): void {
     },
     { focus: 'if-needed' },
   );
+  if (settings.scale.mode === 'fit') {
+    const next = get().area;
+    patchSettings('scale', { fitMm: clampTo(scale * Math.max(next.widthM, next.heightM), modelFieldRange('scale', 'fitMm')) });
+  }
 }
 
 export function setModelSource(modelSource: ModelSource): void {
@@ -643,7 +645,23 @@ export function patchSvg(patch: SvgPatch): void {
 }
 
 export function setPieceSize(patch: Partial<PieceSize>): void {
+  const before = get();
   updateSvg((svg) => ({ product: { ...svg.product, ...patch }, productPreset: 'custom' }));
+  // A margin moves the map window on the piece. Keep the map where it was on
+  // the piece, so only the side whose margin changed is cropped or grows:
+  // kept centred, a bigger top margin cropped the bottom of the map too. Only
+  // while the scale stays, since otherwise the whole map was rescaled anyway.
+  const after = get();
+  if (after.output !== 'svg' || Object.keys(patch).some((key) => key !== 'margins') || after.svg.scale !== before.svg.scale) return;
+  const was = pieceLayout(before.svg.product, before.area.shape, before.svg.border).layout;
+  const now = pieceLayout(after.svg.product, after.area.shape, after.svg.border).layout;
+  if (!was || !now) return;
+  const dx = now.window.x + now.window.w / 2 - (was.window.x + was.window.w / 2);
+  const dy = now.window.y + now.window.h / 2 - (was.window.y + was.window.h / 2);
+  if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return;
+  const metresPerMm = after.svg.scale / 1000;
+  // Piece y runs down the page, the area's own y north.
+  setArea((area) => ({ ...area, center: new Projection(area.center, area.rotationDeg, 1).localToGeo(dx * metresPerMm, -dy * metresPerMm) }));
 }
 
 export function setBorder(patch: Partial<BorderSettings>): void {

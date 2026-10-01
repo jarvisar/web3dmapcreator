@@ -13,7 +13,7 @@ export const AREA_HINT = 'Drag the box to move it. Drag a corner to resize it, o
 
 /** With an SVG map's scale locked the corners can't resize the area. */
 export function areaHint(resizable: boolean): string {
-  return resizable ? AREA_HINT : 'Drag the box to move it, or the round handle to rotate it. Unlock the scale under Area to resize it.';
+  return resizable ? AREA_HINT : 'Drag the box to move it, or the round handle to rotate it. Unlock the scale under Size to resize it.';
 }
 
 export const SHAPE_LABELS: Record<AreaShape, string> = {

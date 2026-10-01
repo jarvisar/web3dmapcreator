@@ -6,7 +6,8 @@ import { PRODUCT_PRESETS } from '../../core/svgmap/presets';
 import { CheckField, Disclosure, SelectField } from '../components/Fields';
 import { NumberField, StackedNumber } from '../components/NumberField';
 import { Segmented } from '../components/Segmented';
-import { formatNumber } from '../lib/format';
+import { formatNumber, formatRatio } from '../lib/format';
+import { ScaleAndSize } from '../panels/ScaleAndSize';
 import { Section } from '../panels/Section';
 import { applyPiecePreset, setBorder, setPieceSize, useApp } from '../state/store';
 import { pieceHeight, pieceLayout } from './piece';
@@ -20,6 +21,7 @@ export function SizePanel() {
   const preset = useApp((state) => state.svg.productPreset);
   const border = useApp((state) => state.svg.border);
   const shape = useApp((state) => state.area.shape);
+  const scale = useApp((state) => state.svg.scale);
   const { layout, error } = pieceLayout(size, shape, border);
 
   const m = size.margins;
@@ -40,7 +42,7 @@ export function SizePanel() {
     <Section
       id="piece"
       title="Size"
-      summary={`${presetName} · ${dimensions}`}
+      summary={`${presetName} · ${dimensions} · ${formatRatio(1000 / scale)}`}
       badge={error ? <span className="badge-dot badge-dot-warning" title={error} /> : undefined}
     >
       <SelectField label="Preset" value={preset} onChange={applyPiecePreset} stacked help="Sets the size, shape, margins, border and title style. The area on the map takes the shape of the map inside the border.">
@@ -95,6 +97,8 @@ export function SizePanel() {
           />
         </>
       )}
+
+      <ScaleAndSize />
 
       {shape === 'rounded' && (
         <NumberField label="Corner radius" value={size.cornerRadius} onChange={(cornerRadius) => setPieceSize({ cornerRadius })} {...fieldRange('product.cornerRadius')} step={0.5} decimals={2} unit="mm" />
