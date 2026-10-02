@@ -236,10 +236,27 @@ Imported routes (`src/core/tracks/`, `pipeline/tracks.ts`, `dsm/route.ts`, UI in
   it runs along (`carries`, 60% of it within 30
   degrees) carries it at the deck's top plus what it stands over a road,
   over the route's whole width, or strips beside a narrower deck stood on
-  the water and kept ground. Decks it only crosses are cut out. Over cut
+  the water and kept ground. Decks it only crosses are cut out. Snapped,
+  only a match to the deck's own line counts (`via` from `snapToNetwork`,
+  `deckLines`). Unsnapped, a stretch along a deck counts only when it gets
+  on and off at the deck's ends, the model's edge or the route's own ends:
+  snapped to a street under Chicago's L, it was lifted onto the viaduct.
+  Over cut
   water it keeps ground like a road (`kept.tracks`, which goes with the
-  route if it's removed in the editor), or wades with supports off. Trees
+  route if it's removed in the editor), or wades with supports off. A
+  route through a tunnel still prints across the water, since tunnels
+  aren't in the snap network and an off-road stretch over water can't be
+  told from a ferry or a swim. Trees
   avoid it. Without routes the model is unchanged.
+- Markers come from the recorded ends, moved onto the laid-out line within
+  40 m (`trackMarkers`): clipping returns pieces out of order, so a route
+  leaving the area and coming back had them on the clip edge. Links and
+  options files keep a route when a segment of it crosses the area, not
+  only a point (`lineTest`). A route back from a link is the same route
+  when its id or name matches and it lies within 15 m of it
+  (`mergeTracks`), since the link simplified it again. Imports thin points
+  under 0.2 m apart before simplifying, and simplify once for every
+  tolerance (`significance`).
 - LiDAR only models: a route rests on compose's bare ground grid
   (`ground`), never the surface, which a
   drifting track climbed every roof and crown of. Trees and clutter under 2 m
@@ -594,6 +611,13 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   Chrome and 2^23 in Node: nothing keyed by every edge or vertex of the
   surface (`capBoundary` uses flat arrays), and no `Float32Array.from(grid,
   fn)` on a grid, which lists every value first.
+- The editor's copy of compose's bare ground and cell flags
+  (`ProfileGrids`, for drawn roads) is built before meshing and kept while
+  the model is open, so the ground is packed to two bytes a cell
+  (`packGrid`), the flags stand in for compose's cut mask, and drawn roads
+  unpack only their own window. Float32 ground and a separate mask cost
+  320 MB at 64M cells. `SurfaceCut` doesn't keep the export's cut surface,
+  which is as big as the cap.
 - `compose.ts` is a port of the add-on's `dsm_model.compose` and matches it on
   its prepared Chicago, Philadelphia and Boston grids (float32 flips 1 to 3
   cells per grid on exact thresholds). Keep the rules and their order. The
@@ -775,23 +799,50 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   is all of it), and the narrowest range wins a field at a time. Set a
   field on a range and smaller ranges inside lose it, clear one and it's
   carved out of wider ranges (`writeRoads`, which every road write in
-  `editActions.ts` goes through, `tidySegment` after). Splits live on the
-  segment's own edit (`splits`). A click picks a block: the stretch between
+  `editActions.ts` goes through, `tidySegment` after). A range reaching
+  part way into the one written keeps its fields only outside it, or
+  taking out a split left the blocks unjoined. Splits live on the
+  segment's own edit (`splits`), at most `MAX_SPLITS`, and a segment keeps
+  at most `MAX_RANGES` range keys when sanitized: `tidy` compares every
+  pair. A click picks a block: the stretch between
   junctions, splits and edit ends (`blockBounds`). Junctions are inner
   vertices another kept segment shares (`pipeline/measure.ts`), which gave
   the same blocks as Overture's connectors on all of the Loop without
   reading them (25% more segment data). Sidewalks that aren't printed don't
-  count, and ones within 0.5 mm are one. Pieces and decks are measured
+  count, and ones within 0.5 mm are one. The other segment has to be
+  printed within `REACH_MM` of the vertex too: a path kept elsewhere but
+  pruned there ended blocks where nothing met (38 on the Loop, 2.7 mm from
+  anything at worst). Pieces and decks are measured
   along their segment once laid out (`measure`, `DeckPiece.at`), by
-  projecting onto the segment's own line, since the tidy moves lines. The
-  road tiles cut pieces at range ends (`styledPieces`), and a stretch with
+  projecting onto the segment's own line, since the tidy moves lines.
+  Points the tidy moved off the line are measured from the points still on
+  it (`settleOffLine`): projected, a moved end on a zigzag footway landed on
+  another zig and the piece ran back along its segment. The
+  road tiles cut pieces at range ends (`styledPieces`), at a vertex too
+  when a range ends on one (a junction often does, and the spans either
+  side both left it out), and a stretch with
   a layer or height of its own is clipped flat at its cuts (`endMask`).
   Without range edits nothing is cut, so exports with whole-segment edits
   stay byte-identical (checked on the Loop). A deck takes the road's edit
-  at its middle (`editOf` with `at`, `ObjectFacts.at` for the viewer). The
+  at its middle (`editOf` with `at`, `ObjectFacts.at` for the viewer).
+  Every deck of a segment shares its key, so a segment with two bridges
+  gives both the edit at the first one's middle. A
+  divided road's merged line keeps the other carriageway's segment
+  (`partners` from `divided.ts`). Most run beside several, so the line is
+  cut where the nearest one changes (`byPartner`), each stretch with its
+  own `partner`/`partnerMeasure`: one partner for the whole line carried a
+  few metres of a segment's edit over a block on the Loop. That one's
+  colour, width and height fill in where its own edit
+  leaves them (`carryEdit`), never its removal, since the merged line
+  stands for both. The viewer cuts merged lines at the partner's range
+  ends as the export does, and the inspector shows the carried width and
+  height but only offers Reset for the block's own edit.
+  `roadWrites.test.ts` fails on any write into edits'
+  objects outside `writeRoads` that isn't listed with a reason. The
   viewer cuts its road lines into blocks (`viewer/blocks.ts`) only when
   splits or edit ranges change (`blocksSignature`), and `Whole street`
-  selects whole segments.
+  selects whole segments. Its per-piece edit cache is keyed by piece index
+  and cleared with every new model.
 - Custom layers export as `layer:<id>` (building rank) and
   `layer:<id>:water` (water rank) with a `PartColour`. Shapes in a model
   colour export as `added-<group>` with building rank, so a water-coloured

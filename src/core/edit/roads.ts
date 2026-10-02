@@ -27,7 +27,7 @@ import { bufferRoads, type RoadGroup, type RoadPiece } from '../pipeline/roads';
 import type { ModelSettings } from '../settings';
 import type { TrackGround } from '../pipeline/generate';
 import type { MultiPolygon, Vec2 } from '../types';
-import { parseRoadKey, roadSegment } from './blocks';
+import { carryEdit, parseRoadKey, roadSegment } from './blocks';
 
 export const ROAD_PARTS: Record<RoadGroup, string> = { road: 'roads', rail: 'rail', path: 'paths' };
 const GROUPS: RoadGroup[] = ['road', 'rail', 'path'];
@@ -82,7 +82,8 @@ const AT_EPSILON = 1e-9;
 function mergeStyles(ranges: readonly StyledRange[], from: number, to: number): RoadStyle | undefined {
   let out: RoadStyle | undefined;
   for (const range of ranges) {
-    if (range.from > from + 1e-7 || range.to < to - 1e-7) continue;
+    // Looser than the cuts, so a stretch cut at a vertex just short of a range's end is still held by it.
+    if (range.from > from + 1e-6 || range.to < to - 1e-6) continue;
     out = { ...out, ...range.style };
   }
   return out;
@@ -90,82 +91,117 @@ function mergeStyles(ranges: readonly StyledRange[], from: number, to: number): 
 
 /**
  * A piece cut where the ranges of its segment end, each stretch with its
- * style. A piece no range ends within comes back as itself.
+ * style. A divided road's merged line lies along the other carriageway's
+ * segment too (`partner`), and is cut where that one's ranges end as well:
+ * its colour, width and height fill in wherever the piece's own edits leave
+ * them. Not its removal, since the merged line stands for both
+ * carriageways, and the other one taken out leaves this one. A piece no
+ * range ends within comes back as itself.
  */
-export function styledPieces(piece: RoadPiece, ranges: readonly StyledRange[]): StyledPiece[] {
-  const measure = piece.measure;
-  if (!ranges.length) return [{ piece, style: undefined, cut: [false, false] }];
-  if (!measure || measure.length !== piece.points.length) return [{ piece, style: mergeStyles(ranges, 0, 1), cut: [false, false] }];
+export function styledPieces(piece: RoadPiece, ranges: readonly StyledRange[], partnerRanges: readonly StyledRange[] = []): StyledPiece[] {
+  const n = piece.points.length;
+  const own = piece.measure?.length === n ? piece.measure : null;
+  const other = partnerRanges.length && piece.partnerMeasure?.length === n ? piece.partnerMeasure : null;
+  if (!ranges.length && !other) return [{ piece, style: undefined, cut: [false, false] }];
+  if (!own) return [{ piece, style: combine(mergeStyles(ranges, 0, 1), undefined), cut: [false, false] }];
+  // Distance along the piece, which both measures are cut by.
+  const along = [0];
+  for (let i = 1; i < n; i++) along.push(along[i - 1] + Math.hypot(piece.points[i][0] - piece.points[i - 1][0], piece.points[i][1] - piece.points[i - 1][1]));
+  const length = along[n - 1];
+  const cuts: number[] = [];
+  const cutAt = (measure: number[], list: readonly StyledRange[]) => {
+    for (const range of list) {
+      for (const v of [range.from, range.to]) {
+        // A range ending on a vertex (a junction often is one) is cut there.
+        // The spans either side both leave it out as one of their ends.
+        for (let i = 1; i < n - 1; i++) if (Math.abs(measure[i] - v) <= 1e-7) cuts.push(along[i]);
+        for (let i = 1; i < n; i++) {
+          const a = measure[i - 1];
+          const b = measure[i];
+          if (Math.abs(b - a) < AT_EPSILON || v <= Math.min(a, b) + 1e-7 || v >= Math.max(a, b) - 1e-7) continue;
+          cuts.push(along[i - 1] + ((v - a) / (b - a)) * (along[i] - along[i - 1]));
+        }
+      }
+    }
+  };
+  cutAt(own, ranges);
+  if (other) cutAt(other, partnerRanges);
+  const bounds = [0];
+  for (const s of cuts.sort((a, b) => a - b)) if (s > 1e-6 && s < length - 1e-6 && s - bounds[bounds.length - 1] > 1e-6) bounds.push(s);
+  bounds.push(length);
+  // The measures between two distances along the piece, low to high.
+  const span = (measure: number[], from: number, to: number): [number, number] => {
+    const a = valueAt(along, measure, from);
+    const b = valueAt(along, measure, to);
+    return a <= b ? [a, b] : [b, a];
+  };
+  // Stretches between the cuts, neighbours with the same style together.
+  const stretches: { from: number; to: number; style: RoadStyle | undefined }[] = [];
+  for (let i = 1; i < bounds.length; i++) {
+    const style = combine(mergeStyles(ranges, ...span(own, bounds[i - 1], bounds[i])), other ? mergeStyles(partnerRanges, ...span(other, bounds[i - 1], bounds[i])) : undefined);
+    const last = stretches[stretches.length - 1];
+    if (last && JSON.stringify(last.style) === JSON.stringify(style)) last.to = bounds[i];
+    else stretches.push({ from: bounds[i - 1], to: bounds[i], style });
+  }
+  if (stretches.length === 1) return [{ piece, style: stretches[0].style, cut: [false, false] }];
+  return stretches.map((stretch) => ({ piece: slicePiece(piece, along, stretch.from, stretch.to), style: stretch.style, cut: [stretch.from > 0, stretch.to < length] }));
+}
+
+/** A piece's own style over the other carriageway's, without that one's removal. */
+function combine(own: RoadStyle | undefined, partner: RoadStyle | undefined): RoadStyle | undefined {
+  return carryEdit(own, partner);
+}
+
+/** Whether a piece's measures reach into [from, to]. */
+function overlaps(measure: readonly number[], from: number, to: number): boolean {
   let lo = Infinity;
   let hi = -Infinity;
   for (const v of measure) {
     lo = Math.min(lo, v);
     hi = Math.max(hi, v);
   }
-  const cuts = new Set<number>();
-  for (const range of ranges) for (const v of [range.from, range.to]) if (v > lo + 1e-7 && v < hi - 1e-7) cuts.add(v);
-  const bounds = [lo, ...[...cuts].sort((a, b) => a - b), hi];
-  // Stretches between the cuts, neighbours with the same style together.
-  const stretches: { from: number; to: number; style: RoadStyle | undefined }[] = [];
-  for (let i = 1; i < bounds.length; i++) {
-    const style = mergeStyles(ranges, bounds[i - 1], bounds[i]);
-    const last = stretches[stretches.length - 1];
-    if (last && JSON.stringify(last.style) === JSON.stringify(style)) last.to = bounds[i];
-    else stretches.push({ from: bounds[i - 1], to: bounds[i], style });
-  }
-  if (stretches.length === 1) return [{ piece, style: stretches[0].style, cut: [false, false] }];
-  const out: StyledPiece[] = [];
-  for (const stretch of stretches) {
-    for (const run of sliceByMeasure(piece.points, measure, stretch.from, stretch.to)) {
-      out.push({ piece: { ...piece, points: run.points, measure: run.measure }, style: stretch.style, cut: run.cut });
-    }
-  }
-  return out;
+  return hi >= from - 1e-7 && lo <= to + 1e-7;
 }
 
-/** The runs of a line whose measure is within [from, to], with which of their ends are cuts. */
-function sliceByMeasure(points: Vec2[], measure: number[], from: number, to: number): { points: Vec2[]; measure: number[]; cut: [boolean, boolean] }[] {
-  const out: { points: Vec2[]; measure: number[]; cut: [boolean, boolean] }[] = [];
-  let run: { points: Vec2[]; measure: number[]; cut: [boolean, boolean] } | null = null;
-  const close = (endCut: boolean) => {
-    if (run && run.points.length >= 2) {
-      run.cut[1] = endCut;
-      out.push(run);
-    }
-    run = null;
+/** A per-point value at a distance along the piece. */
+function valueAt(along: number[], values: number[], s: number): number {
+  let i = 1;
+  while (i < along.length - 1 && along[i] < s) i++;
+  const span = along[i] - along[i - 1];
+  const t = span > 0 ? Math.max(0, Math.min(1, (s - along[i - 1]) / span)) : 0;
+  return values[i - 1] + (values[i] - values[i - 1]) * t;
+}
+
+/** The piece between two distances along it, its measures with it. */
+function slicePiece(piece: RoadPiece, along: number[], from: number, to: number): RoadPiece {
+  const points: Vec2[] = [];
+  const at = (s: number) => {
+    let i = 1;
+    while (i < along.length - 1 && along[i] < s) i++;
+    const span = along[i] - along[i - 1];
+    return { i, t: span > 0 ? Math.max(0, Math.min(1, (s - along[i - 1]) / span)) : 0 };
   };
-  const last = points.length - 2;
-  for (let i = 0; i <= last; i++) {
-    const a = measure[i];
-    const b = measure[i + 1];
-    let t0: number;
-    let t1: number;
-    if (Math.abs(b - a) < AT_EPSILON) {
-      const inside = a >= from - 1e-7 && a <= to + 1e-7;
-      t0 = inside ? 0 : 1;
-      t1 = inside ? 1 : 0;
-    } else {
-      const tf = (from - a) / (b - a);
-      const tt = (to - a) / (b - a);
-      t0 = Math.max(0, Math.min(tf, tt));
-      t1 = Math.min(1, Math.max(tf, tt));
-    }
-    if (t1 - t0 < AT_EPSILON) {
-      close(true);
-      continue;
-    }
-    const at = (t: number): Vec2 => [points[i][0] + (points[i + 1][0] - points[i][0]) * t, points[i][1] + (points[i + 1][1] - points[i][1]) * t];
-    if (!run || t0 > AT_EPSILON) {
-      close(true);
-      run = { points: [at(t0)], measure: [a + (b - a) * t0], cut: [!(i === 0 && t0 <= AT_EPSILON), false] };
-    }
-    const current = run as { points: Vec2[]; measure: number[] };
-    current.points.push(at(t1));
-    current.measure.push(a + (b - a) * t1);
-    if (t1 < 1 - AT_EPSILON) close(true);
+  const start = at(from);
+  const end = at(to);
+  const pointOf = ({ i, t }: { i: number; t: number }): Vec2 => [
+    piece.points[i - 1][0] + (piece.points[i][0] - piece.points[i - 1][0]) * t,
+    piece.points[i - 1][1] + (piece.points[i][1] - piece.points[i - 1][1]) * t,
+  ];
+  const valueOf = (values: number[] | undefined, { i, t }: { i: number; t: number }) => (values ? values[i - 1] + (values[i] - values[i - 1]) * t : NaN);
+  const measure: number[] = [];
+  const partner: number[] = [];
+  const push = (p: Vec2, m: number, q: number) => {
+    points.push(p);
+    measure.push(m);
+    partner.push(q);
+  };
+  push(pointOf(start), valueOf(piece.measure, start), valueOf(piece.partnerMeasure, start));
+  for (let k = start.i; k < end.i; k++) {
+    if (along[k] <= from || along[k] >= to) continue;
+    push(piece.points[k], piece.measure?.[k] ?? NaN, piece.partnerMeasure?.[k] ?? NaN);
   }
-  close(false);
-  return out;
+  push(pointOf(end), valueOf(piece.measure, end), valueOf(piece.partnerMeasure, end));
+  return { ...piece, points, measure: piece.measure ? measure : undefined, partnerMeasure: piece.partnerMeasure ? partner : undefined };
 }
 
 /**
@@ -274,6 +310,8 @@ export class TileGrid {
 export class RoadTiles extends TileGrid {
   private readonly boxes: Float64Array;
   private readonly bySegment = new Map<string, number[]>();
+  /** Merged divided roads by the other carriageway's segment, whose edits they carry. */
+  private readonly byPartner = new Map<string, number[]>();
   /** Pieces by the tiles their box reaches, with room for the widest edited ribbon. */
   private readonly near = new Map<number, number[]>();
   /** The generated road polygons cut into tiles, made the first time a tile is asked for. */
@@ -311,6 +349,11 @@ export class RoadTiles extends TileGrid {
       const list = this.bySegment.get(key);
       if (list) list.push(i);
       else this.bySegment.set(key, [i]);
+      if (piece.partner) {
+        const partner = this.byPartner.get(`r:${piece.partner}`);
+        if (partner) partner.push(i);
+        else this.byPartner.set(`r:${piece.partner}`, [i]);
+      }
       for (const tile of this.tilesTouching([minX - reach, minY - reach, maxX + reach, maxY + reach])) {
         const cell = this.near.get(tile);
         if (cell) cell.push(i);
@@ -322,13 +365,15 @@ export class RoadTiles extends TileGrid {
   /** Tiles that a road's ribbon reaches, as it was and as `style` has it, or a route's. A range reaches the pieces lying along it. */
   tilesOf(key: string, style: RoadStyle | undefined): number[] {
     const cut = this.cuts.findIndex((c) => c.key === key);
-    if (cut >= 0) return this.tilesTouching(this.cutBoxes[cut]);
+    if (cut >= 0) return this.routeTiles(cut);
     const out = new Set<number>();
     const gap = this.settings.roads.gapMm;
     const range = parseRoadKey(key);
-    for (const i of this.bySegment.get(roadSegment(key)) ?? []) {
-      const measure = this.pieces[i].measure;
-      if (range && measure && (Math.max(...measure) < range.from - 1e-7 || Math.min(...measure) > range.to + 1e-7)) continue;
+    const segment = roadSegment(key);
+    const own = (this.bySegment.get(segment) ?? []).map((i) => [i, this.pieces[i].measure] as const);
+    const carried = (this.byPartner.get(segment) ?? []).map((i) => [i, this.pieces[i].partnerMeasure] as const);
+    for (const [i, measure] of [...own, ...carried]) {
+      if (range && measure && !overlaps(measure, range.from, range.to)) continue;
       const width = Math.max(this.pieces[i].widthMm, style?.widthMm ?? 0);
       const reach = width / 2 + gap + REACH_MM;
       const b = i * 4;
@@ -338,9 +383,30 @@ export class RoadTiles extends TileGrid {
     return [...out];
   }
 
+  /**
+   * Tiles a route's ground passes through, by its outline's edges. A route
+   * across the model has a box over nearly every tile. A tile wholly inside
+   * the ground would be missed, but a ribbon at most 5 mm wide only covers a
+   * 12 mm tile where a recording scribbles over the same spot.
+   */
+  private routeTiles(cut: number): number[] {
+    const out = new Set<number>();
+    for (const polygon of this.cuts[cut].pieces) {
+      for (const ring of polygon) {
+        for (let i = 0; i < ring.length; i++) {
+          const [ax, ay] = ring[i];
+          const [bx, by] = ring[(i + 1) % ring.length];
+          for (const tile of this.tilesTouching([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)])) out.add(tile);
+        }
+      }
+    }
+    return [...out];
+  }
+
   /** Road keys, whole segments or ranges, with pieces in the model. */
   has(key: string): boolean {
-    return this.bySegment.has(roadSegment(key));
+    const segment = roadSegment(key);
+    return this.bySegment.has(segment) || this.byPartner.has(segment);
   }
 
   /** Route keys the roads gave way to. */
@@ -381,7 +447,9 @@ export class RoadTiles extends TileGrid {
     const all: RoadPiece[] = [];
     const special = new Map<string, { part: string; thickness: number; pieces: RoadPiece[]; styled: StyledPiece[]; cut: boolean }>();
     for (const i of this.near.get(tile) ?? []) {
-      for (const styled of styledPieces(this.pieces[i], styles.ranges(`r:${this.pieces[i].sourceId}`))) {
+      const original = this.pieces[i];
+      const carried = original.partner ? styles.ranges(`r:${original.partner}`) : [];
+      for (const styled of styledPieces(original, styles.ranges(`r:${original.sourceId}`), carried)) {
         const { piece, style } = styled;
         if (style?.removed) continue;
         const sized = style?.widthMm !== undefined ? { ...piece, widthMm: style.widthMm } : piece;

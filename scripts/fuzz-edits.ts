@@ -50,7 +50,7 @@ import { buildPlates } from '../src/core/pipeline/plates';
 import { cloneSettings, DEFAULT_EXPORT, DEFAULT_PALETTE, sanitizeSettings, type AreaShape, type ModelSettings } from '../src/core/settings';
 import { FONTS } from '../src/core/svgmap/text/fonts';
 import { FontLoader } from '../src/core/svgmap/text/loadFont';
-import { ROLE_GROUP, type MeshPart } from '../src/core/types';
+import { ROLE_GROUP, type MeshPart, type Polygon } from '../src/core/types';
 import { parseTrackFile } from '../src/core/tracks/parse';
 import { decodeTrack, encodeTrack, type TrackLines } from '../src/core/tracks/track';
 import { folderStore, setUpLidar, threadPool } from './lidar-node';
@@ -88,6 +88,8 @@ function presetBounds(name: string): string {
 const TEXTS = ['Chicago', 'HOME', 'Race Day 2026', 'i', '', ' ', 'ÅÉÎ øß', '日本語', '🏁 Finish', 'W'.repeat(40), 'a.b-c_d'];
 const COLOURS = ['#E4002B', '#0057B8', '#FF8200', '#7A3E9D', '#009A44', '#E0A800', '#00A3AD', '#D62598', '#FFFFFF', '#000000'];
 const GROUPS = ['buildings', 'roads', 'water', 'green', 'terrain', 'sand'];
+// A point a hair from an edge counts as on it, in the floating check.
+const NUDGES = [[1e-4, 0], [-1e-4, 0], [0, 1e-4], [0, -1e-4]] as const;
 const CLEARANCE_MM = 0.2;
 
 /** Routes from --route files, stored and read back as the app does. */
@@ -352,6 +354,25 @@ async function main() {
           { widthMm: undefined, heightMm: undefined },
         ]);
         edits = { ...edits, objects: writeRoads(edits.objects, [key], patch).objects };
+        return true;
+      },
+    ],
+    [
+      'other carriageway',
+      2,
+      () => {
+        // A range of a carriageway merged onto the other's line, which the merged line carries.
+        const merged = spec.edit!.roads.filter((piece) => piece.partner);
+        if (!merged.length) return false;
+        const segment = `r:${pick(merged).partner}`;
+        // One of its blocks, or any range of it.
+        const bounds = blockBounds(roadEdits(edits.objects).get(segment), spec.edit!.junctions?.get(segment));
+        const i = Math.floor(rand() * (bounds.length - 1));
+        const a = rand();
+        const b = Math.min(1, a + rand() * 0.6);
+        if (b - a < 0.01) return false;
+        const key = chance(0.5) ? roadKey(segment, bounds[i], bounds[i + 1]) : roadKey(segment, a, b);
+        edits = { ...edits, objects: writeRoads(edits.objects, [key], pick<Partial<ObjectEdit>>([{ layer: layerId() }, { widthMm: 0.2 + rand() * 6 }, { heightMm: 0.1 + rand() * 3 }, { removed: true }])).objects };
         return true;
       },
     ],
@@ -683,9 +704,12 @@ async function main() {
       for (const [x, y] of interiorPoints(solid.polygon, 0.5, 12)) {
         const bottom = zOf(solid.bottom, x, y);
         if (bottom <= model.baseZ + 1e-6 || bottom <= heightAt(x, y) + 0.05) continue;
+        // interiorPoints can land on the piece's own edge, and a piece held by
+        // a deck shares that edge with it, where pointInPolygon may say outside.
+        const within = (polygon: Polygon) => pointInPolygon(x, y, polygon) || NUDGES.some(([dx, dy]) => pointInPolygon(x + dx, y + dy, polygon));
         const held =
           solids.some(({ solid: other, box }) => {
-            if (other === solid || x < box[0] || x > box[2] || y < box[1] || y > box[3] || !pointInPolygon(x, y, other.polygon)) return false;
+            if (other === solid || x < box[0] - 1e-3 || x > box[2] + 1e-3 || y < box[1] - 1e-3 || y > box[3] + 1e-3 || !within(other.polygon)) return false;
             return zOf(other.bottom, x, y) <= bottom + 0.05 && zOf(other.top, x, y) >= bottom - 0.05;
           }) ||
           caps.some(({ cap, box }) => {

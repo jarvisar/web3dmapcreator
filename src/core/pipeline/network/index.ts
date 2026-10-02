@@ -90,7 +90,7 @@ export function tidyNetwork(input: NetworkInput): { pieces: RoadPiece[]; stats: 
     // Cull works on whole candidates, so each part stands in as one.
     const lines = parts.map((p) => ({ ...candidates[p.source], points: p.points }));
     const result = cull(lines, weld(lines, NODE_MM), parts.map((p) => p.ends), { gap, stub: STUB_MM });
-    parts = result.parts.map((q) => ({ ...q, source: parts[q.source].source, merged: parts[q.source].merged }));
+    parts = result.parts.map((q) => ({ ...q, source: parts[q.source].source, merged: parts[q.source].merged, partners: parts[q.source].partners }));
     culled = result;
   }
   const afterCull = length(parts);
@@ -105,7 +105,11 @@ export function tidyNetwork(input: NetworkInput): { pieces: RoadPiece[]; stats: 
   const out = pruned.parts.sort((a, b) => a.source - b.source);
   const round = (mm: number) => Math.round(mm * 10) / 10;
   return {
-    pieces: out.map((part) => ({ ...candidates[part.source].piece, points: part.points })),
+    // A merged line keeps the other carriageway's segments, whose edits it carries (edit/roads.ts).
+    pieces: out.map((part) => {
+      const piece = { ...candidates[part.source].piece, points: part.points };
+      return part.partners?.length ? { ...piece, partners: part.partners.map((i) => candidates[i].piece.sourceId) } : piece;
+    }),
     stats: {
       network_culled_mm: round(afterMerge - afterCull),
       network_culled_routes: culled.droppedRoutes,

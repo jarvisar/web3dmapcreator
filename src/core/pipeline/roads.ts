@@ -38,6 +38,11 @@ export interface RoadPiece extends SubSegment {
   widthMm: number;
   /** Where each point lies along the segment, 0 to 1, for edits to a block of it (measure.ts). Set once laid out. */
   measure?: number[];
+  /** A divided road's merged line: the other carriageway's segments (network/divided.ts). */
+  partners?: string[];
+  /** The one of them it lies along, and where each point lies along that, once laid out. */
+  partner?: string;
+  partnerMeasure?: number[];
 }
 
 export interface RoadResult {

@@ -1,6 +1,6 @@
 import { Copy, Crosshair, Eraser, Plus, RotateCcw, Route, Search, Spline, Trash2, TriangleAlert, Undo2, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
-import { parseRoadKey, roadSegment } from '../../../core/edit/blocks';
+import { parseRoadKey, roadEditOf, roadSegment } from '../../../core/edit/blocks';
 import { editOf, isPartKey, kindOf, objectOf, partKey, shapeKey, twinOf } from '../../../core/edit/keys';
 import { buildingHeightRange, EDIT_LIMITS, editCount, followsGround, MAX_TEXT_LENGTH, type AddedShape, type EditLayer, type ModelEdits } from '../../../core/edit/types';
 import { Projection } from '../../../core/geo/projection';
@@ -34,6 +34,7 @@ import { getEditData, type EditData } from '../../state/model';
 import { useApp } from '../../state/store';
 import { FilamentPopover } from '../../panels/ColourPopover';
 import { describeCounts, describeKey, roadClassName } from './describe';
+import { appliedRoadEdit } from '../blocks';
 import { BackupNote } from '../../components/BackupNote';
 
 const NEW_LAYER = '__new';
@@ -128,15 +129,17 @@ function ObjectControls({
   makeDrawn: InspectorProps['makeDrawn'];
   preview: InspectorProps['preview'];
 }) {
-  const applied = (key: string) => editOf(edits, key, data.objects[key]?.at);
+  // A road on a divided road's merged line shows the other carriageway's edits it carries too.
+  const applied = (key: string) => (kindOf(key) === 'road' ? appliedRoadEdit(edits, key, data.roads) : editOf(edits, key, data.objects[key]?.at));
   const allRemoved = keys.every((key) => applied(key)?.removed);
   const layers = new Set(keys.map((key) => applied(key)?.layer ?? ''));
   const layer = layers.size === 1 ? [...layers][0] : MIXED;
   // Once per change of the edits, not every render: each key against every
   // edit took 2.6 s a hover with thousands of both.
   const editedKeys = useMemo(() => new Set(Object.keys(edits.objects).flatMap((k) => [k, objectOf(k)])), [edits.objects]);
-  // A block of a road is edited when an edit of the road reaches it.
-  const edited = keys.some((key) => editedKeys.has(key) || (kindOf(key) === 'road' && Object.keys(applied(key) ?? {}).length > 0));
+  // A block of a road is edited when an edit of its own road reaches it. What
+  // it carries from the other carriageway isn't, since Reset can't clear that.
+  const edited = keys.some((key) => editedKeys.has(key) || (kindOf(key) === 'road' && Object.keys(roadEditOf(edits.objects, key) ?? {}).length > 0));
   const only = (kind: string) => kinds.size === 1 && kinds.has(kind);
   const streets = [...kinds].every((kind) => kind === 'road' || kind === 'bridge');
   const tag = keys.join(',');
@@ -303,19 +306,22 @@ function BuildingHeight({ keys, edits, data, heightOf, tag }: { keys: string[]; 
 function RoadSize({ keys, edits, data, tag }: { keys: string[]; edits: ModelEdits; data: EditData; tag: string }) {
   const lines = data.roads;
   const roads = keys.filter((key) => kindOf(key) === 'road');
+  // As it applies, the other carriageway's included on a merged divided road, and as it was set, for Reset.
+  const applied = (key: string) => (kindOf(key) === 'road' ? appliedRoadEdit(edits, key, lines) : editOf(edits, key, data.objects[key]?.at));
+  const own = (key: string) => (kindOf(key) === 'road' ? roadEditOf(edits.objects, key) : editOf(edits, key, data.objects[key]?.at));
   const widthOf = (key: string) => {
-    const edited = editOf(edits, key, data.objects[key]?.at)?.widthMm;
+    const edited = applied(key)?.widthMm;
     if (edited !== undefined) return edited;
     if (kindOf(key) === 'bridge') return data.objects[key]?.widthMm ?? 0.5;
     const piece = lines ? lines.keys.indexOf(roadSegment(key)) : -1;
     return piece >= 0 ? lines!.widths[piece] : 0.5;
   };
   const widths = keys.map(widthOf);
-  const heights = roads.map((key) => editOf(edits, key)?.heightMm ?? lines?.thicknessMm ?? 0);
+  const heights = roads.map((key) => applied(key)?.heightMm ?? lines?.thicknessMm ?? 0);
   const sameWidth = widths.every((w) => Math.abs(w - widths[0]) < 0.005);
   const sameHeight = heights.every((h) => Math.abs(h - heights[0]) < 0.005);
-  const widthEdited = keys.some((key) => editOf(edits, key, data.objects[key]?.at)?.widthMm !== undefined);
-  const heightEdited = roads.some((key) => editOf(edits, key)?.heightMm !== undefined);
+  const widthEdited = keys.some((key) => own(key)?.widthMm !== undefined);
+  const heightEdited = roads.some((key) => own(key)?.heightMm !== undefined);
   const width = sameWidth ? widths[0] : Math.max(...widths);
   if (!widths.length) return null;
   return (
@@ -714,7 +720,8 @@ function LayerField({ label, value, groups, onChange, help }: { label: string; v
 
 /** Whether an edit's key is in the model shown, so edits made on another area can be told apart. */
 function inModel(key: string, data: EditData): boolean {
-  if (kindOf(key) === 'road') return data.roads?.keys.includes(roadSegment(key)) ?? false;
+  // A carriageway merged onto the other's line has none of its own, but its edits still carry.
+  if (kindOf(key) === 'road') return (data.roads?.keys.includes(roadSegment(key)) || data.roads?.partners?.includes(roadSegment(key))) ?? false;
   if (kindOf(key) === 'tree') return true;
   return objectOf(key) in data.objects;
 }

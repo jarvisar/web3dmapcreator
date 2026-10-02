@@ -38,7 +38,7 @@ import type { Projection } from '../../core/geo/projection';
 import { roadEdits, roadSegment } from '../../core/edit/blocks';
 import { kindOf } from '../../core/edit/keys';
 import { splitTarget, type SplitTarget } from './blocks';
-import type { RoadMark } from './roads';
+import type { RoadMark, RoadPick } from './roads';
 import type { ObjectFacts } from '../../core/edit/session';
 import { emptyEdits, followsGround, MAX_SHAPE_POINTS, type AddedShape, type ModelEdits } from '../../core/edit/types';
 import type { EditTool } from '../state/store';
@@ -443,19 +443,20 @@ export class EditController {
   }
 
   /** What the split tool would do at a point of the page, or null off the roads. */
-  private splitAt(x: number, y: number): SplitTarget | null {
+  private splitAt(x: number, y: number): { target: SplitTarget; pick: RoadPick } | null {
     const roads = this.engine.roads;
     const pick = this.engine.roadPickAt(x, y);
     if (!roads || !pick) return null;
     const segment = roadSegment(pick.key);
     const splits = roadEdits(this.state.edits.objects).get(segment)?.splits ?? [];
-    return splitTarget(roads, this.engine.blockBoundsOf(segment), splits, pick);
+    const target = splitTarget(roads, this.engine.blockBoundsOf(segment), splits, pick);
+    return target ? { target, pick } : null;
   }
 
   private click(x: number, y: number, modifiers: { additive: boolean; part: boolean }): void {
     const tool = this.state.tool;
     if (tool === 'split') {
-      const target = this.splitAt(x, y);
+      const target = this.splitAt(x, y)?.target;
       if (target) this.handlers.split(target);
       this.splitPreview = null;
       this.updateGuide();
@@ -490,8 +491,7 @@ export class EditController {
     if (!at || this.drag) return;
     const tool = this.state.tool;
     if (tool === 'split') {
-      const target = this.splitAt(at.x, at.y);
-      const pick = target ? this.engine.roadPickAt(at.x, at.y) : null;
+      const { target, pick } = this.splitAt(at.x, at.y) ?? { target: null, pick: null };
       this.engine.setHover(target?.kind === 'split' && pick ? pick.key : null);
       this.handlers.hover(null, at.x, at.y);
       this.splitPreview = target && pick ? { target, mark: target.kind === 'split' ? { piece: pick.piece, x: pick.x, y: pick.y, z: pick.z, dx: pick.dx, dy: pick.dy } : target.mark } : null;
@@ -778,17 +778,24 @@ export class EditController {
   private rebuildMarks(): void {
     const roads = this.engine.roads;
     const { enabled, edits } = this.state;
-    const key = enabled && roads ? JSON.stringify([...roadEdits(edits.objects)].filter(([, entry]) => entry.splits.length).map(([segment, entry]) => [segment, entry.splits])) : '';
+    const marks: RoadMark[] = [];
+    if (enabled && roads) {
+      // On a shown piece where there's one: a split's mark is also the end of
+      // the block before it, which may be removed while the next one shows.
+      const shown = (piece: number) => this.engine.roadShown(piece);
+      for (const [segment, entry] of roadEdits(edits.objects)) {
+        for (const at of entry.splits) {
+          const mark = roads.markAt(segment, at, shown);
+          if (mark && shown(mark.piece)) marks.push(mark);
+        }
+      }
+    }
+    // The bars follow the width and height of the road they cross.
+    const key = JSON.stringify(marks.map((m) => [m.piece, m.x, m.y, this.engine.roadWidth(m.piece), this.engine.roadHeight(m.piece)]));
     if (key === this.marksKey) return;
     this.marksKey = key;
     this.clearGroup(this.marks, true);
-    if (!enabled || !roads) return;
-    for (const [segment, entry] of roadEdits(edits.objects)) {
-      for (const at of entry.splits) {
-        const mark = roads.markAt(segment, at);
-        if (mark && this.engine.roadShown(mark.piece)) this.marks.add(this.bar(mark, this.splitMaterial));
-      }
-    }
+    for (const mark of marks) this.marks.add(this.bar(mark, this.splitMaterial));
     this.layout();
   }
 

@@ -7,7 +7,7 @@
 // changes.
 
 import type { LonLat } from '../types';
-import { MAX_SPLITS, normalRoadKey, roundAt } from './blocks';
+import { MAX_RANGES, MAX_SPLITS, normalRoadKey, roadSegment, roundAt } from './blocks';
 
 /** Saved edits of another version are read as far as they still make sense. */
 export const EDITS_VERSION = 2;
@@ -174,11 +174,18 @@ export function sanitizeEdits(raw: unknown): ModelEdits {
   }
 
   if (isObject(raw.objects)) {
+    const ranges = new Map<string, number>();
     for (const [name, value] of Object.entries(raw.objects)) {
       if (!isObject(value) || name.length > 300 || !/^[a-z]{1,2}:/.test(name)) continue;
       // A range of a road is written one way, so one block has one key.
       const key = name.startsWith('r:') ? normalRoadKey(name) : name;
       if (!key) continue;
+      if (key.startsWith('r:') && key.includes('@')) {
+        const segment = roadSegment(key);
+        const count = ranges.get(segment) ?? 0;
+        if (count >= MAX_RANGES) continue;
+        ranges.set(segment, count + 1);
+      }
       const edit: ObjectEdit = {};
       if (key.startsWith('r:') && !key.includes('@') && Array.isArray(value.splits)) {
         const splits = [...new Set(value.splits.filter((v): v is number => finite(v) && v > 0 && v < 1).map(roundAt))].filter((v) => v > 0 && v < 1);

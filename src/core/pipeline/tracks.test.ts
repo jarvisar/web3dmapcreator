@@ -189,6 +189,71 @@ describe('routes on a map model', () => {
     expect(spec.edit!.kept.tracks).toEqual([]);
   });
 
+  it('stays on a street under a viaduct beside it, and rides the viaduct when on it', async () => {
+    // A street along y 0 with an elevated road 3 m off its line, not joined to it, on dry land.
+    const data: SourceData = {
+      release: 'test',
+      features: {
+        segment: [
+          feature({ type: 'LineString', coordinates: [at(-700, 0), at(700, 0)] }, { subtype: 'road', class: 'secondary' }),
+          feature({ type: 'LineString', coordinates: [at(-300, 3), at(300, 3)] }, { subtype: 'road', class: 'primary', road_flags: [{ values: ['is_bridge'] }] }),
+          feature({ type: 'LineString', coordinates: [at(0, -400), at(0, 400)] }, { subtype: 'road', class: 'residential' }),
+        ],
+      },
+    };
+    const lift = async (points: LonLat[], snap: boolean) => {
+      const settings = cloneSettings();
+      settings.terrain.resolution = 96;
+      settings.bridges.enabled = true;
+      settings.tracks.snap = snap;
+      const spec = await generateModel({ area, settings, data, elevation: flat, tracks: [{ id: 'v', name: 'V', lines: [points] }] });
+      const [x, y] = model(150, 1.5);
+      const solid = routeSolids(spec).find((s) => pointInPolygon(x, y, s.polygon as Polygon));
+      return { decks: spec.stats.route_decks ?? 0, top: solid ? valueAt(solid.top, x, y) : null };
+    };
+    const line = (from: [number, number], to: [number, number]): LonLat[] => {
+      const steps = Math.round(Math.hypot(to[0] - from[0], to[1] - from[1]) / 3);
+      return Array.from({ length: steps + 1 }, (_, k) => at(from[0] + ((to[0] - from[0]) * k) / steps, from[1] + ((to[1] - from[1]) * k) / steps));
+    };
+    // Up the cross street and along the street, recorded a metre off it.
+    const street = [...line([1, -300], [1, -1]), ...line([3, -1], [400, -1])];
+    expect((await lift(street, true)).decks).toBe(0);
+    // The same unsnapped: it comes in from the side, so it's under the deck.
+    expect((await lift([...line([0, -300], [0, 0.5]), ...line([3, 0.5], [400, 0.5])], false)).decks).toBe(0);
+    // Along the deck itself, snapped and not.
+    const wobble = (points: LonLat[]) => points.map(([lon, lat], i): LonLat => [lon, lat + (Math.sin(i) * 0.5) * M_LAT]);
+    const snapped = await lift(wobble(line([-290, 3.5], [290, 3.5])), true);
+    expect(snapped.decks).toBeGreaterThan(0);
+    expect(snapped.top).toBeGreaterThan(1);
+    expect((await lift(wobble(line([-400, 3.5], [400, 3.5])), false)).decks).toBeGreaterThan(0);
+  });
+
+  it('puts markers at the recorded ends, not where the area cut the route', async () => {
+    // Starts inside, leaves through the east edge, comes back in from the
+    // north and finishes inside. Clipped, the piece coming back in is first.
+    const width = 0.6;
+    const out: TrackLines = { id: 'out', name: 'Out', lines: [[at(-600, 300), at(1200, 300), at(1200, 1000), at(-500, 1000), at(-500, 380)]] };
+    const { spec } = await build([out], (s) => {
+      s.tracks.snap = false;
+      s.tracks.widthMm = width;
+    });
+    const solids = routeSolids(spec);
+    const [sx, sy] = model(-600, 300);
+    expect(covers(solids, [sx - width, sy])).toBe(true);
+    const [fx, fy] = model(-500, 380);
+    expect(covers(solids, [fx + width, fy])).toBe(true);
+    // Starting off the model, it gets no dot.
+    const outside: TrackLines = { id: 'outside', name: 'Outside', lines: [[at(-900, 450), at(-400, 450)]] };
+    const { spec: off } = await build([outside], (s) => {
+      s.tracks.snap = false;
+      s.tracks.widthMm = width;
+    });
+    const [cx, cy] = model(-740, 450);
+    expect(covers(routeSolids(off), [cx, cy + width])).toBe(false);
+    const [gx, gy] = model(-400, 450);
+    expect(covers(routeSolids(off), [gx, gy + width])).toBe(true);
+  });
+
   it('is left out with the layer off or without routes', async () => {
     const { spec: off } = await build([run()], (s) => (s.tracks.enabled = false));
     expect(off.layers.some((layer) => layer.id === 'routes')).toBe(false);

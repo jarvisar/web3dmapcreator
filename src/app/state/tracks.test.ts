@@ -135,6 +135,34 @@ describe('routes in links, files and storage', () => {
     expect(shared.tracks).toEqual([here]);
   });
 
+  it('count as on the area when a line crosses it with no point on it', () => {
+    // Two points 20 km either side of the area, the straight line between them through its middle.
+    const across = track('across', [
+      [lon0 - 0.25, lat0],
+      [lon0 + 0.25, lat0 + 0.001],
+    ]);
+    const past = track('past', [
+      [lon0 - 0.25, lat0 + 0.2],
+      [lon0 + 0.25, lat0 + 0.2],
+    ]);
+    const { tracks: scoped, left } = tracksForArea([across, past], DEFAULT_AREA);
+    expect(scoped).toEqual([across]);
+    expect(left).toBe(1);
+  });
+
+  it('come back from our own link without a copy, simplified or not', () => {
+    vi.stubGlobal('location', { href: 'https://citymodel.example/' });
+    let seed = 5;
+    const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 2;
+    // About 18 km recorded every 3 m, which the link has to simplify.
+    const noisy = Array.from({ length: 6000 }, (_, i): LonLat => [lon0 - 0.004 + i * 3 * M * 1.35 + random() * 3 * M, lat0 + Math.sin(i / 80) * 200 * M + random() * 3 * M]);
+    const ours = [track('run', noisy)];
+    const shared = parseHash(new URL(shareUrl(DEFAULT_AREA, 'model', defaultSvgSettings(), emptyEdits(), ours).url).hash);
+    expect(shared.tracks).toHaveLength(1);
+    expect(shared.tracks![0].lines).not.toEqual(ours[0].lines);
+    expect(bringIn(emptyEdits(), { routes: [], hiddenLines: [] }, { tracks: shared.tracks! }, ours)).toBeNull();
+  });
+
   it('are simplified to fit a link, or left out when they cannot be', () => {
     let seed = 3;
     const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 2;

@@ -387,9 +387,10 @@ export function resetObjects(keys: string[]): void {
   const edits = get().edits;
   const blocks = keys.filter((key) => key.startsWith('r:') && key.includes('@'));
   const written = writeRoads(edits.objects, blocks, { removed: undefined, layer: undefined, heightMm: undefined, widthMm: undefined });
-  const objects = written.objects;
   const targets = new Set(keys.filter((key) => !blocks.includes(key)));
-  for (const key of keys) if (key.startsWith('r:') && !key.includes('@')) for (const range of segmentKeys(objects, key)) targets.add(range);
+  for (const key of keys) if (key.startsWith('r:') && !key.includes('@')) for (const range of segmentKeys(written.objects, key)) targets.add(range);
+  // A copy to delete from: segmentKeys indexed the written object, and the index is kept by identity.
+  const objects = { ...written.objects };
   const dropped: string[] = [...written.touched];
   for (const key of Object.keys(objects)) {
     if (!targets.has(key) && !targets.has(objectOf(key))) continue;

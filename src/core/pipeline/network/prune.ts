@@ -238,7 +238,7 @@ export function prune(input: Part[], candidates: Candidate[], options: PruneOpti
       const reachesEnd = to >= lengths[i] - tolerance;
       const points = startsAtEnd && reachesEnd ? p.points : slice(p.points, cums[i], from, to);
       if (points.length < 2) continue;
-      out.push({ source: p.source, points, ends: [startsAtEnd ? p.ends[0] : 'met', reachesEnd ? p.ends[1] : 'met'] });
+      out.push({ source: p.source, points, ends: [startsAtEnd ? p.ends[0] : 'met', reachesEnd ? p.ends[1] : 'met'], merged: p.merged, partners: p.partners });
     }
   });
   return { parts: out, stubs, nubs, islands: small.size };

@@ -169,7 +169,7 @@ async function startSession(id: number, spec: ModelSpec, request: GenerateReques
 }
 
 function roadTransfers(lines: NonNullable<GenerateResult['roads']>): Transferable[] {
-  return [lines.groups.buffer, lines.widths.buffer, lines.starts.buffer, lines.points.buffer, ...(lines.measures ? [lines.measures.buffer] : [])];
+  return [lines.groups.buffer, lines.widths.buffer, lines.starts.buffer, lines.points.buffer, ...(lines.measures ? [lines.measures.buffer] : []), ...(lines.partnerMeasures ? [lines.partnerMeasures.buffer] : [])];
 }
 
 /** Applies the newest edit request, one at a time, never during a generation. */
@@ -757,7 +757,8 @@ async function exportModel(id: number, request: ExportRequest) {
       { stage: 'write', seconds: writeSeconds(lastTriangles) },
     ]);
     progress.begin('plates', 'Preparing parts');
-    const spec = session && withEdits ? await session.edited(edits, request.palette) : lastSpec;
+    // Hidden parts go in too: a drawn road left out of the export mustn't clear the trees over it.
+    const spec = session && withEdits ? await session.edited(edits, request.palette, request.excludeParts ?? []) : lastSpec;
     const { plates, failed } = await buildPlates(spec, {
       multiPlate: request.multiPlate,
       sectionWidthMm: request.sectionWidthMm,

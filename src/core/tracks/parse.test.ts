@@ -4,7 +4,7 @@ import type { LonLat } from '../types';
 import { readFit } from './fitfile';
 import { parseTrackFile, TrackFileError } from './parse';
 import { decodePolyline, encodePolyline } from './polyline';
-import { decodeTrack, encodeTrack, MAX_TRACK_POINTS, mergeTracks, sanitizeTracks, simplifyTrack, trackLengthM, type Track } from './track';
+import { decodeTrack, encodeTrack, MAX_TRACK_POINTS, mergeTracks, sanitizeTracks, simplifyLine, simplifyTrack, trackLengthM, type Track } from './track';
 
 const bytes = (text: string) => strToU8(text).buffer as ArrayBuffer;
 const parse = (name: string, text: string) => parseTrackFile(name, bytes(text))[0];
@@ -97,6 +97,32 @@ describe('simplifying tracks', () => {
     const total = simplifyTrack([noisy]).reduce((n, l) => n + l.length, 0);
     expect(total).toBeLessThanOrEqual(MAX_TRACK_POINTS);
     expect(total).toBeGreaterThan(100);
+  });
+
+  it('keep what Douglas-Peucker keeps at the tolerance they end up at', () => {
+    let seed = 9;
+    const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 2;
+    // Near the equator, so degrees are metres times one factor. Points 2 m apart or more.
+    const noisy: LonLat[] = Array.from({ length: 5000 }, (_, i) => [i * 3 * M + random() * 0.5 * M, Math.sin(i / 200) * 500 * M + random() * 0.5 * M]);
+    const perDegree = (Math.PI / 180) * 6371008.8;
+    for (const tolerance of [1, 2.5, 7]) expect(simplifyTrack([noisy], tolerance, Infinity)[0]).toEqual(simplifyLine(noisy, tolerance / perDegree));
+    // Coarser by half again until it fits.
+    const fitted = simplifyTrack([noisy], 1, 300)[0];
+    let tolerance = 1;
+    while (simplifyLine(noisy, tolerance / perDegree).length > 300) tolerance *= 1.5;
+    expect(fitted).toEqual(simplifyLine(noisy, tolerance / perDegree));
+  });
+
+  it('thin points logged closer than the tolerance first', () => {
+    // A straight walk logged every 2 cm, then a corner.
+    const dense: LonLat[] = Array.from({ length: 5001 }, (_, i): LonLat => [i * 0.02 * M, 0]);
+    dense.push([100 * M, 50 * M]);
+    const [line] = simplifyTrack([dense]);
+    expect(line).toHaveLength(3);
+    expect(line[0]).toEqual(dense[0]);
+    expect(line[2]).toEqual(dense[5001]);
+    // The corner can move back by the thinning's 0.2 m at most.
+    expect(Math.abs(line[1][0] - dense[5000][0]) / M).toBeLessThanOrEqual(0.2 + 1e-6);
   });
 
   it('measure and decode what they encode', () => {
@@ -305,5 +331,22 @@ describe('saved tracks', () => {
     // Their b is another route, so it gets an id of its own.
     expect(new Set(merged.tracks.map((t) => t.id)).size).toBe(4);
     expect(mergeTracks(ours, [track('z', 1)]).tracks).toBe(ours);
+  });
+
+  it('know their own route back from a link that simplified it', () => {
+    let seed = 2;
+    const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 2;
+    const points: LonLat[] = Array.from({ length: 3000 }, (_, i) => [i * 3 * M + random() * 2 * M, Math.sin(i / 100) * 300 * M + random() * 2 * M]);
+    const run: Track = { id: 'run1', name: 'Run', visible: true, lines: encodeTrack([points]) };
+    const linked = { ...run, lines: encodeTrack(decodeTrack(run), 12) };
+    expect(linked.lines).not.toEqual(run.lines);
+    expect(mergeTracks([run], [linked]).added).toBe(0);
+    // Passed on, it got a new id but kept its name.
+    expect(mergeTracks([run], [{ ...linked, id: 'other' }]).added).toBe(0);
+    // Another run of the same course under another name is its own.
+    expect(mergeTracks([run], [{ ...linked, id: 'other', name: 'Run again' }]).added).toBe(1);
+    // The same name somewhere else is too.
+    const moved = { ...run, lines: encodeTrack([points.map(([lon, lat]): LonLat => [lon, lat + 40 * M])]) };
+    expect(mergeTracks([run], [moved]).added).toBe(1);
   });
 });

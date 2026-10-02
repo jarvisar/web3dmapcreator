@@ -806,7 +806,8 @@ function applyStretch(
     if (end) mid[mid.length - 1] = end;
     const line = dedupe(mid, 1e-6);
     if (line.length >= 2) {
-      added.push({ source, ...orient(line, [lo - m.from <= EPSILON ? head : 'met', m.to - hi <= EPSILON ? tail : 'met'], m.reversed), merged: true });
+      const partners = [...new Set(yInside.map((y) => parts[y.part].source))];
+      added.push({ source, ...orient(line, [lo - m.from <= EPSILON ? head : 'met', m.to - hi <= EPSILON ? tail : 'met'], m.reversed), merged: true, partners });
     }
     if (m.to - hi > EPSILON) {
       const after = bendIn(slice(X.points, X.cum, hi, m.to), true, midAt(hi));

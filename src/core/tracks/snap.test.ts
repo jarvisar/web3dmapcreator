@@ -116,6 +116,30 @@ describe('snapping a track to the roads', () => {
     expect(Math.min(...dense(lines).map(([x, y]) => Math.hypot(x - middle[0], y - middle[1])))).toBeLessThan(8);
   });
 
+  it('says which line each stretch was matched along', () => {
+    const park: Vec2[] = [
+      [50, 300],
+      [300, 300],
+      [400, 400],
+      [700, 400],
+    ];
+    const { lines, via } = snapToNetwork([recorded(park, 4, 3)], network, { unitsPerMetre: 1 });
+    expect(via).toHaveLength(1);
+    expect(via[0]).toHaveLength(lines[0].length - 1);
+    const lengths = new Map<number, number>();
+    lines[0].slice(1).forEach(([bx, by], i) => {
+      const [ax, ay] = lines[0][i];
+      const middle: Vec2 = [(ax + bx) / 2, (ay + by) / 2];
+      if (via[0][i] >= 0) expect(distanceToPath(middle, network[via[0][i]])).toBeLessThan(0.01);
+      else expect(Math.hypot(middle[0] - 350, middle[1] - 350)).toBeLessThan(110);
+      lengths.set(via[0][i], (lengths.get(via[0][i]) ?? 0) + Math.hypot(bx - ax, by - ay));
+    });
+    // Mostly the streets at y 300 and 400, and the diagonal across the block off them.
+    expect(lengths.get(7)).toBeGreaterThan(200);
+    expect(lengths.get(9)).toBeGreaterThan(250);
+    expect(lengths.get(-1)).toBeGreaterThan(100);
+  });
+
   it('follows an out and back on the same street', () => {
     const outAndBack: Vec2[] = [
       [100, 500],

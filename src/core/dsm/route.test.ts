@@ -14,7 +14,7 @@ import { compose } from './compose';
 import { gridSpec } from './grid';
 import { emptyLayers } from './layers';
 import { surfaceModel } from './model';
-import { BUILDING_CELL, CUT_CELL, ProfileIndex, routeProfile, WATER_CELL, type ProfileGrids } from './route';
+import { BUILDING_CELL, CUT_CELL, ProfileIndex, routeProfile, WATER_CELL, type RouteGrids } from './route';
 
 const CELL = 0.5;
 const NX = 240;
@@ -22,7 +22,7 @@ const NY = 21;
 const GROUND = 2;
 
 /** A strip of model, with the surface and bare ground given per column. */
-function grids(surface: (i: number) => number, ground: (i: number) => number = () => GROUND, water: (i: number) => boolean = () => false): ProfileGrids {
+function grids(surface: (i: number) => number, ground: (i: number) => number = () => GROUND, water: (i: number) => boolean = () => false): RouteGrids {
   const values = (fn: (i: number) => number) => Float32Array.from({ length: NX * NY }, (_, k) => fn(k % NX));
   const grid = { minX: 0, minY: 0, step: CELL, cols: NX, rows: NY };
   return {

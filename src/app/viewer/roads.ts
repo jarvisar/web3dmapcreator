@@ -37,6 +37,8 @@ export class RoadIndex {
   private readonly grid = new Map<number, number[]>();
   private readonly byKey = new Map<string, number[]>();
   private readonly bySegment = new Map<string, number[]>();
+  /** Merged divided roads by the other carriageway's segment, which they stand for too. */
+  private readonly byPartner = new Map<string, number[]>();
   /** Segment start point index per segment, and its piece. */
   private readonly segmentPiece: Int32Array;
   private readonly segmentStart: Int32Array;
@@ -55,6 +57,12 @@ export class RoadIndex {
       const pieces = this.bySegment.get(segment);
       if (pieces) pieces.push(piece);
       else this.bySegment.set(segment, [piece]);
+      const partner = lines.partners?.[piece];
+      if (partner) {
+        const carried = this.byPartner.get(partner);
+        if (carried) carried.push(piece);
+        else this.byPartner.set(partner, [piece]);
+      }
       for (let p = starts[piece]; p < starts[piece + 1] - 1; p++) {
         this.segmentPiece[s] = piece;
         this.segmentStart[s] = p;
@@ -80,21 +88,30 @@ export class RoadIndex {
   }
 
   has(key: string): boolean {
-    return this.byKey.has(key) || this.bySegment.has(key);
+    return this.byKey.has(key) || this.bySegment.has(key) || this.byPartner.has(key);
   }
 
-  /** The pieces of a block, a whole segment, or any range of one: those whose middle lies in it. */
+  /**
+   * The pieces of a block, a whole segment, or any range of one: those whose
+   * middle lies in it, and a divided road's merged line standing for it.
+   */
   piecesOf(key: string): number[] {
-    const exact = this.byKey.get(key);
-    if (exact) return exact;
     const range = parseRoadKey(key);
-    if (!range) return [];
-    const pieces = this.bySegment.get(range.segment) ?? [];
-    if (range.from <= 0 && range.to >= 1) return pieces;
-    return pieces.filter((piece) => {
-      const at = this.middleAt(piece);
-      return at === at && at >= range.from - 1e-7 && at <= range.to + 1e-7;
-    });
+    const carried = range ? (this.byPartner.get(range.segment) ?? []) : [];
+    const exact = this.byKey.get(key);
+    if (exact && !carried.length) return exact;
+    if (!range) return exact ?? [];
+    const whole = range.from <= 0 && range.to >= 1;
+    const inside = (at: number) => whole || (at === at && at >= range.from - 1e-7 && at <= range.to + 1e-7);
+    const own = exact ?? (this.bySegment.get(range.segment) ?? []).filter((piece) => inside(this.middleAt(piece)));
+    return [...own, ...carried.filter((piece) => inside(this.partnerMiddleAt(piece)))];
+  }
+
+  /** Where a merged divided road's middle lies along the other carriageway, NaN when unknown. */
+  private partnerMiddleAt(piece: number): number {
+    const m = this.lines.partnerMeasures;
+    if (!m) return NaN;
+    return (m[this.lines.starts[piece]] + m[this.lines.starts[piece + 1] - 1]) / 2;
   }
 
   /** A piece's line in plan. */
@@ -118,10 +135,12 @@ export class RoadIndex {
   }
 
   /** Where a segment's line is at a point along it, with its direction, or null where the model doesn't show it. */
-  markAt(segment: string, at: number): RoadMark | null {
+  markAt(segment: string, at: number, prefer?: (piece: number) => boolean): RoadMark | null {
     const { starts, points, measures } = this.lines;
     if (!measures) return null;
-    for (const piece of this.bySegment.get(segment) ?? []) {
+    const pieces = this.bySegment.get(segment) ?? [];
+    const ordered = prefer ? [...pieces.filter(prefer), ...pieces.filter((piece) => !prefer(piece))] : pieces;
+    for (const piece of ordered) {
       for (let p = starts[piece]; p < starts[piece + 1] - 1; p++) {
         const a = measures[p];
         const b = measures[p + 1];

@@ -27,6 +27,7 @@
 // with the trees over them cleared from a copy of the surface instead.
 
 import { groundAt, type GroundGrid } from '../edit/ground';
+import { cellHeight } from '../geometry/lattice';
 import type { HeightFn } from '../geometry/solid';
 import type { Vec2 } from '../types';
 
@@ -60,7 +61,7 @@ export interface RouteProfile {
   z: Float64Array;
 }
 
-// What a cell of the surface is, in ProfileGrids.flags.
+// What a cell of the surface is, in RouteGrids.flags.
 export const WATER_CELL = 1;
 /** Cut out of the surface for water (compose's `cut`), through the base unless there's a water layer. */
 export const CUT_CELL = 2;
@@ -69,7 +70,7 @@ export const BUILDING_CELL = 4;
 /** Canopy or the skirt around it, or mostly vegetation returns with nothing solid over the ground. */
 export const TREE_CELL = 8;
 
-export interface ProfileGrids {
+export interface RouteGrids {
   /**
    * The surface as meshed, model mm. It can be a window of the model's grid
    * (a drawn road's cleared copy), so cells are found on `ground`.
@@ -88,6 +89,63 @@ export interface ProfileGrids {
   /** What heights over the ground are multiplied by, and the ground's own rise. */
   heightScale: number;
   exaggeration: number;
+}
+
+/** A grid's heights in two bytes a cell, `base + value * scale`. */
+export interface PackedGrid extends Omit<GroundGrid, 'values'> {
+  values: Uint16Array;
+  base: number;
+  scale: number;
+}
+
+/**
+ * RouteGrids as a LiDAR only model keeps them for roads drawn in the editor.
+ * They're built before meshing, where memory peaks, and kept while the model
+ * is open. So the ground takes two bytes a cell (steps of its range over
+ * 65,535, about a micron at most), and the flags stand in for compose's cut
+ * mask. That's two bytes a cell more than without them, 128 MB at 64 million
+ * cells. Float32 ground and a mask of their own made it five.
+ */
+export interface ProfileGrids extends Omit<RouteGrids, 'ground'> {
+  ground: PackedGrid;
+}
+
+export function packGrid(grid: GroundGrid): PackedGrid {
+  const v = grid.values;
+  let low = Infinity;
+  let high = -Infinity;
+  for (let i = 0; i < v.length; i++) {
+    if (v[i] < low) low = v[i];
+    if (v[i] > high) high = v[i];
+  }
+  if (!(low <= high)) low = high = 0;
+  const scale = high > low ? (high - low) / 65535 : 1;
+  const values = new Uint16Array(v.length);
+  for (let i = 0; i < v.length; i++) values[i] = Math.round((v[i] - low) / scale);
+  return { minX: grid.minX, minY: grid.minY, step: grid.step, stepY: grid.stepY, cols: grid.cols, rows: grid.rows, values, base: low, scale };
+}
+
+/** Columns c0 to c0 + cols and rows r0 to r0 + rows of a packed grid, unpacked. */
+export function unpackWindow(grid: PackedGrid, c0: number, r0: number, cols: number, rows: number): GroundGrid {
+  const stepY = grid.stepY ?? grid.step;
+  const values = new Float32Array(cols * rows);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) values[r * cols + c] = grid.base + grid.values[(r0 + r) * grid.cols + c0 + c] * grid.scale;
+  }
+  return { minX: grid.minX + c0 * grid.step, minY: grid.minY + r0 * stepY, step: grid.step, stepY, cols, rows, values };
+}
+
+/** groundAt on a packed grid. */
+export function packedAt(grid: PackedGrid, x: number, y: number): number {
+  const maxC = grid.cols - 1;
+  const maxR = grid.rows - 1;
+  const fx = Math.min(maxC, Math.max(0, (x - grid.minX) / grid.step));
+  const fy = Math.min(maxR, Math.max(0, (y - grid.minY) / (grid.stepY ?? grid.step)));
+  const c = Math.min(maxC - 1, Math.floor(fx));
+  const r = Math.min(maxR - 1, Math.floor(fy));
+  const i = r * grid.cols + c;
+  const { values: v, base, scale } = grid;
+  return cellHeight(base + v[i] * scale, base + v[i + 1] * scale, base + v[i + grid.cols] * scale, base + v[i + grid.cols + 1] * scale, fx - c, fy - r);
 }
 
 export function cellIndex(grid: GroundGrid, x: number, y: number): number {
@@ -117,7 +175,7 @@ function closeOpen(mask: Uint8Array, gap: number): void {
 }
 
 /** Heights a route line rests on, sampled every half cell. */
-export function routeProfile(line: readonly Vec2[], grids: ProfileGrids): RouteProfile {
+export function routeProfile(line: readonly Vec2[], grids: RouteGrids): RouteProfile {
   const { surface, ground, flags, waterTop, filesBuildings, mmPerMetre, heightScale, exaggeration } = grids;
   // Cut water with no layer leaves nothing to rest on.
   const through = waterTop ? 0 : CUT_CELL;

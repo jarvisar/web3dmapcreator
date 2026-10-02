@@ -65,6 +65,8 @@ export interface Part {
   ends: [EndOrigin, EndOrigin];
   /** Moved onto the middle of a divided road, standing for both carriageways. */
   merged?: boolean;
+  /** For a merged line, the candidates of the other carriageway, whose edits it carries too. */
+  partners?: number[];
 }
 
 export function endOrigins(

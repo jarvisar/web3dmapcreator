@@ -13,7 +13,10 @@ import { meshLayers } from '../pipeline/mesh';
 import type { SourceData, SourceFeature } from '../pipeline/source';
 import { cloneSettings, DEFAULT_PALETTE, type AreaSpec } from '../settings';
 import type { MultiPolygon } from '../types';
+import { appliedRoadEdit, blockLines } from '../../app/viewer/blocks';
+import { RoadIndex } from '../../app/viewer/roads';
 import { roadEdits, roadKey, writeRoads } from './blocks';
+import { roadLines } from './lines';
 import { editOf } from './keys';
 import { styledPieces } from './roads';
 import { EditSession } from './session';
@@ -180,5 +183,79 @@ describe('a block of a road', () => {
     expect(cut.some((p) => p.style?.widthMm === 2 && p.cut[0] && p.cut[1])).toBe(true);
     const index = roadEdits(writeRoads({}, ['r:main@0.5-0.75'], { widthMm: 2 }).objects);
     expect(index.get('r:main')?.ranges).toHaveLength(1);
+  });
+
+  it('cuts at a vertex a range ends on', async () => {
+    const { spec } = await setUp();
+    const base = spec.edit!.roads.find((p) => p.sourceId === 'main')!;
+    const piece = { ...base, points: [[0, 0], [10, 0], [20, 0]] as [number, number][], measure: [0, 0.5, 1], partnerMeasure: undefined };
+    // Exactly on the vertex, and a hair either side of it, as a rounded junction is.
+    for (const from of [0.5, 0.5 + 5e-8, 0.5 - 5e-8, 0.500004]) {
+      const pieces = styledPieces(piece, [{ from, to: 1, style: { layer: 'L' } }]);
+      expect(pieces).toHaveLength(2);
+      const styled = pieces.find((p) => p.style?.layer === 'L')!;
+      expect(styled.piece.points[0][0]).toBeCloseTo(10, 3);
+      expect(styled.cut).toEqual([true, false]);
+    }
+  });
+});
+
+describe('a divided road merged onto one line', () => {
+  // Grand Avenue: two-way at either end, two one-way carriageways 4 m apart in between.
+  const oneway = { access_restrictions: [{ access_type: 'denied', when: { heading: 'backward' } }] };
+  const grand = { subtype: 'road', class: 'primary', names: { primary: 'Grand Avenue' } };
+  function divided(): SourceData {
+    return {
+      release: 'test',
+      features: {
+        segment: [
+          feature('before', { type: 'LineString', coordinates: [at(-600, 0), at(-300, 0)] }, grand),
+          feature('up', { type: 'LineString', coordinates: [at(-300, 0), at(-280, 2), at(280, 2), at(300, 0)] }, { ...grand, ...oneway }),
+          feature('down', { type: 'LineString', coordinates: [at(300, 0), at(280, -2), at(-280, -2), at(-300, 0)] }, { ...grand, ...oneway }),
+          feature('after', { type: 'LineString', coordinates: [at(300, 0), at(600, 0)] }, grand),
+        ],
+      },
+    };
+  }
+  async function model() {
+    const settings = cloneSettings();
+    settings.terrain.resolution = 64;
+    const spec = await generateModel({ area, settings, data: divided(), elevation: hills });
+    const projection = new Projection(area.center, area.rotationDeg, spec.mmPerMetre);
+    return { spec, projection, session: new EditSession(spec, settings, projection) };
+  }
+
+  it("carries the other carriageway's colour and width, but not its removal", async () => {
+    const { spec, projection, session } = await model();
+    const merged = spec.edit!.roads.find((p) => p.partner);
+    expect(merged).toBeDefined();
+    const other = `r:${merged!.partner}`;
+    expect(merged!.partnerMeasure).toHaveLength(merged!.points.length);
+    const [mx, my] = projection.toModel(...at(0, 0));
+
+    const coloured = await session.edited(edits(writeRoads({}, [other], { layer: 'L' }).objects), DEFAULT_PALETTE);
+    expect(pointInMulti(mx, my, polygonsOf(coloured, 'layer:L'))).toBe(true);
+    // Its own edit wins where it has one.
+    const own = writeRoads(writeRoads({}, [other], { layer: 'L' }).objects, [`r:${merged!.sourceId}`], { widthMm: 3 }).objects;
+    const both = await session.edited(edits(own), DEFAULT_PALETTE);
+    expect(pointInMulti(mx, my, polygonsOf(both, 'layer:L'))).toBe(true);
+
+    const removed = await session.edited(edits(writeRoads({}, [other], { removed: true }).objects), DEFAULT_PALETTE);
+    expect(pointInMulti(mx, my, polygonsOf(removed, 'roads'))).toBe(true);
+  });
+
+  it('is picked and shown the same way in the viewer', async () => {
+    const { spec } = await model();
+    const merged = spec.edit!.roads.find((p) => p.partner)!;
+    const other = `r:${merged.partner}`;
+    const lines = roadLines(spec.edit!, -spec.baseZ, 0.6);
+    const piece = lines.keys.findIndex((key, i) => key === `r:${merged.sourceId}` && lines.partners![i] === other);
+    expect(piece).toBeGreaterThanOrEqual(0);
+    const objects = writeRoads({}, [other], { layer: 'L' }).objects;
+    const index = new RoadIndex(blockLines(lines, edits(objects)));
+    // Selecting the other carriageway lights up the merged line too.
+    expect(index.piecesOf(other).some((p) => index.lines.partners![p] === other)).toBe(true);
+    expect(appliedRoadEdit(edits(objects), `r:${merged.sourceId}`, lines)?.layer).toBe('L');
+    expect(appliedRoadEdit(edits(writeRoads({}, [other], { removed: true }).objects), `r:${merged.sourceId}`, lines)?.removed).toBeUndefined();
   });
 });

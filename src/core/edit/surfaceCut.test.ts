@@ -1,7 +1,7 @@
 // The LiDAR only surface cut where drawn roads clear it: the viewer's split
 // copy and the export's whole cut have to agree.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { multiArea, rectangle, union } from '../geometry/polygon';
 import type { CapSolid, Layer } from '../geometry/solid';
 import { tinArea } from '../geometry/tinclip';
@@ -9,6 +9,19 @@ import { edgeReport, signedVolume } from '../geometry/validate';
 import { meshLayers } from '../pipeline/mesh';
 import type { MeshPart, MultiPolygon } from '../types';
 import { SurfaceCut } from './surfaceCut';
+
+// Counts down to a cut that fails, when set.
+const failing = vi.hoisted(() => ({ in: 0 }));
+vi.mock('../dsm/model', async (original) => {
+  const actual = await original<typeof import('../dsm/model')>();
+  return {
+    ...actual,
+    cutSurface: (...args: Parameters<typeof actual.cutSurface>) => {
+      if (failing.in > 0 && --failing.in === 0) throw new Error('cut failed');
+      return actual.cutSurface(...args);
+    },
+  };
+});
 
 const SIZE = 60;
 const ground = (x: number, y: number) => 2 + 0.2 * Math.sin(x / 7) * Math.cos(y / 5);
@@ -46,7 +59,7 @@ describe('the surface cut for drawn roads', () => {
     // Two cells touching only at (31, 31).
     const pieces = union(rectangle(30, 30, 31, 31), rectangle(31, 31, 32, 32));
     const hole = cut.hole(pieces, 'a');
-    const out = cut.layer(hole, 'a');
+    const out = cut.layer(hole);
     const cutCap = out.solids.find((s) => s.kind === 'cap') as CapSolid;
     // A micron all round the 240 mm outline would take another 0.24 mm².
     expect(tinArea(cap) - tinArea(cutCap)).toBeCloseTo(multiArea(hole), 3);
@@ -73,7 +86,7 @@ describe('the surface cut for drawn roads', () => {
     };
     const road = (y: number) => rectangle(22, y, 38, y + 1.2);
     const exported = async (hole: MultiPolygon) => {
-      const { parts } = await meshLayers([cut.layer(hole, signature(hole))], { zShift: 0 });
+      const { parts } = await meshLayers([cut.layer(hole)], { zShift: 0 });
       return parts[0];
     };
 
@@ -98,5 +111,22 @@ describe('the surface cut for drawn roads', () => {
     expect(signedVolume(again.positions, again.indices)).toBeCloseTo(signedVolume((await exported(moved)).positions, (await exported(moved)).indices), 3);
     // The fill is the ground: what's left is lower than the trees were.
     expect(signedVolume(again.positions, again.indices)).toBeLessThan(signedVolume(view.positions, view.indices) + 1e-6);
+  });
+
+  it('keeps the split it had when splitting again fails', async () => {
+    const { layer } = city();
+    const cut = new SurfaceCut(layer, crop, [], ground, 0.5);
+    const mesh = async (l: Layer): Promise<MeshPart> => (await meshLayers([l], { zShift: 0 })).parts[0];
+    const volume = (part: MeshPart) => signedVolume(part.positions, part.indices);
+    const near = rectangle(22, 29, 38, 30.2);
+    const far = rectangle(22, 4, 38, 5.2);
+    const first = cut.hole(near, signature(near));
+    const whole = volume(await mesh(cut.layer(first)));
+    expect(volume(await cut.view(first, mesh))).toBeCloseTo(whole, 3);
+    // The rest is cut and meshed again, then the cut for the tiles fails.
+    failing.in = 2;
+    await expect(cut.view(cut.hole(far, signature(far)), mesh)).rejects.toThrow('cut failed');
+    failing.in = 0;
+    expect(volume(await cut.view(first, mesh))).toBeCloseTo(whole, 3);
   });
 });

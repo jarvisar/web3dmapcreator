@@ -15,7 +15,7 @@
 // holes all down it for nothing.
 
 import { CLUTTER_M } from '../dsm/model';
-import { CUT_CELL, routeProfile, TREE_CELL, WATER_CELL, type ProfileGrids, type RouteProfile } from '../dsm/route';
+import { CUT_CELL, packedAt, routeProfile, TREE_CELL, unpackWindow, WATER_CELL, type ProfileGrids, type RouteProfile } from '../dsm/route';
 import { bufferLines, intersection, multiBounds, union } from '../geometry/polygon';
 import { rowCrossings } from '../geometry/scanline';
 import type { HeightFn } from '../geometry/solid';
@@ -56,9 +56,17 @@ export function drawnRoad(line: readonly Vec2[], width: number, height: number, 
   const cols = c1 - c0 + 1;
   const rows = r1 - r0 + 1;
   const window = new Float32Array(cols * rows);
+  const cellFlags = new Uint8Array(cols * rows);
+  const waterTop = grids.waterTop ? new Float32Array(cols * rows) : null;
   for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) window[r * cols + c] = surface.values[(r0 + r) * ground.cols + c0 + c];
+    for (let c = 0; c < cols; c++) {
+      const i = (r0 + r) * ground.cols + c0 + c;
+      window[r * cols + c] = surface.values[i];
+      cellFlags[r * cols + c] = flags[i];
+      if (waterTop) waterTop[r * cols + c] = grids.waterTop![i];
+    }
   }
+  const bare = unpackWindow(ground, c0, r0, cols, rows);
 
   // Trees and clutter in the corridor tall enough to hide the road come down to the ground.
   const clutterMm = CLUTTER_M * grids.mmPerMetre * grids.heightScale;
@@ -72,14 +80,14 @@ export function drawnRoad(line: readonly Vec2[], width: number, height: number, 
       const from = Math.max(c0, Math.ceil((xs[k] - ground.minX) / dx));
       const to = Math.min(c1 + 1, Math.ceil((xs[k + 1] - ground.minX) / dx));
       for (let c = from; c < to; c++) {
-        const i = (r0 + r) * ground.cols + c;
-        const f = flags[i];
+        const i = r * cols + (c - c0);
+        const f = cellFlags[i];
         if (f & (WATER_CELL | CUT_CELL)) continue;
-        const g = ground.values[i];
-        const over = surface.values[i] - g;
+        const g = bare.values[i];
+        const over = window[i] - g;
         if (!(over > least) || (!(f & TREE_CELL) && !(over < clutterMm))) continue;
-        window[r * cols + (c - c0)] = g;
-        cleared[r * cols + (c - c0)] = 1;
+        window[i] = g;
+        cleared[i] = 1;
         any = true;
       }
     }
@@ -88,7 +96,7 @@ export function drawnRoad(line: readonly Vec2[], width: number, height: number, 
   const local: GroundGrid = { minX: ground.minX + c0 * dx, minY: ground.minY + r0 * dy, step: dx, stepY: dy, cols, rows, values: window };
   const inside = (x: number, y: number) => x >= local.minX && x <= local.minX + (cols - 1) * dx && y >= local.minY && y <= local.minY + (rows - 1) * dy;
   const surfaceAt: HeightFn = (x, y) => groundAt(inside(x, y) ? local : surface, x, y);
-  const profile = routeProfile(line, { ...grids, surface: local });
+  const profile = routeProfile(line, { ...grids, surface: local, ground: bare, flags: cellFlags, waterTop });
   const heights = new LineHeights(line, profile, Math.max(width, cell));
   const restsOn: HeightFn = (x, y) => {
     const z = heights.at(x, y);
@@ -113,7 +121,7 @@ export function drawnRoad(line: readonly Vec2[], width: number, height: number, 
  * 20 mm road each bucket held thousands of them: meshing one took minutes.
  * A drawn line has a few segments.
  */
-class LineHeights {
+export class LineHeights {
   private readonly segments: { ax: number; ay: number; ex: number; ey: number; length2: number; from: number; length: number }[] = [];
   private readonly cells = new Map<number, number[]>();
   private readonly along: Float64Array;
@@ -133,12 +141,17 @@ class LineHeights {
       const s = this.segments.length;
       this.segments.push({ ax, ay, ex: bx - ax, ey: by - ay, length2: length * length, from, length });
       from += length;
-      for (let cx = Math.floor(Math.min(ax, bx) / cell); cx <= Math.floor(Math.max(ax, bx) / cell); cx++) {
-        for (let cy = Math.floor(Math.min(ay, by) / cell); cy <= Math.floor(Math.max(ay, by) / cell); cy++) {
-          const key = cellKey(cx, cy);
-          const list = this.cells.get(key);
-          if (list) list.push(s);
-          else this.cells.set(key, [s]);
+      // The cells it passes through and a cell either side, which is what makes
+      // `at` find the nearest segment. Its whole box was (length / cell)² cells
+      // for a long diagonal.
+      for (const [cx, cy] of cellsAlong(ax / cell, ay / cell, bx / cell, by / cell)) {
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            const key = cellKey(cx + dx, cy + dy);
+            const list = this.cells.get(key);
+            if (!list) this.cells.set(key, [s]);
+            else if (list[list.length - 1] !== s) list.push(s);
+          }
         }
       }
     }
@@ -207,6 +220,34 @@ function cellKey(cx: number, cy: number): number {
   return (cx + 2 ** 25) * 2 ** 26 + (cy + 2 ** 25);
 }
 
+/** The unit cells a segment passes through, in order, from one end's cell to the other's. */
+function cellsAlong(ax: number, ay: number, bx: number, by: number): [number, number][] {
+  let cx = Math.floor(ax);
+  let cy = Math.floor(ay);
+  const ex = Math.floor(bx);
+  const ey = Math.floor(by);
+  const sx = Math.sign(ex - cx);
+  const sy = Math.sign(ey - cy);
+  // How far along the segment (0 to 1) the next cell edge is each way, and one cell's worth.
+  const stepX = sx ? 1 / Math.abs(bx - ax) : Infinity;
+  const stepY = sy ? 1 / Math.abs(by - ay) : Infinity;
+  let tx = sx ? (sx > 0 ? cx + 1 - ax : ax - cx) * stepX : Infinity;
+  let ty = sy ? (sy > 0 ? cy + 1 - ay : ay - cy) * stepY : Infinity;
+  const out: [number, number][] = [[cx, cy]];
+  // A fixed count of steps, so rounding at a corner can't run it past the end.
+  for (let n = Math.abs(ex - cx) + Math.abs(ey - cy); n > 0; n--) {
+    if (cy === ey || (cx !== ex && tx < ty)) {
+      cx += sx;
+      tx += stepX;
+    } else {
+      cy += sy;
+      ty += stepY;
+    }
+    out.push([cx, cy]);
+  }
+  return out;
+}
+
 function clampIndex(i: number, count: number): number {
   return Math.min(count - 1, Math.max(0, i));
 }
@@ -243,5 +284,5 @@ function clearedCells(mask: Uint8Array, grid: GroundGrid): MultiPolygon {
 
 /** The bare ground under a point of a LiDAR only model. */
 export function bareGround(grids: ProfileGrids): HeightFn {
-  return (x, y) => groundAt(grids.ground, x, y);
+  return (x, y) => packedAt(grids.ground, x, y);
 }

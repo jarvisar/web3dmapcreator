@@ -15,15 +15,58 @@ import type { EditData } from './model';
 // and a road just outside a round piece.
 const MARGIN = 0.05;
 
+function areaBox(area: AreaSpec) {
+  const margin = MARGIN * Math.max(area.widthM, area.heightM);
+  return { projection: new Projection(area.center, area.rotationDeg, 1), halfW: area.widthM / 2 + margin, halfH: area.heightM / 2 + margin };
+}
+
 /** Whether a lon/lat is on the area, or near enough its edge. */
 function areaTest(area: AreaSpec): (lonLat: [number, number]) => boolean {
-  const projection = new Projection(area.center, area.rotationDeg, 1);
-  const margin = MARGIN * Math.max(area.widthM, area.heightM);
-  const halfW = area.widthM / 2 + margin;
-  const halfH = area.heightM / 2 + margin;
+  const { projection, halfW, halfH } = areaBox(area);
   return ([lon, lat]) => {
     const [x, y] = projection.toModel(lon, lat);
     return Math.abs(x) <= halfW && Math.abs(y) <= halfH;
+  };
+}
+
+/**
+ * Whether any part of a lon/lat line is on the area, segments included: a
+ * simplified route can cross it with no point on it.
+ */
+function lineTest(area: AreaSpec): (line: readonly [number, number][]) => boolean {
+  const { projection, halfW, halfH } = areaBox(area);
+  // Liang-Barsky against the box.
+  const crosses = ([ax, ay]: [number, number], [bx, by]: [number, number]) => {
+    let t0 = 0;
+    let t1 = 1;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const sides: [number, number][] = [
+      [-dx, ax + halfW],
+      [dx, halfW - ax],
+      [-dy, ay + halfH],
+      [dy, halfH - ay],
+    ];
+    for (const [p, q] of sides) {
+      if (p === 0) {
+        if (q < 0) return false;
+        continue;
+      }
+      const t = q / p;
+      if (p < 0) t0 = Math.max(t0, t);
+      else t1 = Math.min(t1, t);
+      if (t0 > t1) return false;
+    }
+    return true;
+  };
+  return (line) => {
+    let last: [number, number] | null = null;
+    for (const [lon, lat] of line) {
+      const point = projection.toModel(lon, lat);
+      if (last ? crosses(last, point) : Math.abs(point[0]) <= halfW && Math.abs(point[1]) <= halfH) return true;
+      last = point;
+    }
+    return false;
   };
 }
 
@@ -69,17 +112,17 @@ export function editsForArea(edits: ModelEdits, area: AreaSpec, model: { data: E
 
 /** The imported routes with any of their line on this area, and how many weren't. */
 export function tracksForArea(tracks: readonly Track[], area: AreaSpec): { tracks: Track[]; left: number } {
-  const inArea = areaTest(area);
-  const kept = tracks.filter((track) => decodeTrack(track).some((line) => line.some(inArea)));
+  const onArea = lineTest(area);
+  const kept = tracks.filter((track) => decodeTrack(track).some(onArea));
   return { tracks: kept, left: tracks.length - kept.length };
 }
 
 /** The picked roads on this area, and how many lines were left out. Routes with nothing here go too. */
 export function picksForArea(picks: Picks, area: AreaSpec): { picks: Picks; left: number } {
-  const inArea = areaTest(area);
+  const onArea = lineTest(area);
   let left = 0;
   const keep = (lines: Picks['hiddenLines']) => {
-    const kept = lines.filter((line) => line.some(inArea));
+    const kept = lines.filter(onArea);
     left += lines.length - kept.length;
     return kept;
   };

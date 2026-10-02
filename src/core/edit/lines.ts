@@ -25,6 +25,10 @@ export interface RoadLines {
   measures?: Float32Array;
   /** Where blocks of a segment end, by its key, for segments with junctions. */
   junctions?: Record<string, number[]>;
+  /** Per piece, a divided road's merged line: the other carriageway's segment key, whose edits it carries, or ''. */
+  partners?: string[];
+  /** Where each point lies along that segment, NaN for pieces without one. */
+  partnerMeasures?: Float32Array;
   /** How far roads stand above the ground, unless edited. */
   thicknessMm: number;
   /** Bridge decks, so a street can be followed across them: both ends (x, y, x, y) of each. */
@@ -38,14 +42,18 @@ export function roadLines(ctx: EditContext, zShift: number, thicknessMm: number)
   const spacing = ctx.heightfield && !ctx.heightfield.flat ? ctx.heightfield.step / 2 : Infinity;
   const coords: number[] = [];
   const along: number[] = [];
+  const carried: number[] = [];
   const starts = new Uint32Array(pieces.length + 1);
   pieces.forEach((piece, i) => {
     starts[i] = coords.length / 3;
-    const measure = piece.measure?.length === piece.points.length ? piece.measure : null;
-    const { points, measures } = densified(piece.points, measure, spacing);
+    const n = piece.points.length;
+    const own = piece.measure?.length === n ? piece.measure : null;
+    const partner = piece.partner && piece.partnerMeasure?.length === n ? piece.partnerMeasure : null;
+    const { points, values } = densified(piece.points, [own, partner], spacing);
     points.forEach(([x, y], k) => {
       coords.push(x, y, ctx.heightAt(x, y) + zShift);
-      along.push(measures ? measures[k] : NaN);
+      along.push(values[0] ? values[0][k] : NaN);
+      carried.push(values[1] ? values[1][k] : NaN);
     });
   });
   starts[pieces.length] = coords.length / 3;
@@ -61,27 +69,29 @@ export function roadLines(ctx: EditContext, zShift: number, thicknessMm: number)
     points: Float32Array.from(coords),
     measures: Float32Array.from(along),
     junctions,
+    partners: pieces.map((p) => (p.partner && p.partnerMeasure ? `r:${p.partner}` : '')),
+    partnerMeasures: Float32Array.from(carried),
     thicknessMm,
     decks: deckEnds(ctx),
   };
 }
 
-/** Points no further apart than `spacing`, with their measures along the segment, when it has them. */
-function densified(points: Vec2[], measure: number[] | null, spacing: number): { points: Vec2[]; measures: number[] | null } {
-  if (!Number.isFinite(spacing)) return { points, measures: measure };
-  if (!measure) return { points: densifyLine(points, spacing), measures: null };
+/** Points no further apart than `spacing`, with per-point values (measures along a segment) carried along. */
+function densified(points: Vec2[], values: (number[] | null)[], spacing: number): { points: Vec2[]; values: (number[] | null)[] } {
+  if (!Number.isFinite(spacing)) return { points, values };
+  if (values.every((v) => !v)) return { points: densifyLine(points, spacing), values };
   const outPoints: Vec2[] = [points[0]];
-  const outMeasures = [measure[0]];
+  const outValues = values.map((v) => (v ? [v[0]] : null));
   for (let i = 1; i < points.length; i++) {
     const [ax, ay] = points[i - 1];
     const [bx, by] = points[i];
     const steps = Math.ceil(Math.hypot(bx - ax, by - ay) / spacing);
     for (let k = 1; k <= steps; k++) {
       outPoints.push([ax + ((bx - ax) * k) / steps, ay + ((by - ay) * k) / steps]);
-      outMeasures.push(measure[i - 1] + ((measure[i] - measure[i - 1]) * k) / steps);
+      values.forEach((v, j) => v && outValues[j]!.push(v[i - 1] + ((v[i] - v[i - 1]) * k) / steps));
     }
   }
-  return { points: outPoints, measures: outMeasures };
+  return { points: outPoints, values: outValues };
 }
 
 function deckEnds(ctx: EditContext): RoadLines['decks'] {

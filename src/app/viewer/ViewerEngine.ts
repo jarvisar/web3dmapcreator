@@ -47,7 +47,7 @@ import { extractTriangles, overlayMaterial, setOverlay, type Soup } from './high
 import { Picker } from './picker';
 import { RoadIndex, type RoadPick } from './roads';
 import { blockLines, blocksSignature, segmentBounds } from './blocks';
-import { parseRoadKey, roadEditOf } from '../../core/edit/blocks';
+import { carryEdit, editAt, parseRoadKey, roadEditOf, roadEdits as roadEditsOf } from '../../core/edit/blocks';
 import type { ObjectEdit } from '../../core/edit/types';
 import { entryColour, SHAPES_PART } from './shown';
 
@@ -234,8 +234,8 @@ export class ViewerEngine {
   roads: RoadIndex | null = null;
   /** What the blocks the roads are cut into depend on, so they're cut again only when it changes. */
   private blocksKey = '';
-  /** Each road key's edit as it applies, for these edits. */
-  private roadEdits = new Map<string, ObjectEdit | undefined>();
+  /** Each road piece's edit as it applies, for these edits. */
+  private roadEdits = new Map<number, ObjectEdit | undefined>();
   private selection: string[] = [];
   private hovered: string | null = null;
   private centres = new Map<ComposedMesh, Float32Array>();
@@ -306,6 +306,8 @@ export class ViewerEngine {
     this.data = data ?? { editable: false, roads: null, objects: {}, ground: null, frame: null };
     this.blocksKey = blocksSignature(this.edits);
     this.roads = this.data.roads ? new RoadIndex(blockLines(this.data.roads, this.edits)) : null;
+    // Keyed by piece index, which means another piece in a new model.
+    this.roadEdits.clear();
     for (const part of parts) this.buildView(part.id);
     this.bounds = bounds;
     if (edits) this.applyEditUpdate(edits);
@@ -886,9 +888,17 @@ export class ViewerEngine {
 
   /** A road piece's edit as it applies: its block's, from every range of its segment holding it. */
   pieceEdit(piece: number): ObjectEdit | undefined {
-    const key = this.roads!.lines.keys[piece];
-    if (!this.roadEdits.has(key)) this.roadEdits.set(key, roadEditOf(this.edits.objects, key));
-    return this.roadEdits.get(key);
+    if (this.roadEdits.has(piece)) return this.roadEdits.get(piece);
+    const lines = this.roads!.lines;
+    let edit = roadEditOf(this.edits.objects, lines.keys[piece]);
+    // A divided road's merged line carries the other carriageway's edits too, where its own leave them.
+    const partner = lines.partners?.[piece];
+    if (partner && lines.partnerMeasures) {
+      const at = (lines.partnerMeasures[lines.starts[piece]] + lines.partnerMeasures[lines.starts[piece + 1] - 1]) / 2;
+      edit = carryEdit(edit, editAt(roadEditsOf(this.edits.objects).get(partner), at));
+    }
+    this.roadEdits.set(piece, edit);
+    return edit;
   }
 
   /** The part a road piece is drawn in now: its custom layer's, or its group's. */

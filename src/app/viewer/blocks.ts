@@ -3,9 +3,9 @@
 // again only when a split or an edit's range comes or goes, not on every
 // edit.
 
-import { blockAt, blockBounds, roadEdits, roadSegment } from '../../core/edit/blocks';
+import { blockAt, blockBounds, carryEdit, editAt, parseRoadKey, roadEditOf, roadEdits, roadSegment } from '../../core/edit/blocks';
 import type { RoadLines } from '../../core/edit/lines';
-import type { ModelEdits } from '../../core/edit/types';
+import type { ModelEdits, ObjectEdit } from '../../core/edit/types';
 import type { RoadIndex, RoadMark, RoadPick } from './roads';
 
 /** What the blocks depend on in the edits: each segment's splits and edit ranges. */
@@ -37,10 +37,20 @@ export function blockLines(base: RoadLines, edits: ModelEdits): RoadLines {
   const starts: number[] = [];
   const points: number[] = [];
   const along: number[] = [];
+  const partners: string[] = [];
+  const carried: number[] = [];
+  const partnerMeasures = base.partnerMeasures;
   const bounds = new Map<string, number[]>();
   const boundsOf = (segment: string) => {
     let list = bounds.get(segment);
     if (!list) bounds.set(segment, (list = blockBounds(index.get(segment), base.junctions?.[segment])));
+    return list;
+  };
+  // The other carriageway's range ends, where the export cuts a merged line too (edit/roads.ts).
+  const carriedCuts = new Map<string, number[]>();
+  const carriedOf = (segment: string) => {
+    let list = carriedCuts.get(segment);
+    if (!list) carriedCuts.set(segment, (list = (index.get(segment)?.ranges ?? []).flatMap((range) => [range.from, range.to]).filter((v) => v > 0 && v < 1)));
     return list;
   };
   for (let piece = 0; piece < base.keys.length; piece++) {
@@ -48,6 +58,7 @@ export function blockLines(base: RoadLines, edits: ModelEdits): RoadLines {
     const first = base.starts[piece];
     const end = base.starts[piece + 1];
     const cuts = boundsOf(segment);
+    const partnerCuts = base.partners?.[piece] && partnerMeasures ? carriedOf(base.partners[piece]) : [];
     const open = () => {
       starts.push(points.length / 3);
       names.push(base.names[piece]);
@@ -55,11 +66,14 @@ export function blockLines(base: RoadLines, edits: ModelEdits): RoadLines {
       groups.push(base.groups[piece]);
       widths.push(base.widths[piece]);
       keys.push(segment);
+      partners.push(base.partners?.[piece] ?? '');
     };
-    const push = (x: number, y: number, z: number, m: number) => {
+    const push = (x: number, y: number, z: number, m: number, q: number) => {
       points.push(x, y, z);
       along.push(m);
+      carried.push(q);
     };
+    const partnerAt = (p: number) => (partnerMeasures ? partnerMeasures[p] : NaN);
     // Each run is keyed once it's closed, by the measure at its middle.
     const close = (from: number) => {
       const count = points.length / 3 - starts[starts.length - 1];
@@ -67,6 +81,8 @@ export function blockLines(base: RoadLines, edits: ModelEdits): RoadLines {
         // Too short to be a line: dropped.
         points.length = starts[starts.length - 1] * 3;
         along.length = starts[starts.length - 1];
+        carried.length = starts[starts.length - 1];
+        partners.pop();
         starts.pop();
         names.pop();
         classes.pop();
@@ -81,29 +97,45 @@ export function blockLines(base: RoadLines, edits: ModelEdits): RoadLines {
     };
     open();
     let runStart = along.length;
-    push(base.points[first * 3], base.points[first * 3 + 1], base.points[first * 3 + 2], measures[first]);
+    push(base.points[first * 3], base.points[first * 3 + 1], base.points[first * 3 + 2], measures[first], partnerAt(first));
+    // Where along the span from p - 1 to p a measure crosses each value strictly between its ends.
+    const crossings = (a: number, b: number, values: readonly number[]): number[] => {
+      if (Number.isNaN(a) || Number.isNaN(b) || a === b) return [];
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      return values.filter((v) => v > lo + 1e-7 && v < hi - 1e-7).map((v) => (v - a) / (b - a));
+    };
+    // A bound on a vertex is cut there, as the export does: the spans either side leave it out.
+    const onVertex = (p: number) =>
+      (cuts.length > 2 && cuts.some((v) => Math.abs(v - measures[p]) <= 1e-7)) || partnerCuts.some((v) => Math.abs(v - partnerAt(p)) <= 1e-7);
     for (let p = first + 1; p < end; p++) {
       const ma = measures[p - 1];
       const mb = measures[p];
-      if (cuts.length > 2 && !Number.isNaN(ma) && !Number.isNaN(mb) && ma !== mb) {
-        // Bounds strictly between the two points, in the order the line meets them.
-        const lo = Math.min(ma, mb);
-        const hi = Math.max(ma, mb);
-        const crossed = cuts.filter((v) => v > lo + 1e-9 && v < hi - 1e-9);
-        if (mb < ma) crossed.reverse();
-        for (const v of crossed) {
-          const t = (v - ma) / (mb - ma);
-          const x = base.points[(p - 1) * 3] + (base.points[p * 3] - base.points[(p - 1) * 3]) * t;
-          const y = base.points[(p - 1) * 3 + 1] + (base.points[p * 3 + 1] - base.points[(p - 1) * 3 + 1]) * t;
-          const z = base.points[(p - 1) * 3 + 2] + (base.points[p * 3 + 2] - base.points[(p - 1) * 3 + 2]) * t;
-          push(x, y, z, v);
-          close(runStart);
-          open();
-          runStart = along.length;
-          push(x, y, z, v);
-        }
+      const qa = partnerAt(p - 1);
+      const qb = partnerAt(p);
+      const ts = [...(cuts.length > 2 ? crossings(ma, mb, cuts) : []), ...(partnerCuts.length ? crossings(qa, qb, partnerCuts) : [])].sort((a, b) => a - b);
+      let last = 0;
+      for (const t of ts) {
+        if (t - last < 1e-9) continue;
+        last = t;
+        const x = base.points[(p - 1) * 3] + (base.points[p * 3] - base.points[(p - 1) * 3]) * t;
+        const y = base.points[(p - 1) * 3 + 1] + (base.points[p * 3 + 1] - base.points[(p - 1) * 3 + 1]) * t;
+        const z = base.points[(p - 1) * 3 + 2] + (base.points[p * 3 + 2] - base.points[(p - 1) * 3 + 2]) * t;
+        const m = ma + (mb - ma) * t;
+        const q = qa + (qb - qa) * t;
+        push(x, y, z, m, q);
+        close(runStart);
+        open();
+        runStart = along.length;
+        push(x, y, z, m, q);
       }
-      push(base.points[p * 3], base.points[p * 3 + 1], base.points[p * 3 + 2], mb);
+      push(base.points[p * 3], base.points[p * 3 + 1], base.points[p * 3 + 2], mb, qb);
+      if (p < end - 1 && onVertex(p)) {
+        close(runStart);
+        open();
+        runStart = along.length;
+        push(base.points[p * 3], base.points[p * 3 + 1], base.points[p * 3 + 2], mb, qb);
+      }
     }
     close(runStart);
   }
@@ -118,7 +150,39 @@ export function blockLines(base: RoadLines, edits: ModelEdits): RoadLines {
     starts: Uint32Array.from(starts),
     points: Float32Array.from(points),
     measures: Float32Array.from(along),
+    partners,
+    partnerMeasures: Float32Array.from(carried),
   };
+}
+
+/**
+ * Where a road key's block lies along the other carriageway, when it's on a
+ * divided road's merged line: that segment and the point at the block's
+ * middle. From the lines as generated.
+ */
+export function carriedAt(lines: RoadLines, key: string): { segment: string; at: number } | null {
+  const range = parseRoadKey(key);
+  const { measures, partners, partnerMeasures, starts } = lines;
+  if (!range || !measures || !partners || !partnerMeasures) return null;
+  const middle = (range.from + range.to) / 2;
+  for (let piece = 0; piece < lines.keys.length; piece++) {
+    if (!partners[piece] || roadSegment(lines.keys[piece]) !== range.segment) continue;
+    for (let p = starts[piece] + 1; p < starts[piece + 1]; p++) {
+      const a = measures[p - 1];
+      const b = measures[p];
+      if (!(Math.min(a, b) <= middle && Math.max(a, b) >= middle) || a === b) continue;
+      const t = (middle - a) / (b - a);
+      return { segment: partners[piece], at: partnerMeasures[p - 1] + (partnerMeasures[p] - partnerMeasures[p - 1]) * t };
+    }
+  }
+  return null;
+}
+
+/** A road key's edit as it applies, the other carriageway's filled in on a merged divided road (carryEdit). */
+export function appliedRoadEdit(edits: ModelEdits, key: string, lines: RoadLines | null): ObjectEdit | undefined {
+  const own = roadEditOf(edits.objects, key);
+  const carried = lines ? carriedAt(lines, key) : null;
+  return carried ? carryEdit(own, editAt(roadEdits(edits.objects).get(carried.segment), carried.at)) : own;
 }
 
 /** How near an existing split or block end a click with the split tool has to be to mean it, in mm. */

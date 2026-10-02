@@ -46,7 +46,6 @@ export class SurfaceCut {
   private taken = new Set<number>();
   private rest: MeshPart | null = null;
   private holeCache: { signature: string; hole: MultiPolygon } | null = null;
-  private whole: { signature: string; layer: Layer } | null = null;
 
   constructor(
     private readonly city: Layer,
@@ -78,14 +77,14 @@ export class SurfaceCut {
     return hole;
   }
 
-  /** The city layer for an export: the whole surface cut, and the fill. Throws when the surface can't be cut. */
-  layer(hole: MultiPolygon, signature: string): Layer {
-    if (this.whole?.signature === signature) return this.whole.layer;
+  /**
+   * The city layer for an export: the whole surface cut, and the fill. Throws
+   * when the surface can't be cut. Not kept, since it's as big as the surface.
+   */
+  layer(hole: MultiPolygon): Layer {
     const tin = cutSurface(this.cap, difference(this.crop, hole), this.crop);
     const solids = this.city.solids.flatMap((solid) => (solid === this.cap ? [...this.withTin(tin), ...this.fill(hole)] : [solid]));
-    const layer = { ...this.city, solids };
-    this.whole = { signature, layer };
-    return layer;
+    return { ...this.city, solids };
   }
 
   /** The city part for the viewer. Throws when the surface can't be cut. */
@@ -129,8 +128,8 @@ export class SurfaceCut {
     const region = union(...rects.values());
     const others = this.city.solids.filter((solid) => solid !== this.cap);
     const outside = difference(this.crop, region);
-    const rest = outside.length ? cut(this.cap, outside, this.crop) : null;
-    this.rest = await mesh({ ...this.city, solids: rest ? [...this.withTin(rest), ...others] : others });
+    const restTin = outside.length ? cut(this.cap, outside, this.crop) : null;
+    const rest = await mesh({ ...this.city, solids: restTin ? [...this.withTin(restTin), ...others] : others });
     // Each tile from the triangles near it, so it doesn't take a pass over the whole surface.
     const near = cut(this.cap, region, this.crop);
     const tiles = new Map<number, Tile>();
@@ -145,6 +144,8 @@ export class SurfaceCut {
       const part = trianglesIn(near, box);
       tiles.set(index, { region: tileRegion, box, tin: part.triangles.length ? cut(part, tileRegion, tileRegion) : part });
     }
+    // All together once nothing can throw: the rest with the old tiles leaves a band of the surface out.
+    this.rest = rest;
     this.tiles = tiles;
     this.taken = wanted;
   }

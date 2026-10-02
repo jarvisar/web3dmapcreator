@@ -1,7 +1,7 @@
 // Road edits by range: keys, what applies where, and writing them.
 
 import { describe, expect, it } from 'vitest';
-import { addSplit, blockAt, blockBounds, editAt, editOver, normalRoadKey, parseRoadKey, removeSplit, roadEditOf, roadEdits, roadKey, roadSegment, writeRoads } from './blocks';
+import { addSplit, blockAt, blockBounds, editAt, editOver, MAX_RANGES, normalRoadKey, parseRoadKey, removeSplit, roadEditOf, roadEdits, roadKey, roadSegment, writeRoads } from './blocks';
 import { sanitizeEdits, type ModelEdits } from './types';
 
 const S = 'r:abc';
@@ -37,6 +37,15 @@ describe('road range keys', () => {
     expect(Object.keys(edits.objects).sort()).toEqual(['r:abc', 'r:abc@0.25-0.5', 'r:def']);
     expect(edits.objects['r:def'].splits).toEqual([0.25, 0.5]);
     expect(edits.objects[S]).toEqual({ widthMm: 2 });
+  });
+
+  it('drops a range that rounds to nothing, and holds a segment to so many ranges', () => {
+    expect(parseRoadKey('r:abc@0.499996-0.500004')).toBeNull();
+    const objects: Record<string, unknown> = { 'r:abc@0.499996-0.500004': { widthMm: 2 } };
+    for (let i = 0; i < 1000; i++) objects[`r:many@${(i / 1000).toFixed(3)}-${((i + 1) / 1000).toFixed(3)}`] = { widthMm: 2 };
+    const edits = sanitizeEdits({ objects });
+    expect(edits.objects['r:abc@0.5-0.5']).toBeUndefined();
+    expect(Object.keys(edits.objects)).toHaveLength(MAX_RANGES);
   });
 });
 
@@ -149,5 +158,31 @@ describe('splits', () => {
     expect(plain.differed).toBe(false);
     expect(plain.objects).toEqual({});
     expect(removeSplit({}, S, 0.5, [0, 1])).toBeNull();
+  });
+
+  it('joins blocks where an edit reached past the next junction', () => {
+    let objects = addSplit({}, S, 0.5)!;
+    objects = writeRoads(objects, ['r:abc@0.5-0.7', 'r:abc@0.7-1'], { layer: 'L' }).objects;
+    expect(objects['r:abc@0.5-1']).toEqual({ layer: 'L' });
+    // Junctions at 0.3 and 0.7: the left side is as long as the right, so the plain one wins.
+    const removed = removeSplit(objects, S, 0.5, [0, 0.3, 0.5, 0.7, 1])!;
+    const entry = roadEdits(removed.objects).get(S);
+    expect(editOver(entry, 0.3, 0.7)).toBeUndefined();
+    expect(editOver(entry, 0.7, 1)).toEqual({ layer: 'L' });
+    expect(blockBounds(entry, [0.3, 0.7])).toEqual([0, 0.3, 0.7, 1]);
+  });
+
+  it('settles ranges that only partly overlap the one written', () => {
+    const narrow: Objects = { 'r:abc@0.5-1': { layer: 'A' }, 'r:abc@0.6-0.95': { layer: 'B' }, 'r:abc@0.8-0.9': { widthMm: 2 } };
+    const before = roadEdits(narrow).get(S);
+    const { objects } = writeRoads(narrow, ['r:abc@0.3-0.7'], { layer: 'C' });
+    const entry = roadEdits(objects).get(S);
+    expect(editAt(entry, 0.65)?.layer).toBe('C');
+    expect(editAt(entry, 0.4)?.layer).toBe('C');
+    // Past the written range, what applied before still does.
+    for (const at of [0.75, 0.85, 0.97]) expect(editAt(entry, at)).toEqual(editAt(before, at));
+    const cleared = roadEdits(writeRoads(narrow, ['r:abc@0.3-0.7'], { layer: undefined }).objects).get(S);
+    expect(editAt(cleared, 0.65)?.layer).toBeUndefined();
+    for (const at of [0.75, 0.85, 0.97]) expect(editAt(cleared, at)).toEqual(editAt(before, at));
   });
 });

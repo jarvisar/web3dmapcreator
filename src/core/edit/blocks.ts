@@ -26,6 +26,8 @@ const DIGITS = 5;
 const EPSILON = 0.5 * 10 ** -DIGITS;
 /** Splits one segment may have. */
 export const MAX_SPLITS = 200;
+/** Range keys one segment may have. `tidy` compares every pair, so a crafted link with thousands hung the tab. */
+export const MAX_RANGES = 2 * MAX_SPLITS;
 /** The fields an edit of a road range can hold. */
 const ROAD_FIELDS = ['removed', 'layer', 'heightMm', 'widthMm'] as const;
 type RoadField = (typeof ROAD_FIELDS)[number];
@@ -62,7 +64,8 @@ export function parseRoadKey(key: string): RoadRange | null {
   if (!match) return null;
   const from = Number(match[1]);
   const to = Number(match[2]);
-  if (!(from >= 0 && to <= 1 && to - from > EPSILON)) return null;
+  // Judged as written, or a key that rounds to nothing would pass here and fail once normalised.
+  if (!(from >= 0 && to <= 1 && roundAt(to) - roundAt(from) > EPSILON)) return null;
   return { segment: key.slice(0, at), from, to };
 }
 
@@ -145,6 +148,18 @@ export function editAt(entry: SegmentEdits | undefined, at: number): ObjectEdit 
     if (Object.keys(fields).length) out = { ...out, ...fields };
   }
   return out;
+}
+
+/**
+ * A divided road's merged line stands for both carriageways: the other
+ * one's colour, width and height fill in where its own edit leaves them,
+ * but not its removal, which leaves this one (edit/roads.ts).
+ */
+export function carryEdit(own: ObjectEdit | undefined, partner: ObjectEdit | undefined): ObjectEdit | undefined {
+  if (!partner) return own;
+  const { removed: _removed, ...rest } = fieldsOf(partner);
+  const out = { ...rest, ...own };
+  return Object.keys(out).length ? out : undefined;
 }
 
 /** The edit as it applies to a road key, whole segment or block, from every range holding it. */
@@ -236,9 +251,26 @@ class RoadWriter {
       const value = patch[field];
       // Narrowest first.
       const ranges = this.entry(segment).ranges.reverse();
+      // A range reaching partly into this one keeps the field only outside it.
+      // The piece left is narrower than the range was, but anything narrower
+      // that beat the range there crosses the same end and was cut the same
+      // way first, so it still wins.
+      for (const other of ranges) {
+        const current = this.objects[other.key];
+        if (other.key === own || current?.[field] === undefined) continue;
+        const overlaps = other.from < to - EPSILON && other.to > from + EPSILON;
+        const inside = other.from >= from - EPSILON && other.to <= to + EPSILON;
+        const holds = other.from <= from + EPSILON && other.to >= to - EPSILON;
+        if (!overlaps || inside || holds) continue;
+        const kept = current[field];
+        this.put(other.key, without(current, field));
+        const side = other.from < from ? roadKey(segment, other.from, from) : roadKey(segment, to, other.to);
+        if (this.objects[side]?.[field] === undefined) this.put(side, { ...this.objects[side], [field]: kept });
+      }
       for (const other of ranges) {
         const inside = other.from >= from - EPSILON && other.to <= to + EPSILON;
-        if (other.key !== own && inside && other.edit[field] !== undefined) this.put(other.key, without(other.edit, field));
+        const current = this.objects[other.key];
+        if (other.key !== own && inside && current?.[field] !== undefined) this.put(other.key, without(current, field));
       }
       if (value !== undefined) {
         this.put(own, { ...this.objects[own], [field]: value });

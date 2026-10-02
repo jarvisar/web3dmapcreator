@@ -99,16 +99,83 @@ function toMetres(lines: readonly LonLat[][]): Point[][] {
   return lines.map((line) => line.map(([lon, lat]) => [lon * kx, lat * ky]));
 }
 
+/** Indexes of the points left after dropping those within `radius` of the last one kept. The ends stay. */
+function radialKept(path: readonly Point[], radius: number): number[] {
+  const n = path.length;
+  if (n <= 2) return Array.from({ length: n }, (_, i) => i);
+  const out = [0];
+  const radiusSq = radius * radius;
+  let [lx, ly] = path[0];
+  for (let i = 1; i < n - 1; i++) {
+    const [x, y] = path[i];
+    if ((x - lx) ** 2 + (y - ly) ** 2 < radiusSq) continue;
+    out.push(i);
+    lx = x;
+    ly = y;
+  }
+  out.push(n - 1);
+  return out;
+}
+
+/**
+ * Douglas-Peucker at every tolerance at once: the squared tolerance under
+ * which each point is kept. That's its distance when it was split off,
+ * capped by the points it was split off under, so the same points are kept
+ * as `keptPoints` keeps.
+ */
+function significance(path: readonly Point[]): Float64Array {
+  const n = path.length;
+  const out = new Float64Array(n);
+  if (!n) return out;
+  out[0] = Infinity;
+  out[n - 1] = Infinity;
+  const stack: number[] = [0, n - 1, Infinity];
+  while (stack.length > 0) {
+    const cap = stack.pop()!;
+    const b = stack.pop()!;
+    const a = stack.pop()!;
+    let worst = -1;
+    let worstSq = 0;
+    for (let i = a + 1; i < b; i++) {
+      const d = segmentDistanceSq(path[i], path[a], path[b]);
+      if (d > worstSq) {
+        worstSq = d;
+        worst = i;
+      }
+    }
+    if (worst >= 0) {
+      const level = Math.min(worstSq, cap);
+      out[worst] = level;
+      stack.push(a, worst, level, worst, b, level);
+    }
+  }
+  return out;
+}
+
+// Points closer than this to the last one kept go before Douglas-Peucker,
+// far under the tolerance. A file logged several times a second can have
+// millions of them.
+const RADIAL_M = 0.2;
+
 /** Simplified to `tolerance` metres, or coarser until there are at most `maxPoints`. */
 export function simplifyTrack(lines: readonly LonLat[][], tolerance = TOLERANCE_M, maxPoints = MAX_TRACK_POINTS): LonLat[][] {
+  if (!(tolerance > 0)) return lines.map((line) => [...line]);
   const metres = toMetres(lines);
+  const thinned = metres.map((path) => radialKept(path, Math.min(RADIAL_M, tolerance / 4)));
+  const levels = metres.map((path, i) => significance(thinned[i].map((j) => path[j])));
   for (;;) {
-    const out = metres.map((path, i) => {
-      const keep = keptPoints(path, tolerance);
-      return lines[i].filter((_, j) => keep[j]);
-    });
-    const total = out.reduce((sum, line) => sum + line.length, 0);
-    if (total <= maxPoints || tolerance > 1e5) return out;
+    const toleranceSq = tolerance * tolerance;
+    let total = 0;
+    for (const level of levels) for (let j = 0; j < level.length; j++) if (level[j] > toleranceSq) total++;
+    if (total <= maxPoints || tolerance > 1e5) {
+      return lines.map((line, i) => {
+        const out: LonLat[] = [];
+        thinned[i].forEach((j, k) => {
+          if (levels[i][k] > toleranceSq) out.push(line[j]);
+        });
+        return out;
+      });
+    }
     tolerance *= 1.5;
   }
 }
@@ -196,18 +263,67 @@ export function sanitizeTracks(value: unknown): Track[] {
   return out;
 }
 
+// A link simplifies routes up to 12 m to fit, so one that came back from a
+// link is within this of the route it was made from.
+const SAME_ROUTE_M = 15;
+
+/** Whether every point of each line is within `reach` metres of the other's line, both ways round. */
+function closeTo(a: readonly LonLat[][], b: readonly LonLat[][], reach: number): boolean {
+  if (a.length !== b.length) return false;
+  const metres = toMetres([...a, ...b]);
+  const within = (points: readonly Point[], line: readonly Point[]): boolean => {
+    // Every segment is listed in the cells it passes through, sampled every
+    // `reach`, so a cell and its neighbours hold everything within `reach`.
+    const cell = 2 * reach;
+    const cells = new Map<string, number[]>();
+    for (let i = 1; i < line.length; i++) {
+      const [ax, ay] = line[i - 1];
+      const [bx, by] = line[i];
+      const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / reach));
+      let lastKey = '';
+      for (let k = 0; k <= steps; k++) {
+        const key = `${Math.floor((ax + ((bx - ax) * k) / steps) / cell)},${Math.floor((ay + ((by - ay) * k) / steps) / cell)}`;
+        if (key === lastKey) continue;
+        lastKey = key;
+        const list = cells.get(key);
+        if (!list) cells.set(key, [i]);
+        else if (list[list.length - 1] !== i) list.push(i);
+      }
+    }
+    const reachSq = reach * reach;
+    return points.every((p) => {
+      const cx = Math.floor(p[0] / cell);
+      const cy = Math.floor(p[1] / cell);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (const i of cells.get(`${cx + dx},${cy + dy}`) ?? []) if (segmentDistanceSq(p, line[i - 1], line[i]) <= reachSq) return true;
+        }
+      }
+      return false;
+    });
+  };
+  return a.every((_, i) => {
+    const p = metres[i];
+    const q = metres[a.length + i];
+    return within(p, q) && within(q, p);
+  });
+}
+
 /**
  * Tracks from a share link or an options file added to these. One that's
  * already here (the same link opened twice) isn't added again, and theirs
- * never replace ours. `left` counts what the limit left out.
+ * never replace ours. That includes ours coming back from a link: it has
+ * the same id, or the same name if it was passed on, but the link may have
+ * simplified it. `left` counts what the limit left out.
  */
 export function mergeTracks(base: Track[], extra: Track[]): { tracks: Track[]; added: number; left: number } {
   const same = (a: Track, b: Track) => a.lines.length === b.lines.length && a.lines.every((line, i) => line === b.lines[i]);
+  const close = (a: Track, b: Track) => (a.id === b.id || a.name === b.name) && closeTo(decodeTrack(a), decodeTrack(b), SAME_ROUTE_M);
   const out = [...base];
   let added = 0;
   let left = 0;
   for (const track of extra) {
-    if (out.some((other) => same(other, track))) continue;
+    if (out.some((other) => same(other, track) || close(other, track))) continue;
     if (out.length >= MAX_TRACKS) {
       left++;
       continue;

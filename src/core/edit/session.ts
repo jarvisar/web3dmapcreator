@@ -853,10 +853,13 @@ export class EditSession {
   /**
    * What drawn roads clear from a LiDAR only surface (drawn.ts), which is
    * cut out of it and filled with the bare ground in the city part. Null
-   * with nothing cleared.
+   * with nothing cleared. Shapes in `hidden` parts are left out of an
+   * export (excludedParts), so what they clear is too.
    */
-  private cleared(standing: Map<string, Standing>): { cut: SurfaceCut; hole: MultiPolygon; signature: string } | null {
-    const pieces = [...standing.values()].flatMap((s) => s.cleared ?? []);
+  private cleared(standing: Map<string, Standing>, edits: ModelEdits, hidden: ReadonlySet<string> = new Set()): { cut: SurfaceCut; hole: MultiPolygon; signature: string } | null {
+    const layerIds = new Set(edits.layers.map((layer) => layer.id));
+    const shown = (shape: AddedShape) => !hidden.has(layerIds.has(shape.layer) ? layerPartId(shape.layer) : SHAPES_PART);
+    const pieces = edits.shapes.flatMap((shape) => (shown(shape) ? (standing.get(shape.id)?.cleared ?? []) : []));
     if (!pieces.length) return null;
     if (this.cutter === undefined) {
       const grids = this.ctx.profile;
@@ -1437,7 +1440,7 @@ export class EditSession {
       if (note) notes[key] = note;
       await offer(key, SHAPES_PART, 'building', stood.signature, () => stood.solids);
     }
-    const cleared = this.cleared(standing);
+    const cleared = this.cleared(standing, edits);
     if ((cleared?.signature ?? '') !== this.sentCut) {
       let part: MeshPart | null = null;
       try {
@@ -1730,8 +1733,8 @@ export class EditSession {
 
   // -------------------------------------------------------------- export
 
-  /** The model with the edits applied, for export. */
-  async edited(edits: ModelEdits, palette: Palette): Promise<ModelSpec> {
+  /** The model with the edits applied, for export, which leaves out the `excluded` parts (excludedParts). */
+  async edited(edits: ModelEdits, palette: Palette, excluded: readonly string[] = []): Promise<ModelSpec> {
     const warnings: string[] = [];
     const pass = this.pass(edits);
     const layerIds = new Set(edits.layers.map((l) => l.id));
@@ -1763,10 +1766,10 @@ export class EditSession {
     const { earth, standing } = this.standAll(pass, roadTiles, decks, footprints);
     const shapeFootprints = [...standing.values()].flatMap((s) => (s.ground.length ? [s.ground] : []));
     const hidden = new Set(this.hiddenTrees(shapeFootprints, roadTiles, earth));
-    const cleared = this.cleared(standing);
+    const cleared = this.cleared(standing, edits, new Set(excluded));
     let city: Layer | null = null;
     try {
-      if (cleared) city = cleared.cut.layer(cleared.hole, cleared.signature);
+      if (cleared) city = cleared.cut.layer(cleared.hole);
     } catch {
       warnings.push(CUT_FAILED);
     }

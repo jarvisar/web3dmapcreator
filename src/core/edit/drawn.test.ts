@@ -15,7 +15,7 @@ import { meshLayers } from '../pipeline/mesh';
 import type { ModelSpec } from '../pipeline/generate';
 import { cloneSettings, DEFAULT_PALETTE, type AreaSpec } from '../settings';
 import type { LonLat, Polygon } from '../types';
-import { drawnRoad } from './drawn';
+import { bareGround, drawnRoad, LineHeights } from './drawn';
 import { EditSession } from './session';
 import { emptyEdits, type AddedShape, type ModelEdits } from './types';
 
@@ -101,7 +101,9 @@ describe('roads drawn on a LiDAR only model', () => {
     const at = (x: number, y: number) => Math.round((y * SCALE - ground.minY) / (ground.stepY ?? ground.step)) * ground.cols + Math.round((x * SCALE - ground.minX) / ground.step);
     expect(flags[at(-28, 0)] & TREE_CELL).toBeTruthy();
     expect(flags[at(-60, 20)] & TREE_CELL).toBe(0);
-    expect(ground.values[at(-28, 0)]).toBeCloseTo(ground.values[at(-60, 20)], 3);
+    const bare = bareGround(profile);
+    expect(bare(-28 * SCALE, 0)).toBeCloseTo(bare(-60 * SCALE, 20 * SCALE), 3);
+    expect(bare(-28 * SCALE, 0)).toBeCloseTo(spec.edit!.heightAt(-60 * SCALE, 20 * SCALE), 3);
   });
 
   it('runs under the trees on the ground, with the trees over it cleared', async () => {
@@ -207,6 +209,21 @@ describe('roads drawn on a LiDAR only model', () => {
     }
   });
 
+  it('clears nothing for a road in a part the export leaves out', async () => {
+    const { spec, session } = await model();
+    const street = road('h', [
+      [-70, 0],
+      [0, 0],
+    ]);
+    const hidden = await session.edited(edits(street), DEFAULT_PALETTE, ['shapes']);
+    expect(cityOf(hidden).solids).toEqual(cityOf(spec).solids);
+    expect(cityOf(await session.edited(edits(street), DEFAULT_PALETTE, ['layer:mine']))).not.toEqual(cityOf(spec));
+
+    const layered: ModelEdits = { ...edits({ ...street, layer: 'mine' }), layers: [{ id: 'mine', name: 'Mine', hex: '#FF0000', line: 'PLA Basic' }] };
+    expect(cityOf(await session.edited(layered, DEFAULT_PALETTE, ['layer:mine'])).solids).toEqual(cityOf(spec).solids);
+    expect(cityOf(await session.edited(layered, DEFAULT_PALETTE, ['shapes']))).not.toEqual(cityOf(spec));
+  });
+
   it('leaves the surface alone where nothing over it is cleared', async () => {
     const { session } = await model();
     const open = road('c', [
@@ -228,5 +245,40 @@ describe('roads drawn on a LiDAR only model', () => {
     const out = await session.edited(edits(raised), DEFAULT_PALETTE);
     // Flat over the highest surface under it, the crowns included.
     expect(topAt(added(out), -60, 0)).toBeGreaterThan(spec.edit!.heightAt(-28 * SCALE, 0));
+  });
+  it('finds the nearest stretch of the line from the cells it passes through', () => {
+    let seed = 7;
+    const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    for (let trial = 0; trial < 40; trial++) {
+      const cell = 0.3 + 3 * random();
+      const line: [number, number][] = [[50 * random(), 50 * random()]];
+      for (let i = 0; i < 6; i++) {
+        const [x, y] = line[line.length - 1];
+        const length = i === 2 ? 400 * random() : 30 * random();
+        const angle = 2 * Math.PI * random();
+        line.push([x + length * Math.cos(angle), y + length * Math.sin(angle)]);
+      }
+      const x: number[] = [];
+      const y: number[] = [];
+      for (let i = 1; i < line.length; i++) {
+        const [[ax, ay], [bx, by]] = [line[i - 1], line[i]];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / (cell / 2)));
+        for (let k = i === 1 ? 0 : 1; k <= n; k++) {
+          x.push(ax + ((bx - ax) * k) / n);
+          y.push(ay + ((by - ay) * k) / n);
+        }
+      }
+      const profile = { x: Float64Array.from(x), y: Float64Array.from(y), z: Float64Array.from(x, (v, k) => Math.sin(v / 5) + Math.cos(y[k] / 7)) };
+      const heights = new LineHeights(line, profile, cell);
+      // One cell holding every segment.
+      const everything = new LineHeights(line, profile, 1e7);
+      for (let q = 0; q < 300; q++) {
+        const k = Math.floor(random() * x.length);
+        const r = (q % 4 ? 0.6 : 4) * cell * random();
+        const angle = 2 * Math.PI * random();
+        const [px, py] = [x[k] + r * Math.cos(angle), y[k] + r * Math.sin(angle)];
+        expect(heights.at(px, py)).toBeCloseTo(everything.at(px, py), 9);
+      }
+    }
   });
 });

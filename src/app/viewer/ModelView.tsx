@@ -13,7 +13,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Vector3 } from 'three';
 import { blockAt, blockBounds, parseRoadKey, roadEdits, roadKey, roadSegment, roundAt } from '../../core/edit/blocks';
-import { editOf, isPartKey, kindOf, objectOf, partKey, twinOf } from '../../core/edit/keys';
+import { isPartKey, kindOf, objectOf, partKey, twinOf } from '../../core/edit/keys';
 import { buildingHeightRange, EDIT_LIMITS, MAX_SHAPE_POINTS, type AddedShape } from '../../core/edit/types';
 import { simplifyLine } from '../../core/tracks/track';
 import { Projection } from '../../core/geo/projection';
@@ -398,14 +398,35 @@ export default function ModelView({ active }: { active: boolean }) {
     const bridges = new Set<string>();
     const done: string[] = [];
     const clamp = (value: number, [low, high]: readonly [number, number]) => Math.min(high, Math.max(low, value));
+    // Each piece once: a divided road's merged line is a piece of both
+    // carriageways, and Whole street selects both. Drawn in groups by the
+    // layer and height each piece has, so a raised block or one in a custom
+    // layer stays that way.
+    const groups = new Map<string, { layer: string; height: number; pieces: number[] }>();
+    const seen = new Set<number>();
     for (const key of keys) {
       if (kindOf(key) !== 'road') continue;
       const pieces = roads.piecesOf(key).filter((piece) => engine.roadShown(piece));
       if (!pieces.length) continue;
-      const edit = editOf(edits, key);
+      for (const piece of pieces) {
+        if (seen.has(piece)) continue;
+        seen.add(piece);
+        const edit = engine.pieceEdit(piece);
+        const layer = edit?.layer && edits.layers.some((l) => l.id === edit.layer) ? edit.layer : 'roads';
+        const height = engine.roadHeight(piece);
+        const group = `${layer}|${height}`;
+        const entry = groups.get(group);
+        if (entry) entry.pieces.push(piece);
+        else groups.set(group, { layer, height, pieces: [piece] });
+      }
+      done.push(key);
+      const twin = twinOf(key)!;
+      const bridge = data.objects[twin];
+      const range = parseRoadKey(key);
+      if (bridge && range && (bridge.at === undefined ? range.from <= 0 && range.to >= 1 : bridge.at >= range.from && bridge.at <= range.to)) bridges.add(twin);
+    }
+    for (const { layer, height, pieces } of groups.values()) {
       const width = Math.max(...pieces.map((piece) => engine.roadWidth(piece)));
-      const height = edit?.heightMm ?? roads.lines.thicknessMm;
-      const layer = edit?.layer && edits.layers.some((l) => l.id === edit.layer) ? edit.layer : 'roads';
       for (const line of chainLines(pieces.map((piece) => roads.lineOf(piece)))) {
         // Within a hundredth of a mm of the road's line, coarser for a very long one.
         let tolerance = 0.01;
@@ -427,11 +448,6 @@ export default function ModelView({ active }: { active: boolean }) {
           font: 'montserrat',
         });
       }
-      done.push(key);
-      const twin = twinOf(key)!;
-      const bridge = data.objects[twin];
-      const range = parseRoadKey(key);
-      if (bridge && range && (bridge.at === undefined ? range.from <= 0 && range.to >= 1 : bridge.at >= range.from && bridge.at <= range.to)) bridges.add(twin);
     }
     if (!shapes.length) {
       toast('Nothing of that road shows, so there is nothing to draw.');

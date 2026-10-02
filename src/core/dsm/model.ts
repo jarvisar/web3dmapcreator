@@ -20,9 +20,8 @@ import type { EditContext, ModelSpec } from '../pipeline/generate';
 import { groundAt, type GroundGrid } from '../edit/ground';
 import { projectLines, projectPolygons, str, type SourceFeature } from '../pipeline/source';
 import type { ObjectInfo } from '../pipeline/context';
-import { MARKER_WIDTHS, trackModelLines } from '../pipeline/tracks';
+import { MARKER_WIDTHS, trackMarkers, trackModelLines } from '../pipeline/tracks';
 import type { AreaSpec, ModelSettings } from '../settings';
-import { markerShapes } from '../tracks/markers';
 import { trackLengthM, type TrackLines } from '../tracks/track';
 import type { ModelStats, MultiPolygon, Polygon, Ring, Vec2 } from '../types';
 import { compose, ISLAND_MIN_MM2, MAP_EDGE_M, TREE_SHARE } from './compose';
@@ -30,7 +29,7 @@ import { FAIR_REACH_MM, FAIR_WINDOW_MM, fairFaces } from './filters';
 import { emptyLayers } from './layers';
 import { meshSurface, straightenWalls, surfaceLimits, wallDetail, WALL_STEP_CELLS, type HeightGrid, type TileJob, type TileResult } from './mesh';
 import type { PreparedSurface } from './prepare';
-import { BUILDING_CELL, CUT_CELL, ProfileIndex, routeProfile, TREE_CELL, WATER_CELL, type ProfileGrids, type RouteProfile } from './route';
+import { BUILDING_CELL, CUT_CELL, packGrid, ProfileIndex, routeProfile, TREE_CELL, WATER_CELL, type ProfileGrids, type RouteGrids, type RouteProfile } from './route';
 
 export const CLUTTER_M = 2;
 // Land narrower than twice this beside cut water is opened away: it would
@@ -56,6 +55,8 @@ const TAPER_STEPS = 4;
 const UNCOVERED_SHARE = 0.02;
 // The share of the surface step meshSurface takes. Straightening the walls takes the rest.
 const SURFACE_MESHED = 0.8;
+// A flag outside route.ts's, for cells marked while the flags are worked out.
+const RAISED_BESIDE = 16;
 
 export interface SurfaceModelInput {
   area: AreaSpec;
@@ -251,7 +252,7 @@ function nearbyLevel(polygon: Polygon, waterTop: Float32Array, { nx, ny, x0, y0,
  * Cells of a mask as squares around their grid points, merged, with the
  * one-cell stairs of a diagonal shore taken out.
  */
-export function maskOutline(mask: Uint8Array, nx: number, ny: number, x0: number, y0: number, dx: number, dy: number): MultiPolygon {
+export function maskOutline(mask: Uint8Array, nx: number, ny: number, x0: number, y0: number, dx: number, dy: number, bit = 0xff): MultiPolygon {
   const pieces: Polygon[] = [];
   const box = (i0: number, i1: number, j0: number, j1: number) => {
     const [xa, xb] = [x0 + (i0 - 0.5) * dx, x0 + (i1 - 0.5) * dx];
@@ -263,12 +264,12 @@ export function maskOutline(mask: Uint8Array, nx: number, ny: number, x0: number
   for (let j = 0; j <= ny; j++) {
     const next = new Map<number, number>();
     for (let i = 0; j < ny && i < nx; ) {
-      if (!mask[j * nx + i]) {
+      if (!(mask[j * nx + i] & bit)) {
         i++;
         continue;
       }
       const i0 = i;
-      while (i < nx && mask[j * nx + i]) i++;
+      while (i < nx && mask[j * nx + i] & bit) i++;
       const key = i0 * (nx + 1) + i;
       next.set(key, open.get(key) ?? j);
       open.delete(key);
@@ -301,7 +302,6 @@ function landRegion(crop: Ring, water: MultiPolygon, minIsland: number): MultiPo
 /** What meshing needs from compose. */
 interface Composed {
   heights: Float32Array;
-  cut: Uint8Array;
   waterTop: Float32Array | null;
   /** The mesher's detail, raised beside walls (wallDetail). */
   detail: Float32Array;
@@ -309,7 +309,7 @@ interface Composed {
   counts: Record<string, number>;
   /** What each route line rests on, with `routes`. */
   profiles?: RouteProfile[];
-  /** The surface, the bare ground and what each cell is, for routes and roads drawn in the editor. */
+  /** The surface, the bare ground and what each cell is, for roads drawn in the editor. The flags hold the cut water. */
   grids: ProfileGrids;
 }
 
@@ -386,7 +386,6 @@ function composeHeights(
   // And cells whose returns are on the ground, raised by compose closing the
   // gaps in a crown beside them.
   const raisedMm = CLUTTER_M * mmPerMetre * input.settings.lidarModel.heightScale;
-  const filled: number[] = [];
   for (let j = 0; j < ny; j++) {
     for (let k = 0; k < nx; k++) {
       const i = j * nx + k;
@@ -395,12 +394,13 @@ function composeHeights(
       for (let b = Math.max(0, j - 1); b <= Math.min(ny - 1, j + 1) && !beside; b++) {
         for (let a = Math.max(0, k - 1); a <= Math.min(nx - 1, k + 1); a++) if (flags[b * nx + a] & TREE_CELL) beside = true;
       }
-      if (beside) filled.push(i);
+      // Marked for now, so it doesn't count as a tree beside the cells after it.
+      if (beside) flags[i] = RAISED_BESIDE;
     }
   }
-  for (const i of filled) flags[i] |= TREE_CELL;
+  for (let i = 0; i < n; i++) if (flags[i] === RAISED_BESIDE) flags[i] = TREE_CELL;
   const frame = { minX: cells.x0, minY: cells.y0, step: cells.dx, stepY: cells.dy, cols: nx, rows: ny };
-  const grids: ProfileGrids = {
+  const grids: RouteGrids = {
     surface: { ...frame, values: result.heights },
     ground: { ...frame, values: result.ground },
     flags,
@@ -411,7 +411,7 @@ function composeHeights(
     exaggeration: input.settings.terrain.exaggeration,
   };
   const profiles = routes ? routes.lines.map((line) => routeProfile(line, grids)) : undefined;
-  return { heights: result.heights, cut: result.cut, waterTop: result.waterTop, detail, groundMaxMm: result.groundMaxMm, counts: result.counts, profiles, grids };
+  return { heights: result.heights, waterTop: result.waterTop, detail, groundMaxMm: result.groundMaxMm, counts: result.counts, profiles, grids: { ...grids, ground: packGrid(grids.ground) } };
 }
 
 /** Each route's lines in model mm, snapped to the road segments if asked. */
@@ -465,7 +465,8 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
   let routes: { track: TrackLines; lines: Vec2[][] }[] = [];
   let clear: Uint8Array | undefined;
   const routeWidth = settings.tracks.widthMm;
-  const routeMarkers = (lines: Vec2[][]) => (settings.tracks.markers ? markerShapes(lines, routeWidth * MARKER_WIDTHS, 0.01) : []);
+  const routeFrame = { projection: new Projection(area.center, area.rotationDeg, mmPerMetre), cropSet: [[crop]] };
+  const routeMarkers = (track: TrackLines, lines: Vec2[][]) => (settings.tracks.markers ? trackMarkers(track, lines, routeFrame, routeWidth * MARKER_WIDTHS) : []);
   if (settings.tracks.enabled && input.tracks?.length) {
     progress.begin('routes', 'Laying out routes');
     await progress.checkpoint();
@@ -476,7 +477,7 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
       const lines = routes.flatMap((route) => route.lines);
       const along = union(
         bufferLines(lines.map((points) => ({ points, width: routeWidth + reach })), 'round'),
-        offsetPolygons(routes.flatMap((route) => routeMarkers(route.lines).map((ring): Polygon => [ring])), reach / 2, 'round'),
+        offsetPolygons(routes.flatMap((route) => routeMarkers(route.track, route.lines).map((ring): Polygon => [ring])), reach / 2, 'round'),
       );
       clear = cellsIn(along, cells);
     }
@@ -506,7 +507,7 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
   let surfaceWater: { polygons: MultiPolygon; floor: number | null }[] = [];
   if (result.counts.cut_water_cells || !rectangle) progress.begin('cut', 'Cutting the surface to shape');
   if (result.counts.cut_water_cells) {
-    let cut = maskOutline(result.cut, nx, ny, x0, y0, dx, dy);
+    let cut = maskOutline(result.grids.flags, nx, ny, x0, y0, dx, dy, CUT_CELL);
     if (mapOutline) cut = followMap(cut, mapOutline, MAP_EDGE_M * mmPerMetre);
     // A layer keeps every island the opening leaves, since nothing falls out.
     const region = landRegion(crop, cut, result.waterTop ? 0 : ISLAND_MIN_MM2);
@@ -551,7 +552,7 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
     const through = result.waterTop ? [] : surfaceWater.flatMap((w) => (w.floor === null ? w.polygons : []));
     const solids: Solid[] = [];
     for (const { track, lines } of routes) {
-      let polygons = intersection(union(bufferLines(lines.map((points) => ({ points, width: routeWidth })), 'round'), routeMarkers(lines).map((ring): Polygon => [ring])), [[crop]]);
+      let polygons = intersection(union(bufferLines(lines.map((points) => ({ points, width: routeWidth })), 'round'), routeMarkers(track, lines).map((ring): Polygon => [ring])), [[crop]]);
       if (through.length) polygons = difference(polygons, through);
       polygons = dropSmall(polygons, 0.005);
       if (!polygons.length) continue;

@@ -22,6 +22,11 @@ export interface SnapOptions {
 
 export interface SnapResult {
   lines: Vec2[][];
+  /**
+   * Per line, which network line each segment was matched along (segment i
+   * runs from point i to i + 1), or -1 where it's off the roads.
+   */
+  via: Int32Array[];
   /** Share of the track's samples matched to a road, 0 to 1. */
   snapped: number;
 }
@@ -58,6 +63,8 @@ class Graph {
   readonly from: Int32Array;
   readonly to: Int32Array;
   readonly length: Float64Array;
+  /** The network line each edge came from. */
+  readonly line: Int32Array;
   /** Node to its edges, CSR. */
   private readonly start: Int32Array;
   private readonly links: Int32Array;
@@ -66,10 +73,11 @@ class Graph {
   // Reused between searches: distances are only valid where stamp matches.
   private readonly dist: Float64Array;
   private readonly prev: Int32Array;
+  private readonly prevEdge: Int32Array;
   private readonly stamp: Int32Array;
   private round = 0;
 
-  constructor(lines: readonly Vec2[][], join: number, cell: number) {
+  constructor(lines: readonly Vec2[][], sources: readonly number[], join: number, cell: number) {
     const xs: number[] = [];
     const ys: number[] = [];
     const grid = new Map<number, number[]>();
@@ -133,14 +141,19 @@ class Graph {
     const from: number[] = [];
     const to: number[] = [];
     const lengths: number[] = [];
+    const edgeLines: number[] = [];
+    let source = NONE;
     const edge = (u: number, v: number) => {
       if (u === v) return;
       from.push(u);
       to.push(v);
       lengths.push(Math.hypot(xs[v] - xs[u], ys[v] - ys[u]));
+      edgeLines.push(source);
     };
-    for (const line of lines) {
+    for (let l = 0; l < lines.length; l++) {
+      const line = lines[l];
       if (line.length < 2) continue;
+      source = sources[l];
       let previous = node(line[0][0], line[0][1]);
       for (let i = 1; i < line.length; i++) {
         const a = line[i - 1];
@@ -160,6 +173,7 @@ class Graph {
     this.from = Int32Array.from(from);
     this.to = Int32Array.from(to);
     this.length = Float64Array.from(lengths);
+    this.line = Int32Array.from(edgeLines);
     const degree = new Int32Array(xs.length + 1);
     for (let e = 0; e < from.length; e++) {
       degree[from[e] + 1]++;
@@ -194,6 +208,7 @@ class Graph {
     }
     this.dist = new Float64Array(xs.length);
     this.prev = new Int32Array(xs.length);
+    this.prevEdge = new Int32Array(xs.length);
     this.stamp = new Int32Array(xs.length);
   }
 
@@ -241,22 +256,23 @@ class Graph {
   /**
    * Distances along the roads from a candidate to each target, up to
    * `limit`, Infinity past it. With `path`, also the nodes between the
-   * candidate and the first target.
+   * candidate and the first target, and with `edges` the edge into each.
    */
-  distances(source: Candidate, targets: readonly Candidate[], limit: number, path?: number[]): number[] {
+  distances(source: Candidate, targets: readonly Candidate[], limit: number, path?: number[], edges?: number[]): number[] {
     const round = ++this.round;
     const heap = new MinHeap();
-    const visit = (n: number, d: number, from: number) => {
+    const visit = (n: number, d: number, from: number, edge: number) => {
       if (d > limit) return;
       if (this.stamp[n] === round && this.dist[n] <= d) return;
       this.stamp[n] = round;
       this.dist[n] = d;
       this.prev[n] = from;
+      this.prevEdge[n] = edge;
       heap.push(n, d);
     };
     const e0 = source.edge;
-    visit(this.from[e0], source.t * this.length[e0], NONE);
-    visit(this.to[e0], (1 - source.t) * this.length[e0], NONE);
+    visit(this.from[e0], source.t * this.length[e0], NONE, e0);
+    visit(this.to[e0], (1 - source.t) * this.length[e0], NONE, e0);
     const wanted = new Set<number>();
     for (const target of targets) {
       wanted.add(this.from[target.edge]);
@@ -270,7 +286,7 @@ class Graph {
       for (let k = this.start[n]; k < this.start[n + 1]; k++) {
         const e = this.links[k];
         const m = this.from[e] === n ? this.to[e] : this.from[e];
-        visit(m, d + this.length[e], n);
+        visit(m, d + this.length[e], n, e);
       }
     }
     const at =(n: number) => (this.stamp[n] === round ? this.dist[n] : Infinity);
@@ -300,7 +316,9 @@ class Graph {
     if (path && Number.isFinite(best) && bestEnd !== NONE) {
       const nodes: number[] = [];
       for (let n = bestEnd; n !== NONE; n = this.prev[n]) nodes.push(n);
-      path.push(...nodes.reverse());
+      nodes.reverse();
+      path.push(...nodes);
+      edges?.push(...nodes.map((n) => this.prevEdge[n]));
     }
     return out;
   }
@@ -389,14 +407,15 @@ function rawBetween(line: readonly Vec2[], along: number[], from: number, to: nu
   return out;
 }
 
-function pushPoint(out: Vec2[], x: number, y: number): void {
+function pushPoint(out: Vec2[], x: number, y: number): boolean {
   const last = out[out.length - 1];
-  if (last && Math.abs(last[0] - x) < 1e-9 && Math.abs(last[1] - y) < 1e-9) return;
+  if (last && Math.abs(last[0] - x) < 1e-9 && Math.abs(last[1] - y) < 1e-9) return false;
   out.push([x, y]);
+  return true;
 }
 
-/** The network lines near the track, so the graph only holds what a match could use. */
-function nearTrack(network: readonly Vec2[][], track: readonly Vec2[][], reach: number): Vec2[][] {
+/** The network lines near the track, so the graph only holds what a match could use, and which line each came from. */
+function nearTrack(network: readonly Vec2[][], track: readonly Vec2[][], reach: number): { lines: Vec2[][]; sources: number[] } {
   const cell = reach;
   const key = (cx: number, cy: number) => (cx + 2 ** 25) * 2 ** 26 + (cy + 2 ** 25);
   const near = new Set<number>();
@@ -415,36 +434,47 @@ function nearTrack(network: readonly Vec2[][], track: readonly Vec2[][], reach: 
     for (let k = 0; k <= steps; k++) if (isNear(a[0] + ((b[0] - a[0]) * k) / steps, a[1] + ((b[1] - a[1]) * k) / steps)) return true;
     return false;
   };
-  const out: Vec2[][] = [];
-  for (const line of network) {
+  const lines: Vec2[][] = [];
+  const sources: number[] = [];
+  network.forEach((line, source) => {
     let piece: Vec2[] = [];
     for (let i = 1; i < line.length; i++) {
       if (segmentNear(line[i - 1], line[i])) {
         if (!piece.length) piece.push(line[i - 1]);
         piece.push(line[i]);
       } else if (piece.length) {
-        out.push(piece);
+        lines.push(piece);
+        sources.push(source);
         piece = [];
       }
     }
-    if (piece.length >= 2) out.push(piece);
-  }
-  return out;
+    if (piece.length >= 2) {
+      lines.push(piece);
+      sources.push(source);
+    }
+  });
+  return { lines, sources };
+}
+
+function unmatched(track: readonly Vec2[][]): SnapResult {
+  return { lines: track.map((line) => [...line]), via: track.map((line) => new Int32Array(Math.max(0, line.length - 1)).fill(NONE)), snapped: 0 };
 }
 
 /** The track moved onto the network where it follows it. Lines are matched one at a time. */
 export function snapToNetwork(track: readonly Vec2[][], network: readonly Vec2[][], options: SnapOptions): SnapResult {
   const u = options.unitsPerMetre;
-  if (!network.length || !track.length || !(u > 0)) return { lines: track.map((line) => [...line]), snapped: 0 };
+  if (!network.length || !track.length || !(u > 0)) return unmatched(track);
   const radius = RADIUS_M * u;
-  const graph = new Graph(nearTrack(network, track, radius + 150 * u), JOIN_M * u, radius);
-  if (!graph.nodes) return { lines: track.map((line) => [...line]), snapped: 0 };
+  const near = nearTrack(network, track, radius + 150 * u);
+  const graph = new Graph(near.lines, near.sources, JOIN_M * u, radius);
+  if (!graph.nodes) return unmatched(track);
   const sigma = SIGMA_M * u;
   const beta = BETA_M * u;
   const offCost = 0.5 * (OFF_M / SIGMA_M) ** 2;
   let total = 0;
   let matched = 0;
   const lines: Vec2[][] = [];
+  const via: Int32Array[] = [];
 
   for (const line of track) {
     if (line.length < 2) continue;
@@ -502,13 +532,18 @@ export function snapToNetwork(track: readonly Vec2[][], network: readonly Vec2[]
     }
 
     const out: Vec2[] = [];
+    // The network line of the segment ending at each point.
+    const ways: number[] = [];
+    const push = (x: number, y: number, way: number) => {
+      if (pushPoint(out, x, y)) ways.push(way);
+    };
     for (let k = 0; k < samples.length; k++) {
       const state = states[k];
       const offNow = state === candidates[k].length;
       total++;
       if (offNow) {
-        if (k > 0) for (const p of rawBetween(line, along, samples[k - 1].s, samples[k].s)) pushPoint(out, p[0], p[1]);
-        pushPoint(out, samples[k].x, samples[k].y);
+        if (k > 0) for (const p of rawBetween(line, along, samples[k - 1].s, samples[k].s)) push(p[0], p[1], NONE);
+        push(samples[k].x, samples[k].y, NONE);
         continue;
       }
       matched++;
@@ -518,12 +553,18 @@ export function snapToNetwork(track: readonly Vec2[][], network: readonly Vec2[]
         const p = candidates[k - 1][prevState];
         const straight = Math.hypot(samples[k].x - samples[k - 1].x, samples[k].y - samples[k - 1].y);
         const nodes: number[] = [];
-        graph.distances(p, [c], straight * 3 + 2 * radius + 30 * u, nodes);
-        for (const n of nodes) pushPoint(out, graph.x[n], graph.y[n]);
+        const edges: number[] = [];
+        graph.distances(p, [c], straight * 3 + 2 * radius + 30 * u, nodes, edges);
+        nodes.forEach((n, i) => push(graph.x[n], graph.y[n], graph.line[edges[i]]));
+        push(c.x, c.y, graph.line[c.edge]);
+      } else {
+        push(c.x, c.y, NONE);
       }
-      pushPoint(out, c.x, c.y);
     }
-    if (out.length >= 2) lines.push(out);
+    if (out.length >= 2) {
+      lines.push(out);
+      via.push(Int32Array.from(ways.slice(1)));
+    }
   }
-  return { lines, snapped: total ? matched / total : 0 };
+  return { lines, via, snapped: total ? matched / total : 0 };
 }
