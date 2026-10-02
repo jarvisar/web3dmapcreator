@@ -22,11 +22,13 @@ import {
   restoreObjects,
   revertEdits,
   setActivePoint,
+  setEditMode,
   setSelection,
   settleEdits,
   shapeDefaults,
   takeInLink,
   undoEdit,
+  updateShape,
 } from './editActions';
 import { setModelParts } from './model';
 import { BACKUP_KEY, readBackup } from './persist';
@@ -461,6 +463,22 @@ describe('points of drawn shapes', () => {
     setSelection(['s:p']);
     setActivePoint({ shape: 'p', index: 0 });
     setSelection([]);
+    expect(useApp.getState().ui.activePoint).toBeNull();
+  });
+  it('forgets a picked point that undo took away, or edit mode left behind', () => {
+    commitEdits({ ...emptyEdits(), shapes: [shape('p', { points: [[0, 0], [0.001, 0]] })] });
+    setSelection(['s:p']);
+    // A point added from the dot between two, then picked, as a tap on the dot does.
+    updateShape('p', { points: [[0, 0], [0.0005, 0], [0.001, 0]] });
+    setActivePoint({ shape: 'p', index: 2 });
+    undoEdit();
+    expect(useApp.getState().ui.activePoint).toBeNull();
+    const steps = useApp.getState().editHistory.past.length;
+    // Nothing to delete, and no empty undo step either.
+    deletePoint('p', 2);
+    expect(useApp.getState().editHistory.past).toHaveLength(steps);
+    setActivePoint({ shape: 'p', index: 0 });
+    setEditMode(false);
     expect(useApp.getState().ui.activePoint).toBeNull();
   });
 });

@@ -389,7 +389,8 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
           <span>{note}</span>
         </p>
       )}
-      {shape?.kind === 'text' && <TextControls shape={shape} />}
+      {/* Keyed, so a new text shape selected in place of another still gets its text focused. */}
+      {shape?.kind === 'text' && <TextControls key={shape.id} shape={shape} />}
       {shape && shape.kind !== 'area' && (
         <NumberRow
           label={SIZE_LABELS[shape.kind]}
@@ -969,7 +970,10 @@ function LayerRow({ layer, count, edits }: { layer: EditLayer; count: number; ed
         aria-label="Layer name"
         maxLength={60}
         onChange={(event) => setName(event.target.value)}
-        onBlur={() => name.trim() && name !== layer.name && updateLayer(layer.id, { name: name.trim() })}
+        onBlur={() => {
+          if (!name.trim()) setName(layer.name);
+          else if (name.trim() !== layer.name) updateLayer(layer.id, { name: name.trim() });
+        }}
         onKeyDown={(event) => event.key === 'Enter' && (event.target as HTMLInputElement).blur()}
       />
       <button type="button" className="link-btn layer-count" onClick={select} disabled={!count} title="Select what's in it" aria-label={`Select the ${count} things in ${layer.name}`}>

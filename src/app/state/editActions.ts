@@ -132,7 +132,7 @@ export function undoEdit(): void {
     return {
       edits,
       editHistory: { past: past.slice(0, -1), future: [back, ...future], coalesce: null },
-      ui: { ...state.ui, selection: keep(state.ui.selection, edits) },
+      ui: { ...state.ui, selection: keep(state.ui.selection, edits), activePoint: keepPoint(state.ui.activePoint, edits) },
     };
   });
 }
@@ -145,7 +145,7 @@ export function redoEdit(): void {
     return {
       edits,
       editHistory: { past: [...past, back], future: future.slice(1), coalesce: null },
-      ui: { ...state.ui, selection: keep(state.ui.selection, edits) },
+      ui: { ...state.ui, selection: keep(state.ui.selection, edits), activePoint: keepPoint(state.ui.activePoint, edits) },
     };
   });
 }
@@ -154,6 +154,13 @@ export function redoEdit(): void {
 function keep(selection: string[], edits: ModelEdits): string[] {
   const shapes = new Set(edits.shapes.map((s) => shapeKey(s.id)));
   return selection.filter((key) => kindOf(key) !== 'shape' || shapes.has(key));
+}
+
+/** The picked point, unless undo took away its shape or the point itself. */
+function keepPoint(point: { shape: string; index: number } | null, edits: ModelEdits): { shape: string; index: number } | null {
+  if (!point) return null;
+  const shape = edits.shapes.find((s) => s.id === point.shape);
+  return shape && point.index < shape.points.length ? point : null;
 }
 
 /** Every edit gone, for every area. A copy is kept aside in case that wasn't meant. */
@@ -297,7 +304,7 @@ export function setActivePoint(activePoint: { shape: string; index: number } | n
 /** Deletes a point of a drawn path or area, if it has enough left. */
 export function deletePoint(shape: string, index: number): void {
   const found = get().edits.shapes.find((s) => s.id === shape);
-  if (!found) return;
+  if (!found || index < 0 || index >= found.points.length) return;
   const minimum = found.kind === 'area' ? 3 : 2;
   if (found.points.length <= minimum) {
     toast(`A ${found.kind === 'area' ? 'drawn area' : 'drawn path'} needs at least ${minimum} points.`);
@@ -335,7 +342,9 @@ export function toggleSelected(keys: string[]): void {
 }
 
 export function setEditMode(editMode: boolean): void {
-  set((state) => ({ ui: { ...state.ui, editMode, tool: editMode ? state.ui.tool : 'select', selection: editMode ? state.ui.selection : [] } }));
+  set((state) => ({
+    ui: { ...state.ui, editMode, tool: editMode ? state.ui.tool : 'select', selection: editMode ? state.ui.selection : [], activePoint: editMode ? state.ui.activePoint : null },
+  }));
   settleEdits();
 }
 

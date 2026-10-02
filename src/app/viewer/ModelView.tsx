@@ -495,7 +495,7 @@ export default function ModelView({ active }: { active: boolean }) {
         const onTop = target.key !== null && ['building', 'bridge', 'shape'].includes(kindOf(target.key) ?? '');
         const lift = onTop ? Math.min(EDIT_LIMITS.liftMm[1], Math.max(0, Math.round((target.point.z - ground) * 10) / 10)) : 0;
         // Raised, it has a flat top that sits on the roof, whatever the tool's default.
-        addShape({ ...shapeDefaults(tool), at: [lon, lat], points: [], rotationDeg: editData.frame?.rotationDeg ?? 0, liftMm: lift, ...(lift > 0 ? { followGround: false } : {}) });
+        addShape({ ...shapeDefaults(tool), at: [lon, lat], points: [], rotationDeg: getEditData().frame?.rotationDeg ?? 0, liftMm: lift, ...(lift > 0 ? { followGround: false } : {}) });
         setTool('select');
       },
       split(target) {
