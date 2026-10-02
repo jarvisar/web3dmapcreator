@@ -3,11 +3,11 @@
 // a second even for a long ride.
 
 import { areaAroundTracks, shareOutside } from '../../core/tracks/frame';
-import { parseTrackFile, TrackFileError } from '../../core/tracks/parse';
-import { decodeTrack, encodeTrack, MAX_TRACKS, newTrackId, tidyTrackName, trackEnds, type Track } from '../../core/tracks/track';
+import { MAX_FILE_BYTES, readTrackFile, TOO_BIG, TrackFileError } from '../../core/tracks/parse';
+import { decodeTrack, encodeTrack, MAX_TRACK_POINTS, MAX_TRACKS, newTrackId, tidyTrackName, trackEnds, trackPoints, type Track } from '../../core/tracks/track';
 import type { LonLat } from '../../core/types';
 import { formatMmPair } from '../lib/format';
-import { bedFit } from './derived';
+import { bedFit, bedFitMm } from './derived';
 import { patchSettings, setArea, setTracks, toast, useApp, type Toast } from './store';
 import { asChange, undoChange, type SetupStep } from './undo';
 
@@ -33,7 +33,7 @@ function moved(text: string, step: SetupStep | null): [string, Toast['action'] |
   const fit = bedFit(area, settings, exportSettings);
   const undo = step ? { label: 'Undo', run: () => undoChange(step) } : undefined;
   if (output !== 'model' || fit.fits || settings.scale.mode !== 'fixed') return [text, undo];
-  const longest = Math.min(fit.printer.width, fit.printer.depth) - 20;
+  const longest = bedFitMm(area, settings, fit.printer);
   return [
     `${text} At this scale the model is ${formatMmPair(fit.width, fit.depth)}, bigger than the bed.`,
     { label: 'Scale to the bed', run: () => asChange('Scale to the bed', () => patchSettings('scale', { mode: 'fit', fitMm: longest })) },
@@ -54,10 +54,26 @@ export async function importTrackFiles(files: Iterable<File>): Promise<ImportRes
       errors.push(`${file.name}: there can be up to ${MAX_TRACKS} routes. Remove some first.`);
       continue;
     }
+    // Checked before reading it all into memory.
+    if (file.size > MAX_FILE_BYTES) {
+      errors.push(`${file.name}: ${TOO_BIG}`);
+      continue;
+    }
     try {
-      const parsed = parseTrackFile(file.name, await file.arrayBuffer());
-      for (const track of parsed.slice(0, room())) added.push({ id: newTrackId(), name: track.name, visible: true, lines: encodeTrack(track.lines) });
-      if (parsed.length > room()) errors.push(`${file.name}: there can be up to ${MAX_TRACKS} routes, so some in it were left out.`);
+      const { tracks: parsed, skipped } = readTrackFile(file.name, await file.arrayBuffer());
+      const space = room();
+      for (const track of parsed.slice(0, space)) {
+        const lines = encodeTrack(track.lines);
+        // Saved state drops a route over the limit, so it isn't taken now
+        // only to be gone after a reload.
+        if (trackPoints(lines) > MAX_TRACK_POINTS) {
+          errors.push(`${file.name}: ${track.name} is in ${track.lines.length.toLocaleString()} separate pieces, more than a route can hold.`);
+          continue;
+        }
+        added.push({ id: newTrackId(), name: track.name, visible: true, lines });
+      }
+      for (const text of skipped) errors.push(`${file.name}: ${text}`);
+      if (parsed.length > space) errors.push(`${file.name}: there can be up to ${MAX_TRACKS} routes, so some in it were left out.`);
     } catch (error) {
       if (!(error instanceof TrackFileError)) console.error(error);
       errors.push(`${file.name}: ${error instanceof TrackFileError ? error.message : "it couldn't be read."}`);

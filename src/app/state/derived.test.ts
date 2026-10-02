@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MAX_SECTIONS } from '../../core/export/sections';
 import { DEFAULT_AREA, DEFAULT_EXPORT, cloneSettings } from '../../core/settings';
 import { emptyEdits, type AddedShape, type ModelEdits } from '../../core/edit/types';
-import { bedFit, hiddenDownloadParts, modelSize, usedGroups } from './derived';
+import { bedFit, bedFitMm, hiddenDownloadParts, modelSize, usedGroups } from './derived';
 import type { RoadLines } from '../../core/engine/protocol';
 import type { ResultMeta } from './store';
 
@@ -13,6 +13,22 @@ describe('bed fit', () => {
     const fit = bedFit({ ...DEFAULT_AREA, shape: 'circle', widthM: 3000, heightM: 3000 }, settings, { ...DEFAULT_EXPORT, sectionWidthMm: 50, sectionHeightMm: 50 });
     expect(fit.cols * fit.rows).toBeLessThanOrEqual(MAX_SECTIONS);
     expect(fit.plates).toBeLessThan(fit.cols * fit.rows);
+  });
+
+  it('fits the bed with the rim on, whatever the shape', () => {
+    // A 20 mm rim used to make Fit the bed 276 mm long on the P1S's 256 mm bed.
+    for (const shape of ['rectangle', 'rounded', 'circle', 'hexagon'] as const) {
+      for (const rim of [0, 2, 20]) {
+        const settings = cloneSettings();
+        settings.rim = { ...settings.rim, enabled: rim > 0, widthMm: rim || 2 };
+        const area = { ...DEFAULT_AREA, shape, widthM: 4000, heightM: shape === 'rectangle' ? 2200 : 4000 };
+        const exportSettings = { ...DEFAULT_EXPORT, printer: 'P1S' };
+        settings.scale = { ...settings.scale, mode: 'fit', fitMm: bedFitMm(area, settings, bedFit(area, settings, exportSettings).printer) };
+        const fit = bedFit(area, settings, exportSettings);
+        expect(fit.fits).toBe(true);
+        expect(Math.max(fit.width, fit.depth)).toBeCloseTo(236, 1);
+      }
+    }
   });
 
   it("doesn't count a grid too large to export", () => {

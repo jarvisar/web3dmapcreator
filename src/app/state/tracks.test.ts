@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { strToU8, zipSync } from 'fflate';
 import { emptyEdits } from '../../core/edit/types';
 import { DEFAULT_AREA, DEFAULT_EXPORT, DEFAULT_PALETTE, cloneSettings } from '../../core/settings';
 import { encodePolyline } from '../../core/tracks/polyline';
@@ -79,6 +80,44 @@ describe('importing routes', () => {
     const result = await importTrackFiles([bad, gpx('Good', eastward([lon0, lat0], 0.2))]);
     expect(result.added).toEqual(['Good']);
     expect(result.errors).toEqual([expect.stringMatching(/^notes\.txt: This doesn't look like/)]);
+  });
+
+  it('say what a zip left out, and only that', async () => {
+    const text = (name: string, points: LonLat[]) => strToU8(`<gpx><trk><name>${name}</name><trkseg>${points.map(([lon, lat]) => `<trkpt lat="${lat}" lon="${lon}"/>`).join('')}</trkseg></trk></gpx>`);
+    const members = Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`r${i}.gpx`, text(`Route ${i}`, eastward([lon0, lat0 + i * 0.001], 0.2))]));
+    const eleven = await importTrackFiles([new File([zipSync(members)], 'eleven.zip')]);
+    expect(eleven.added).toHaveLength(11);
+    expect(eleven.errors).toEqual([]);
+    useApp.setState(initial, true);
+    const mixed = await importTrackFiles([new File([zipSync({ 'good.gpx': text('Good', eastward([lon0, lat0], 0.2)), 'bad.gpx': strToU8('not a route') })], 'mixed.zip')]);
+    expect(mixed.added).toEqual(['Good']);
+    expect(mixed.errors).toEqual([expect.stringMatching(/^mixed\.zip: bad\.gpx in it was left out\. This doesn't look like/)]);
+    useApp.setState(initial, true);
+    const many = Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`r${String(i).padStart(2, '0')}.gpx`, text(`Route ${i}`, eastward([lon0, lat0 + i * 0.001], 0.2))]));
+    const full = await importTrackFiles([new File([zipSync(many)], 'many.zip')]);
+    expect(full.added).toHaveLength(20);
+    expect(full.errors).toEqual(['many.zip: only the first 20 route files in it were read.']);
+  });
+
+  it("won't take a route that wouldn't come back after a reload", async () => {
+    // 5,001 stretches keep 10,002 ends however much they're simplified.
+    const lines = Array.from({ length: 5001 }, (_, i) => [
+      [lon0 + (i % 100) * 0.0001, lat0 + Math.floor(i / 100) * 0.0001],
+      [lon0 + (i % 100) * 0.0001 + 0.00003, lat0 + Math.floor(i / 100) * 0.0001],
+    ]);
+    const geojson = JSON.stringify({ type: 'Feature', properties: { name: 'Pieces' }, geometry: { type: 'MultiLineString', coordinates: lines } });
+    const result = await importTrackFiles([new File([geojson], 'pieces.geojson'), gpx('Good', eastward([lon0, lat0], 0.2))]);
+    expect(result.added).toEqual(['Good']);
+    expect(result.errors).toEqual(['pieces.geojson: Pieces is in 5,001 separate pieces, more than a route can hold.']);
+  });
+
+  it("doesn't read a file over the size limit", async () => {
+    const huge = new File(['x'], 'huge.gpx');
+    Object.defineProperty(huge, 'size', { value: 51 * 1024 * 1024 });
+    const read = vi.spyOn(huge, 'arrayBuffer');
+    const result = await importTrackFiles([huge]);
+    expect(read).not.toHaveBeenCalled();
+    expect(result.errors).toEqual(['huge.gpx: This file is over 50 MB.']);
   });
 
   it('shows, hides, renames and removes them', async () => {

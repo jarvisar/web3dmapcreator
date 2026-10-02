@@ -157,7 +157,11 @@ function significance(path: readonly Point[]): Float64Array {
 // millions of them.
 const RADIAL_M = 0.2;
 
-/** Simplified to `tolerance` metres, or coarser until there are at most `maxPoints`. */
+/**
+ * Simplified to `tolerance` metres, or coarser until there are at most
+ * `maxPoints`. Every stretch keeps its ends, so one in more than half that
+ * many stretches stays over it.
+ */
 export function simplifyTrack(lines: readonly LonLat[][], tolerance = TOLERANCE_M, maxPoints = MAX_TRACK_POINTS): LonLat[][] {
   if (!(tolerance > 0)) return lines.map((line) => [...line]);
   const metres = toMetres(lines);
@@ -242,6 +246,12 @@ export function tidyTrackName(name: string): string {
     .slice(0, MAX_NAME);
 }
 
+export function trackPoints(lines: readonly string[]): number {
+  let points = 0;
+  for (const line of lines) points += decodePolyline(line).length;
+  return points;
+}
+
 /** Tracks with anything unknown or out of range dropped, from saved state, a link or a file. */
 export function sanitizeTracks(value: unknown): Track[] {
   if (!Array.isArray(value)) return [];
@@ -254,9 +264,7 @@ export function sanitizeTracks(value: unknown): Track[] {
     if (ids.has(id)) continue;
     const lines = item.lines.filter((line): line is string => typeof line === 'string' && line.length > 0 && POLYLINE.test(line));
     if (!lines.length) continue;
-    let points = 0;
-    for (const line of lines) points += decodePolyline(line).length;
-    if (points > MAX_TRACK_POINTS) continue;
+    if (trackPoints(lines) > MAX_TRACK_POINTS) continue;
     ids.add(id);
     out.push({ id, name: tidyTrackName(typeof item.name === 'string' ? item.name : '') || 'Route', visible: item.visible !== false, lines });
   }

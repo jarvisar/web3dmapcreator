@@ -147,6 +147,19 @@ export function printedSize(area: AreaSpec, settings: SizeSettings): { width: nu
   return { width, depth };
 }
 
+/**
+ * The longer side of the area in printed mm, rim left out as Fit to size
+ * takes it, that puts the whole model on the bed with 10 mm to spare all
+ * round. The rim is a fixed width in mm, so what it adds doesn't change
+ * with the scale. It can add more than its width along a side at a mitred corner.
+ */
+export function bedFitMm(area: AreaSpec, settings: SizeSettings, printer: Printer): number {
+  const rimmed = printedSize(area, settings);
+  const bare = printedSize(area, { ...settings, rim: { ...settings.rim, enabled: false } });
+  const rim = Math.max(rimmed.width - bare.width, rimmed.depth - bare.depth);
+  return Math.min(printer.width, printer.depth) - 20 - rim;
+}
+
 export function bedFit(area: AreaSpec, settings: ModelSettings, exportSettings: ExportSettings): BedFit {
   const printer = printerByKey(exportSettings.printer);
   const { outline, west, south, width, depth } = modelOutline(area, settings);

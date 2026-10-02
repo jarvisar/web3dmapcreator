@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emptyEdits } from '../../core/edit/types';
-import { BACKUP_KEY, EDITS_KEY, PICKS_KEY, clearSavedState, readBackup, writeBackup } from './persist';
+import { BACKUP_KEY, EDITS_KEY, PICKS_KEY, STORAGE_KEY, clearSavedState, readBackup, writeBackup } from './persist';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -50,6 +50,26 @@ describe('the backup', () => {
     expect(backup.reason).toBe('reset');
     expect(backup.edits?.objects['b:1']).toEqual({ removed: true });
     expect(backup.picks?.routes[0].name).toBe('Home');
+  });
+
+  it("leaves the edits and picks where they were when there's no room for the backup", () => {
+    const stored = storage();
+    const edits = JSON.stringify({ ...emptyEdits(), objects: { 'b:1': { removed: true } } });
+    const picks = JSON.stringify({ routes: [route], hiddenLines: [] });
+    stored.set(EDITS_KEY, edits);
+    stored.set(PICKS_KEY, picks);
+    stored.set(STORAGE_KEY, '{"settings":{}}');
+    vi.stubGlobal('localStorage', {
+      ...localStorage,
+      setItem: () => {
+        throw new DOMException('full', 'QuotaExceededError');
+      },
+    });
+    clearSavedState();
+    expect(stored.get(EDITS_KEY)).toBe(edits);
+    expect(stored.get(PICKS_KEY)).toBe(picks);
+    expect(stored.has(STORAGE_KEY)).toBe(false);
+    expect(stored.has(BACKUP_KEY)).toBe(false);
   });
 
   it("keeps the one it has when a reset has nothing to keep, or can't read it", () => {

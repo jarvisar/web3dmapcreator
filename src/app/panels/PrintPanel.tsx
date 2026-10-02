@@ -6,7 +6,7 @@ import type { Printer } from '../../core/settings';
 import { NumberField } from '../components/NumberField';
 import { SelectField } from '../components/Fields';
 import { formatMmPair, formatNumber, formatRatio } from '../lib/format';
-import { bedFit } from '../state/derived';
+import { bedFit, bedFitMm } from '../state/derived';
 import type { BedFit } from '../state/derived';
 import { patchExport, patchSettings, setPrintedSide, useApp } from '../state/store';
 import { ScaleAndSize } from './ScaleAndSize';
@@ -45,9 +45,8 @@ export function PrintPanel() {
   const maxPlates = bambu ? BAMBU_MAX_PLATES : MAX_SECTIONS;
 
   const summary = `${formatRatio(mmPerMetre)} · ${formatMmPair(fit.width, fit.depth)} · ${fitSummary(fit)}`;
-  // The longer side, without the rim, as Fit to size always took it.
   const fitBed = () => {
-    const longest = Math.min(fit.printer.width, fit.printer.depth) - 20;
+    const longest = bedFitMm(area, settings, fit.printer);
     // Unlocked, the area stays and the scale follows, as Fit to size always did.
     if (scale.mode === 'fit') patchSettings('scale', { fitMm: longest });
     else setPrintedSide(area.widthM >= area.heightM ? 'width' : 'height', longest);

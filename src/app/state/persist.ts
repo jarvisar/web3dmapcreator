@@ -222,25 +222,36 @@ let saving = true;
 // Also stops saving for the rest of this page. Otherwise a save still waiting
 // in the sync, or the one on pagehide, puts the cleared settings straight back.
 // The edits and picks go into the backup rather than away, unread in case
-// they're what crashed.
+// they're what crashed. Unreadable ones go with the rest.
 export function clearSavedState(): void {
   saving = false;
-  try {
-    const edits = readStoredEdits(readText(EDITS_KEY));
-    const picks = readStoredPicks(readText(PICKS_KEY));
-    const tracks = readStoredTracks(readText(TRACKS_KEY));
-    const backup: Backup = { savedAt: Date.now(), reason: 'reset' };
-    if (edits && hasEdits(edits)) backup.edits = edits;
-    if (picks && hasPicks(picks)) backup.picks = picks;
-    if (tracks?.length) backup.tracks = tracks;
-    if (backup.edits || backup.picks || backup.tracks) localStorage.setItem(BACKUP_KEY, JSON.stringify(backup));
-  } catch {
-    // Unreadable or no room: they go with the rest.
+  const backup: Backup = { savedAt: Date.now(), reason: 'reset' };
+  // Keys that go into the backup, only removed once it's written.
+  const kept = new Set<string>();
+  const edits = readStoredEdits(readText(EDITS_KEY));
+  const picks = readStoredPicks(readText(PICKS_KEY));
+  const tracks = readStoredTracks(readText(TRACKS_KEY));
+  if (edits && hasEdits(edits)) {
+    backup.edits = edits;
+    kept.add(EDITS_KEY);
+  }
+  if (picks && hasPicks(picks)) {
+    backup.picks = picks;
+    kept.add(PICKS_KEY);
+  }
+  if (tracks?.length) {
+    backup.tracks = tracks;
+    kept.add(TRACKS_KEY);
   }
   try {
-    for (const key of [KEY, EDITS_KEY, PICKS_KEY, TRACKS_KEY]) localStorage.removeItem(key);
+    // The settings go first, which also makes room for the backup.
+    for (const key of [KEY, EDITS_KEY, PICKS_KEY, TRACKS_KEY]) if (!kept.has(key)) localStorage.removeItem(key);
+    if (!kept.size) return;
+    localStorage.setItem(BACKUP_KEY, JSON.stringify(backup));
+    for (const key of kept) localStorage.removeItem(key);
   } catch {
-    // Storage is off, so nothing was saved either.
+    // Storage is off, or still no room for the backup. Whatever had no
+    // backup yet stays where it was, so only the settings are reset.
   }
 }
 

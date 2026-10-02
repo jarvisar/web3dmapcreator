@@ -33,6 +33,14 @@ export interface ParsedTrack {
   lines: LonLat[][];
 }
 
+export interface TrackFile {
+  tracks: ParsedTrack[];
+  /** What in a zip was left out, worded to follow the zip's name. */
+  skipped: string[];
+}
+
+export const TOO_BIG = `This file is over ${MAX_FILE_BYTES / 1024 / 1024} MB.`;
+
 // The lines of one recorded track, or of one drawn line or shape.
 interface Chunk {
   lines: LonLat[][];
@@ -371,7 +379,7 @@ const ROUTE_NAME = new RegExp(`\\.(${TRACK_FILE_TYPES.join('|')})(\\.gz)?$`, 'i'
 
 // A KMZ is a zip with the KML in it, doc.kml by name. Other zips can hold
 // any number of route files, each of which becomes a route.
-function fromZip(data: Uint8Array, fileName: string): ParsedTrack[] {
+function fromZip(data: Uint8Array, fileName: string): TrackFile {
   let files: Record<string, Uint8Array>;
   let unpacked = 0;
   try {
@@ -390,25 +398,34 @@ function fromZip(data: Uint8Array, fileName: string): ParsedTrack[] {
   if (!names.length) throw new TrackFileError(/\.kmz$/i.test(fileName) ? 'This KMZ file has no KML in it.' : 'This zip has no route files in it.');
   // A KMZ's other KML files are usually overlays, not more routes.
   const chosen = /\.kmz$/i.test(fileName) ? names.slice(0, 1) : names.slice(0, MAX_IN_ZIP);
-  const out: ParsedTrack[] = [];
+  const tracks: ParsedTrack[] = [];
+  const skipped: string[] = [];
   let failure: unknown = null;
   for (const name of chosen) {
     try {
       const bytes = /\.gz$/i.test(name) ? gunzip(files[name]) : files[name];
-      out.push(toTrack(contentsOf(bytes), chosen.length === 1 && /\.kmz$/i.test(fileName) ? fileName : name));
+      tracks.push(toTrack(contentsOf(bytes), chosen.length === 1 && /\.kmz$/i.test(fileName) ? fileName : name));
     } catch (error) {
       failure ??= error;
+      const member = name.replace(/^.*\//, '');
+      skipped.push(error instanceof TrackFileError ? `${member} in it was left out. ${error.message}` : `${member} in it couldn't be read.`);
     }
   }
-  if (!out.length) throw failure;
-  return out;
+  if (!tracks.length) throw failure;
+  if (chosen.length < names.length && chosen.length > 1) skipped.push(`only the first ${MAX_IN_ZIP} route files in it were read.`);
+  return { tracks, skipped };
 }
 
-/** The routes in a file, usually one. Throws TrackFileError with a message to show. */
-export function parseTrackFile(fileName: string, data: ArrayBuffer): ParsedTrack[] {
-  if (data.byteLength > MAX_FILE_BYTES) throw new TrackFileError(`This file is over ${MAX_FILE_BYTES / 1024 / 1024} MB.`);
+/** The routes in a file, usually one, and what in a zip of them was left out. Throws TrackFileError with a message to show. */
+export function readTrackFile(fileName: string, data: ArrayBuffer): TrackFile {
+  if (data.byteLength > MAX_FILE_BYTES) throw new TrackFileError(TOO_BIG);
   let bytes: Uint8Array = new Uint8Array(data);
   if (bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = gunzip(bytes);
   if (signature(bytes, 0, 4) === 'PK\x03\x04') return fromZip(bytes, fileName);
-  return [toTrack(contentsOf(bytes), fileName)];
+  return { tracks: [toTrack(contentsOf(bytes), fileName)], skipped: [] };
+}
+
+/** Just the routes, for the scripts. */
+export function parseTrackFile(fileName: string, data: ArrayBuffer): ParsedTrack[] {
+  return readTrackFile(fileName, data).tracks;
 }
