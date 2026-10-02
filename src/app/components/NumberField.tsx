@@ -47,17 +47,22 @@ export function NumberInput({
   const typed = useRef(false);
   // What the field held when it was focused, for Escape.
   const before = useRef(value);
+  // The last value the field sent itself, so its own arrow steps don't move `before`.
+  const sent = useRef<number | null>(null);
 
   // Focused but not typed in, it still follows the value, which an undo can change.
   useEffect(() => {
+    const own = sent.current !== null && Math.abs(value - sent.current) <= 1e-9 * Math.max(1, Math.abs(value));
+    sent.current = null;
     if (focused.current && typed.current) return;
     setText(formatNumber(value * scale, decimals));
-    if (focused.current) before.current = value;
+    if (focused.current && !own) before.current = value;
   }, [value, scale, decimals]);
 
   function commit(next: number) {
     const clamped = clamp(next, min, max);
     const rounded = Number(clamped.toFixed(Math.max(decimals, 6)));
+    sent.current = rounded / scale;
     onChange(rounded / scale);
     return rounded;
   }

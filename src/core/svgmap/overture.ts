@@ -4,7 +4,7 @@
 // it, so the rest of Overture's buildings are already in the tiles and aren't
 // read. The tiles come from a newer OSM than Overture's, so an added building
 // that mostly overlaps a tile building (mapped since) is dropped too.
-import type { Paths64 } from 'clipper2-ts';
+import { FillRule, type Paths64, union } from 'clipper2-ts';
 import type { MultiPolygon, OvertureFeature, Polygon } from '../data/features';
 import { clipToRect, pathBounds } from '../geometry/clipRect';
 import type { GeoBounds } from '../types';
@@ -83,8 +83,13 @@ export function projectFootprints(features: readonly OvertureFeature[], transfor
       }
     }
     if (!rings.length) continue;
+    // Overture doesn't promise a winding. The footprints are unioned with
+    // the tile buildings under NonZero, where an outline wound the other
+    // way, or a courtyard, cancelled the tile building under it. EvenOdd
+    // on each feature alone gives Clipper's own winding.
     const clipped = clipToRect(rect, rings);
-    if (clipped.length) out.push(clipped);
+    const normal = clipped.length ? union(clipped, FillRule.EvenOdd) : [];
+    if (normal.length) out.push(normal);
   }
   return out;
 }

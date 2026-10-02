@@ -155,6 +155,18 @@ describe('repairElevation', () => {
     repairElevation(island, PIXEL_M);
     for (let r = 9; r <= 11; r++) for (let c = 9; c <= 11; c++) expect(island.values[r * 20 + c]).toBe(30);
   });
+
+  it("doesn't judge or fill seabed from a missing tile's sea level", () => {
+    // Columns 0-9 are a tile the server didn't have, the rest seabed at -40 m
+    // with one garbage pixel right beside the missing tile.
+    const g = grid(20, 8, (c, r) => (c < 10 ? 0 : c === 10 && r === 4 ? -900 : -40));
+    const missing = new Uint8Array(20 * 8);
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 10; c++) missing[r * 20 + c] = 1;
+    expect(repairElevation(g, PIXEL_M, missing)).toBe(1);
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 20; c++) expect(g.values[r * 20 + c]).toBe(c < 10 ? 0 : -40);
+    }
+  });
 });
 
 describe('mosaic sampling', () => {
@@ -211,6 +223,17 @@ describe('fetchDem (offline)', () => {
     expect(dem.sample(...lonLat(262.3 * 256, 380.5 * 256, 10))).toBe(100);
     expect(dem.sample(...lonLat(263.7 * 256, 380.5 * 256, 10))).toBe(0);
     expect(progress.at(-1)).toMatchObject({ tilesDone: 2, tilesTotal: 2 });
+  });
+
+  it('leaves seabed beside a missing tile as it is', async () => {
+    // Zoom 15 at the equator, about 4.8 m pixels: 40 m of seabed beside a
+    // missing tile's 0 m is steeper than ground can be, but it isn't garbage.
+    const [w, n] = lonLat(16384.5 * 256, 16384.2 * 256, 15);
+    const [e, s] = lonLat(16385.5 * 256, 16384.8 * 256, 15);
+    vi.stubGlobal('fetch', mockServer({ [tileUrl(15, 16385, 16384)]: tile(() => -40) }).fetch);
+    const dem = await fetchDem({ bounds: bbox(w, s, e, n), targetSpacingM: 1, zoom: 15 });
+    expect(dem).toMatchObject({ columns: 512, rows: 256, tilesMissing: 1 });
+    expect(dem.values.every((v, i) => v === (i % 512 < 256 ? 0 : -40))).toBe(true);
   });
 
   it('fills void pixels, cached tiles included', async () => {

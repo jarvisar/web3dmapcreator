@@ -1,6 +1,6 @@
 // End-to-end check in the installed Edge: generate the default area, look at
-// it in 3D and download it in every format. Needs a running server
-// (npm run dev or npm run preview).
+// it in 3D and download it in every format, after checking Escape in a number
+// field. Needs a running server (npm run dev or npm run preview).
 //   node scripts/e2e.mjs <url> <out-folder> [--all-formats] [--lidar | --lidar-only [--cut-water | --water-layer]] [--cell m] [--again] [--approve]
 //   node scripts/e2e.mjs <url> <out-folder> --svg [--all-formats]
 // With --lidar (LiDAR buildings in a map model) or --lidar-only, give a
@@ -45,7 +45,8 @@ const fail = (message) => {
 };
 
 // Saved under the label too: several formats are .3mf with the same name.
-async function download(label, name = /^download/i) {
+// "Download ." so an offer's "Download and regenerate" is never pressed by mistake.
+async function download(label, name = /^download \./i) {
   const [file] = await Promise.all([
     page.waitForEvent('download', { timeout: 300000 }),
     page.getByRole('button', { name }).first().click(),
@@ -56,6 +57,20 @@ async function download(label, name = /^download/i) {
   const size = statSync(target).size;
   console.log(`${label}: ${file.suggestedFilename()} (${(size / 1e6).toFixed(1)} MB)`);
   if (size === 0) fail(`${label} downloaded an empty file`);
+}
+
+// Escape puts a number field back after arrow steps. Its own steps once
+// moved what Escape restores, so Escape did nothing.
+async function checkEscape() {
+  const field = page.getByRole('textbox', { name: 'Rotation', exact: true }).first();
+  await field.focus();
+  const start = await field.inputValue();
+  await field.press('ArrowUp');
+  await field.press('ArrowUp');
+  await field.press('Escape');
+  const after = await field.inputValue();
+  if (after !== start) fail(`Escape left Rotation at ${after}, not ${start}`);
+  await field.blur();
 }
 
 // An error the app shows, which a finished progress bar says nothing about.
@@ -75,6 +90,7 @@ const started = Date.now();
 await page.goto(url);
 await page.waitForTimeout(3000);
 await page.screenshot({ path: join(folder, '1-map.png') });
+await checkEscape();
 
 if (svg) {
   await page.getByRole('radio', { name: 'SVG map' }).click();

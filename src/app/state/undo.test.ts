@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SvgRoute } from '../../core/svgmap/routes';
-import { patchSettings, patchSvg, resetAllSettings, setArea, setLabel, setOutput, useApp } from './store';
-import { asChange, describeChange, quietly, redoChange, startUndo, undoChange, useUndo } from './undo';
+import { patchSettings, patchSvg, resetAllSettings, setArea, setLabel, setOutput, setupOf, useApp } from './store';
+import { asChange, describeChange, quietly, redoChange, redoLabel, startUndo, undoChange, undoLabel, useUndo } from './undo';
 
 // Tests run without a DOM, so the listeners go on a bare EventTarget.
 const target = new EventTarget();
@@ -173,6 +173,34 @@ describe('undo for the area and settings', () => {
     expect(useApp.getState().svg.routes).toBe(theirs);
     // The pick step changes nothing now, so there's nothing left to undo.
     expect(undoChange()).toBe(false);
+  });
+
+  it("names what undo and redo would do, passing over steps another tab's picks emptied", async () => {
+    const labels = () => {
+      const { past, future } = useUndo.getState();
+      return { undo: undoLabel(past, useApp.getState()), redo: redoLabel(future, useApp.getState()) };
+    };
+    press();
+    release();
+    patchSvg({ routes: [route('mine')] });
+    await tick();
+    press();
+    release();
+    nudge(0.001);
+    await tick();
+    const theirs = [route('theirs')];
+    quietly(
+      () => patchSvg({ routes: theirs }),
+      (setup) => ({ ...setup, svg: { ...setup.svg, routes: theirs } }),
+    );
+    expect(labels()).toEqual({ undo: 'Move area', redo: null });
+    undoChange();
+    // Only the emptied pick step is left, so the button has nothing to do.
+    expect(labels()).toEqual({ undo: null, redo: 'Move area' });
+    redoChange();
+    // And now it's redo that has the empty step in front.
+    useUndo.setState({ future: [{ setup: setupOf(useApp.getState()), label: 'Nothing' }, ...useUndo.getState().future] });
+    expect(labels()).toEqual({ undo: 'Move area', redo: null });
   });
 
   it('switches the output back', async () => {

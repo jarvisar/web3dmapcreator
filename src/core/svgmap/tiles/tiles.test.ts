@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { area } from 'clipper2-ts';
-import { PbfWriter } from 'pbf';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_FILTERS } from '../settings';
 import { clipPolylineToBox, decodeTile } from './decode';
 import { FLAG, acceptLine, acceptPolygon, classifyLine, classifyPolygon } from './schema';
 import { stitchSeams } from './stitch';
+import { encodeTile } from './test-helpers';
 
 describe('clipping to a tile', () => {
   it('puts cut ends exactly on the tile edge', () => {
@@ -17,31 +17,6 @@ describe('clipping to a tile', () => {
     expect(clipPolylineToBox([[5000, 10], [6000, 10]], 0, 0, 4096, 4096)).toEqual([]);
   });
 });
-
-// A one-feature tile with a single polygon ring, in tile units (y down).
-function encodeTile(layer: string, ring: [number, number][]): Uint8Array {
-  const zigzag = (n: number) => (n << 1) ^ (n >> 31);
-  const geometry: number[] = [];
-  let [cx, cy] = [0, 0];
-  ring.forEach(([x, y], i) => {
-    if (i === 0) geometry.push(1 | (1 << 3));
-    if (i === 1) geometry.push(2 | ((ring.length - 1) << 3));
-    geometry.push(zigzag(x - cx), zigzag(y - cy));
-    [cx, cy] = [x, y];
-  });
-  geometry.push(7 | (1 << 3));
-  const pbf = new PbfWriter();
-  pbf.writeMessage(3, (_: unknown, l: PbfWriter) => {
-    l.writeVarintField(15, 2);
-    l.writeStringField(1, layer);
-    l.writeMessage(2, (_f: unknown, f: PbfWriter) => {
-      f.writeVarintField(3, 3);
-      f.writePackedVarint(4, geometry);
-    }, null);
-    l.writeVarintField(5, 4096);
-  }, null);
-  return pbf.finish();
-}
 
 describe('clipping polygons to a tile', () => {
   it('gives each piece left inside the tile its own ring', () => {

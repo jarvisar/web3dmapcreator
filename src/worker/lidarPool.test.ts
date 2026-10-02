@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BatchJob } from '../core/lidar/prepare';
-import { setLidarStore } from '../core/lidar/read/fetcher';
-import type { FromLidarWorker, ToLidarWorker } from './lidarProtocol';
+import { setLidarStore, setLidarTransport } from '../core/lidar/read/fetcher';
+import { lidarWorker, type FromLidarWorker, type ToLidarWorker } from './lidarProtocol';
 import { lidarPool, type WorkerLike } from './lidarPool';
 
 type Job = Extract<ToLidarWorker, { type: 'job' }>;
@@ -96,6 +96,35 @@ describe('LiDAR worker pool', () => {
     await expect(pool.run(job('a'), () => undefined)).rejects.toThrow('The LiDAR worker stopped: out of memory?');
     expect(onStale).not.toHaveBeenCalled();
     pool.close();
+  });
+
+  it("doesn't take a worker that loaded and then died silently for an old version", async () => {
+    // A mesh tile sends nothing until it's done. In a LiDAR only model built
+    // from checkpoints, its worker is a new one, so only 'ready' says it loaded.
+    const onStale = vi.fn();
+    const create = () => {
+      const worker: WorkerLike = {
+        onmessage: null,
+        onerror: null,
+        terminate() {},
+        postMessage() {
+          setTimeout(() => worker.onerror?.({}), 5);
+        },
+      };
+      setTimeout(() => worker.onmessage?.({ data: { type: 'ready' } }), 0);
+      return worker;
+    };
+    const pool = lidarPool(1, undefined, create, onStale);
+    await expect(pool.tile({} as Parameters<typeof pool.tile>[0])).rejects.toThrow('The LiDAR worker stopped: out of memory?');
+    expect(onStale).not.toHaveBeenCalled();
+    pool.close();
+  });
+
+  it('has every worker say when its script has loaded', () => {
+    const sent: FromLidarWorker[] = [];
+    lidarWorker((message) => sent.push(message));
+    setLidarTransport(null);
+    expect(sent).toEqual([{ type: 'ready' }]);
   });
 
   it('stops every worker when generation is cancelled', async () => {

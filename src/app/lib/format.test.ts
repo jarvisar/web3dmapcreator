@@ -1,5 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { formatRatio, parseDecimal } from './format';
+import { formatRatio, formatTimeLeft, parseDecimal } from './format';
+
+describe('formatTimeLeft', () => {
+  it('rounds up to five seconds under a minute, then to minutes', () => {
+    expect(formatTimeLeft(3)).toBe('a few seconds left');
+    expect(formatTimeLeft(21)).toBe('about 25 s left');
+    expect(formatTimeLeft(55)).toBe('about 55 s left');
+    // Never "about 60 s".
+    expect(formatTimeLeft(55.5)).toBe('about 1 min left');
+    expect(formatTimeLeft(59.9)).toBe('about 1 min left');
+    expect(formatTimeLeft(89)).toBe('about 1 min left');
+    expect(formatTimeLeft(150)).toBe('about 3 min left');
+    expect(formatTimeLeft(3 * 3600 + 20 * 60)).toBe('about 3 h 20 min left');
+  });
+});
 
 describe('parseDecimal', () => {
   it('reads a comma as a decimal point unless it groups thousands', () => {

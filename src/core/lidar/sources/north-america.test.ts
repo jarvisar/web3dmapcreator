@@ -8,6 +8,7 @@ import { HttpError } from '../../data/http';
 import type { GeoBounds } from '../../types';
 import type { Fetcher } from '../read/fetcher';
 import { anchorage } from './anchorage';
+import type { Failure } from './common';
 import { flightDates, lidarbc } from './lidarbc';
 import { projectName, quebec } from './quebec';
 import { memberCell, nameParts, quarterQuad, quarterQuads, texas } from './texas';
@@ -145,6 +146,41 @@ describe('TxGIO', () => {
     setCorsProxy('direct');
     const [survey] = await texas.discover(fetcher, bbox, []);
     expect(survey).toMatchObject({ name: 'TxGIO StratMap 2024 Hays Williamson Counties', acquisitionStart: '2024-01-01' });
+  });
+
+  describe('with one ZIP that will not read', () => {
+    const base = 'https://data.geographic.texas.gov/';
+    const good = `${base}447db89a/resources/stratmap21-28cm-50cm-bexar-travis_3097433_lpc.zip`;
+    const broken = `${base}91943379/resources/stratmap24-50cm-hays-williamson-counties_3097433_lpc.zip`;
+    const zip = zipSync({ 'stratmap21-28cm_3097433c1.laz': lasFile(80_000_000) });
+    const catalog = (url: string) =>
+      url.includes('resource__icontains=_3097433_lpc')
+        ? {
+            results: [
+              { resource: good, filesize: zip.length, collection_id: '447db89a', resource_type_abbreviation: 'LPC' },
+              { resource: broken, filesize: 5e8, collection_id: '91943379', resource_type_abbreviation: 'LPC' },
+            ],
+          }
+        : undefined;
+
+    it('keeps the other collections and says which one failed', async () => {
+      setCorsProxy('direct');
+      // The broken ZIP's directory read is a 404.
+      const { fetcher } = fakeFetcher((url) => catalog(url) ?? (url === good ? zip : undefined));
+      const failures: Failure[] = [];
+      const surveys = await texas.discover(fetcher, around(-97.7344, 30.27), failures);
+      expect(surveys.map((s) => s.id)).toEqual(['447db89a']);
+      expect(failures).toEqual([{ source: 'TxGIO StratMap 2024 Hays Williamson Counties', reason: 'it answered HTTP 404' }]);
+    });
+
+    it('still stops when the model is cancelled', async () => {
+      setCorsProxy('direct');
+      const { fetcher } = fakeFetcher((url) => {
+        if (url === broken) throw new DOMException('Aborted', 'AbortError');
+        return catalog(url) ?? (url === good ? zip : undefined);
+      });
+      await expect(texas.discover(fetcher, around(-97.7344, 30.27), [])).rejects.toMatchObject({ name: 'AbortError' });
+    });
   });
 });
 

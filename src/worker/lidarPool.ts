@@ -100,6 +100,7 @@ export function lidarPool(
         running.set(id, { reject, worker });
         worker.onmessage = ({ data }) => {
           spoke.add(worker);
+          if (data.type === 'ready') return;
           if (data.type === 'request') {
             answer(fetcher, data.rid, data.request, (reply) => worker.postMessage(reply));
             return;
@@ -123,6 +124,8 @@ export function lidarPool(
           worker.terminate();
           // Silent from the start and no reason given: the script didn't load.
           // A tab still on the last version asks for a chunk a deploy removed.
+          // A worker that loaded said 'ready', so one dying silently later (out
+          // of memory on a mesh tile, which says nothing until it's done) isn't this.
           if (!spoke.has(worker) && !event.message) {
             onStale?.();
             reject(new Error('The LiDAR reader could not load, probably because the site was updated. Reload the page and try again.'));

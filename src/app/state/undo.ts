@@ -135,9 +135,7 @@ export function undoChange(only?: SetupStep): boolean {
   close();
   const { past, future } = useUndo.getState();
   const now = setupOf(useApp.getState());
-  let i = past.length - 1;
-  // Steps that change nothing any more, like picks another tab replaced, are passed over.
-  while (i >= 0 && sameSetup(past[i].setup, now)) i--;
+  const i = lastUndo(past, now);
   const step = past[i];
   if (!step || (only && step !== only)) return false;
   apply(step.setup);
@@ -150,14 +148,27 @@ export function redoChange(): boolean {
   close();
   const { past, future } = useUndo.getState();
   const now = setupOf(useApp.getState());
-  let i = 0;
-  while (i < future.length && sameSetup(future[i].setup, now)) i++;
+  const i = firstRedo(future, now);
   const step = future[i];
   if (!step) return false;
   apply(step.setup);
   useUndo.setState({ past: [...past, { setup: now, label: step.label }].slice(-HISTORY_LIMIT), future: future.slice(i + 1) });
   toast(`Redone: ${step.label ?? describeChange(now, step.setup)}`, 'info', undefined, 'undo');
   return true;
+}
+
+// Steps that change nothing any more, like picks another tab replaced, are
+// passed over by undo, redo and their buttons alike.
+function lastUndo(past: SetupStep[], now: Setup): number {
+  let i = past.length - 1;
+  while (i >= 0 && sameSetup(past[i].setup, now)) i--;
+  return i;
+}
+
+function firstRedo(future: SetupStep[], now: Setup): number {
+  let i = 0;
+  while (i < future.length && sameSetup(future[i].setup, now)) i++;
+  return i;
 }
 
 function apply(setup: Setup): void {
@@ -208,15 +219,19 @@ export function quietly(run: () => void, rebase?: (setup: Setup) => Setup): void
 /** What undo and redo would do now, for their buttons. Null for nothing. */
 export function useUndoLabels(): { undo: string | null; redo: string | null } {
   const { past, future } = useUndo();
-  const undo = useApp((state) => {
-    const step = past[past.length - 1];
-    return step ? (step.label ?? describeChange(step.setup, state)) : null;
-  });
-  const redo = useApp((state) => {
-    const step = future[0];
-    return step ? (step.label ?? describeChange(state, step.setup)) : null;
-  });
+  const undo = useApp((state) => undoLabel(past, state));
+  const redo = useApp((state) => redoLabel(future, state));
   return { undo, redo };
+}
+
+export function undoLabel(past: SetupStep[], now: Setup): string | null {
+  const step = past[lastUndo(past, now)];
+  return step ? (step.label ?? describeChange(step.setup, now)) : null;
+}
+
+export function redoLabel(future: SetupStep[], now: Setup): string | null {
+  const step = future[firstRedo(future, now)];
+  return step ? (step.label ?? describeChange(now, step.setup)) : null;
 }
 
 /** Whether Ctrl+Z is the model editor's: while it's open, unless the focus is in the sidebar or on these buttons. */

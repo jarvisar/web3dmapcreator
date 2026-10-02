@@ -60,7 +60,9 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   Waikiki came out a metre tall. Only pixels below sea level dropping far
   more steeply than ground can are touched, so polders, mines and the Dead
   Sea are left alone. Reclaimed land over old seabed (Singapore, Dubai)
-  isn't garbage and still adds a few mm of base.
+  isn't garbage and still adds a few mm of base. Tiles the server doesn't
+  have read as sea level but are left out of both the test and the fill, or
+  seabed beside one counted as garbage.
 - Between nodes the terrain is the grid split along each cell's low-to-high
   diagonal (`geometry/lattice.ts`), `heightAt` included, and draped solids
   (terrain, land, roads, grounded buildings) are cut from those triangles
@@ -321,7 +323,10 @@ LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
   each building is in one batch per round, so finishing order doesn't matter.
   Workers send downloads to the pool (`lidarProtocol.ts`, `Fetcher.serve`),
   which fetches each file once. Separate caches per worker downloaded
-  Chicago's LiDAR about three times over.
+  Chicago's LiDAR about three times over. Each worker says `ready` once its
+  script has run. Only one that never did and fails without a reason is
+  taken for a tab left on an old version (`onStale`): a mesh tile says
+  nothing until it's done, and a worker lost on one was told to reload.
 - Readers only use range reads that come back whole (exact header, VLR, page
   and node ranges). A server ignoring `Range` is an error.
 - Prepared results and batch checkpoints are keyed by the source properties
@@ -831,11 +836,14 @@ Undo outside the editor (`src/app/state/undo.ts`, buttons in `TopBar.tsx`):
   `rebase` when it should be in every step (picks from another tab), or
   the undo button lights up for something nobody did. Name an action's
   step with `asChange`, which also returns it for a toast's Undo
-  (`undoChange(step)` only undoes it while it's the last).
+  (`undoChange(step)` only undoes it while it's the last). A rebase can
+  leave steps that change nothing, which undo, redo and the buttons' labels
+  all pass over (`lastUndo`, `firstRedo`).
 - A text field typed in since it was focused keeps `Ctrl+Z` for its own
   typing. `NumberInput` and `HexInput` follow the value while focused
   until typed in, or an undo with the focus there showed the old value and
-  blur wrote it back.
+  blur wrote it back. `NumberInput`'s own arrow steps don't move what
+  Escape puts back (`sent`).
 
 SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.md`):
 
@@ -879,7 +887,10 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
   footprints whose geometry isn't from OSM (`svgmap/overture.ts`): only the
   `sources` dataset and `is_underground` are read (`columns` in
   `fetchOverture`, `sources` pruned to `property` and `dataset`), and one
-  overlapping tile buildings by over a quarter is dropped. Tile buildings are
+  overlapping tile buildings by over a quarter is dropped. Each feature is
+  unioned EvenOdd on its own first (`projectFootprints`): Overture's winding
+  isn't fixed, and under the layer's NonZero union an outline wound the other
+  way, or a hole, cancelled the tile polygon under it. Tile buildings are
   indexed by ring, not feature: OpenMapTiles packs whole blocks into one
   feature and per feature took 87 s on the Loop. They're merged into their
   own prepared entry with its own unions, so turning it off gives the tiles'

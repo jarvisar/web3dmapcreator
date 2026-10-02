@@ -16,6 +16,8 @@ export type ToLidarWorker =
   | { type: 'answer'; rid: number; value?: ArrayBuffer | string; error?: { name: string; message: string } };
 
 export type FromLidarWorker =
+  // Sent once the worker's script has run, so a crash after it isn't taken for a script that never loaded.
+  | { type: 'ready' }
   | { type: 'progress'; id: number; label: string; detail?: string }
   | { type: 'done'; id: number; outcome: BatchOutcome | SurfaceOutcome | TileResult }
   | { type: 'error'; id: number; name: string; message: string }
@@ -38,6 +40,7 @@ export function lidarWorker(post: (message: FromLidarWorker) => void): (message:
         post({ type: 'request', rid, request });
       }),
   );
+  post({ type: 'ready' });
   return (message) => {
     if (message.type === 'answer') {
       const handlers = waiting.get(message.rid);

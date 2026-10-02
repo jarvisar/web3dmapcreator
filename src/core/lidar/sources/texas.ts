@@ -25,7 +25,7 @@ import { proxyAvailable } from '../../data/corsProxy';
 import { readHeader } from '../read/las';
 import type { Fetcher } from '../read/fetcher';
 import { centralMembers, type ZipMember } from '../read/zip';
-import { overlaps, Surveys, type Box, type Provider } from './common';
+import { briefly, overlaps, Surveys, type Box, type Provider } from './common';
 
 const API = 'https://api.tnris.org/api/v1/';
 const FILES = 'https://data.geographic.texas.gov/';
@@ -147,7 +147,7 @@ export const texas: Provider = {
   id: 'texas',
   name: 'TxGIO StratMap',
   areas: [[-106.7, 25.8, -93.5, 36.6]],
-  async discover(fetcher, bbox) {
+  async discover(fetcher, bbox, failures) {
     if (!proxyAvailable()) return [];
     const zips: { url: string; size: number; collection: string; year: number; place: string; quad: Box; code: string }[] = [];
     await Promise.all(
@@ -167,7 +167,17 @@ export const texas: Provider = {
     const collections = new Map<string, Hit[]>();
     await Promise.all(
       zips.map(async (zip) => {
-        const members = await centralMembers(async (start, end) => new Uint8Array(await fetcher.range(zip.url, start, end)), zip.size);
+        let members: ZipMember[];
+        try {
+          members = await centralMembers(async (start, end) => new Uint8Array(await fetcher.range(zip.url, start, end)), zip.size);
+        } catch (error) {
+          // One ZIP that won't read (a 404, the proxy dropping a request)
+          // loses its own cells, not every TxGIO collection.
+          if ((error as Error)?.name === 'AbortError') throw error;
+          const source = `TxGIO StratMap ${zip.year} ${title(zip.place)}`;
+          if (!failures.some((f) => f.source === source)) failures.push({ source, reason: briefly(error) });
+          return;
+        }
         for (const member of members) {
           // Prefixes vary inside one ZIP (El Paso has 35 and 50 cm members), so the code decides.
           const match = /_(\d{7})([a-d])([1-4])\.laz$/i.exec(member.name);

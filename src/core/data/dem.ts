@@ -150,9 +150,12 @@ const PIT_REACH = 3;
 
 /**
  * Fills voids and seabed garbage from the pixels around them, in place.
- * `pixelM` is the mosaic's pixel size in metres. Returns the pixels filled.
+ * `pixelM` is the mosaic's pixel size in metres. `missing` marks the pixels
+ * of tiles the server didn't have, which stay at sea level but aren't data:
+ * beside one, seabed deeper than about 25 m at zoom 15 read as garbage and
+ * was filled from the 0s. Returns the pixels filled.
  */
-export function repairElevation(grid: DemGrid, pixelM: number): number {
+export function repairElevation(grid: DemGrid, pixelM: number, missing?: Uint8Array): number {
   const { columns, rows, values } = grid;
   const n = columns * rows;
   let any = false;
@@ -193,8 +196,9 @@ export function repairElevation(grid: DemGrid, pixelM: number): number {
           const cc = c + offX[k];
           const rr = r + offY[k];
           if (cc < 0 || cc >= columns || rr < 0 || rr >= rows) continue;
-          const q = values[rr * columns + cc];
-          if (q !== VOID_M && q - offDrop[k] > allowed) allowed = q - offDrop[k];
+          const j = rr * columns + cc;
+          const q = values[j];
+          if (q !== VOID_M && !missing?.[j] && q - offDrop[k] > allowed) allowed = q - offDrop[k];
         }
         pit = allowed - v > PIT_MARGIN_M;
       }
@@ -209,7 +213,7 @@ export function repairElevation(grid: DemGrid, pixelM: number): number {
   }
   if (!count) return 0;
   count += enclosedPits(grid, bad, [minC, minR, maxC, maxR]);
-  fillFromNeighbours(grid, bad, count);
+  fillFromNeighbours(grid, bad, count, missing);
   return count;
 }
 
@@ -282,7 +286,7 @@ function enclosedPits(grid: DemGrid, bad: Uint8Array, [minC, minR, maxC, maxR]: 
 }
 
 /** Each marked pixel gets the mean of its known neighbours, working in from the edges of what's marked. */
-function fillFromNeighbours(grid: DemGrid, bad: Uint8Array, count: number): void {
+function fillFromNeighbours(grid: DemGrid, bad: Uint8Array, count: number, missing: Uint8Array | undefined): void {
   const { columns, rows, values } = grid;
   const queue = new Int32Array(count);
   const queued = new Uint8Array(bad.length);
@@ -309,7 +313,7 @@ function fillFromNeighbours(grid: DemGrid, bad: Uint8Array, count: number): void
     if (!bad[i]) continue;
     let known = false;
     neighbours(i, (j) => {
-      if (!bad[j]) known = true;
+      if (!bad[j] && !missing?.[j]) known = true;
     });
     if (known) push(i);
   }
@@ -318,7 +322,7 @@ function fillFromNeighbours(grid: DemGrid, bad: Uint8Array, count: number): void
     let sum = 0;
     let n = 0;
     neighbours(i, (j) => {
-      if (bad[j]) return;
+      if (bad[j] || missing?.[j]) return;
       sum += values[j];
       n++;
     });
@@ -430,6 +434,8 @@ export async function fetchDem(options: FetchDemOptions): Promise<DemMosaic> {
   const columns = tilesX * TILE_SIZE;
   const rows = tilesY * TILE_SIZE;
   const values = new Float32Array(columns * rows);
+  // Pixels of missing tiles, made only when there are some.
+  let gaps: Uint8Array | undefined;
   let used = 0;
   let missing = 0;
   let bytes = 0;
@@ -469,11 +475,15 @@ export async function fetchDem(options: FetchDemOptions): Promise<DemMosaic> {
   };
 
   const loadTile = async (x: number, y: number): Promise<void> => {
+    const left = (x - range.x0) * TILE_SIZE;
+    const top = (y - range.y0) * TILE_SIZE;
     let heights: Float32Array;
     try {
       heights = await readTile(x, y);
     } catch (error) {
       if (error instanceof HttpError && (error.status === 403 || error.status === 404)) {
+        gaps ??= new Uint8Array(columns * rows);
+        for (let row = 0; row < TILE_SIZE; row++) gaps.fill(1, (top + row) * columns + left, (top + row) * columns + left + TILE_SIZE);
         missing++;
         report();
         return;
@@ -481,8 +491,6 @@ export async function fetchDem(options: FetchDemOptions): Promise<DemMosaic> {
       if (error instanceof DecodeError) throw new Error(`Elevation tile ${zoom}/${x}/${y} could not be read: ${error.message}`);
       throw error;
     }
-    const left = (x - range.x0) * TILE_SIZE;
-    const top = (y - range.y0) * TILE_SIZE;
     for (let row = 0; row < TILE_SIZE; row++) {
       values.set(heights.subarray(row * TILE_SIZE, (row + 1) * TILE_SIZE), (top + row) * columns + left);
     }
@@ -501,7 +509,7 @@ export async function fetchDem(options: FetchDemOptions): Promise<DemMosaic> {
     report(true);
     const grid: DemGrid = { zoom, tileX0: range.x0, tileY0: range.y0, columns, rows, values };
     // After decoding, so tiles from the byte cache are repaired too.
-    repairElevation(grid, groundResolutionM((south + north) / 2, zoom));
+    repairElevation(grid, groundResolutionM((south + north) / 2, zoom), gaps);
     return createDemMosaic(grid, bounds, used, missing);
   } catch (error) {
     controller.abort(error);

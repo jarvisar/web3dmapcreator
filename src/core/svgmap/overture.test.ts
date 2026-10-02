@@ -2,14 +2,16 @@ import type { Paths64 } from 'clipper2-ts';
 import { describe, expect, it } from 'vitest';
 import type { OvertureFeature } from '../data/features';
 import { defaultRenderSettings } from './defaults';
-import { SCALE } from './fills';
-import { lonLatToWorld, worldToLonLat } from './geo/mercator';
+import { SCALE, areaMm2, intersectWith, unionAll } from './fills';
+import { TILE_EXTENT, lonLatToWorld, worldToLonLat } from './geo/mercator';
 import { makeTransform } from './geo/transform';
 import { computeLayout } from './layout/layout';
 import { shapeCentre, shapePolygon } from './layout/shapes';
 import { geometryDataset, isMissingFromOsm, missingBuildings, notInTiles, projectFootprints, windowBounds } from './overture';
 import type { PreparedPolygon } from './prepare';
 import { windowClipRect } from './prepare';
+import { decodeTile } from './tiles/decode';
+import { encodeTile } from './tiles/test-helpers';
 
 // Squares in Clipper units (microns), x/y and side in mm.
 const square = (x: number, y: number, side: number, clockwise = false): Paths64[number] => {
@@ -89,11 +91,61 @@ describe('projecting footprints', () => {
     const [wx, wy] = lonLatToWorld(area.lon, area.lat, 14);
     const [cx, cy] = transform.toCanvas(wx, wy);
     expect(footprint).toHaveLength(1);
-    expect(footprint[0][0].x).toBeCloseTo(cx * SCALE, -1);
-    expect(footprint[0][0].y).toBeCloseTo(cy * SCALE, -1);
+    expect(footprint[0].some((p) => Math.hypot(p.x - cx * SCALE, p.y - cy * SCALE) < 5)).toBe(true);
     // 10 m at 2000 m over the window's width.
-    const side = Math.hypot(footprint[0][1].x - footprint[0][0].x, footprint[0][1].y - footprint[0][0].y) / SCALE;
+    const side = Math.sqrt(Math.abs(areaMm2(footprint)));
     expect(side).toBeCloseTo((10 / area.widthM) * layout.window.w, 2);
+  });
+
+  it("never cancels a tile polygon, whichever way Overture's rings are wound", () => {
+    const ring = (x: number, y: number, side: number) => [metres(x, y), metres(x + side, y), metres(x + side, y + side), metres(x, y + side), metres(x, y)];
+    const polygon = (id: string, rings: [number, number][][]): OvertureFeature => ({ ...box(id, 0, 0, 1), geometry: { type: 'Polygon', coordinates: rings } });
+    // A tile building as the tiles give it: projected the same way, its own winding.
+    const [tile] = projectFootprints([box('tile', 0, 0, 20)], transform, rect);
+    const tileArea = Math.abs(areaMm2(unionAll(tile)));
+    const area = (paths: Paths64) => Math.abs(areaMm2(unionAll(paths)));
+
+    // Wound the other way and half over the tile building.
+    const [reversed] = projectFootprints([polygon('rev', [ring(10, 0, 20).reverse()])], transform, rect);
+    expect(area([...tile, ...reversed])).toBeCloseTo(tileArea * 1.5, 1);
+
+    // Its courtyard right over the tile building, holes wound either way.
+    for (const hole of [ring(-5, -5, 30), ring(-5, -5, 30).reverse()]) {
+      const [court] = projectFootprints([polygon('court', [ring(-20, -20, 60), hole])], transform, rect);
+      expect(area(court)).toBeCloseTo(tileArea * ((60 * 60 - 30 * 30) / 400), 1);
+      expect(area([...tile, ...court])).toBeCloseTo(area(court) + tileArea, 1);
+    }
+  });
+
+  it('winds outlines the way the tile decoder does, so one over a tile building never cancels it', () => {
+    // A tile building under the middle of the window, decoded and put on the canvas as prepare does.
+    const [cx, cy] = lonLatToWorld(area.lon, area.lat, 14);
+    const [tx, ty] = [Math.floor(cx / TILE_EXTENT), Math.floor(cy / TILE_EXTENT)];
+    const inTile = ([lon, lat]: [number, number]): [number, number] => {
+      const [wx, wy] = lonLatToWorld(lon, lat, 14);
+      return [Math.round(wx - tx * TILE_EXTENT), Math.round(wy - ty * TILE_EXTENT)];
+    };
+    const onCanvas = (paths: Paths64): Paths64 =>
+      paths.map((ring) =>
+        ring.map((p) => {
+          const [x, y] = transform.toCanvas(p.x, p.y);
+          return { x: Math.round(x * SCALE), y: Math.round(y * SCALE) };
+        }),
+      );
+    const size = (paths: Paths64) => Math.abs(areaMm2(unionAll(paths)));
+    const corners = [metres(0, 0), metres(30, 0), metres(30, 30), metres(0, 30)];
+    for (const tileRing of [corners, [...corners].reverse()]) {
+      const [decoded] = decodeTile(encodeTile('building', tileRing.map(inTile)), tx, ty).polygons;
+      const tile = onCanvas(decoded.rings);
+      // Half over the tile building, Overture's outline wound either way.
+      const outline = [metres(15, -10), metres(45, -10), metres(45, 20), metres(15, 20), metres(15, -10)];
+      for (const ring of [outline, [...outline].reverse()]) {
+        const [footprint] = projectFootprints([{ ...box('o', 0, 0, 1), geometry: { type: 'Polygon', coordinates: [ring] } }], transform, rect);
+        const overlap = Math.abs(areaMm2(intersectWith(unionAll(tile), unionAll(footprint))));
+        expect(overlap).toBeGreaterThan(size(footprint) / 4);
+        expect(size([...tile, ...footprint])).toBeCloseTo(size(tile) + size(footprint) - overlap, 2);
+      }
+    }
   });
 
   it('keeps every part of a multipolygon and leaves out what misses the window', () => {
