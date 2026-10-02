@@ -54,8 +54,14 @@ function frameAt(corners: LonLat[], anchor: LonLat, base: Pick<AreaSpec, 'shape'
   let h = Math.max(...local.map((p) => Math.abs(p[1]))) * 2;
   if (base.shape === 'circle') w = h = Math.max(...local.map((p) => Math.hypot(p[0], p[1]))) * 2;
   else if (base.shape === 'hexagon') {
-    w = Math.max(w, h / HEX_RATIO);
+    w = Math.max(w, h / HEX_RATIO, MIN_SIDE_M / HEX_RATIO);
     h = w * HEX_RATIO;
+  }
+  if (base.shape === 'rounded') {
+    // A straight route has no extent across it. Give the fit a real outline
+    // before testing its corners, or a degenerate ring never contains it.
+    w = Math.max(w, MIN_SIDE_M);
+    h = Math.max(h, MIN_SIDE_M);
   }
   // Grown until the shape itself holds every corner: a hexagon's or a rounded
   // rectangle's corners are cut off its box.
@@ -87,7 +93,11 @@ export function areaAroundTracks(lines: readonly LonLat[][], base: AreaSpec, tur
   const points: LonLat[] = [];
   for (const line of lines) for (const p of line) points.push(p);
   if (!points.length) return null;
-  const anchor: LonLat = [points.reduce((s, p) => s + p[0], 0) / points.length, points.reduce((s, p) => s + p[1], 0) / points.length];
+  // Average longitude around the first point, so a route at 180 degrees
+  // doesn't get framed around Greenwich.
+  const firstLon = points[0][0];
+  const lon = firstLon + points.reduce((s, p) => s + ((p[0] - firstLon + 540) % 360) - 180, 0) / points.length;
+  const anchor: LonLat = [lon, points.reduce((s, p) => s + p[1], 0) / points.length];
   const enu = new Projection(anchor, 0, 1);
   const corners = hull(points.map(([lon, lat]) => enu.toModel(lon, lat))).map((i) => points[i]);
   const area = (f: Framing) => Math.max(f.widthM, MIN_SIDE_M) * Math.max(f.heightM, MIN_SIDE_M);

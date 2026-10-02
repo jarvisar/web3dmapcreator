@@ -171,6 +171,16 @@ describe('reading route files', () => {
     expect(unnamed.name).toBe('Evening Ride');
   });
 
+  it('ignores markup in XML comments before the root', () => {
+    const gpx = '<!-- Exported from <planner> --><gpx><trk><trkseg><trkpt lat="1" lon="2"/><trkpt lat="1.01" lon="2"/></trkseg></trk></gpx>';
+    expect(parse('comment.gpx', gpx).lines[0]).toHaveLength(2);
+  });
+
+  it('keeps a valid route when the accompanying track has no usable line', () => {
+    const gpx = '<gpx><rte><rtept lat="1" lon="2"/><rtept lat="1.01" lon="2"/></rte><trk><trkseg><trkpt lat="0" lon="0"/><trkpt lat="91" lon="2"/></trkseg></trk></gpx>';
+    expect(parse('route.gpx', gpx).lines[0]).toEqual([[2, 1], [2, 1.01]]);
+  });
+
   it('reads KML lines, shapes and Google Earth tracks', () => {
     const kml = `<?xml version="1.0"?>
       <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
@@ -351,6 +361,8 @@ describe('saved tracks', () => {
       track('a', 1),
       { ...track('a', 2) },
       { id: 'b', name: 'x'.repeat(500), lines: ['not<polyline>'] },
+      { id: 'empty', lines: ['?'] },
+      { id: 'offglobe', lines: [encodePolyline([[0, 95], [0, 96]])] },
       { id: 'c', name: '  Spaced   name.gpx ', visible: false, lines: [encodePolyline([[0, 1], [0, 2]])] },
       'nonsense',
     ]);

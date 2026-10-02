@@ -4,7 +4,7 @@ import { modelFieldRange } from '../../core/settings';
 import { effectiveScale } from '../../core/geo/area';
 import { shareOutside } from '../../core/tracks/frame';
 import { TRACK_ACCEPT } from '../../core/tracks/parse';
-import { decodeTrack, MAX_TRACKS, trackLengthM, type Track } from '../../core/tracks/track';
+import { decodeTrack, MAX_TRACKS, tidyTrackName, trackLengthM, type Track } from '../../core/tracks/track';
 import { BackupNote } from '../components/BackupNote';
 import { Checkbox } from '../components/Checkbox';
 import { CheckField } from '../components/Fields';
@@ -33,7 +33,11 @@ function TrackRow({ track }: { track: Track }) {
         aria-label="Route name"
         maxLength={100}
         onChange={(event) => setName(event.target.value)}
-        onBlur={() => (name.trim() ? renameTrack(track.id, name) : setName(track.name))}
+        onBlur={() => {
+          const clean = tidyTrackName(name);
+          if (clean) renameTrack(track.id, clean);
+          setName(clean || track.name);
+        }}
         onKeyDown={(event) => {
           if (event.key === 'Enter') event.currentTarget.blur();
           if (event.key === 'Escape') setName(track.name);

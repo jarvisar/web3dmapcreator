@@ -265,6 +265,7 @@ export function sanitizeTracks(value: unknown): Track[] {
     const lines = item.lines.filter((line): line is string => typeof line === 'string' && line.length > 0 && POLYLINE.test(line));
     if (!lines.length) continue;
     if (trackPoints(lines) > MAX_TRACK_POINTS) continue;
+    if (!decodeTrack({ lines }).length) continue;
     ids.add(id);
     out.push({ id, name: tidyTrackName(typeof item.name === 'string' ? item.name : '') || 'Route', visible: item.visible !== false, lines });
   }

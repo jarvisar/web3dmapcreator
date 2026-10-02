@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { shapeRing } from '../geo/area';
+import { shapeRing, validateArea } from '../geo/area';
 import { Projection } from '../geo/projection';
 import { pointInPolygon } from '../geometry/polygon';
 import type { AreaSpec } from '../settings';
@@ -48,6 +48,31 @@ describe('framing the area around routes', () => {
   it('stays put when turning frames them only a little smaller', () => {
     const almost: LonLat[][] = [[geo(-1000, -600), geo(1000, -500), geo(1000, 600), geo(-1000, 500)]];
     expect(areaAroundTracks(almost, base, true)!.rotationDeg).toBe(0);
+  });
+
+  it('frames a straight route tightly in a rounded area', () => {
+    const meridian: LonLat[][] = [[[-87, 41.87], [-87, 41.89]]];
+    const area = areaAroundTracks(meridian, { ...base, shape: 'rounded' })!;
+    expect(inside(area, meridian)).toBe(true);
+    expect(area.heightM).toBeGreaterThan(2200);
+    expect(area.heightM).toBeLessThan(3000);
+  });
+
+  it('frames routes on both sides of the date line together', () => {
+    const crossing: LonLat[][] = [[[179.99, 10], [179.999, 10]], [[-179.999, 10], [-179.99, 10]]];
+    const area = areaAroundTracks(crossing, base)!;
+    expect(Math.abs(area.center[0])).toBeGreaterThan(179.99);
+    expect(area.widthM).toBeLessThan(3000);
+    expect(inside(area, crossing)).toBe(true);
+    expect(validateArea(area)).toMatch(/180th meridian/);
+  });
+
+  it('keeps a tiny hexagon in proportion at the minimum size', () => {
+    const tiny = [[geo(0, 0), geo(1, 1)]];
+    const area = areaAroundTracks(tiny, { ...base, shape: 'hexagon' })!;
+    expect(area.heightM).toBeGreaterThanOrEqual(50);
+    expect(area.heightM / area.widthM).toBeCloseTo(Math.sqrt(3) / 2, 6);
+    expect(inside(area, tiny)).toBe(true);
   });
 
   it('measures how much of a route is off the area', () => {

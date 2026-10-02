@@ -16,6 +16,15 @@ const NAMED: Record<string, string> = { lt: '<', gt: '>', amp: '&', quot: '"', a
 
 const localName = (name: string) => name.slice(name.indexOf(':') + 1);
 
+export function xmlRoot(source: string): string {
+  const token = new RegExp(TOKEN.source, 'g');
+  let match: RegExpExecArray | null;
+  while ((match = token.exec(source)) !== null) {
+    if (match[3] && !match[2]) return localName(match[3]);
+  }
+  return '';
+}
+
 export function decodeEntities(text: string): string {
   if (!text.includes('&')) return text;
   return text.replace(ENTITY, (whole, entity: string) => {

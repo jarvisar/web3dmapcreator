@@ -1112,6 +1112,7 @@ npx tsx scripts/generate.ts --route run.gpx --fit-route --out out/run.3mf   # a 
 $env:NETWORK=1; npx vitest run src/core/svgmap/e2e.test.ts   # SVG maps from live tiles ($env:SVG_OUT to keep them)
 node scripts/e2e.mjs http://localhost:4173/ out/e2e-svg --svg --all-formats   # SVG map in Edge
 node scripts/e2e-edit.mjs http://localhost:4173/ out/e2e-edit   # the editor in Edge, --phone and --svg too
+node scripts/e2e-tracks.mjs http://localhost:4173/ out/e2e-tracks   # imported routes, sharing, edits and every export, --phone too
 npm run build                # site into build/ (not dist/, which holds old add-on archives)
 ```
 

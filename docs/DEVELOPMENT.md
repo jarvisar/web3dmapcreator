@@ -91,6 +91,8 @@ With `--lidar`, point data and batch results are kept in `out/lidar-cache` (or `
 
 `e2e-edit.mjs` goes through the editor like a person would, then opens every export format to check the custom layer is in it. `--phone` does it at phone size with taps, and `--svg` picks roads for an SVG route. On desktop it also tries `Undo all` and putting the edits back, a share link opened over other edits in the same tab and in a new one, an idle tab closing, and hiding every part but a custom layer. The SVG run tries `Undo all picks` and checks `Reset all settings` keeps the picks.
 
+`e2e-tracks.mjs` checks imported GPX routes, including file errors, names, visibility after a reload, route settings, dropping files, fitting the area, output switching, share links and options. It generates a model, opens every export format to check the route part, then removes routes in the editor and undoes one. `--phone` runs the same checks at phone size.
+
 ## Tests
 
 `npm test` covers the projection, the classifiers, linear referencing, water, roads, bridges, land cover, buildings and roofs (checked against the add-on's rules), the mesher, the exporters and the data layer against small parquet fixtures. The pipeline tests build models and check that every part is made of closed, consistently wound shells.

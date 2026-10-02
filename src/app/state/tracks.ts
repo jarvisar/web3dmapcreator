@@ -2,6 +2,7 @@
 // area around them. Files are read on the main thread, which takes well under
 // a second even for a long ride.
 
+import { MAX_SIDE_M } from '../../core/geo/area';
 import { areaAroundTracks, shareOutside } from '../../core/tracks/frame';
 import { MAX_FILE_BYTES, readTrackFile, TOO_BIG, TrackFileError } from '../../core/tracks/parse';
 import { decodeTrack, encodeTrack, MAX_TRACK_POINTS, MAX_TRACKS, newTrackId, tidyTrackName, trackEnds, trackPoints, type Track } from '../../core/tracks/track';
@@ -21,6 +22,13 @@ export interface ImportResult {
 
 function lines(tracks: readonly Track[]): LonLat[][] {
   return tracks.flatMap((track) => decodeTrack(track));
+}
+
+function fitMessage(routes: readonly LonLat[][], text: string): string {
+  const { area } = useApp.getState();
+  if (shareOutside(routes, area) <= 0.005) return text;
+  const limit = Math.max(area.widthM, area.heightM) >= MAX_SIDE_M ? ` Areas can be up to ${MAX_SIDE_M / 1000} km across.` : '';
+  return `The area moved to the routes, but some are still outside it.${limit}`;
 }
 
 /**
@@ -47,6 +55,7 @@ function moved(text: string, step: SetupStep | null): [string, Toast['action'] |
  */
 export async function importTrackFiles(files: Iterable<File>): Promise<ImportResult> {
   const added: Track[] = [];
+  const sources = new Map<Track, string>();
   const errors: string[] = [];
   const room = () => MAX_TRACKS - useApp.getState().tracks.length - added.length;
   for (const file of files) {
@@ -61,8 +70,11 @@ export async function importTrackFiles(files: Iterable<File>): Promise<ImportRes
     }
     try {
       const { tracks: parsed, skipped } = readTrackFile(file.name, await file.arrayBuffer());
-      const space = room();
-      for (const track of parsed.slice(0, space)) {
+      for (const track of parsed) {
+        if (room() <= 0) {
+          errors.push(`${file.name}: there can be up to ${MAX_TRACKS} routes, so some in it were left out.`);
+          break;
+        }
         const lines = encodeTrack(track.lines);
         // Saved state drops a route over the limit, so it isn't taken now
         // only to be gone after a reload.
@@ -70,17 +82,21 @@ export async function importTrackFiles(files: Iterable<File>): Promise<ImportRes
           errors.push(`${file.name}: ${track.name} is in ${track.lines.length.toLocaleString()} separate pieces, more than a route can hold.`);
           continue;
         }
-        added.push({ id: newTrackId(), name: track.name, visible: true, lines });
+        const stored = { id: newTrackId(), name: track.name, visible: true, lines };
+        added.push(stored);
+        sources.set(stored, file.name);
       }
       for (const text of skipped) errors.push(`${file.name}: ${text}`);
-      if (parsed.length > space) errors.push(`${file.name}: there can be up to ${MAX_TRACKS} routes, so some in it were left out.`);
     } catch (error) {
       if (!(error instanceof TrackFileError)) console.error(error);
       errors.push(`${file.name}: ${error instanceof TrackFileError ? error.message : "it couldn't be read."}`);
     }
   }
-  if (!added.length) return { added: [], errors };
   const state = useApp.getState();
+  // Another drop or an options import can finish while a file is being read.
+  const space = Math.max(0, MAX_TRACKS - state.tracks.length);
+  for (const track of added.splice(space)) errors.push(`${sources.get(track)}: there can be up to ${MAX_TRACKS} routes. Remove some first.`);
+  if (!added.length) return { added: [], errors };
   const fresh = lines(added);
   const area = shareOutside(fresh, state.area) > MOVE_WHEN_OUTSIDE ? areaAroundTracks(fresh, state.area) : null;
   const step = asChange(added.length === 1 ? 'Add route' : 'Add routes', () => {
@@ -88,7 +104,7 @@ export async function importTrackFiles(files: Iterable<File>): Promise<ImportRes
     if (area) setArea(area, { focus: 'always', placeName: added.length === 1 ? added[0].name : '' });
   });
   const named = added.length === 1 ? `Added ${added[0].name}` : `Added ${added.length} routes`;
-  const [text, action] = area ? moved(`${named}. The area moved to fit ${added.length === 1 ? 'it' : 'them'}.`, step) : [`${named}.`, step ? { label: 'Undo', run: () => undoChange(step) } : undefined];
+  const [text, action] = area ? moved(`${named}. ${fitMessage(fresh, `The area moved to fit ${added.length === 1 ? 'it' : 'them'}.`)}`, step) : [`${named}.`, step ? { label: 'Undo', run: () => undoChange(step) } : undefined];
   toast(text, 'success', action);
   return { added: added.map((track) => track.name), errors };
 }
@@ -117,7 +133,7 @@ export function fitAreaToTracks(turn: boolean): boolean {
   const area = areaAroundTracks(shown, state.area, turn);
   if (!area) return false;
   const step = asChange(turn ? 'Fit and turn area to routes' : 'Fit area to routes', () => setArea(area, { focus: 'always' }));
-  const [text, action] = moved('The area fits the routes.', step);
+  const [text, action] = moved(fitMessage(shown, 'The area fits the routes.'), step);
   toast(text, 'info', action);
   return true;
 }

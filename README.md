@@ -135,6 +135,7 @@ Pushing to `main` deploys the site with GitHub Actions. Set `Settings > Pages > 
 - `Snap to roads` uses the roads that are printed. With `Roads` off routes stay as recorded, and with paths off a route along a footpath snaps to the street beside it.
 - Share links simplify long routes to fit, at most 12 m off. A route that still doesn't fit is left out of the link, so export options to share it.
 - In a LiDAR only model a route or drawn road under a building or an overpass is hidden by it, as it would be from above. Raise a drawn road to put it on top. A survey that doesn't file buildings can't tell an elevated railway from a building, so routes stay under both there.
+- Removing an imported route in the LiDAR only editor keeps the surface it cleared. Hide or remove it under `Routes` and regenerate to put back the trees and clutter.
 
 ###### Note: The project starts from Bambu's PLA Basic and Matte presets. Check the filament types before slicing.
 

@@ -3,7 +3,7 @@ import { strToU8, zipSync } from 'fflate';
 import { emptyEdits } from '../../core/edit/types';
 import { DEFAULT_AREA, DEFAULT_EXPORT, DEFAULT_PALETTE, cloneSettings } from '../../core/settings';
 import { encodePolyline } from '../../core/tracks/polyline';
-import { decodeTrack, type Track } from '../../core/tracks/track';
+import { decodeTrack, MAX_TRACKS, type Track } from '../../core/tracks/track';
 import type { LonLat } from '../../core/types';
 import { defaultSvgSettings } from '../svgmap/settings';
 import { bedFit } from './derived';
@@ -118,6 +118,30 @@ describe('importing routes', () => {
     const result = await importTrackFiles([huge]);
     expect(read).not.toHaveBeenCalled();
     expect(result.errors).toEqual(['huge.gpx: This file is over 50 MB.']);
+  });
+
+  it('holds the route limit when imports overlap', async () => {
+    setTracks(Array.from({ length: MAX_TRACKS - 2 }, (_, i) => track(`saved${i}`, eastward([lon0, lat0], 0.2))));
+    const pending = gpx('Pending', eastward([lon0, lat0], 0.2));
+    const buffer = await pending.arrayBuffer();
+    let finish!: (data: ArrayBuffer) => void;
+    vi.spyOn(pending, 'arrayBuffer').mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const first = importTrackFiles([gpx('First', eastward([lon0, lat0], 0.2)), pending]);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    const other = await importTrackFiles([gpx('Other', eastward([lon0, lat0], 0.2)), gpx('Last', eastward([lon0, lat0], 0.2))]);
+    expect(other.added).toEqual(['Other', 'Last']);
+    finish(buffer);
+    const result = await first;
+    expect(useApp.getState().tracks).toHaveLength(MAX_TRACKS);
+    expect(result.added).toEqual([]);
+    expect(result.errors).toContainEqual(expect.stringMatching(/First\.gpx: there can be up to 20 routes/));
+  });
+
+  it('says when the area limit prevents fitting the whole route', async () => {
+    await importTrackFiles([gpx('Long', eastward([lon0 + 1, lat0], 80))]);
+    expect(useApp.getState().toasts.at(-1)!.text).toMatch(/60 km|outside/);
+    fitAreaToTracks(false);
+    expect(useApp.getState().toasts.at(-1)!.text).toMatch(/60 km|outside/);
   });
 
   it('shows, hides, renames and removes them', async () => {

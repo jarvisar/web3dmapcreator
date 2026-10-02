@@ -7,7 +7,7 @@ import { gunzipSync, strFromU8, unzipSync } from 'fflate';
 import type { LonLat } from '../types';
 import { FitError, isFit, readFit } from './fitfile';
 import { distanceM, tidyTrackName } from './track';
-import { walkXml } from './xml';
+import { walkXml, xmlRoot } from './xml';
 
 export const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_POINTS = 2_000_000;
@@ -110,7 +110,7 @@ function readGpx(text: string): FileContents {
   // Planners and some apps write the route twice, as a few turn points in
   // <rte> and the full line in <trk>. Both printed, the turn points cut
   // straight across every bend, so a recorded or full line wins.
-  const tracked = chunks.some((c) => c.track && c.lines.some((l) => l.length >= 2));
+  const tracked = chunks.some((c) => c.track && c.lines.some((l) => cleanLine(l).length > 0));
   return { name: fileName || trackName, chunks: tracked ? chunks.filter((c) => c.track) : chunks, points };
 }
 
@@ -281,8 +281,7 @@ function readGeoJson(source: string): FileContents {
 }
 
 function readXml(source: string): FileContents {
-  const root = /<(?![?!])([^\s/>]+)/.exec(source)?.[1] ?? '';
-  switch (root.slice(root.indexOf(':') + 1)) {
+  switch (xmlRoot(source)) {
     case 'gpx':
       return readGpx(source);
     case 'kml':
