@@ -783,6 +783,7 @@ const KIND_LABELS: Record<string, [string, string]> = {
   building: ['Building', 'buildings'],
   water: ['Water', 'bodies of water'],
   bridge: ['Bridge', 'bridges'],
+  route: ['Route', 'routes'],
 };
 
 /** Everything in the model with a name, one entry per name and kind. */
@@ -842,7 +843,7 @@ function FindBox({ data, focusOn }: { data: EditData; focusOn: InspectorProps['f
   return (
     <div className="find-box">
       <label className="sr-only" htmlFor={id}>
-        Find a street, building or water by name
+        Find a street, building, water or route by name
       </label>
       <div className="find-input">
         <Search size={13} aria-hidden="true" />
@@ -851,7 +852,7 @@ function FindBox({ data, focusOn }: { data: EditData; focusOn: InspectorProps['f
           className="text-input"
           type="search"
           value={query}
-          placeholder="Find a street, building or water"
+          placeholder="Find a street, building, water or route"
           autoComplete="off"
           spellCheck={false}
           onChange={(event) => setQuery(event.target.value)}

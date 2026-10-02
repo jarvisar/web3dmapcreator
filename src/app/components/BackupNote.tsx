@@ -1,5 +1,5 @@
 import type { BackupReason } from '../state/persist';
-import { forgetBackup, restoreBackup } from '../state/editActions';
+import { backupText, forgetBackup, restoreBackup } from '../state/editActions';
 import { useApp } from '../state/store';
 
 const FROM: Record<BackupReason, string> = {
@@ -11,11 +11,11 @@ const FROM: Record<BackupReason, string> = {
   restore: 'you swapped out',
 };
 
-/** Offers back the edits or picked roads a link, a file or Undo all replaced. */
-export function BackupNote({ of }: { of: 'edits' | 'picks' }) {
+/** Offers back the edits, picked roads or routes a link, a file, Undo all or a reset replaced. */
+export function BackupNote({ of }: { of: 'edits' | 'picks' | 'tracks' }) {
   const backup = useApp((state) => state.backup);
-  if (!backup || !(of === 'edits' ? backup.edits : backup.picks)) return null;
-  const what = backup.edits && backup.picks ? 'edits and picked roads' : backup.edits ? 'edits' : 'picked roads';
+  if (!backup || !backup[of]) return null;
+  const what = backupText(backup);
   return (
     <p className="inspector-note">
       {backup.reason === 'restore' ? 'The' : 'Your'} {what} {FROM[backup.reason]} are kept aside.{' '}

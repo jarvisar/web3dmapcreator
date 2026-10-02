@@ -20,12 +20,14 @@ import { MAX_SIDE_M, MIN_SIDE_M } from '../../core/geo/area';
 import type { AreaSpec, ExportSettings, ModelSettings, Palette } from '../../core/settings';
 import { emptyEdits, hasEdits, sanitizeEdits, type ModelEdits } from '../../core/edit/types';
 import { sanitizeLines, sanitizeRoutes, type Picks } from '../../core/svgmap/routes';
+import { sanitizeTracks, type Track } from '../../core/tracks/track';
 import { type SvgSettings, defaultSvgSettings, mergeSettings } from '../svgmap/settings';
 import { matchingPreset } from './derived';
 
 export const STORAGE_KEY = 'jarvizar-city-model:v1';
 export const EDITS_KEY = 'jarvizar-city-model:edits';
 export const PICKS_KEY = 'jarvizar-city-model:picks';
+export const TRACKS_KEY = 'jarvizar-city-model:tracks';
 export const BACKUP_KEY = 'jarvizar-city-model:backup';
 const KEY = STORAGE_KEY;
 
@@ -40,6 +42,8 @@ export interface SavedState {
   /** Read even when the settings can't be, and empty when nothing was saved. */
   edits: ModelEdits;
   picks: Picks;
+  /** Imported routes. */
+  tracks: Track[];
   /** Without the picks. */
   svg?: SvgSettings;
   placeName?: string;
@@ -147,6 +151,15 @@ function readPicks(raw: Json): Picks {
   return { routes: sanitizeRoutes(raw.routes), hiddenLines: sanitizeLines(raw.hiddenLines) };
 }
 
+export function readStoredTracks(text: string | null): Track[] | null {
+  try {
+    const raw: unknown = text ? JSON.parse(text) : null;
+    return Array.isArray(raw) ? sanitizeTracks(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function hasPicks(picks: Picks): boolean {
   return picks.hiddenLines.length > 0 || picks.routes.some((route) => route.lines.length > 0);
 }
@@ -167,9 +180,11 @@ export function loadSaved(): SavedState {
   // the next save wrote nothing over them.
   const edits = readStoredEdits(readText(EDITS_KEY)) ?? emptyEdits();
   const picks = readStoredPicks(readText(PICKS_KEY)) ?? { routes: [], hiddenLines: [] };
+  const tracks = readStoredTracks(readText(TRACKS_KEY)) ?? [];
   // They're what's in storage now, so saving them again waits for a change.
   written.set(EDITS_KEY, [edits]);
   written.set(PICKS_KEY, [picks.routes, picks.hiddenLines]);
+  written.set(TRACKS_KEY, [tracks]);
   loadedHash = typeof raw.hash === 'string' ? raw.hash : undefined;
   return {
     output: raw.output === 'svg' || raw.output === 'model' ? raw.output : undefined,
@@ -180,6 +195,7 @@ export function loadSaved(): SavedState {
     exportSettings: readExport(raw.exportSettings),
     edits,
     picks,
+    tracks,
     svg: isObject(raw.svg) ? mergeSettings(defaultSvgSettings(), raw.svg) : undefined,
     placeName: typeof raw.placeName === 'string' ? raw.placeName : undefined,
     fileName: typeof raw.fileName === 'string' ? raw.fileName : null,
@@ -212,15 +228,17 @@ export function clearSavedState(): void {
   try {
     const edits = readStoredEdits(readText(EDITS_KEY));
     const picks = readStoredPicks(readText(PICKS_KEY));
+    const tracks = readStoredTracks(readText(TRACKS_KEY));
     const backup: Backup = { savedAt: Date.now(), reason: 'reset' };
     if (edits && hasEdits(edits)) backup.edits = edits;
     if (picks && hasPicks(picks)) backup.picks = picks;
-    if (backup.edits || backup.picks) localStorage.setItem(BACKUP_KEY, JSON.stringify(backup));
+    if (tracks?.length) backup.tracks = tracks;
+    if (backup.edits || backup.picks || backup.tracks) localStorage.setItem(BACKUP_KEY, JSON.stringify(backup));
   } catch {
     // Unreadable or no room: they go with the rest.
   }
   try {
-    for (const key of [KEY, EDITS_KEY, PICKS_KEY]) localStorage.removeItem(key);
+    for (const key of [KEY, EDITS_KEY, PICKS_KEY, TRACKS_KEY]) localStorage.removeItem(key);
   } catch {
     // Storage is off, so nothing was saved either.
   }
@@ -246,13 +264,15 @@ const REASONS: readonly BackupReason[] = ['link', 'import', 'clear', 'clear-pick
 /**
  * The user's edits or picked roads from before something replaced them: a
  * link or an options file that changed some of them, Undo all, or the crash
- * screen's reset. It stays until it's put back or forgotten.
+ * screen's reset. It stays until it's put back or forgotten. Routes are only
+ * ever kept by the reset, since nothing else replaces them.
  */
 export interface Backup {
   savedAt: number;
   reason: BackupReason;
   edits?: ModelEdits;
   picks?: Picks;
+  tracks?: Track[];
 }
 
 export function readBackup(): Backup | null {
@@ -262,9 +282,11 @@ export function readBackup(): Backup | null {
     const backup: Backup = { savedAt: raw.savedAt, reason: raw.reason as BackupReason };
     const edits = isObject(raw.edits) ? sanitizeEdits(raw.edits) : null;
     const picks = isObject(raw.picks) ? readPicks(raw.picks) : null;
+    const tracks = sanitizeTracks(raw.tracks);
     if (edits && hasEdits(edits)) backup.edits = edits;
     if (picks && hasPicks(picks)) backup.picks = picks;
-    return backup.edits || backup.picks ? backup : null;
+    if (tracks.length) backup.tracks = tracks;
+    return backup.edits || backup.picks || backup.tracks ? backup : null;
   } catch {
     return null;
   }
@@ -273,7 +295,7 @@ export function readBackup(): Backup | null {
 /** Keeps a backup in place of the one before, or drops it given nothing. False when the browser refused it. */
 export function writeBackup(backup: Backup | null): boolean {
   try {
-    if (!backup || (!backup.edits && !backup.picks)) localStorage.removeItem(BACKUP_KEY);
+    if (!backup || (!backup.edits && !backup.picks && !backup.tracks)) localStorage.removeItem(BACKUP_KEY);
     else localStorage.setItem(BACKUP_KEY, JSON.stringify(backup));
     return true;
   } catch {
@@ -321,6 +343,7 @@ export function saveState(
     palette: Palette;
     exportSettings: ExportSettings;
     edits: ModelEdits;
+    tracks?: Track[];
     svg: SvgSettings;
     placeName: string;
     fileName: string | null;
@@ -351,5 +374,7 @@ export function saveState(
   let ok = settings ? write(KEY, null, () => JSON.stringify(data)) : true;
   ok = write(EDITS_KEY, [state.edits], () => JSON.stringify(state.edits)) && ok;
   ok = write(PICKS_KEY, [routes, hiddenLines], () => JSON.stringify({ routes, hiddenLines })) && ok;
+  const tracks = state.tracks;
+  if (tracks) ok = write(TRACKS_KEY, [tracks], () => JSON.stringify(tracks)) && ok;
   return ok;
 }

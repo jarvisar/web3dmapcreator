@@ -274,7 +274,7 @@ function clampSpeed(speed: number): number {
 
 /** What the viewer shows about an object you can select, by its key. */
 export interface ObjectInfo {
-  kind: 'building' | 'bridge' | 'water' | 'tree' | 'rock';
+  kind: 'building' | 'bridge' | 'water' | 'tree' | 'rock' | 'route';
   name?: string;
   /** Class or type, e.g. "office" or "lake". */
   detail?: string;

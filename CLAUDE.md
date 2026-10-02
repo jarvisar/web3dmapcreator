@@ -43,6 +43,7 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges, `network/` tidy), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
 | `src/core/edit/` | Model editor: the edits document (`types.ts`, `keys.ts`), `EditSession` applying it to a generated model in the worker, road tiles, land fill, terrain and water after edits (`earth.ts`), added shapes and what they stand on (`stand.ts`), road lines for picking |
+| `src/core/tracks/` | Imported routes ("tracks" in the code, so they don't clash with the SVG maps' picked-road routes): reading GPX, KML, KMZ, TCX, GeoJSON and FIT (`parse.ts`, `fitfile.ts`), encoded polylines, snapping to roads (`snap.ts`), framing the area (`frame.ts`), start and finish markers. Map models lay them out in `pipeline/tracks.ts`, LiDAR only models rest them on the survey in `dsm/route.ts` |
 | `src/core/engine/` | Worker protocol and main-thread client |
 | `src/worker/engine.worker.ts` | Downloads, generates, meshes and exports off the main thread |
 | `proxy/` | The LiDAR CORS proxy, a Cloudflare Worker: only the URLs `PROXIED` in `src/core/data/corsProxy.ts` matches, only the site's origins, GET and HEAD, bodies streamed |
@@ -200,6 +201,54 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   follow time, not item counts (meshing goes by `meshCost`, not solids).
   Code that can't yield can still `report`: the worker's messages go out
   mid-call. Fixed shares had meshing at 10% of the bar for 40% of the time.
+
+Imported routes (`src/core/tracks/`, `pipeline/tracks.ts`, `dsm/route.ts`, UI in
+`panels/RoutesPanel.tsx` and `state/tracks.ts`):
+
+- Routes are user data like the edits: one list for every area, saved
+  under their own key (`TRACKS_KEY`), in undo's `Setup`, added to (never
+  replaced) by links and option files (`mergeTracks`), and only the ones
+  on the area go in a link (`tracksForArea`, `t=`) or an options file. A
+  link simplifies them up to 12 m to fit (`packTracks`). Lines are stored
+  as encoded polylines, simplified to 1 m at import and to at most 10,000
+  points. The visible ones go to the worker decoded, and they're part of
+  `modelKey`, not `snapshotKey`, so offers don't go stale with them.
+  Only 3D models build them for now: SVG maps have picked routes instead.
+- They never go through the road tidy. `settings.tracks.snap` (on by
+  default) matches a recording to the roads with an HMM (`snap.ts`): a
+  sample every 10 m, candidates within 40 m, and an off-road state that
+  costs as much as a road 24 m away plus 4 to switch, so an unmapped trail
+  stays as recorded. Map models snap to the road lines as tidied, decks
+  included, so the route sits on the printed road. LiDAR only models
+  download every road and path segment for it (`loadMapWater`).
+- Map models: a ribbon of `widthMm` at `heightMm` over the ground (0.8,
+  a layer over 0.6 mm roads), draped like roads, keyed `rt:<id>` and
+  described for the editor. Its layer comes after roads, land and decks
+  and before buildings, so where GPS drifts into a building the building
+  keeps the overlap and its walls stay its colour. Buildings aren't cut out
+  of it: at a small scale a route 27 m wide was shredded into dashes by the
+  houses either side, and over a low building its top stays whole. A deck
+  it runs along (`carries`, 60% of it within 30
+  degrees) carries it at the deck's top plus what it stands over a road,
+  over the route's whole width, or strips beside a narrower deck stood on
+  the water and kept ground. Decks it only crosses are cut out. Over cut
+  water it keeps ground like a road (`kept.tracks`, which goes with the
+  route if it's removed in the editor), or wades with supports off. Trees
+  avoid it. Without routes the model is unchanged.
+- LiDAR only models: a route rests on compose's bare ground grid
+  (`ground`, returned only with `clear`), never the surface, which a
+  drifting track climbed every roof and crown of. Trees and clutter under 2 m
+  are cleared to the ground along it first (`clear`, the ribbon plus a cell
+  either side), so it shows through parks. Raised stretches (over 2.5 m) it
+  rides only when the surface rises gently (25% over two cells, the sheer
+  drop at a deck's side to the water left out): decks and ramps yes, walls,
+  crowns and overpasses no. A non-building structure over it for 40 m or
+  more carries it on top at a 30 m running median (Chicago's L along Wells
+  hid six blocks), only in surveys that file buildings. Over water it rests
+  on the recess or the layer, and pieces over water cut through the base
+  are left out. Steps become 45 degree ramps. The route is listed before the
+  city, so under a roof the city keeps the overlap, as the view shows it.
+  Its underside goes 1.5 cells under the surface to reach the meshed TIN.
 
 Road network tidy (`pipeline/network/`, `roads.tidy`, run in `collectRoadPieces`
 before bridges are split off):
@@ -959,6 +1008,7 @@ npx tsx scripts/generate.ts --preset "Chicago - The Loop (small)" --lidar-only -
 npx tsx scripts/check-bambu.ts   # round trip through installed Bambu Studio (isolated data dir)
 npx tsx scripts/fuzz-edits.ts --preset "Chicago - The Loop (small)" --steps 40   # random edits, exports checked against the view (--bridges, --no-supports, --through)
 npx tsx scripts/generate.ts --options out/fuzz/<failed step>.json --out out/repro.3mf   # an options file, edits and all
+npx tsx scripts/generate.ts --route run.gpx --fit-route --out out/run.3mf   # a route, the area framed around it (--turn, --no-snap, --lidar-only)
 $env:NETWORK=1; npx vitest run src/core/svgmap/e2e.test.ts   # SVG maps from live tiles ($env:SVG_OUT to keep them)
 node scripts/e2e.mjs http://localhost:4173/ out/e2e-svg --svg --all-formats   # SVG map in Edge
 node scripts/e2e-edit.mjs http://localhost:4173/ out/e2e-edit   # the editor in Edge, --phone and --svg too

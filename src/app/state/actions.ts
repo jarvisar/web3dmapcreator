@@ -4,6 +4,7 @@ import { CancelledError, offeredTiles } from '../../core/engine/client';
 import type { GenerateResult, LidarOffer, ProgressEvent } from '../../core/engine/protocol';
 import { surveyQuery } from '../../core/lidar/query';
 import { cloneSettings } from '../../core/settings';
+import { visibleTracks } from '../../core/tracks/track';
 import { downloadBlob, NARROW_QUERY } from '../lib/browser';
 import { formatBytes } from '../lib/format';
 import { kindOf, objectOf } from '../../core/edit/keys';
@@ -15,6 +16,7 @@ import { setModelParts, type EditData } from './model';
 import {
   patchExporting,
   patchGeneration,
+  modelKey,
   snapshotKey,
   surveySearchKey,
   toast,
@@ -122,7 +124,10 @@ export async function generateModel(options: { approveTiles?: string[] } = {}): 
   const id = ++run;
   const area = structuredClone(state.area);
   const settings = cloneSettings(state.settings);
+  // Offers are for the area and settings, whatever the routes.
   const key = snapshotKey(area, settings);
+  const tracks = state.tracks;
+  const madeOf = modelKey(area, settings, tracks);
   patchGeneration({ status: 'running', progress: null, startedAt: Date.now(), error: null, cancelling: false });
   try {
     const request = {
@@ -134,6 +139,7 @@ export async function generateModel(options: { approveTiles?: string[] } = {}): 
       maxCells: lidarCellLimit(state.ui.largeGrids),
       approveTiles: options.approveTiles,
       speed: savedSpeed(),
+      tracks: settings.tracks.enabled ? visibleTracks(tracks) : [],
     };
     const result = await getEngine().generate(request, (event) => {
       if (id === run) queueProgress(event, 'generation');
@@ -149,7 +155,7 @@ export async function generateModel(options: { approveTiles?: string[] } = {}): 
     };
     setModelParts(result.parts, data, result.edit, result.modelId);
     setNotes(result.edit?.notes ?? {});
-    const meta = toMeta(result, key);
+    const meta = toMeta(result, madeOf);
     // What generating found is as good as a search, for picking a survey.
     const found = result.lidar?.found ?? result.surface?.found ?? [];
     const narrow = window.matchMedia(NARROW_QUERY).matches;
@@ -161,7 +167,7 @@ export async function generateModel(options: { approveTiles?: string[] } = {}): 
         cancelling: false,
         error: null,
         result: meta,
-        stale: key !== snapshotKey(current.area, current.settings),
+        stale: madeOf !== modelKey(current.area, current.settings, current.tracks),
         offers: offersFor(key, result.lidar?.offers ?? result.surface?.offers),
         surveys: found.length ? { key: surveySearchKey(area, settings), status: 'done', list: found, failures: [] } : current.generation.surveys,
       },

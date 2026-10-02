@@ -7,6 +7,7 @@ import type { SurveyChoice } from '../lidar/choice';
 import type { SurveyQuery } from '../lidar/query';
 import type { LidarOffer } from '../lidar/offers';
 import type { ModelEdits } from '../edit/types';
+import type { TrackLines } from '../tracks/track';
 import type { AreaSpec, ExportFormat, ModelSettings, Palette } from '../settings';
 import type { MeshPart, ModelStats } from '../types';
 
@@ -26,6 +27,8 @@ export interface GenerateRequest {
   approveTiles?: string[];
   /** How long work took here against the estimates, from the last job (GenerateResult.speed). */
   speed?: number;
+  /** Imported routes to build, the visible ones, decoded. */
+  tracks?: TrackLines[];
 }
 
 export interface EditRequest {
@@ -51,6 +54,8 @@ export type Stage =
   | 'land'
   | 'close'
   | 'trees'
+  // Imported routes, in both kinds of model
+  | 'routes'
   // LiDAR only models, after 'surveys' and 'lidar'
   | 'mapwater'
   | 'compose'

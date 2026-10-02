@@ -1,5 +1,5 @@
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { Map as MlMap, NavigationControl, ScaleControl, setWorkerUrl } from 'maplibre-gl';
+import { Map as MlMap, NavigationControl, ScaleControl, setWorkerUrl, type GeoJSONSource } from 'maplibre-gl';
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { IControl } from 'maplibre-gl';
 import { CircleAlert, X } from 'lucide-react';
@@ -19,6 +19,46 @@ import { pieceLayout, pieceProduct } from '../svgmap/piece';
 import { AreaEditor, type TitleDragPhase } from './AreaEditor';
 import { BASEMAPS, flattenBuildings } from './basemaps';
 import { registerMap } from './mapHandle';
+import { tracksGeoJson } from '../state/tracks';
+
+const ROUTES = 'routes';
+const NO_ROUTES: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+
+/**
+ * Imported routes on the map, in the route colour on a white casing, with a
+ * filled dot at the start and an open one at the finish. A new base map
+ * takes them away with its style, so they're added again whenever the style
+ * changes. Returns what it showed, or null while the style is loading.
+ */
+function showRoutes(map: MlMap, data: GeoJSON.FeatureCollection, colour: string, shown: { data: unknown; colour: string } | null): { data: unknown; colour: string } | null {
+  try {
+    const source = map.getSource<GeoJSONSource>(ROUTES);
+    if (!source) {
+      map.addSource(ROUTES, { type: 'geojson', data });
+      const layout = { 'line-join': 'round', 'line-cap': 'round' } as const;
+      map.addLayer({ id: 'route-casing', type: 'line', source: ROUTES, layout, paint: { 'line-color': '#ffffff', 'line-width': 6, 'line-opacity': 0.85 } });
+      map.addLayer({ id: 'route-line', type: 'line', source: ROUTES, layout, paint: { 'line-color': colour, 'line-width': 3 } });
+      map.addLayer({
+        id: 'route-ends',
+        type: 'circle',
+        source: ROUTES,
+        filter: ['==', '$type', 'Point'],
+        paint: { 'circle-radius': 4.5, 'circle-stroke-width': 2, 'circle-color': ['match', ['get', 'end'], 'start', colour, '#ffffff'], 'circle-stroke-color': colour },
+      });
+      return { data, colour };
+    }
+    if (shown?.data !== data) void source.setData(data);
+    if (shown?.colour !== colour) {
+      map.setPaintProperty('route-line', 'line-color', colour);
+      map.setPaintProperty('route-ends', 'circle-color', ['match', ['get', 'end'], 'start', colour, '#ffffff']);
+      map.setPaintProperty('route-ends', 'circle-stroke-color', colour);
+    }
+    return { data, colour };
+  } catch {
+    // The style isn't ready yet. Its styledata event comes back here.
+    return null;
+  }
+}
 
 // MapLibre finds its worker next to its own module, which is gone once Vite
 // bundles it. Point it at a worker chunk Vite builds instead.
@@ -104,6 +144,13 @@ export function MapView({ active }: { active: boolean }) {
   const resizable = useApp((state) => areaResizable(state));
   const customFontId = useApp((state) => state.customFontId);
   const layout = useMemo(() => (svg ? pieceLayout(piece, shape, border).layout : null), [svg, piece, shape, border]);
+  // Routes are only built into 3D models for now, so an SVG map doesn't show them.
+  const tracks = useApp((state) => state.tracks);
+  const routeColour = useApp((state) => state.palette.route.hex);
+  const routeData = useMemo(() => (svg ? NO_ROUTES : tracksGeoJson(tracks)), [svg, tracks]);
+  const routes = useRef({ data: routeData, colour: routeColour, shown: null as { data: unknown; colour: string } | null });
+  routes.current.data = routeData;
+  routes.current.colour = routeColour;
   // The title while it's dragged on the map. It's only stored when let go.
   // Pressing it selects it, which shows its handles.
   const [dragged, setDragged] = useState<LabelSettings | null>(null);
@@ -183,6 +230,11 @@ export function MapView({ active }: { active: boolean }) {
       tileErrors.current = 0;
       setBasemapFailed(false);
     });
+    map.on('styledata', () => {
+      const r = routes.current;
+      if (map.getSource(ROUTES)) return;
+      r.shown = showRoutes(map, r.data, r.colour, null);
+    });
     map.setStyle(BASEMAPS[initial.ui.basemap].style, { transformStyle: flattenBuildings });
     mapRef.current = map;
     registerMap(map);
@@ -236,6 +288,13 @@ export function MapView({ active }: { active: boolean }) {
     const handles = titleSelected && artwork ? titleHandles(shownLabel, artwork) : [];
     editor.setPiece(layout ? pieceOverlay(layout, artwork, handles, titleSelected) : null);
   }, [svg, layout, artwork, resizable, titleSelected, shownLabel]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const r = routes.current;
+    r.shown = showRoutes(map, routeData, routeColour, r.shown) ?? r.shown;
+  }, [routeData, routeColour]);
 
   // The first style is set when the map is created. Later changes swap it.
   const firstStyle = useRef(true);

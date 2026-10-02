@@ -42,7 +42,7 @@ function option(name: string): string | undefined {
 
 type Box = [number, number, number, number, number, number];
 
-// A small city: terrain, water, parks, roads, paving, buildings in two parts, trees and a rim.
+// A small city: terrain, water, parks, roads, paving, a route, buildings in two parts, trees and a rim.
 function city(west: number, south: number, east: number, north: number): MeshPart[] {
   const w = east - west;
   const d = north - south;
@@ -62,6 +62,7 @@ function city(west: number, south: number, east: number, north: number): MeshPar
     layer('green', 'Parks', 'green', [[cx - 15, cy - 12, 1.85, 12, 9, 0.55]]),
     layer('roads', 'Roads', 'road', [[west, cy - 1, 1.85, w, 2, 0.6], [cx - 1, south, 1.85, 2, d, 0.6]]),
     layer('paved', 'Paved', 'paved', [[cx + 4, cy + 4, 1.85, 8, 6, 0.5]]),
+    layer('routes', 'Routes', 'route', [[west + 4, cy + 1.2, 1.85, w - 8, 0.6, 0.8]]),
     layer('buildings-a', 'Buildings', 'building', blocks.slice(0, 12)),
     layer('buildings-b', 'Buildings', 'building', blocks.slice(12)),
     layer('trees', 'Trees', 'tree', [[cx - 12, cy - 9, 2.3, 1.2, 1.2, 1.8], [cx - 8, cy - 6, 2.3, 1.2, 1.2, 1.8]]),

@@ -83,7 +83,9 @@ With `--lidar`, point data and batch results are kept in `out/lidar-cache` (or `
 
 `check-bambu.ts` gives Bambu Studio its own data folder, so your own settings, presets and recent files are never touched.
 
-`--options` takes an options file exported with its map area: the area, settings, colours, export options and the 3D editor's edits. Other flags override it, and `--no-edits` leaves the edits out. It's the quickest way to rebuild what someone downloaded.
+`--options` takes an options file exported with its map area: the area, settings, colours, export options, the 3D editor's edits and the routes on it. Other flags override it, and `--no-edits` leaves the edits out. It's the quickest way to rebuild what someone downloaded.
+
+`--route file` adds an imported route, any file the app reads, and can be given more than once. Routes are stored and read back the way the app does, so they're simplified the same. `--fit-route` frames the area around them in `--shape` and prints the area for `--area`, and `--turn` turns it too when that frames them smaller. `--no-snap` leaves them as recorded, and `--no-markers`, `--route-width` and `--route-height` set the rest.
 
 `fuzz-edits.ts` makes random edits (removals, heights, road widths, layers, shapes with odd sizes and points) and every few steps exports in one plate and in sections. It checks every part is closed and finite, no building part floats, and the export has the same volume per colour as the 3D view would show, with nothing hidden and with a random few parts hidden. Shapes are also put on roofs and bridge decks the way the editor places them, and no part of a shape may hang in the air or stand on water alone. `--lidar-water cut` or `layer` goes with `--lidar-only`. A failing step is saved as an options file for `generate.ts --options`. `--selftest` exports the step before's edits, which the checks have to catch. It takes `--trees`, `--bridges`, `--shape`, `--rotation` and `--lidar-only` like `generate.ts`.
 

@@ -51,6 +51,7 @@ export const KIND_NAMES: Record<ObjectKind, [string, string]> = {
   tree: ['tree', 'trees'],
   rock: ['rock', 'rocks'],
   shape: ['shape', 'shapes'],
+  route: ['route', 'routes'],
 };
 
 function titleCase(text: string): string {
@@ -94,6 +95,8 @@ export function describeKey(key: string, data: EditData, edits: ModelEdits): Des
       if (!shape) return { kind, title: 'Shape', detail: '' };
       return { kind, title: shape.kind === 'text' ? `“${shape.text || 'Text'}”` : SHAPE_NAMES[shape.kind], detail: shape.kind === 'text' ? 'Text' : 'Added shape' };
     }
+    case 'route':
+      return { kind, title: facts?.name || 'Route', detail: facts?.detail ? `Imported route, ${facts.detail}` : 'Imported route' };
   }
 }
 

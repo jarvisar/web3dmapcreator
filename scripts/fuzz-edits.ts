@@ -7,6 +7,7 @@
 //
 //   npx tsx scripts/fuzz-edits.ts --preset "Chicago - The Loop (small)" [--steps 40] [--seed 1]
 //     [--check-every 5] [--trees] [--bridges] [--no-supports] [--through] [--skip-thin] [--widen-thin] [--shape circle] [--rotation 30] [--lidar] [--lidar-only [--lidar-water cut|layer]]
+//     [--route file.gpx] (routes in the model, which the edits remove and recolour too)
 //
 // --selftest exports without the last step's edits, which every check has to
 // catch, to show the checks still catch something.
@@ -49,6 +50,8 @@ import { cloneSettings, DEFAULT_EXPORT, DEFAULT_PALETTE, sanitizeSettings, type 
 import { FONTS } from '../src/core/svgmap/text/fonts';
 import { FontLoader } from '../src/core/svgmap/text/loadFont';
 import { ROLE_GROUP, type MeshPart } from '../src/core/types';
+import { parseTrackFile } from '../src/core/tracks/parse';
+import { decodeTrack, encodeTrack, type TrackLines } from '../src/core/tracks/track';
 import { folderStore, setUpLidar, threadPool } from './lidar-node';
 import { lidarPoolSize, surfacePoolSize } from '../src/worker/lidarPool';
 
@@ -86,7 +89,21 @@ const COLOURS = ['#E4002B', '#0057B8', '#FF8200', '#7A3E9D', '#009A44', '#E0A800
 const GROUPS = ['buildings', 'roads', 'water', 'green', 'terrain', 'sand'];
 const CLEARANCE_MM = 0.2;
 
+/** Routes from --route files, stored and read back as the app does. */
+function routes(): TrackLines[] {
+  const out: TrackLines[] = [];
+  process.argv.forEach((value, i) => {
+    if (value !== '--route' || !process.argv[i + 1]) return;
+    const bytes = readFileSync(process.argv[i + 1]);
+    for (const track of parseTrackFile(process.argv[i + 1], bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer)) {
+      out.push({ id: `route${out.length + 1}`, name: track.name, lines: decodeTrack({ lines: encodeTrack(track.lines) }) });
+    }
+  });
+  return out;
+}
+
 async function build(area: ReturnType<typeof areaFromBounds>, settings: ModelSettings): Promise<ModelSpec> {
+  const tracks = routes();
   const progress = new Progress();
   if (settings.modelSource === 'lidar') {
     const cacheDir = 'out/lidar-cache';
@@ -97,7 +114,7 @@ async function build(area: ReturnType<typeof areaFromBounds>, settings: ModelSet
       const cell = requestedCell(settings.lidarModel, scale, area.widthM, area.heightM);
       const maxCells = settings.lidarModel.cellMode === 'metres' ? fixedCellLimit(reportedMemoryGb(totalmem())) : undefined;
       const surface = await prepareSurface({ area, cellM: cell, maxCells, runner: pool });
-      return await surfaceModel({ area, settings, surface, progress, runTile: (tile) => pool.tile(tile), concurrency: pool.concurrency, releaseLayers: true });
+      return await surfaceModel({ area, settings, surface, progress, runTile: (tile) => pool.tile(tile), concurrency: pool.concurrency, releaseLayers: true, tracks });
     } finally {
       pool.close();
     }
@@ -119,7 +136,7 @@ async function build(area: ReturnType<typeof areaFromBounds>, settings: ModelSet
       pool.close();
     }
   }
-  return generateModel({ area, settings, data: withRaceways(data, raceways), elevation: dem, progress, lidar });
+  return generateModel({ area, settings, data: withRaceways(data, raceways), elevation: dem, progress, lidar, tracks });
 }
 
 /** Signed volume of a mesh's triangles from `from` to `to`. */
@@ -180,6 +197,7 @@ async function main() {
   const withParts = buildings.filter((key) => facts[key].parts?.length);
   const water = keysOf('water');
   const bridges = keysOf('bridge');
+  const routeKeys = keysOf('route');
   const trees = [...new Set(spec.layers.flatMap((l) => l.solids.map((s) => s.key ?? '')).filter((key) => key.startsWith('t:')))];
   // Points in cut water and basins, to put shapes and roads in.
   const wetPoints = [
@@ -199,7 +217,7 @@ async function main() {
   const box = ringBounds(spec.crop[0]);
   const fontIds = FONTS.map((f) => f.id).filter((id) => id !== 'custom');
   console.log(
-    `${buildings.length} buildings (${withParts.length} with parts), ${roads.length} roads, ${bridges.length} bridges, ${water.length} water, ${wetPoints.length} points in it, ${trees.length} trees`,
+    `${buildings.length} buildings (${withParts.length} with parts), ${roads.length} roads, ${bridges.length} bridges, ${water.length} water, ${wetPoints.length} points in it, ${trees.length} trees, ${routeKeys.length} routes`,
   );
 
   // What the viewer has, as it would after each update.
@@ -350,6 +368,8 @@ async function main() {
       },
     ],
     ['remove tree', 1, () => trees.length > 0 && (set(pick(trees), { removed: true }), true)],
+    ['remove route', 1, () => routeKeys.length > 0 && (set(pick(routeKeys), chance(0.7) ? { removed: true } : { removed: undefined }), true)],
+    ['route to a layer', 1, () => routeKeys.length > 0 && (set(pick(routeKeys), { layer: layerId() }), true)],
     [
       'shape on a roof',
       2,

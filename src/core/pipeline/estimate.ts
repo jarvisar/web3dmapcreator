@@ -22,8 +22,16 @@ const MESH_SECONDS_PER_COST = 1.85e-6;
 const WARM_MESH_SECONDS_PER_COST = 1.4e-6;
 const WRITE_SECONDS_PER_TRIANGLE = 1.25e-6;
 
-/** The steps of generateModel and the meshing after it, from what the data holds. */
-export function generationSteps(counts: FeatureCounts, settings: ModelSettings, area: AreaSpec, guess = false): PlannedStep[] {
+// Laying out routes, per point of the tracks: snapping is most of it.
+const ROUTE_SECONDS_PER_POINT = 2e-4;
+
+/** Laying out imported routes with this many points between them. */
+export function routeSeconds(points: number): number {
+  return 0.02 + ROUTE_SECONDS_PER_POINT * points;
+}
+
+/** The steps of generateModel and the meshing after it, from what the data holds. `routePoints` counts the routes' points. */
+export function generationSteps(counts: FeatureCounts, settings: ModelSettings, area: AreaSpec, guess = false, routePoints = 0): PlannedStep[] {
   const n = (type: SourceType) => counts[type] ?? 0;
   const segments = settings.roads.enabled ? n('segment') : 0;
   const buildings = settings.buildings.enabled ? n('building') + n('building_part') : 0;
@@ -47,6 +55,7 @@ export function generationSteps(counts: FeatureCounts, settings: ModelSettings, 
     // The union of every footprint grows faster than their number.
     steps.push({ stage: 'footprints', seconds: 0.01 + 4.5e-7 * buildings ** 1.5 });
   }
+  if (routePoints && settings.tracks.enabled) steps.push({ stage: 'routes', seconds: routeSeconds(routePoints) });
   if (land) steps.push({ stage: 'land', seconds: 0.02 + 4.5e-4 * land });
   steps.push({ stage: 'close', seconds: 0.01 + 1e-4 * water });
   if (settings.trees.enabled) steps.push({ stage: 'trees', seconds: 0.2 + 2e-4 * land });
@@ -84,8 +93,9 @@ export function surfaceCells(area: AreaSpec, cellM: number, maxCells?: number): 
 }
 
 /** The steps of a LiDAR only model after its survey is read, from its grid. */
-export function surfaceSteps(cells: number, cut: boolean): PlannedStep[] {
+export function surfaceSteps(cells: number, cut: boolean, routePoints = 0): PlannedStep[] {
   return [
+    ...(routePoints ? [{ stage: 'routes' as const, seconds: routeSeconds(routePoints) }] : []),
     { stage: 'compose', seconds: 0.05 + 8e-7 * cells },
     // 2 µs a cell for Chicago's 7.9 million, 4 µs for the Ferry Building's million.
     { stage: 'surface', seconds: 0.3 + 2.8e-6 * cells },

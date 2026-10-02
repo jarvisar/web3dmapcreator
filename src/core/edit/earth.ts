@@ -82,7 +82,7 @@ export class EarthModel {
     private readonly waterShown: boolean,
   ) {
     const kept = ctx.kept;
-    this.standing = union(kept.roads, kept.piers, kept.decks, kept.buildings);
+    this.standing = union(kept.roads, kept.piers, kept.decks, kept.buildings, ...kept.tracks.map((track) => track.pieces));
     this.kept = settings.supports ? this.standing : kept.decks;
   }
 

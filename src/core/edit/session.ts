@@ -177,6 +177,7 @@ const GROUP_ROLE: Record<ColourGroup, MaterialRole> = {
   terrain: 'terrain',
   buildings: 'building',
   roads: 'road',
+  route: 'route',
   paved: 'paved',
   water: 'water',
   green: 'green',
@@ -1147,6 +1148,10 @@ export class EditSession {
     const piers = this.wetPierList();
     const piersChanged = piers.some((p) => editOf(edits, p.key)?.removed || decks.get(p.key)?.piers);
     if (piersChanged) for (const p of piers) parts.push(`b${p.key}=${editOf(edits, p.key)?.removed ? 'gone' : (decks.get(p.key)?.width ?? '')}`);
+    // A route taken out takes the ground kept under it with it.
+    const routesGone = kept.tracks.filter((track) => editOf(edits, track.key)?.removed);
+    for (const track of routesGone) parts.push(`r${track.key}`);
+    const routes = routesGone.length ? kept.tracks.filter((track) => !routesGone.includes(track)).map((track) => track.pieces) : kept.tracks.map((track) => track.pieces);
     const structural = parts.length > 0;
     // Shapes kept on ground of their own, and the rest, which stand in the water on their own.
     const onGround: MultiPolygon[] = [];
@@ -1191,10 +1196,10 @@ export class EditSession {
     const wet = (list: MultiPolygon[]) => list.map((polygons) => intersection(polygons, noGround.polygonsWithin(multiBounds(polygons))));
     let result: { kept: MultiPolygon | null; standing: MultiPolygon | null };
     if (supportsOn) {
-      const ground = structural || onGround.length ? union(roads, pierGround, kept.decks, buildings, ...wet(onGround)) : null;
+      const ground = structural || onGround.length ? union(roads, pierGround, kept.decks, buildings, ...routes, ...wet(onGround)) : null;
       result = { kept: ground, standing: wading.length ? union(ground ?? model.kept, ...wet(wading)) : ground };
     } else {
-      result = { kept: null, standing: union(roads, pierGround, kept.decks, buildings, ...wet(wading)) };
+      result = { kept: null, standing: union(roads, pierGround, kept.decks, buildings, ...routes, ...wet(wading)) };
     }
     this.inWaterCache = { signature, ...result };
     return { ...result, signature };
@@ -1900,6 +1905,7 @@ const GROUP_LABELS: Record<ColourGroup, string> = {
   terrain: 'Terrain',
   buildings: 'Buildings',
   roads: 'Roads',
+  route: 'Routes',
   paved: 'Paved',
   water: 'Water',
   green: 'Parks',

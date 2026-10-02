@@ -38,6 +38,16 @@ Press the pencil at the top right of the 3D view to change the model before down
 
 Edits follow the map features, not the mesh, so they stay when you change settings and generate again. They're saved in the browser, in exported options when the map area is included, and in a copied share link unless there are too many for one. A link only carries the ones on its area. `Ctrl+Z` undoes an edit while the editor is open, and Help lists the other keys.
 
+### Routes
+
+Import a run, ride or hike under `Routes` to print it on the model in a colour of its own. GPX, KML, KMZ, TCX, FIT and GeoJSON files work, gzipped or in a zip, so an activity or route exported from Strava, Garmin Connect, Komoot or Google My Maps can go straight in. You can also drop the files anywhere on the page. If most of a new route is off the area, the area moves to fit it. `Fit area to routes` does that again, and `Fit and turn` also turns the area when that frames the routes at least 10% smaller.
+
+A route is 0.6 mm wide and stands 0.8 mm over the ground by default, a layer above the roads, as its own part in the `Routes` colour. A dot marks the start and a bar the finish. The road tidy never touches routes. GPS wanders 5 to 10 m off a street, which is half a road's width at the default scale, so `Snap to roads` moves a recorded route onto the roads it followed. Stretches away from any road, like a trail through a park, stay as recorded. A route that runs into a building disappears inside it if the building is taller, a bridge deck carries one that runs along it, and where a route crosses water it gets a strip of ground under it like a road.
+
+In a LiDAR only model a route rests on the bare ground, not on the roofs and trees beside it, and the trees and parked cars along it are flattened so it shows. It goes up onto bridges and ramps, and on top of an elevated railway or road it runs along, but stays under an overpass it only passes under. Snapping downloads Overture's roads for the area there.
+
+Routes are saved in the browser, and go in exported options and share links with the area they're on. In the editor a route can be removed or put in a custom layer, so two routes can print in different colours.
+
 ### SVG Maps
 
 ![The Chicago Loop as an SVG map on a 5 x 7 in plaque, in the laser preview](docs/images/svg-map.png)
@@ -66,6 +76,7 @@ The water comes from the survey, with Overture's water outlines used for smooth 
 - LiDAR only models: the whole area from a survey as one single-colour solid, with water recessed, as a thin layer in its own colour, or cut away
 - Optional bridges on piers, trees and a border rim
 - An editor in the 3D view: remove, raise or recolour buildings, widen roads, leave water out, add text and pins, and draw your own roads and buildings. Custom layers export as parts of their own
+- Routes from GPX, KML, TCX, FIT and GeoJSON files, snapped to the roads and printed in their own colour, on map models and LiDAR only models
 - Crop to a rectangle, rounded rectangle, circle or hexagon, rotated to follow the street grid
 - Fixed print scale, or fit the model to a size
 - Large models split into sections, one per plate
@@ -118,6 +129,11 @@ Pushing to `main` deploys the site with GitHub Actions. Set `Settings > Pages > 
 - SVG maps are drawn from OpenFreeMap's vector tiles, not the Overture data the models use, so the two can differ a little. Where OpenStreetMap is missing buildings, like a lot of Mexico City or the outskirts of São Paulo, turn on `Add missing buildings from Overture` under `Map data`. It's off by default since it's a second download.
 - An SVG map that needs more than 400 tiles uses less detailed ones, so small features can go missing. A city centre at 1:20,000 needs 4 to 12. The limit can be raised to 2000 under `Map data`.
 - Areas that cross the 180th meridian, or come within 25 m of it, aren't supported.
+- Imported routes only print on 3D models for now. SVG maps have their own routes, picked from the roads in the preview.
+- A route across open water with no bridge under it, like a ferry crossing, gets a strip of ground across the water.
+- `Snap to roads` uses the roads that are printed. With `Roads` off routes stay as recorded, and with paths off a route along a footpath snaps to the street beside it.
+- Share links simplify long routes to fit, at most 12 m off. A route that still doesn't fit is left out of the link, so export options to share it.
+- In a LiDAR only model a route under a building or an overpass is hidden by it, as it would be from above. A survey that doesn't file buildings can't tell an elevated railway from a building, so routes stay under both there.
 
 ###### Note: The project starts from Bambu's PLA Basic and Matte presets. Check the filament types before slicing.
 

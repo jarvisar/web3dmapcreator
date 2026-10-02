@@ -1,4 +1,5 @@
 import { sanitizeEdits, type ModelEdits } from '../../core/edit/types';
+import { sanitizeTracks, type Track } from '../../core/tracks/track';
 import { sanitizeSettings, type AreaSpec, type ExportSettings, type ModelSettings, type Palette } from '../../core/settings';
 import { limitFor } from '../../core/svgmap/limits';
 import { normalizeArea } from '../lib/area';
@@ -33,6 +34,8 @@ export interface SavedMap {
   fileName: string | null;
   /** The 3D editor's changes, which only mean something for this area. */
   edits?: ModelEdits;
+  /** Imported routes on this area. */
+  tracks?: Track[];
 }
 
 export function encodeOptions({ output, settings, palette, exportSettings, svg }: Options, map?: SavedMap): string {
@@ -99,12 +102,19 @@ export function decodeOptions(text: string): Options {
       if (!isObject(map.edits)) throw new Error('Invalid option: map.edits.');
       options.map.edits = sanitizeEdits(map.edits);
     }
+    if (map.tracks !== undefined) {
+      if (!Array.isArray(map.tracks)) throw new Error('Invalid option: map.tracks.');
+      options.map.tracks = sanitizeTracks(map.tracks);
+    }
   }
   // Edits and picked roads are cleaned rather than checked: a colour's case
   // or a clamped height is no reason to refuse the file.
   const { routes: _routes, hiddenLines: _hidden, ...svg } = options.svg;
   const checked = { ...structuredClone(options), svg };
-  if (checked.map) delete checked.map.edits;
+  if (checked.map) {
+    delete checked.map.edits;
+    delete checked.map.tracks;
+  }
   checkValues(raw, checked, 'options');
   return options;
 }

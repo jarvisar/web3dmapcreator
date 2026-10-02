@@ -23,7 +23,8 @@ import type { HeightFn, Layer, PrismSolid, Solid } from '../geometry/solid';
 import type { PreparedLidar } from '../lidar/prepare';
 import type { AreaSpec, ModelSettings, SurfaceCategory } from '../settings';
 import { HeightField } from '../terrain/heightfield';
-import type { MaterialRole, ModelStats, MultiPolygon, Polygon } from '../types';
+import type { TrackLines } from '../tracks/track';
+import type { MaterialRole, ModelStats, MultiPolygon, Polygon, Vec2 } from '../types';
 import { buildBuildings } from './buildings';
 import { isWaterDeck } from './classify';
 import { describeObject, Progress, type Context, type ObjectInfo } from './context';
@@ -34,6 +35,7 @@ import { buildAirports, bufferRoads, collectRoadPieces, type RoadPiece, type Roa
 import { projectPolygons, type Elevation, type SourceData, type SourceType } from './source';
 import { solveWater, waterBottom, type WaterKind } from './water';
 import { shapeBeaches } from './beaches';
+import { layOutTracks, type TrackLayout } from './tracks';
 import { buildTrees } from './trees';
 
 export interface ModelSpec {
@@ -75,7 +77,7 @@ export interface EditContext {
    * mapped piers and the like (`decks`, widened thin ground too) with them
    * off. Roads include airport paving, which is also on its own.
    */
-  kept: { roads: MultiPolygon; buildings: MultiPolygon; piers: MultiPolygon; decks: MultiPolygon; airport: MultiPolygon };
+  kept: { roads: MultiPolygon; buildings: MultiPolygon; piers: MultiPolygon; decks: MultiPolygon; airport: MultiPolygon; tracks: TrackGround[] };
   /** The terrain as built: ground draped on the grid, and flat floors under water. */
   terrain?: { ground: MultiPolygon };
   /** Bridge decks as laid out, to build again at another width. */
@@ -87,6 +89,12 @@ export interface EditContext {
    * removed road or building can have its ground back (edit/land.ts).
    */
   land?: { regions: Partial<Record<SurfaceCategory, MultiPolygon>>; water: MultiPolygon };
+}
+
+/** An imported route's ground in cut water and basins, which goes with the route. */
+export interface TrackGround {
+  key: string;
+  pieces: MultiPolygon;
 }
 
 export interface EditWater {
@@ -115,6 +123,8 @@ export interface GenerateInput {
   elevation: Elevation | null;
   /** Prepared LiDAR measurements; null or absent builds every building from the map. */
   lidar?: PreparedLidar | null;
+  /** Imported routes to build, the visible ones. */
+  tracks?: TrackLines[];
   progress?: Progress;
 }
 
@@ -215,8 +225,11 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   let pierGround: MultiPolygon = [];
   let deckPieces: DeckPiece[] = [];
   let groundRoads: RoadPiece[] = [];
+  // The road lines as tidied, decks included, for snapping routes to.
+  let roadLines: Vec2[][] = [];
   if (settings.roads.enabled) {
     const collected = await collectRoadPieces(features('segment'), ctx);
+    roadLines = collected.pieces.map((piece) => piece.points);
     let groundPieces: RoadPiece[] = collected.pieces;
     let decks: RoadPiece[] = [];
     if (settings.bridges.enabled) ({ ground: groundPieces, decks } = splitDecks(collected.pieces, ctx, water.mappedCut));
@@ -252,7 +265,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   const noGround = union(water.cut, water.basins);
   const supportsOn = settings.supports;
   const structures: MultiPolygon[] = [];
-  const kept: EditContext['kept'] = { roads: [], buildings: [], piers: [], decks: [], airport: [] };
+  const kept: EditContext['kept'] = { roads: [], buildings: [], piers: [], decks: [], airport: [], tracks: [] };
   if (roads.footprint.length) structures.push((kept.roads = intersection(roads.footprint, noGround)));
   if (airport.length && kept.roads.length) kept.airport = intersection(airport, noGround);
   // Every pier in the water, not only those whose middle is: one on the bank
@@ -271,6 +284,22 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     : { solids: [] as PrismSolid[], measured: [] as Solid[], rock: [] as Solid[], footprint: [] as MultiPolygon };
   if (buildings.footprint.length && noGround.length) {
     structures.push((kept.buildings = intersection(buildings.footprint, noGround)));
+  }
+
+  // ------------------------------------------------------------------ routes
+  let tracks: TrackLayout | null = null;
+  if (settings.tracks.enabled && input.tracks?.length) {
+    progress.begin('routes', 'Laying out routes');
+    tracks = await layOutTracks(input.tracks, ctx, { network: roadLines, decks: deckPieces });
+    // Nothing may stand on the water alone, since the water part can be left out.
+    if (noGround.length) {
+      for (const piece of tracks.pieces) {
+        const wet = intersection(piece.ground, noGround);
+        if (!wet.length) continue;
+        kept.tracks.push({ key: piece.key, pieces: wet });
+        structures.push(wet);
+      }
+    }
   }
   const standing = union(...structures);
   const cutFinal = standing.length ? difference(water.cut, standing) : water.cut;
@@ -458,6 +487,29 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   if (decks.length) layers.push({ id: 'bridges', name: 'Bridges', role: 'bridge', solids: decks });
   if (piers.length) layers.push({ id: 'piers', name: 'Bridge Piers', role: 'pier', solids: piers });
 
+  // ------------------------------------------------------------------ routes
+  // A slicer gives an overlap to the part listed later. After the roads, land
+  // and decks, the route keeps it where it lies over them, and before the
+  // buildings, a building keeps it where the route runs into one.
+  if (tracks?.pieces.length) {
+    const height = settings.tracks.heightMm;
+    const top = (x: number, y: number) => hf.heightAt(x, y) + height;
+    const bottom = (x: number, y: number) => hf.heightAt(x, y) - embed;
+    // On a deck it stands as far over the deck as it would over a road.
+    const lift = Math.max(0.1, height - settings.roads.thicknessMm);
+    const solids: Solid[] = [];
+    for (const piece of tracks.pieces) {
+      for (const polygon of piece.ground) solids.push(...wade({ kind: 'prism', role: 'route', polygon, top, bottom, drape: drapeStep, lattice, key: piece.key }));
+      for (const deck of piece.decks) {
+        const deckTop = deck.top;
+        for (const polygon of deck.polygons) {
+          solids.push({ kind: 'prism', role: 'route', polygon, top: (x, y) => deckTop(x, y) + lift, bottom: (x, y) => deckTop(x, y) - embed, drape: deck.drape, key: piece.key });
+        }
+      }
+    }
+    if (solids.length) layers.push({ id: 'routes', name: 'Routes', role: 'route', solids });
+  }
+
   // ---------------------------------------------------------------- buildings
   const buildingSolids: Solid[] = [...buildings.solids, ...buildings.measured].flatMap(wade);
   if (buildingSolids.length) layers.push({ id: 'buildings', name: 'Buildings', role: 'building', solids: buildingSolids });
@@ -467,7 +519,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   if (settings.trees.enabled) {
     progress.begin('trees', 'Planting trees');
     const trees = await buildTrees(data, ctx, {
-      roads: roads.footprint,
+      roads: tracks?.ground.length ? [...roads.footprint, ...tracks.ground] : roads.footprint,
       structures: [...buildings.footprint, ...decks.map((deck) => deck.polygon)],
       noGround: union(cutOpen, basinOpen, water.sheets),
     });

@@ -1,0 +1,59 @@
+import { describe, expect, it } from 'vitest';
+import { shapeRing } from '../geo/area';
+import { Projection } from '../geo/projection';
+import { pointInPolygon } from '../geometry/polygon';
+import type { AreaSpec } from '../settings';
+import type { LonLat } from '../types';
+import { areaAroundTracks, shareOutside } from './frame';
+
+const base: AreaSpec = { center: [0, 0], widthM: 1000, heightM: 1000, rotationDeg: 0, shape: 'rectangle', cornerRadius: 0.1 };
+const origin = new Projection([-87.63, 41.88], 0, 1);
+const geo = (x: number, y: number): LonLat => origin.localToGeo(x, y);
+
+// About 6 km east to west and 2 km north to south.
+const wide: LonLat[][] = [[geo(-3000, 0), geo(-1000, 800), geo(1000, -1000), geo(3000, 900)]];
+
+function inside(area: AreaSpec, lines: LonLat[][]): boolean {
+  const projection = new Projection(area.center, area.rotationDeg, 1);
+  const ring = shapeRing(area.shape, area.widthM, area.heightM, area.cornerRadius * Math.min(area.widthM, area.heightM), 1);
+  return lines.every((line) => line.every(([lon, lat]) => pointInPolygon(...projection.toModel(lon, lat), [ring])));
+}
+
+describe('framing the area around routes', () => {
+  it('holds every point in each shape, with a margin', () => {
+    for (const shape of ['rectangle', 'rounded', 'circle', 'hexagon'] as const) {
+      const area = areaAroundTracks(wide, { ...base, shape, cornerRadius: 0.25 })!;
+      expect(inside(area, wide), shape).toBe(true);
+      expect(shareOutside(wide, area)).toBe(0);
+      // Not much bigger than it needs to be.
+      expect(area.widthM, shape).toBeLessThan({ rectangle: 7000, rounded: 7500, circle: 8000, hexagon: 8500 }[shape]);
+    }
+    const rect = areaAroundTracks(wide, base)!;
+    expect(rect.widthM).toBeGreaterThan(6000);
+    expect(rect.heightM).toBeGreaterThan(1900);
+    expect(rect.heightM).toBeLessThan(2400);
+  });
+
+  it('keeps the rotation unless asked to turn, and turns for a diagonal route', () => {
+    const diagonal: LonLat[][] = [[geo(-3000, -3000), geo(3000, 3000)]];
+    const kept = areaAroundTracks(diagonal, { ...base, rotationDeg: 10 })!;
+    expect(kept.rotationDeg).toBe(10);
+    expect(inside(kept, diagonal)).toBe(true);
+    const turned = areaAroundTracks(diagonal, base, true)!;
+    expect(Math.abs(Math.abs(turned.rotationDeg) - 45)).toBeLessThan(2);
+    expect(turned.widthM * turned.heightM).toBeLessThan(kept.widthM * kept.heightM * 0.5);
+    expect(inside(turned, diagonal)).toBe(true);
+  });
+
+  it('stays put when turning frames them only a little smaller', () => {
+    const almost: LonLat[][] = [[geo(-1000, -600), geo(1000, -500), geo(1000, 600), geo(-1000, 500)]];
+    expect(areaAroundTracks(almost, base, true)!.rotationDeg).toBe(0);
+  });
+
+  it('measures how much of a route is off the area', () => {
+    const area = { ...base, center: geo(0, 0), widthM: 3000, heightM: 3000 };
+    expect(shareOutside(wide, area)).toBeGreaterThan(0.2);
+    expect(shareOutside(wide, area)).toBeLessThan(0.8);
+    expect(areaAroundTracks([], base)).toBeNull();
+  });
+});

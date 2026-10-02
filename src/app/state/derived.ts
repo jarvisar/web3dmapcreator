@@ -26,10 +26,11 @@ import { SHAPES_PART } from '../viewer/shown';
 import type { EditData } from './model';
 import type { ResultMeta, UiState } from './store';
 
-/** Colour groups the enabled layers can produce, in palette order. */
-export function usedGroups(settings: ModelSettings): ColourGroup[] {
+/** Colour groups the enabled layers can produce, in palette order. `tracks` is whether any imported route is shown. */
+export function usedGroups(settings: ModelSettings, tracks = false): ColourGroup[] {
   const used = new Set<ColourGroup>(['terrain']);
   if (settings.rim.enabled) used.add('rim');
+  if (tracks && settings.tracks.enabled) used.add('route');
   // A LiDAR Only model is one part in the terrain colour, and its water can be another.
   if (settings.modelSource === 'lidar') {
     if (settings.lidarModel.waterMode === 'layer') used.add('water');

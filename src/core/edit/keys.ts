@@ -9,10 +9,11 @@
 //   t:<feature id>, t:f<r>,<c> a mapped tree, a forest tree
 //   k:<record id>              bare rock measured with LiDAR
 //   s:<shape id>               a shape added in the editor
+//   rt:<track id>              an imported route
 
 import type { ModelEdits, ObjectEdit } from './types';
 
-export type ObjectKind = 'building' | 'road' | 'bridge' | 'water' | 'tree' | 'rock' | 'shape';
+export type ObjectKind = 'building' | 'road' | 'bridge' | 'water' | 'tree' | 'rock' | 'shape' | 'route';
 
 const PREFIXES: [string, ObjectKind][] = [
   ['br:', 'bridge'],
@@ -22,6 +23,7 @@ const PREFIXES: [string, ObjectKind][] = [
   ['t:', 'tree'],
   ['k:', 'rock'],
   ['s:', 'shape'],
+  ['rt:', 'route'],
 ];
 
 export function kindOf(key: string): ObjectKind | null {

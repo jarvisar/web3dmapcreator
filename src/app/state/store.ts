@@ -30,6 +30,7 @@ import { LASER_PALETTES, type ModeStyle, type OutputMode, PRINT_THEMES, type Plo
 import { DEFAULT_LABEL, type LabelSettings } from '../../core/svgmap/text/label';
 import { CUSTOM_FONT_ID } from '../../core/svgmap/text/fonts';
 import { mergePicks, type Picks } from '../../core/svgmap/routes';
+import { mergeTracks, type Track } from '../../core/tracks/track';
 import type { FeatureFilters } from '../../core/svgmap/tiles/schema';
 import type { ColourGroup, MaterialRole, ModelStats } from '../../core/types';
 import { effectiveScale } from '../../core/geo/area';
@@ -49,6 +50,7 @@ export type { Output };
 export type View = 'map' | 'result';
 export type SectionKey =
   | 'area'
+  | 'routes'
   | 'print'
   | 'layers'
   | 'colours'
@@ -195,6 +197,8 @@ export interface AppState {
   exportSettings: ExportSettings;
   /** Changes made to the model in the 3D editor, applied to every model of this area. */
   edits: ModelEdits;
+  /** Routes imported from GPX and other files, for every area like the edits. */
+  tracks: Track[];
   editHistory: EditHistory;
   svg: SvgSettings;
   /** Name of the title font the user loaded, set once the file is read back from IndexedDB. */
@@ -218,6 +222,7 @@ export const HISTORY_LIMIT = 100;
 
 export const DEFAULT_SECTIONS: Record<SectionKey, boolean> = {
   area: true,
+  routes: false,
   print: true,
   layers: false,
   colours: false,
@@ -234,23 +239,29 @@ export const DEFAULT_SECTIONS: Record<SectionKey, boolean> = {
 export interface Brought {
   edits: number;
   picks: number;
+  tracks: number;
   /** Theirs that didn't fit the limits. */
   left: number;
-  /** Ours that theirs changed, to keep aside. */
+  /** Ours that theirs changed, to keep aside. Routes are only ever added to. */
   replaced: { edits?: ModelEdits; picks?: Picks };
   /** The backup that keeps them, once kept. */
   kept?: Backup;
-  before: { edits: ModelEdits; picks: Picks };
-  after: { edits: ModelEdits; picks: Picks };
+  before: { edits: ModelEdits; picks: Picks; tracks: Track[] };
+  after: { edits: ModelEdits; picks: Picks; tracks: Track[] };
 }
 
 /**
- * Edits and picks from a share link or an options file, added to these
- * rather than put in their place (mergeEdits, mergePicks). Null when they
- * change nothing.
+ * Edits, picks and routes from a share link or an options file, added to
+ * these rather than put in their place (mergeEdits, mergePicks,
+ * mergeTracks). Null when they change nothing.
  */
-export function bringIn(edits: ModelEdits, picks: Picks, from: { edits?: ModelEdits | null; picks?: Picks | null }): Brought | null {
-  const brought: Brought = { edits: 0, picks: 0, left: 0, replaced: {}, before: { edits, picks }, after: { edits, picks } };
+export function bringIn(
+  edits: ModelEdits,
+  picks: Picks,
+  from: { edits?: ModelEdits | null; picks?: Picks | null; tracks?: Track[] | null },
+  tracks: Track[] = [],
+): Brought | null {
+  const brought: Brought = { edits: 0, picks: 0, tracks: 0, left: 0, replaced: {}, before: { edits, picks, tracks }, after: { edits, picks, tracks } };
   if (from.edits && hasEdits(from.edits)) {
     const merged = mergeEdits(edits, from.edits);
     if (merged.added || merged.replaced) brought.after.edits = merged.edits;
@@ -265,7 +276,13 @@ export function bringIn(edits: ModelEdits, picks: Picks, from: { edits?: ModelEd
     brought.picks = merged.added;
     brought.left += merged.left;
   }
-  const changed = brought.after.edits !== edits || brought.after.picks !== picks;
+  if (from.tracks?.length) {
+    const merged = mergeTracks(tracks, from.tracks);
+    brought.after.tracks = merged.tracks;
+    brought.tracks = merged.added;
+    brought.left += merged.left;
+  }
+  const changed = brought.after.edits !== edits || brought.after.picks !== picks || brought.after.tracks !== tracks;
   return changed || brought.left ? brought : null;
 }
 
@@ -304,8 +321,9 @@ function initialState(): AppState {
   const output = shared?.output ?? saved.output ?? 'model';
   // A link's edits and picks are added to what's here. Its SVG settings
   // don't carry picks, so they never clear them.
-  openedLink = shared ? bringIn(saved.edits, saved.picks, { edits: shared.edits, picks: shared.picks }) : null;
+  openedLink = shared ? bringIn(saved.edits, saved.picks, { edits: shared.edits, picks: shared.picks, tracks: shared.tracks }, saved.tracks) : null;
   const edits = openedLink?.after.edits ?? saved.edits;
+  const tracks = openedLink?.after.tracks ?? saved.tracks;
   const picks = openedLink?.after.picks ?? saved.picks;
   let svg: SvgSettings = { ...(shared?.svg?.svg ?? saved.svg ?? defaultSvgSettings()), routes: picks.routes, hiddenLines: picks.hiddenLines };
   const backup = openedLink ? keepReplaced(openedLink, 'link', readBackup()) : readBackup();
@@ -329,6 +347,7 @@ function initialState(): AppState {
     exportSettings: saved.exportSettings ?? { ...DEFAULT_EXPORT },
     edits,
     editHistory: { past: edits !== saved.edits ? [stepBetween(saved.edits, edits)] : [], future: [], coalesce: null },
+    tracks,
     svg,
     customFontName: null,
     customFontId: null,
@@ -402,9 +421,38 @@ export function snapshotKey(area: AreaSpec, settings: ModelSettings): string {
   return JSON.stringify([area, { ...settings, scale }]);
 }
 
-function withStale(generation: GenerationState, area: AreaSpec, settings: ModelSettings): GenerationState {
+const trackSignatures = new WeakMap<readonly Track[], string>();
+
+/** The routes a model is built with, as a short signature: the visible ones, while the layer is on. */
+function tracksSignature(tracks: readonly Track[], settings: ModelSettings): string {
+  if (!settings.tracks.enabled) return '';
+  let signature = trackSignatures.get(tracks);
+  if (signature === undefined) {
+    // FNV-1a over every visible line, so dragging the area doesn't copy them all.
+    let hash = 0x811c9dc5;
+    let count = 0;
+    for (const track of tracks) {
+      if (!track.visible) continue;
+      count++;
+      for (const text of [track.id, ...track.lines]) {
+        for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+        hash = Math.imul(hash ^ 0x7c, 0x01000193);
+      }
+    }
+    signature = count ? `${count}:${(hash >>> 0).toString(36)}` : '';
+    trackSignatures.set(tracks, signature);
+  }
+  return signature;
+}
+
+/** What a model is made from: the area, settings and routes. A model made from another is stale. */
+export function modelKey(area: AreaSpec, settings: ModelSettings, tracks: readonly Track[]): string {
+  return `${snapshotKey(area, settings)}|${tracksSignature(tracks, settings)}`;
+}
+
+function withStale(generation: GenerationState, area: AreaSpec, settings: ModelSettings, tracks: readonly Track[]): GenerationState {
   if (!generation.result) return generation;
-  const stale = generation.result.key !== snapshotKey(area, settings);
+  const stale = generation.result.key !== modelKey(area, settings, tracks);
   return stale === generation.stale ? generation : { ...generation, stale };
 }
 
@@ -416,13 +464,13 @@ export function hasResult(state: Pick<AppState, 'output' | 'generation'>): boole
 // ----------------------------------------------------------------- setup
 
 /** What undo and redo cover outside the model editor (undo.ts): the area and every setting, not the view. */
-export type Setup = Pick<AppState, 'output' | 'area' | 'areaSizes' | 'settings' | 'palette' | 'exportSettings' | 'svg' | 'placeName' | 'fileName'>;
+export type Setup = Pick<AppState, 'output' | 'area' | 'areaSizes' | 'settings' | 'palette' | 'exportSettings' | 'svg' | 'placeName' | 'fileName' | 'tracks'>;
 
-export const SETUP_KEYS = ['output', 'area', 'areaSizes', 'settings', 'palette', 'exportSettings', 'svg', 'placeName', 'fileName'] as const satisfies readonly (keyof Setup)[];
+export const SETUP_KEYS = ['output', 'area', 'areaSizes', 'settings', 'palette', 'exportSettings', 'svg', 'placeName', 'fileName', 'tracks'] as const satisfies readonly (keyof Setup)[];
 
 export function setupOf(state: Setup): Setup {
-  const { output, area, areaSizes, settings, palette, exportSettings, svg, placeName, fileName } = state;
-  return { output, area, areaSizes, settings, palette, exportSettings, svg, placeName, fileName };
+  const { output, area, areaSizes, settings, palette, exportSettings, svg, placeName, fileName, tracks } = state;
+  return { output, area, areaSizes, settings, palette, exportSettings, svg, placeName, fileName, tracks };
 }
 
 /** Puts back a setup undo kept. The map follows the area if it went out of view. */
@@ -430,7 +478,7 @@ export function restoreSetup(setup: Setup): void {
   set((state) => {
     const view = state.ui.view === 'result' && !hasResult({ output: setup.output, generation: state.generation }) ? 'map' : state.ui.view;
     const mapFocus = setup.area !== state.area ? { seq: state.ui.mapFocus.seq + 1, mode: 'if-needed' as const } : state.ui.mapFocus;
-    return { ...setupOf(setup), generation: withStale(state.generation, setup.area, setup.settings), ui: { ...state.ui, view, mapFocus } };
+    return { ...setupOf(setup), generation: withStale(state.generation, setup.area, setup.settings, setup.tracks), ui: { ...state.ui, view, mapFocus } };
   });
 }
 
@@ -475,7 +523,7 @@ export function setArea(next: AreaSpec | ((area: AreaSpec) => AreaSpec), options
     if (options.title !== undefined) svg = { ...svg, label: { ...svg.label, text: options.title } };
     const fitted = fitForOutput(state.output, requested, svg, options.fit);
     const area = fitted.area;
-    const patch: Partial<AppState> = { area, svg: fitted.svg, generation: withStale(state.generation, area, state.settings) };
+    const patch: Partial<AppState> = { area, svg: fitted.svg, generation: withStale(state.generation, area, state.settings, state.tracks) };
     if (options.placeName !== undefined) patch.placeName = options.placeName;
     if (options.focus) {
       patch.ui = { ...state.ui, mapFocus: { seq: state.ui.mapFocus.seq + 1, mode: options.focus } };
@@ -506,7 +554,7 @@ export function setOutput(output: Output): void {
       area,
       areaSizes,
       svg,
-      generation: withStale(state.generation, area, state.settings),
+      generation: withStale(state.generation, area, state.settings, state.tracks),
       ui: { ...state.ui, view },
     };
   });
@@ -519,7 +567,7 @@ export type SettingsSection = { [K in keyof ModelSettings]: ModelSettings[K] ext
 export function patchSettings<K extends SettingsSection>(key: K, patch: Partial<ModelSettings[K]>): void {
   set((state) => {
     const settings = { ...state.settings, [key]: { ...state.settings[key], ...patch } } as ModelSettings;
-    return { settings, generation: withStale(state.generation, state.area, settings) };
+    return { settings, generation: withStale(state.generation, state.area, settings, state.tracks) };
   });
 }
 
@@ -593,14 +641,14 @@ export function setPrintedSide(side: 'width' | 'height', mm: number): void {
 export function setModelSource(modelSource: ModelSource): void {
   set((state) => {
     const settings = { ...state.settings, modelSource };
-    return { settings, generation: withStale(state.generation, state.area, settings) };
+    return { settings, generation: withStale(state.generation, state.area, settings, state.tracks) };
   });
 }
 
 export function setSupports(supports: boolean): void {
   set((state) => {
     const settings = { ...state.settings, supports };
-    return { settings, generation: withStale(state.generation, state.area, settings) };
+    return { settings, generation: withStale(state.generation, state.area, settings, state.tracks) };
   });
 }
 
@@ -611,7 +659,7 @@ export function resetSettingsSection(key: SettingsSection, keep: readonly string
     const current = state.settings[key] as Record<string, unknown>;
     for (const field of keep) if (field in fresh) fresh[field] = current[field];
     const settings = { ...state.settings, [key]: fresh } as ModelSettings;
-    return { settings, generation: withStale(state.generation, state.area, settings) };
+    return { settings, generation: withStale(state.generation, state.area, settings, state.tracks) };
   });
 }
 
@@ -640,7 +688,7 @@ export function resetAllSettings(): void {
       palette: structuredClone(DEFAULT_PALETTE),
       exportSettings: { ...DEFAULT_EXPORT },
       fileName: null,
-      generation: withStale(state.generation, area, settings),
+      generation: withStale(state.generation, area, settings, state.tracks),
     };
   });
 }
@@ -662,8 +710,9 @@ export function applyOptions(options: Options, includeArea = true): Brought | nu
   if (error) throw new Error(`Invalid SVG options: ${error}`);
   const current: Picks = { routes: state.svg.routes, hiddenLines: state.svg.hiddenLines };
   const filePicks: Picks | undefined = savedMap ? { routes: imported.svg.routes, hiddenLines: imported.svg.hiddenLines } : undefined;
-  const brought = bringIn(state.edits, current, { edits: savedMap?.edits, picks: filePicks });
+  const brought = bringIn(state.edits, current, { edits: savedMap?.edits, picks: filePicks, tracks: savedMap?.tracks }, state.tracks);
   const picks = brought?.after.picks ?? current;
+  const tracks = brought?.after.tracks ?? state.tracks;
   const { area, svg } = fitForOutput(imported.output, requestedArea, { ...imported.svg, routes: picks.routes, hiddenLines: picks.hiddenLines });
   const view = state.ui.view === 'result' && !hasResult({ output: imported.output, generation: state.generation }) ? 'map' : state.ui.view;
   const edits = brought && brought.after.edits !== state.edits ? brought.after.edits : null;
@@ -672,9 +721,10 @@ export function applyOptions(options: Options, includeArea = true): Brought | nu
     area,
     svg,
     ...(savedMap ? { placeName: savedMap.placeName, fileName: savedMap.fileName } : {}),
+    tracks,
     // Undo takes the file's edits back out.
     ...(edits ? { edits, editHistory: { past: [...state.editHistory.past, stepBetween(state.edits, edits)].slice(-HISTORY_LIMIT), future: [], coalesce: null } } : {}),
-    generation: withStale(state.generation, area, imported.settings),
+    generation: withStale(state.generation, area, imported.settings, tracks),
     ui: {
       ...state.ui,
       view,
@@ -684,6 +734,13 @@ export function applyOptions(options: Options, includeArea = true): Brought | nu
   });
   if (brought) set({ backup: keepReplaced(brought, 'import', get().backup) });
   return brought;
+}
+
+// ---------------------------------------------------------------- routes
+
+/** The imported routes in place of these. tracks.ts has the actions that call this. */
+export function setTracks(tracks: Track[]): void {
+  set((state) => (state.tracks === tracks ? {} : { tracks, generation: withStale(state.generation, state.area, state.settings, tracks) }));
 }
 
 // --------------------------------------------------------------- palette
@@ -724,7 +781,7 @@ function updateSvg(patch: SvgPatch, extra: (state: AppState) => Partial<AppState
     const changed = { ...state.svg, ...(typeof patch === 'function' ? patch(state.svg) : patch) };
     const more = extra(state);
     const { area, svg } = fitForOutput(state.output, more.area ?? state.area, changed);
-    return { ...more, area, svg, generation: withStale(state.generation, area, state.settings) };
+    return { ...more, area, svg, generation: withStale(state.generation, area, state.settings, state.tracks) };
   });
 }
 

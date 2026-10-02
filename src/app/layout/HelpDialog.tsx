@@ -34,6 +34,7 @@ const MODEL_TIPS = [
   'A model larger than the bed can be split into sections with Multi-plate export. Each section prints on its own plate and the pieces fit together. No connectors are added.',
   'The water and the terrain are separate parts, so water can be a different colour or left out.',
   'A LiDAR only model shows the city the year it was surveyed. Glass, dark roofs and water return few points, so those spots are filled in from around them.',
+  'Import a run or ride under Routes, or drop the GPX, FIT or other file on the page. It prints in its own colour, and Snap to roads moves a recording onto the streets it took.',
 ];
 
 const EDIT_TIPS = [

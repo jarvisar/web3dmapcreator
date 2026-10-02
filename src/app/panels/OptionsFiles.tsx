@@ -5,6 +5,7 @@ import { CheckField } from '../components/Fields';
 import { CUSTOM_FONT_ID } from '../../core/svgmap/text/fonts';
 import { downloadBlob } from '../lib/browser';
 import { decodeOptions, encodeOptions, MAX_OPTIONS_BYTES, OPTIONS_TOO_BIG, type Options } from '../state/options';
+import { tracksForArea } from '../state/linkScope';
 import { broughtText, undoBrought } from '../state/editActions';
 import { applyOptions, toast, useApp, type Brought } from '../state/store';
 import { asChange, undoChange } from '../state/undo';
@@ -48,7 +49,10 @@ export function OptionsFiles() {
         <button type="button" className="btn" onClick={() => {
           const state = useApp.getState();
           const edits = hasEdits(state.edits) ? { edits: state.edits } : {};
-          const map = includeArea ? { area: state.area, placeName: state.placeName, fileName: state.fileName, ...edits } : undefined;
+          // Routes elsewhere stay here, like a share link's.
+          const routes = tracksForArea(state.tracks, state.area).tracks;
+          const tracks = routes.length ? { tracks: routes } : {};
+          const map = includeArea ? { area: state.area, placeName: state.placeName, fileName: state.fileName, ...edits, ...tracks } : undefined;
           downloadBlob(new Blob([encodeOptions(state, map)], { type: 'application/json' }), 'city-model-options.json');
           if (usesCustomFont(state)) toast('Options exported. Custom font files need to be copied separately.', 'info');
         }}>
@@ -59,7 +63,7 @@ export function OptionsFiles() {
         </button>
       </div>
       <CheckField label="Include map area" checked={includeArea} onChange={setIncludeArea} />
-      <p className="options-file-help">Save or load options as a JSON file. With the map area, edits made in the 3D view go too. Uncheck to keep the current location and shape. SVG area size follows the piece and scale.</p>
+      <p className="options-file-help">Save or load options as a JSON file. With the map area, edits made in the 3D view and the routes on it go too. Uncheck to keep the current location and shape. SVG area size follows the piece and scale.</p>
       <input ref={input} type="file" accept=".json,application/json" hidden aria-label="Import options file" onChange={(event) => {
         const file = event.currentTarget.files?.[0];
         event.currentTarget.value = '';

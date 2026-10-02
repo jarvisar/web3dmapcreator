@@ -3,13 +3,14 @@
 // A rounded area adds its corner radius as a seventh value. An SVG map adds
 // o=svg, and a copied link s=<settings> (see svgmap/share.ts). Links from
 // the old SVGmap site only have s=. A copied link also carries the model's
-// edits (e=) or the SVG map's picked roads (p=), deflated, unless that would
-// make it too long to paste anywhere.
+// edits (e=) and imported routes (t=), or the SVG map's picked roads (p=),
+// deflated, unless that would make it too long to paste anywhere.
 
 import { deflateSync, inflateSync, strFromU8, strToU8 } from 'fflate';
 import { hasEdits, sanitizeEdits, type ModelEdits } from '../../core/edit/types';
 import type { AreaShape, AreaSpec } from '../../core/settings';
 import { sanitizeLines, sanitizeRoutes, type LonLatLine, type SvgRoute } from '../../core/svgmap/routes';
+import { encodeTrack, decodeTrack, sanitizeTracks, type Track } from '../../core/tracks/track';
 import { SHAPES } from '../lib/area';
 import { type SharedSvg, decodeSvgSettings, encodeSvgSettings } from '../svgmap/share';
 import type { SvgSettings } from '../svgmap/settings';
@@ -91,8 +92,9 @@ export interface SharedLink {
   svg: SharedSvg | null;
   edits: ModelEdits | null;
   picks: SharedPicks | null;
+  tracks: Track[] | null;
   /** Parts the link has but that couldn't be read, usually because it was cut short. */
-  unreadable: ('edits' | 'picks')[];
+  unreadable: ('edits' | 'picks' | 'tracks')[];
 }
 
 export function parseHash(hash: string): SharedLink {
@@ -105,6 +107,7 @@ export function parseHash(hash: string): SharedLink {
   const o = params.get('o');
   const edits = params.get('e') ? readEdits(unpack(params.get('e')!)) : null;
   const picks = params.get('p') ? readPicks(unpack(params.get('p')!)) : null;
+  const tracks = params.get('t') ? readTracks(unpack(params.get('t')!)) : null;
   return {
     area: parseAreaHash(clean),
     // An SVGmap link is always an SVG map. An area without o= was written in
@@ -113,19 +116,45 @@ export function parseHash(hash: string): SharedLink {
     svg,
     edits,
     picks,
-    unreadable: [...(params.get('e') && !edits ? ['edits' as const] : []), ...(params.get('p') && !picks ? ['picks' as const] : [])],
+    tracks,
+    unreadable: [
+      ...(params.get('e') && !edits ? ['edits' as const] : []),
+      ...(params.get('p') && !picks ? ['picks' as const] : []),
+      ...(params.get('t') && !tracks ? ['tracks' as const] : []),
+    ],
   };
 }
 
 /** What to tell the user about a link that came with edits or picked roads that couldn't be read. */
 export function unreadableText(link: SharedLink): string | null {
   if (!link.unreadable.length) return null;
-  const what = link.unreadable.map((part) => (part === 'edits' ? 'edits to the model' : 'picked roads')).join(' and ');
+  const what = link.unreadable.map((part) => (part === 'edits' ? 'edits to the model' : part === 'tracks' ? 'routes' : 'picked roads')).join(' and ');
   return `The ${what} in this link couldn't be read, so they were left out. The link may have been cut short when it was copied.`;
 }
 
 function readEdits(value: unknown): ModelEdits | null {
   return value ? sanitizeEdits(value) : null;
+}
+
+function readTracks(value: unknown): Track[] | null {
+  if (!Array.isArray(value)) return null;
+  const tracks = sanitizeTracks(value);
+  return tracks.length ? tracks : null;
+}
+
+// Coarser simplifying tried in turn until the routes fit in a link, in
+// metres. A route planner's few hundred points fit as they are, and a
+// recorded run usually does at 3 m, still under half a printed road's width.
+const LINK_TOLERANCES_M = [0, 2, 3, 5, 8, 12];
+
+/** Routes packed for a link, simplified until they fit, or null when they don't. */
+export function packTracks(tracks: Track[]): string | null {
+  for (const tolerance of LINK_TOLERANCES_M) {
+    const simplified = tolerance ? tracks.map((track) => ({ ...track, lines: encodeTrack(decodeTrack(track), tolerance) })) : tracks;
+    const packed = pack(simplified);
+    if (packed.length <= MAX_LINK_EXTRA) return packed;
+  }
+  return null;
 }
 
 function readPicks(value: unknown): SharedPicks | null {
@@ -135,18 +164,18 @@ function readPicks(value: unknown): SharedPicks | null {
 }
 
 export function readHash(): SharedLink {
-  if (typeof location === 'undefined') return { area: null, output: null, svg: null, edits: null, picks: null, unreadable: [] };
+  if (typeof location === 'undefined') return { area: null, output: null, svg: null, edits: null, picks: null, tracks: null, unreadable: [] };
   return parseHash(location.hash);
 }
 
 /**
  * The link to copy, and what it had to leave out for length: the model's
- * edits or the SVG map's picked roads.
+ * edits or routes, or the SVG map's picked roads.
  */
-export function shareUrl(area: AreaSpec, output: Output, svg: SvgSettings, edits?: ModelEdits): { url: string; left: 'edits' | 'picks' | null } {
+export function shareUrl(area: AreaSpec, output: Output, svg: SvgSettings, edits?: ModelEdits, tracks?: Track[]): { url: string; left: 'edits' | 'picks' | 'tracks' | null } {
   const url = new URL(location.href);
   let hash = formatAreaHash(area, output).slice(1);
-  let left: 'edits' | 'picks' | null = null;
+  let left: 'edits' | 'picks' | 'tracks' | null = null;
   if (output === 'svg') {
     hash += `&s=${encodeSvgSettings(svg)}`;
     if (svg.routes.some((route) => route.lines.length) || svg.hiddenLines.length) {
@@ -154,10 +183,17 @@ export function shareUrl(area: AreaSpec, output: Output, svg: SvgSettings, edits
       if (packed.length <= MAX_LINK_EXTRA) hash += `&p=${packed}`;
       else left = 'picks';
     }
-  } else if (edits && hasEdits(edits)) {
-    const packed = pack(edits);
-    if (packed.length <= MAX_LINK_EXTRA) hash += `&e=${packed}`;
-    else left = 'edits';
+  } else {
+    if (edits && hasEdits(edits)) {
+      const packed = pack(edits);
+      if (packed.length <= MAX_LINK_EXTRA) hash += `&e=${packed}`;
+      else left = 'edits';
+    }
+    if (tracks?.length) {
+      const packed = packTracks(tracks);
+      if (packed) hash += `&t=${packed}`;
+      else left ??= 'tracks';
+    }
   }
   url.hash = hash;
   return { url: url.toString(), left };

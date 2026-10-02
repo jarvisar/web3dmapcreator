@@ -26,7 +26,8 @@ import { describeCounts } from '../viewer/edit/describe';
 import { applyStep, extendStep, stepBetween, type EditStep } from './history';
 import { applyEditUpdate, getEditData } from './model';
 import { hasPicks, writeBackup, type Backup } from './persist';
-import { HISTORY_LIMIT, keepReplaced, patchSvg, toast, useApp, type Brought, type EditTool, type Toast } from './store';
+import { mergeTracks } from '../../core/tracks/track';
+import { HISTORY_LIMIT, keepReplaced, patchSvg, setTracks, toast, useApp, type Brought, type EditTool, type Toast } from './store';
 
 const set = useApp.setState;
 const get = useApp.getState;
@@ -200,6 +201,12 @@ export function forgetBackup(): void {
   set({ backup: null });
 }
 
+/** What a backup holds, as words: "edits and picked roads". */
+export function backupText(backup: Backup): string {
+  const parts = [backup.edits ? 'edits' : '', backup.picks ? 'picked roads' : '', backup.tracks ? 'routes' : ''].filter(Boolean);
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : (parts[0] ?? '');
+}
+
 /** Puts the backup back, and keeps what it replaces in its place, so doing it again swaps them back. */
 export function restoreBackup(): void {
   const state = get();
@@ -217,10 +224,12 @@ export function restoreBackup(): void {
     if (hasPicks(current)) swapped.picks = current;
     patchSvg({ routes: backup.picks.routes, hiddenLines: backup.picks.hiddenLines });
   }
+  // Routes are only ever added to, never swapped out.
+  if (backup.tracks) setTracks(mergeTracks(get().tracks, backup.tracks).tracks);
   const next = swapped.edits || swapped.picks ? swapped : null;
   writeBackup(next);
   set({ backup: next });
-  const what = backup.edits && backup.picks ? 'edits and picked roads' : backup.edits ? 'edits' : 'picked roads';
+  const what = backupText(backup);
   toast(`Put back your ${what}.`, 'info', next ? { label: 'Undo', run: restoreBackup } : undefined);
 }
 
@@ -231,6 +240,7 @@ export function broughtText(brought: Brought, from: string): string {
   const parts: string[] = [];
   if (brought.edits) parts.push(`${brought.edits} ${brought.edits === 1 ? 'edit' : 'edits'}`);
   if (brought.picks) parts.push(`${brought.picks} picked ${brought.picks === 1 ? 'road' : 'roads'}`);
+  if (brought.tracks) parts.push(`${brought.tracks} ${brought.tracks === 1 ? 'route' : 'routes'}`);
   let text = parts.length ? `Added ${parts.join(' and ')} from ${from}.` : `Nothing new came from ${from}.`;
   if (brought.left) text += ` ${brought.left} didn't fit within the limits.`;
   if (brought.kept) {
@@ -248,6 +258,7 @@ export function undoBrought(brought: Brought): void {
   if (picks !== brought.before.picks && state.svg.routes === picks.routes && state.svg.hiddenLines === picks.hiddenLines) {
     patchSvg({ routes: brought.before.picks.routes, hiddenLines: brought.before.picks.hiddenLines });
   }
+  if (brought.after.tracks !== brought.before.tracks && state.tracks === brought.after.tracks) setTracks(brought.before.tracks);
   if (brought.kept && get().backup === brought.kept) forgetBackup();
 }
 
@@ -263,6 +274,7 @@ export function takeInLink(brought: Brought): void {
     settleEdits();
   }
   if (brought.after.picks !== brought.before.picks) patchSvg({ routes: brought.after.picks.routes, hiddenLines: brought.after.picks.hiddenLines });
+  if (brought.after.tracks !== brought.before.tracks) setTracks(brought.after.tracks);
   set({ backup: keepReplaced(brought, 'link', get().backup) });
   broughtToast(brought);
 }

@@ -231,6 +231,8 @@ export interface ComposeResult {
   detail: Float32Array;
   /** Highest ground (not buildings or trees) in model mm, same datum as heights. */
   groundMaxMm: number;
+  /** With `clear`: the bare ground in model mm, same datum as heights. */
+  ground?: Float32Array;
   counts: Record<string, number>;
 }
 
@@ -244,6 +246,8 @@ export interface ComposeResult {
  * the waterline on beaches to the map's (see followShore), and `pieces`
  * (which mapped water feature each cell is in, of those that can be
  * trusted, or -1) gives water to surveys that file none (unfiledWater).
+ * `clear` (1 per cell along an imported route) isn't in the add-on: trees
+ * and clutter there come down to the ground, so the route shows (route.ts).
  */
 export function compose(
   layers: SurfaceLayers,
@@ -256,11 +260,24 @@ export function compose(
   mapped?: Uint8Array,
   shore?: Uint8Array,
   pieces?: Int32Array,
+  clear?: Uint8Array,
 ): ComposeResult {
   const s = { ...DEFAULT_COMPOSE, ...settings };
   const { nx, ny } = layers;
   const n = nx * ny;
   const { surface, ground, water, canopy, skirt, counts } = composeSurface(layers, dx, dy, s, mapped, shore, pieces);
+  if (clear) {
+    let cleared = 0;
+    for (let i = 0; i < n; i++) {
+      if (!clear[i] || water[i]) continue;
+      if (!canopy[i] && !skirt[i] && !(surface[i] - ground[i] < s.clutterHeightM)) continue;
+      if (surface[i] > ground[i] + 0.2) cleared++;
+      surface[i] = ground[i];
+      canopy[i] = 0;
+      skirt[i] = 0;
+    }
+    counts.route_cleared_cells = cleared;
+  }
 
   let cut: Uint8Array = new Uint8Array(n);
   const layer = s.water === 'layer';
@@ -306,7 +323,12 @@ export function compose(
     for (let i = 0; i < n; i++) if (cut[i] && water[i]) waterTop[i] = surface[i];
   }
   if (counts.cut_water_cells) bankHeights(surface, cut, nx, ny, BANK_RINGS + (mapped ? Math.ceil(MAP_EDGE_M / Math.min(dx, dy)) : 0));
-  return { heights: surface, water, cut, waterTop, detail, groundMaxMm: groundMax + shift, counts };
+  let groundMm: Float32Array | undefined;
+  if (clear) {
+    groundMm = new Float32Array(n);
+    for (let i = 0; i < n; i++) groundMm[i] = heightMm(ground[i], ground[i], 0, h) + shift;
+  }
+  return { heights: surface, water, cut, waterTop, detail, groundMaxMm: groundMax + shift, ground: groundMm, counts };
 }
 
 /**

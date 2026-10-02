@@ -51,7 +51,7 @@ import { dataPlan } from '../core/pipeline/dataPlan';
 import { dataBoundsFor, generateModel, type ModelSpec } from '../core/pipeline/generate';
 import { meshLayers, partsBounds } from '../core/pipeline/mesh';
 import { buildPlates } from '../core/pipeline/plates';
-import type { SourceFeature } from '../core/pipeline/source';
+import type { SourceFeature, SourceType } from '../core/pipeline/source';
 import { printerByKey, sanitizeSettings } from '../core/settings';
 import type { GeoBounds, ModelStats } from '../core/types';
 import { installLidarCodecs } from './lidarCodecs';
@@ -486,23 +486,43 @@ async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | 
 
 interface MapWater {
   features: SourceFeature[];
+  /** Road segments, when routes are snapped to them. */
+  segments: SourceFeature[];
   release: string;
   downloaded: number;
 }
 
+/** Points in the routes a generation builds, for its progress plan. */
+function routePoints(request: GenerateRequest): number {
+  if (!request.settings.tracks.enabled) return 0;
+  let points = 0;
+  for (const track of request.tracks ?? []) for (const line of track.lines) points += line.length;
+  return points;
+}
+
+/** Whether a LiDAR Only model needs road segments, to snap its routes to. */
+function needsSegments(request: GenerateRequest): boolean {
+  return request.settings.tracks.enabled && request.settings.tracks.snap && Boolean(request.tracks?.length);
+}
+
 /**
- * Mapped water for a LiDAR Only model: a map model's download of the same
- * area if there is one, or the water alone.
+ * Map data for a LiDAR Only model: its mapped water, and road segments to
+ * snap routes to. A map model's download of the same area if there is one
+ * with both, or only what's needed.
  */
 async function loadMapWater(request: GenerateRequest, job: Running): Promise<MapWater> {
   const bounds = dataBoundsFor(request.area);
   const prefix = `${boundsKey(bounds)}|`;
-  if (overture?.key.startsWith(prefix)) return { features: overture.data.features.water ?? [], release: overture.data.release, downloaded: 0 };
-  const data = await fetchOverture({ bounds, types: ['water'], keep: dataPlan(request.settings, bounds).keep, signal: job.abort.signal });
-  overture = { key: `${prefix}water`, data };
+  const types: SourceType[] = [...(request.settings.lidarModel.mapWater ? (['water'] as const) : []), ...(needsSegments(request) ? (['segment'] as const) : [])];
+  const cached = overture?.key.startsWith(prefix) && types.every((type) => (overture!.data.features as Partial<Record<SourceType, unknown>>)[type]) ? overture.data : null;
+  if (cached) return { features: cached.features.water ?? [], segments: cached.features.segment ?? [], release: cached.release, downloaded: 0 };
+  // Every road and path, whatever the map model's road settings, since a route can follow any of them.
+  const plan = dataPlan({ ...request.settings, roads: { ...request.settings.roads, enabled: true, includePaths: true, includeRail: false } }, bounds);
+  const data = await fetchOverture({ bounds, types, keep: plan.keep, signal: job.abort.signal });
+  overture = { key: `${prefix}${types.join(',')}`, data };
   let downloaded = 0;
   for (const stats of Object.values(data.stats)) downloaded += stats.bytes - stats.cachedBytes;
-  return { features: data.features.water ?? [], release: data.release, downloaded };
+  return { features: data.features.water ?? [], segments: data.features.segment ?? [], release: data.release, downloaded };
 }
 
 function surfaceSummary(prepared: PreparedSurface): SurfaceSummary {
@@ -525,7 +545,8 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
   // Browsers without nested workers read and mesh in this worker instead.
   const pool = typeof Worker === 'undefined' ? null : lidarPool(surfacePoolSize(), job.abort.signal);
   // Downloaded while the survey is read. The model is still built without it.
-  const pending = request.settings.lidarModel.mapWater ? loadMapWater(request, job).catch((error: Error) => error) : null;
+  const pending = request.settings.lidarModel.mapWater || needsSegments(request) ? loadMapWater(request, job).catch((error: Error) => error) : null;
+  const points = routePoints(request);
   const { area, settings } = request;
   const cut = area.shape !== 'rectangle' || settings.lidarModel.waterMode !== 'recess';
   // Waiting on map water that hasn't come in by the time the survey's read is rare and short.
@@ -536,12 +557,12 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
     const cells = surfaceCells(area, cell, maxCells);
     // As loadSurface decides whether to read the survey again.
     const kept = surface?.key === key && !reopened(surface.prepared.offers, await approvedTiles(request));
-    job.progress.plan([...(kept ? [] : lidarSteps(LIDAR_SECONDS_PER_CELL * cells)), ...waiting, ...surfaceSteps(cells, cut)]);
+    job.progress.plan([...(kept ? [] : lidarSteps(LIDAR_SECONDS_PER_CELL * cells)), ...waiting, ...surfaceSteps(cells, cut, points)]);
     const prepared = await loadSurface(request, job, pool);
     timings.lidar = (performance.now() - started) / 1000;
     const t1 = performance.now();
-    job.progress.plan([...waiting, ...surfaceSteps(prepared.layers.nx * prepared.layers.ny, cut)]);
-    job.progress.begin('mapwater', 'Downloading map water');
+    job.progress.plan([...waiting, ...surfaceSteps(prepared.layers.nx * prepared.layers.ny, cut, points)]);
+    job.progress.begin('mapwater', request.settings.lidarModel.mapWater ? 'Downloading map water' : 'Downloading roads for the routes');
     const water = await pending;
     if (water instanceof Error && (water.name === 'AbortError' || job.abort.signal.aborted)) throw water;
     const mapWater = water instanceof Error ? null : water;
@@ -552,8 +573,10 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
       progress: job.progress,
       runTile: pool ? (tile) => pool.tile(tile) : undefined,
       concurrency: pool?.concurrency ?? 1,
-      mapWater: mapWater?.features,
+      mapWater: request.settings.lidarModel.mapWater ? mapWater?.features : undefined,
       releaseLayers: true,
+      tracks: request.tracks,
+      segments: mapWater?.segments,
     });
     timings.generate = (performance.now() - t1) / 1000;
     const t2 = performance.now();
@@ -564,9 +587,15 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
     lastSpec = spec;
     lastTriangles = meshed.parts.reduce((n, part) => n + part.indices.length / 3, 0);
     lastCredits = [...new Set(prepared.surveys.map((s) => `LiDAR: ${s.attribution}`))];
-    lastMapData = Boolean(mapWater?.features.length);
+    lastMapData = Boolean(mapWater?.features.length || (spec.stats.routes && mapWater?.segments.length));
     const warnings = [...spec.warnings];
-    if (water instanceof Error) warnings.push(`Map water could not be downloaded, so the water is the survey's alone. ${describe(water)}`);
+    if (water instanceof Error) {
+      warnings.push(
+        request.settings.lidarModel.mapWater
+          ? `Map data could not be downloaded, so the water is the survey's alone${needsSegments(request) ? ' and routes are as recorded' : ''}. ${describe(water)}`
+          : `Roads could not be downloaded, so routes are as recorded. ${describe(water)}`,
+      );
+    }
     if (meshed.failed) warnings.push('The LiDAR surface could not be closed into a solid. Try another area shape, or report this.');
     for (const failure of prepared.failures.slice(0, 3)) warnings.push(lidarFailure(failure));
     const missing = missingChoice(request.settings.lidar.survey, prepared.found);
@@ -609,7 +638,7 @@ async function generate(id: number, request: GenerateRequest) {
   // from the area's size, and no time left is shown.
   const after = (counts: FeatureCounts | null): PlannedStep[] => [
     ...(useLidar ? lidarSteps(LIDAR_SECONDS_PER_BUILDING * ((counts ?? guessCounts(area)).building ?? 0)) : []),
-    ...generationSteps(counts ?? guessCounts(area), settings, area, !counts),
+    ...generationSteps(counts ?? guessCounts(area), settings, area, !counts, routePoints(request)),
   ];
   try {
     const kept = overture?.key === dataKey(request) ? overture.data : null;
@@ -634,6 +663,7 @@ async function generate(id: number, request: GenerateRequest) {
       data,
       elevation: dem,
       lidar,
+      tracks: request.tracks,
       progress: job.progress,
     });
     timings.generate = (performance.now() - t1) / 1000;

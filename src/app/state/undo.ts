@@ -307,6 +307,7 @@ const SETTINGS: Partial<Record<keyof ModelSettings, string>> = {
   lidarModel: 'Change LiDAR only settings',
   supports: 'Change supports',
   rim: 'Change rim settings',
+  tracks: 'Change route settings',
 };
 
 const TITLE_SIZE: (keyof LabelSettings)[] = ['size', 'boxWidth', 'boxHeight', 'bandHeight'];
@@ -337,6 +338,11 @@ export function describeChange(from: Setup, to: Setup): string {
     return 'Change title';
   }
   if (a.routes !== b.routes || a.hiddenLines !== b.hiddenLines) return 'Change picked roads';
+  if (from.tracks !== to.tracks) {
+    if (to.tracks.length > from.tracks.length) return to.tracks.length - from.tracks.length === 1 ? 'Add route' : 'Add routes';
+    if (to.tracks.length < from.tracks.length) return 'Remove route';
+    return 'Change routes';
+  }
   if (a.scaleLocked !== b.scaleLocked || from.settings.scale.mode !== to.settings.scale.mode) return 'Change scale lock';
   if (a.scale !== b.scale || from.settings.scale !== to.settings.scale) return 'Change scale';
   for (const key of Object.keys(to.settings) as (keyof ModelSettings)[]) {

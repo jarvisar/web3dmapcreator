@@ -193,6 +193,20 @@ export interface ModelSettings {
     /** Multiplies the height of everything standing on the ground. */
     heightScale: number;
   };
+  /**
+   * Routes imported from GPX and similar files (tracks/), as a part of their
+   * own. They never go through the road tidy.
+   */
+  tracks: {
+    enabled: boolean;
+    widthMm: number;
+    /** Above the ground. More than the roads' thickness, so a route along a road stands proud of it. */
+    heightMm: number;
+    /** A dot at the start and a bar across the finish. */
+    markers: boolean;
+    /** Move a recorded track onto the roads it followed (tracks/snap.ts). */
+    snap: boolean;
+  };
   /** Keep ground under roads, buildings and piers that stand over cut water. */
   supports: boolean;
   rim: {
@@ -285,6 +299,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
   },
   lidar: { enabled: false, roofMode: 'envelope', preferLidar: true, minFootprintMm2: 0.7, rockSurfaces: false, survey: '', surveyPreference: 'balanced', olderYears: 5 },
   lidarModel: { cellMode: 'detail', detailMm: 0.05, cellM: 0.5, trees: 'natural', keepClutter: true, waterDepthMm: 0.6, waterMode: 'recess', mapWater: true, heightScale: 1 },
+  tracks: { enabled: true, widthMm: 0.6, heightMm: 0.8, markers: true, snap: true },
   supports: true,
   rim: { enabled: false, heightMm: 1.5, widthMm: 2 },
 };
@@ -373,6 +388,7 @@ export const COLOUR_GROUPS: ColourGroupInfo[] = [
   { key: 'terrain', label: 'Terrain', description: 'Terrain, and the ground kept under structures over water' },
   { key: 'buildings', label: 'Buildings', description: 'Buildings and building parts' },
   { key: 'roads', label: 'Roads', description: 'Roads, paths, railways, airport paving, bridges and piers' },
+  { key: 'route', label: 'Routes', description: 'Routes imported from GPX and other files' },
   { key: 'paved', label: 'Paved', description: 'Paved plazas and pedestrian areas' },
   { key: 'water', label: 'Water', description: 'Rivers, lakes, the sea and ponds' },
   { key: 'green', label: 'Parks', description: 'Parks, grass and other green land cover' },
@@ -432,6 +448,7 @@ const FOREST = f('PLA Basic', 'Mistletoe Green');
 const WATER: PaletteEntry = { hex: '#5CB2D1', line: 'PLA Basic' };
 const SAND: PaletteEntry = { hex: '#8C6338', line: 'PLA Basic' };
 const RIM: PaletteEntry = { hex: '#29292B', line: 'PLA Basic' };
+const RED = f('PLA Basic', 'Red');
 
 export interface PalettePreset {
   key: string;
@@ -443,31 +460,31 @@ export interface PalettePreset {
 export const PALETTE_PRESETS: PalettePreset[] = [
   {
     key: 'DEFAULT', name: 'Default',
-    description: 'Matte Caramel buildings, Matte Ivory White terrain, Basic Dark Gray roads, Matte Ash Gray paving, Basic Bambu Green parks',
-    palette: { terrain: IVORY, buildings: CARAMEL, roads: DARK_GRAY, paved: ASH_GRAY, water: WATER,
+    description: 'Matte Caramel buildings, Matte Ivory White terrain, Basic Dark Gray roads, Matte Ash Gray paving, Basic Bambu Green parks, Basic Red routes',
+    palette: { terrain: IVORY, buildings: CARAMEL, roads: DARK_GRAY, route: RED, paved: ASH_GRAY, water: WATER,
       green: BAMBU_GREEN, forest: FOREST, trees: FOREST, sand: SAND, rock: SAND, rim: RIM },
   },
   {
     key: 'AMS4', name: '4-Colour AMS',
-    description: 'White terrain and buildings, dark gray roads, green parks and trees, blue water: at most four filaments',
-    palette: { terrain: IVORY, buildings: IVORY, roads: DARK_GRAY, paved: DARK_GRAY,
+    description: 'White terrain and buildings, dark gray roads, green parks, trees and routes, blue water: at most four filaments',
+    palette: { terrain: IVORY, buildings: IVORY, roads: DARK_GRAY, route: BAMBU_GREEN, paved: DARK_GRAY,
       water: f('PLA Matte', 'Sky Blue'), green: BAMBU_GREEN, forest: BAMBU_GREEN, trees: BAMBU_GREEN,
       sand: IVORY, rock: IVORY, rim: DARK_GRAY },
   },
   {
     key: 'CLASSIC', name: 'Classic Map',
-    description: 'Beige land, terracotta buildings, white roads, pale blue water and green parks',
+    description: 'Beige land, terracotta buildings, white roads, pale blue water, green parks and red routes',
     palette: { terrain: f('PLA Basic', 'Beige'), buildings: f('PLA Matte', 'Terracotta'),
-      roads: f('PLA Basic', 'Jade White'), paved: f('PLA Basic', 'Jade White'),
+      roads: f('PLA Basic', 'Jade White'), route: f('PLA Matte', 'Scarlet Red'), paved: f('PLA Basic', 'Jade White'),
       water: f('PLA Matte', 'Ice Blue'), green: f('PLA Matte', 'Apple Green'),
       forest: f('PLA Matte', 'Apple Green'), trees: f('PLA Matte', 'Grass Green'),
       sand: f('PLA Matte', 'Desert Tan'), rock: f('PLA Matte', 'Desert Tan'), rim: f('PLA Matte', 'Dark Brown') },
   },
   {
     key: 'NIGHT', name: 'Night',
-    description: 'Black terrain, gray buildings, gold roads, dark blue water and dark green parks',
+    description: 'Black terrain, gray buildings, gold roads, dark blue water, dark green parks and ice blue routes',
     palette: { terrain: f('PLA Matte', 'Charcoal'), buildings: f('PLA Matte', 'Ash Gray'),
-      roads: f('PLA Basic', 'Gold'), paved: f('PLA Basic', 'Gold'),
+      roads: f('PLA Basic', 'Gold'), route: f('PLA Matte', 'Ice Blue'), paved: f('PLA Basic', 'Gold'),
       water: f('PLA Matte', 'Dark Blue'), green: f('PLA Matte', 'Dark Green'),
       forest: f('PLA Matte', 'Dark Green'), trees: f('PLA Matte', 'Dark Green'),
       sand: f('PLA Matte', 'Dark Brown'), rock: f('PLA Matte', 'Dark Brown'), rim: f('PLA Matte', 'Charcoal') },
@@ -475,7 +492,7 @@ export const PALETTE_PRESETS: PalettePreset[] = [
   {
     key: 'SINGLE', name: 'Single Colour',
     description: 'Everything in PLA Matte Ivory White: one filament, for printers without multi-material',
-    palette: { terrain: IVORY, buildings: IVORY, roads: IVORY, paved: IVORY, water: IVORY, green: IVORY,
+    palette: { terrain: IVORY, buildings: IVORY, roads: IVORY, route: IVORY, paved: IVORY, water: IVORY, green: IVORY,
       forest: IVORY, trees: IVORY, sand: IVORY, rock: IVORY, rim: IVORY },
   },
 ];
@@ -546,6 +563,7 @@ const RANGES: SettingsRanges = {
   trees: { spacingM: [2, 200], minHeightMm: [0.1, 10], minWidthMm: [0.1, 5], variation: [0, 0.8], maxTrees: [0, 500000, true] },
   lidar: { minFootprintMm2: [0, 10], olderYears: [1, 15, true] },
   lidarModel: { detailMm: [0.02, 0.3], cellM: [0.25, 5], waterDepthMm: [0, 3], heightScale: [0.1, 3] },
+  tracks: { widthMm: [0.3, 5], heightMm: [0.1, 10] },
   rim: { heightMm: [0.1, 30], widthMm: [0.1, 20] },
 };
 

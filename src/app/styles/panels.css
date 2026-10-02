@@ -446,6 +446,50 @@
   line-height: 1.5;
 }
 
+/* Imported routes */
+
+.routes-import {
+  display: flex;
+}
+
+.route-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 10px;
+  min-width: 0;
+}
+
+.route-name {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 5px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.route-name:hover {
+  border-color: var(--border);
+}
+
+.route-name:focus-visible {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  outline: none;
+}
+
+.route-length {
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* LiDAR only: the model's own settings in place of the layer list */
 
 .lidar-model {

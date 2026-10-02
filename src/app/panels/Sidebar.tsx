@@ -14,6 +14,7 @@ import { ColoursPanel } from './ColoursPanel';
 import { ExportPanel } from './ExportPanel';
 import { LayersPanel } from './LayersPanel';
 import { PrintPanel } from './PrintPanel';
+import { RoutesPanel } from './RoutesPanel';
 import { OptionsFiles } from './OptionsFiles';
 
 function OutputSwitch() {
@@ -79,6 +80,7 @@ export function Sidebar() {
       <AreaPanel />
       {output === 'model' ? (
         <>
+          <RoutesPanel />
           <PrintPanel />
           <LayersPanel />
           <ColoursPanel />

@@ -1,5 +1,5 @@
 // Keeps localStorage and the URL hash in step with the store, and this tab
-// in step with others saving the same edits and picks.
+// in step with others saving the same edits, picks and routes.
 
 import { sameArea } from '../lib/area';
 import {
@@ -11,13 +11,15 @@ import {
   readBackup,
   readStoredEdits,
   readStoredPicks,
+  readStoredTracks,
   savedHash,
   saveState,
   STORAGE_KEY,
+  TRACKS_KEY,
 } from './persist';
 import { formatAreaHash, parseHash, unreadableText } from './shareLink';
 import { adoptEdits, broughtToast, takeInLink } from './editActions';
-import { bringIn, dropMissingFont, patchSvg, setArea, setOutput, takeLinkProblem, takeOpenedLink, toast, useApp } from './store';
+import { bringIn, dropMissingFont, patchSvg, setArea, setOutput, setTracks, takeLinkProblem, takeOpenedLink, toast, useApp } from './store';
 import { asChange, quietly } from './undo';
 
 let started = false;
@@ -106,7 +108,7 @@ export function startSync(): void {
       changed = true;
       fromLoad = false;
     }
-    if (settings || state.edits !== previous.edits || state.svg !== previous.svg) {
+    if (settings || state.edits !== previous.edits || state.svg !== previous.svg || state.tracks !== previous.tracks) {
       clearTimeout(saveTimer);
       saveTimer = window.setTimeout(save, 300);
     }
@@ -143,7 +145,7 @@ export function startSync(): void {
         useApp.setState({ svg: { ...shared.svg.svg, routes: state.svg.routes, hiddenLines: state.svg.hiddenLines } });
         dropMissingFont();
       }
-      const brought = bringIn(state.edits, { routes: state.svg.routes, hiddenLines: state.svg.hiddenLines }, { edits: shared.edits, picks: shared.picks });
+      const brought = bringIn(state.edits, { routes: state.svg.routes, hiddenLines: state.svg.hiddenLines }, { edits: shared.edits, picks: shared.picks, tracks: shared.tracks }, state.tracks);
       if (brought) takeInLink(brought);
       if (shared.output) setOutput(shared.output);
       const area = shared.area ?? useApp.getState().area;
@@ -152,7 +154,7 @@ export function startSync(): void {
       if (shared.svg || !sameArea(next, useApp.getState().area)) setArea(next, { focus: 'always', placeName: '' });
     });
     // Drop the settings from the address bar once they're in.
-    if (shared.svg || shared.edits || shared.picks || shared.unreadable.length) writeHashNow();
+    if (shared.svg || shared.edits || shared.picks || shared.tracks || shared.unreadable.length) writeHashNow();
     const problem = unreadableText(shared);
     if (problem) toast(problem, 'error');
   });
@@ -185,6 +187,15 @@ export function startSync(): void {
       quietly(
         () => patchSvg({ routes, hiddenLines }),
         (setup) => ({ ...setup, svg: { ...setup.svg, routes, hiddenLines } }),
+      );
+    } else if (event.key === TRACKS_KEY) {
+      if (!isSaved(TRACKS_KEY, [state.tracks])) return;
+      const tracks = readStoredTracks(event.newValue);
+      if (!tracks) return;
+      markSaved(TRACKS_KEY, [tracks]);
+      quietly(
+        () => setTracks(tracks),
+        (setup) => ({ ...setup, tracks }),
       );
     }
   });

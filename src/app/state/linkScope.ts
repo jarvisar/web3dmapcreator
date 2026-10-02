@@ -7,6 +7,7 @@ import type { ModelEdits } from '../../core/edit/types';
 import { Projection } from '../../core/geo/projection';
 import type { AreaSpec } from '../../core/settings';
 import type { Picks } from '../../core/svgmap/routes';
+import { decodeTrack, type Track } from '../../core/tracks/track';
 import type { EditData } from './model';
 
 // Shapes and roads a little past the edge still count, the shape's corners
@@ -63,6 +64,13 @@ export function editsForArea(edits: ModelEdits, area: AreaSpec, model: { data: E
   const used = new Set([...Object.values(objects).map((edit) => edit.layer), ...shapes.map((shape) => shape.layer)]);
   const layers = edits.layers.filter((layer) => used.has(layer.id));
   return { edits: { ...edits, layers, objects, shapes }, left, unplaced };
+}
+
+/** The imported routes with any of their line on this area, and how many weren't. */
+export function tracksForArea(tracks: readonly Track[], area: AreaSpec): { tracks: Track[]; left: number } {
+  const inArea = areaTest(area);
+  const kept = tracks.filter((track) => decodeTrack(track).some((line) => line.some(inArea)));
+  return { tracks: kept, left: tracks.length - kept.length };
 }
 
 /** The picked roads on this area, and how many lines were left out. Routes with nothing here go too. */

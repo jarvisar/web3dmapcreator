@@ -1,5 +1,5 @@
 import { LucideProvider } from 'lucide-react';
-import { lazy, Suspense, useEffect, useRef } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, type DragEvent } from 'react';
 import { Toasts } from './components/Toasts';
 import { HelpDialog } from './layout/HelpDialog';
 import { TopBar } from './layout/TopBar';
@@ -7,7 +7,8 @@ import { NARROW_QUERY, useMediaQuery } from './lib/browser';
 import { MapView } from './map/MapView';
 import { ActionBar } from './panels/ActionBar';
 import { Sidebar } from './panels/Sidebar';
-import { setDrawerOpen, useApp } from './state/store';
+import { setDrawerOpen, toast, useApp } from './state/store';
+import { importTrackFiles } from './state/tracks';
 import { SvgPreview } from './svgmap/Preview';
 
 // three.js is only needed once there is a model, so it loads on demand.
@@ -20,6 +21,8 @@ export function App() {
   const output = useApp((state) => state.output);
   const needsViewer = useApp((state) => state.generation.result !== null || state.generation.status === 'running');
   const drawer = narrow && drawerOpen;
+  const [dropping, setDropping] = useState(false);
+  const dropTimer = useRef(0);
 
   // The open drawer covers the map, which goes inert under it, so focus
   // moves into the drawer. The drawer closes itself after a search or
@@ -50,9 +53,33 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [drawer]);
 
+  // A route file dropped anywhere on the page, while making a model.
+  // dragleave fires for every child the pointer crosses, so the overlay
+  // goes when dragover stops coming instead.
+  const isFileDrag = (event: DragEvent) => output === 'model' && Array.from(event.dataTransfer.types).includes('Files');
+  const onDragOver = (event: DragEvent) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setDropping(true);
+    clearTimeout(dropTimer.current);
+    dropTimer.current = window.setTimeout(() => setDropping(false), 200);
+  };
+  const onDrop = (event: DragEvent) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    clearTimeout(dropTimer.current);
+    setDropping(false);
+    // The browser empties the list once the event is over.
+    const files = Array.from(event.dataTransfer.files);
+    void importTrackFiles(files).then(({ errors }) => {
+      if (errors.length) toast(errors.join(' '), 'error');
+    });
+  };
+
   return (
     <LucideProvider size={14} strokeWidth={2}>
-      <div className={`app${narrow ? ' is-narrow' : ''}${drawer ? ' drawer-open' : ''}`}>
+      <div className={`app${narrow ? ' is-narrow' : ''}${drawer ? ' drawer-open' : ''}`} onDragOver={onDragOver} onDrop={onDrop}>
         <TopBar narrow={narrow} />
         <aside id="sidebar" className="sidebar" aria-label="Settings" tabIndex={-1} inert={narrow && !drawerOpen}>
           <Sidebar />
@@ -70,6 +97,11 @@ export function App() {
         </main>
         <ActionBar />
         <HelpDialog />
+        {dropping && (
+          <div className="drop-overlay" aria-hidden="true">
+            <div className="drop-message">Drop GPX, KML, KMZ, TCX, FIT or GeoJSON files to add them as routes</div>
+          </div>
+        )}
       </div>
     </LucideProvider>
   );

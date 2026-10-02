@@ -30,8 +30,12 @@
 // surveys are put in order without one, see lidar/ranking.ts). Every survey
 // found is listed in the order it would be read,
 // --options path.json (an options file exported from the app with its map area:
-// the area, settings, colours, export options and 3D edits, which the other
-// flags override), --no-edits (leave the options file's edits out).
+// the area, settings, colours, export options, 3D edits and routes, which the
+// other flags override), --no-edits (leave the options file's edits out),
+// --route file.gpx (an imported route, any file the app reads, repeatable),
+// --fit-route (the area framed around the routes, in --shape), --turn (and
+// turned if that frames them smaller), --no-snap (routes as recorded),
+// --no-markers, --route-width mm, --route-height mm.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { totalmem } from 'node:os';
@@ -63,6 +67,9 @@ import { Projection } from '../src/core/geo/projection';
 import type { ModelSpec } from '../src/core/pipeline/generate';
 import { FontLoader } from '../src/core/svgmap/text/loadFont';
 import { decodeOptions, type Options } from '../src/app/state/options';
+import { parseTrackFile } from '../src/core/tracks/parse';
+import { areaAroundTracks } from '../src/core/tracks/frame';
+import { decodeTrack, encodeTrack, visibleTracks, type TrackLines } from '../src/core/tracks/track';
 import {
   cloneSettings,
   DEFAULT_PALETTE,
@@ -80,6 +87,22 @@ function arg(name: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 const flag = (name: string) => process.argv.includes(`--${name}`);
+const args = (name: string) => process.argv.flatMap((value, i) => (value === `--${name}` && process.argv[i + 1] ? [process.argv[i + 1]] : []));
+
+/** Routes from --route files and the options file, stored and read back as the app does. */
+function loadTracks(): TrackLines[] {
+  const out: TrackLines[] = options?.map?.tracks ? visibleTracks(options.map.tracks) : [];
+  for (const path of args('route')) {
+    const bytes = readFileSync(path);
+    const parsed = parseTrackFile(path, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+    for (const track of parsed) {
+      const lines = decodeTrack({ lines: encodeTrack(track.lines) });
+      out.push({ id: `cli${out.length + 1}`, name: track.name, lines });
+      console.log(`route: ${track.name}, ${lines.reduce((n, line) => n + line.length, 0)} points in ${lines.length} line(s)`);
+    }
+  }
+  return out;
+}
 
 function presetBounds(name: string): string {
   for (const group of PRESET_GROUPS) {
@@ -144,9 +167,20 @@ async function withEdits(spec: ModelSpec, settings: ModelSettings, area: AreaSpe
 async function main() {
   const shape = (arg('shape') as AreaShape) ?? options?.map?.area.shape ?? 'rectangle';
   const boundsText = arg('bbox') ?? (arg('preset') ? presetBounds(arg('preset')!) : undefined);
-  if (!boundsText && !arg('area') && !options?.map) throw new Error('Pass --bbox w,s,e,n, --preset name, --area lon,lat,width,height or --options file.json');
-  const area = arg('area') ? exactArea(arg('area')!, shape) : boundsText ? areaFromBounds(parseBoundsText(boundsText), shape) : { ...options!.map!.area };
+  const tracks = loadTracks();
+  if (!boundsText && !arg('area') && !options?.map && !(flag('fit-route') && tracks.length)) throw new Error('Pass --bbox w,s,e,n, --preset name, --area lon,lat,width,height, --options file.json or --route with --fit-route');
+  let area: AreaSpec = arg('area')
+    ? exactArea(arg('area')!, shape)
+    : boundsText
+      ? areaFromBounds(parseBoundsText(boundsText), shape)
+      : options?.map
+        ? { ...options.map.area }
+        : { center: [0, 0], widthM: 1000, heightM: 1000, rotationDeg: 0, shape, cornerRadius: 0.1 };
   if (arg('rotation')) area.rotationDeg = Number(arg('rotation'));
+  if (flag('fit-route')) {
+    area = areaAroundTracks(tracks.flatMap((track) => track.lines), area, flag('turn')) ?? area;
+    console.log(`area: ${area.center[0].toFixed(6)},${area.center[1].toFixed(6)},${Math.round(area.widthM)},${Math.round(area.heightM)},${area.rotationDeg} (--area to repeat it)`);
+  }
   let settings: ModelSettings = options ? options.settings : cloneSettings();
   if (arg('settings')) settings = merge(settings, JSON.parse(readFileSync(arg('settings')!, 'utf8')));
   if (arg('scale')) settings.scale.mmPerMetre = Number(arg('scale'));
@@ -174,8 +208,12 @@ async function main() {
   if (arg('survey')) settings.lidar.survey = arg('survey')!;
   if (arg('prefer')) settings.lidar.surveyPreference = arg('prefer') as typeof settings.lidar.surveyPreference;
   if (arg('older-years')) settings.lidar.olderYears = Number(arg('older-years'));
+  if (flag('no-snap')) settings.tracks.snap = false;
+  if (flag('no-markers')) settings.tracks.markers = false;
+  if (arg('route-width')) settings.tracks.widthMm = Number(arg('route-width'));
+  if (arg('route-height')) settings.tracks.heightMm = Number(arg('route-height'));
   settings = sanitizeSettings(settings);
-  if (settings.modelSource === 'lidar') return lidarOnly(area, settings);
+  if (settings.modelSource === 'lidar') return lidarOnly(area, settings, tracks);
 
   const t0 = performance.now();
   const bounds = dataBoundsFor(area);
@@ -232,7 +270,7 @@ async function main() {
 
   const generating = performance.now();
   const progress = new Progress((e) => log(e.label));
-  const spec = await withEdits(await generateModel({ area, settings, data, elevation: dem, lidar, progress }), settings, area);
+  const spec = await withEdits(await generateModel({ area, settings, data, elevation: dem, lidar, tracks, progress }), settings, area);
   const t2 = performance.now();
   const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ });
   const t3 = performance.now();
@@ -276,7 +314,7 @@ async function main() {
   }
 }
 
-async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
+async function lidarOnly(area: AreaSpec, settings: ModelSettings, tracks: TrackLines[]) {
   const t0 = performance.now();
   let lastLabel = '';
   const log = (label: string, detail?: string) => {
@@ -291,12 +329,17 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
   const pool = threads > 1 ? threadPool(threads, cacheDir) : null;
   try {
     const cell = requestedCell(settings.lidarModel, scale, area.widthM, area.heightM);
-    const water = settings.lidarModel.mapWater
-      ? fetchOverture({ bounds: dataBoundsFor(area), types: ['water'], keep: dataPlan(settings, dataBoundsFor(area)).keep }).then((data) => {
-          console.log(`map water: ${data.features.water?.length ?? 0} features, ${(data.bytes / 1e6).toFixed(1)} MB, release ${data.release}`);
-          return data.features.water ?? [];
+    // Every road and path for snapping routes, as the worker fetches them.
+    const segments = settings.tracks.enabled && settings.tracks.snap && tracks.length;
+    const types = [...(settings.lidarModel.mapWater ? (['water'] as const) : []), ...(segments ? (['segment'] as const) : [])];
+    const roadsPlan = dataPlan({ ...settings, roads: { ...settings.roads, enabled: true, includePaths: true, includeRail: false } }, dataBoundsFor(area));
+    const mapData = types.length
+      ? fetchOverture({ bounds: dataBoundsFor(area), types, keep: roadsPlan.keep }).then((data) => {
+          console.log(`map data: ${data.features.water?.length ?? 0} water features, ${data.features.segment?.length ?? 0} segments, ${(data.bytes / 1e6).toFixed(1)} MB, release ${data.release}`);
+          return data;
         })
-      : Promise.resolve(undefined);
+      : Promise.resolve(null);
+    const water = mapData.then((data) => (settings.lidarModel.mapWater ? (data?.features.water ?? []) : undefined));
     const maxCells = settings.lidarModel.cellMode !== 'metres' ? undefined : arg('max-cells') ? Number(arg('max-cells')) : fixedCellLimit(reportedMemoryGb(totalmem()));
     const surface = await prepareSurface({ area, cellM: cell, maxCells, progress: (label, _fraction, detail) => log(label, detail), runner: pool ?? undefined, approved: flag('download-tiles') ? 'all' : undefined, survey: settings.lidar.survey || undefined, rules: { preference: settings.lidar.surveyPreference, years: settings.lidar.olderYears } });
     const mapWater = await water;
@@ -319,7 +362,18 @@ async function lidarOnly(area: AreaSpec, settings: ModelSettings) {
     }
     const progress = new Progress((e) => log(e.label));
     const spec = await withEdits(
-      await surfaceModel({ area, settings, surface, progress, runTile: pool ? (tile) => pool.tile(tile) : undefined, concurrency: pool?.concurrency ?? 1, mapWater, releaseLayers: true }),
+      await surfaceModel({
+        area,
+        settings,
+        surface,
+        progress,
+        runTile: pool ? (tile) => pool.tile(tile) : undefined,
+        concurrency: pool?.concurrency ?? 1,
+        mapWater,
+        releaseLayers: true,
+        tracks,
+        segments: (await mapData)?.features.segment,
+      }),
       settings,
       area,
     );

@@ -74,10 +74,11 @@ export function ColoursPanel() {
   const palette = useApp((state) => state.palette);
   const settings = useApp((state) => state.settings);
   const layers = useApp((state) => state.edits.layers);
+  const tracks = useApp((state) => state.tracks.some((track) => track.visible));
   const [editing, setEditing] = useState<{ group: ColourGroup; anchor: HTMLElement } | null>(null);
   const [editingLayer, setEditingLayer] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const [showMore, setShowMore] = useState(false);
-  const used = usedGroups(settings);
+  const used = usedGroups(settings, tracks);
   const unused = COLOUR_GROUPS.map((group) => group.key).filter((key) => !used.includes(key));
   const count = filamentCount(palette, used, layers);
   const preset = matchingPreset(palette);

@@ -283,7 +283,7 @@ function sanitizeShape(item: unknown, layerIds: Set<string>): AddedShape | null 
 
 // The palette's groups, which a shape can take its colour from. Kept here as
 // strings so this module needs nothing from settings.
-const COLOUR_GROUP_KEYS = new Set(['terrain', 'buildings', 'roads', 'paved', 'water', 'green', 'forest', 'trees', 'sand', 'rock', 'rim']);
+const COLOUR_GROUP_KEYS = new Set(['terrain', 'buildings', 'roads', 'route', 'paved', 'water', 'green', 'forest', 'trees', 'sand', 'rock', 'rim']);
 
 /** A shape's layer if it still has it, a custom layer or a model colour, or else its kind's colour. */
 export function shapeLayerIn(shape: Pick<AddedShape, 'kind' | 'layer'>, layers: readonly EditLayer[]): string {

@@ -34,7 +34,8 @@ export type MaterialRole =
   | 'sand'
   | 'rock'
   | 'tree'
-  | 'rim';
+  | 'rim'
+  | 'route';
 
 /** A colour the user picks. Several roles can share one group. */
 export type ColourGroup =
@@ -48,7 +49,8 @@ export type ColourGroup =
   | 'trees'
   | 'sand'
   | 'rock'
-  | 'rim';
+  | 'rim'
+  | 'route';
 
 export const ROLE_GROUP: Record<MaterialRole, ColourGroup> = {
   terrain: 'terrain',
@@ -67,6 +69,7 @@ export const ROLE_GROUP: Record<MaterialRole, ColourGroup> = {
   rock: 'rock',
   tree: 'trees',
   rim: 'rim',
+  route: 'route',
 };
 
 /**

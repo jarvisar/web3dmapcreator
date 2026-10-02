@@ -619,3 +619,29 @@
   gap: 6px;
   margin-top: 4px;
 }
+
+/* Route files dragged over the page */
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(40, 44, 52, 0.35);
+  pointer-events: none;
+}
+
+.drop-message {
+  max-width: 420px;
+  padding: 18px 22px;
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--text);
+  font-size: 14px;
+  text-align: center;
+}

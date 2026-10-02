@@ -6,7 +6,7 @@ import { defaultSvgSettings } from '../svgmap/settings';
 import { fitAreaToPiece } from '../svgmap/piece';
 import { undoEdit } from './editActions';
 import { decodeOptions, encodeOptions, MAX_OPTIONS_BYTES, type Options } from './options';
-import { applyOptions, patchSettings, resetAllSettings, resetSettingsSection, snapshotKey, useApp, type ResultMeta } from './store';
+import { applyOptions, modelKey, patchSettings, resetAllSettings, resetSettingsSection, useApp, type ResultMeta } from './store';
 
 function options(): Options {
   return {
@@ -152,7 +152,7 @@ describe('applying options', () => {
   });
 
   it('marks an existing model stale and recognises restoring its original options', () => {
-    const result = { key: snapshotKey(initial.area, initial.settings) } as ResultMeta;
+    const result = { key: modelKey(initial.area, initial.settings, initial.tracks) } as ResultMeta;
     useApp.setState({ generation: { ...initial.generation, result } });
     const changed = options();
     changed.settings.terrain.elevation = false;
