@@ -45,7 +45,10 @@ import type { EditData } from '../state/model';
 import { ComposedMesh, type ComposedSource, type Entry } from './composed';
 import { extractTriangles, overlayMaterial, setOverlay, type Soup } from './highlight';
 import { Picker } from './picker';
-import { RoadIndex } from './roads';
+import { RoadIndex, type RoadPick } from './roads';
+import { blockLines, blocksSignature, segmentBounds } from './blocks';
+import { parseRoadKey, roadEditOf } from '../../core/edit/blocks';
+import type { ObjectEdit } from '../../core/edit/types';
 import { entryColour, SHAPES_PART } from './shown';
 
 export { SHAPES_PART };
@@ -229,6 +232,10 @@ export class ViewerEngine {
   private edits: ModelEdits = emptyEdits();
   private data: EditData = { editable: false, roads: null, objects: {}, ground: null, frame: null };
   roads: RoadIndex | null = null;
+  /** What the blocks the roads are cut into depend on, so they're cut again only when it changes. */
+  private blocksKey = '';
+  /** Each road key's edit as it applies, for these edits. */
+  private roadEdits = new Map<string, ObjectEdit | undefined>();
   private selection: string[] = [];
   private hovered: string | null = null;
   private centres = new Map<ComposedMesh, Float32Array>();
@@ -297,7 +304,8 @@ export class ViewerEngine {
     this.clearModel();
     this.generated = new Map(parts.map((part) => [part.id, part]));
     this.data = data ?? { editable: false, roads: null, objects: {}, ground: null, frame: null };
-    this.roads = this.data.roads ? new RoadIndex(this.data.roads) : null;
+    this.blocksKey = blocksSignature(this.edits);
+    this.roads = this.data.roads ? new RoadIndex(blockLines(this.data.roads, this.edits)) : null;
     for (const part of parts) this.buildView(part.id);
     this.bounds = bounds;
     if (edits) this.applyEditUpdate(edits);
@@ -348,6 +356,14 @@ export class ViewerEngine {
 
   setEdits(edits: ModelEdits): void {
     this.edits = edits;
+    this.roadEdits.clear();
+    // A split, or an edit to a new stretch of a road, ends blocks somewhere new.
+    const blocks = blocksSignature(edits);
+    if (blocks !== this.blocksKey) {
+      this.blocksKey = blocks;
+      if (this.data.roads) this.roads = new RoadIndex(blockLines(this.data.roads, edits));
+      for (const listener of this.geometryListeners) listener();
+    }
     for (const material of this.materials.values()) material.color.set(this.colourOf(material.userData.colour as string));
     this.restyle();
     this.refreshHighlights();
@@ -615,7 +631,7 @@ export class ViewerEngine {
     const now = new Set<string>();
     const unhidden = new Set<string>();
     const wanted = new Set(keys.map(objectOf));
-    const context = { edits: this.edits, hiddenParts: this.hiddenParts, implicitHidden: this.implicitHidden };
+    const context = { edits: this.edits, hiddenParts: this.hiddenParts, implicitHidden: this.implicitHidden, deckAt: this.deckAt };
     const allShown = { ...context, hiddenParts: new Set<string>() };
     for (const view of this.views.values()) {
       for (const composed of [view.base, view.override]) {
@@ -632,7 +648,7 @@ export class ViewerEngine {
     const roads = this.roads;
     return keys.filter((key) => {
       if (kindOf(key) === 'road') {
-        if (!roads || this.edits.objects[key]?.removed) return false;
+        if (!roads || roadEditOf(this.edits.objects, key)?.removed) return false;
         const pieces = roads.piecesOf(key);
         return pieces.length > 0 && !pieces.some((piece) => this.roadShown(piece));
       }
@@ -822,7 +838,7 @@ export class ViewerEngine {
   }
 
   private entryStyle(view: PartView, composed: ComposedMesh, entry: Entry): string | null {
-    const context = { edits: this.edits, hiddenParts: this.hiddenParts, implicitHidden: this.implicitHidden };
+    const context = { edits: this.edits, hiddenParts: this.hiddenParts, implicitHidden: this.implicitHidden, deckAt: this.deckAt };
     return entryColour(entry, context, composed === view.base && view.overrideKeys.has(entry.key), view.id);
   }
 
@@ -865,20 +881,50 @@ export class ViewerEngine {
     return b.map((v, i) => (i < 3 ? Math.min(v, s[i]) : Math.max(v, s[i]))) as Bounds;
   }
 
+  /** A bridge's middle along its road's segment. */
+  private readonly deckAt = (key: string): number | undefined => this.data.objects[key]?.at;
+
+  /** A road piece's edit as it applies: its block's, from every range of its segment holding it. */
+  pieceEdit(piece: number): ObjectEdit | undefined {
+    const key = this.roads!.lines.keys[piece];
+    if (!this.roadEdits.has(key)) this.roadEdits.set(key, roadEditOf(this.edits.objects, key));
+    return this.roadEdits.get(key);
+  }
+
   /** The part a road piece is drawn in now: its custom layer's, or its group's. */
   private roadPart(piece: number): string {
     const lines = this.roads!.lines;
-    const layer = this.edits.objects[lines.keys[piece]]?.layer;
+    const layer = this.pieceEdit(piece)?.layer;
     if (layer && this.edits.layers.some((l) => l.id === layer)) return `layer:${layer}`;
     return ROAD_PART_IDS[lines.groups[piece]];
   }
 
-  private roadShown(piece: number): boolean {
-    return !this.edits.objects[this.roads!.lines.keys[piece]]?.removed && !this.hiddenParts.has(this.roadPart(piece));
+  roadShown(piece: number): boolean {
+    return !this.pieceEdit(piece)?.removed && !this.hiddenParts.has(this.roadPart(piece));
   }
 
   /** Road pieces a part holds now, given the edits. */
   private roadAt(view: PartView, x: number, y: number): string | null {
+    return this.roadPick(view, x, y)?.key ?? null;
+  }
+
+  /** The road under a point of the page, with where along it the point is, as the split tool needs. */
+  roadPickAt(clientX: number, clientY: number): RoadPick | null {
+    if (this.lost) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const hit = this.picker.pick(this.renderer, this.camera, clientX - rect.left, clientY - rect.top, rect.width, rect.height, (slot, id) => id === 0 && this.isRoadPart(this.slots[slot]?.view));
+    this.requestRender();
+    const view = hit ? this.slots[hit.slot]?.view : undefined;
+    if (!hit?.point || !view || hit.id > 0) return null;
+    return this.roadPick(view, hit.point.x, hit.point.y);
+  }
+
+  /** A segment's block bounds as the view has them (blocks.ts). */
+  blockBoundsOf(segment: string): number[] {
+    return this.data.roads ? segmentBounds(this.data.roads, this.edits, segment) : [0, 1];
+  }
+
+  private roadPick(view: PartView, x: number, y: number): RoadPick | null {
     const roads = this.roads;
     if (!roads) return null;
     const group = ROAD_PARTS[view.id];
@@ -886,23 +932,21 @@ export class ViewerEngine {
     if (group === undefined && !layer) return null;
     const lines = roads.lines;
     const accept = (piece: number) => {
-      const edit = this.edits.objects[lines.keys[piece]];
+      const edit = this.pieceEdit(piece);
       if (edit?.removed) return false;
       const pieceLayer = edit?.layer && this.edits.layers.some((l) => l.id === edit.layer) ? edit.layer : null;
       if (layer) return pieceLayer === layer;
       return !pieceLayer && lines.groups[piece] === group;
     };
-    return roads.nearest(x, y, accept, (piece) => this.roadWidth(piece))?.key ?? null;
+    return roads.nearest(x, y, accept, (piece) => this.roadWidth(piece));
   }
 
   roadWidth(piece: number): number {
-    const lines = this.roads!.lines;
-    return this.edits.objects[lines.keys[piece]]?.widthMm ?? lines.widths[piece];
+    return this.pieceEdit(piece)?.widthMm ?? this.roads!.lines.widths[piece];
   }
 
   roadHeight(piece: number): number {
-    const lines = this.roads!.lines;
-    return this.edits.objects[lines.keys[piece]]?.heightMm ?? lines.thicknessMm;
+    return this.pieceEdit(piece)?.heightMm ?? this.roads!.lines.thicknessMm;
   }
 
   /** The overlay for keys: object triangles tinted, roads outlined. */
@@ -922,8 +966,11 @@ export class ViewerEngine {
     for (const key of keys) {
       if (kindOf(key) === 'road') {
         if (this.roads) roadPieces.push(...this.roads.piecesOf(key).filter((piece) => this.roadShown(piece)));
-        // A bridge on the road's segment goes with its edits, so it lights up too.
-        if (this.data.objects[twinOf(key)!]) objects.set(twinOf(key)!, null);
+        // A bridge in the block goes with its edits, so it lights up too.
+        const bridge = this.data.objects[twinOf(key)!];
+        const range = parseRoadKey(key);
+        const at = bridge?.at;
+        if (bridge && range && (at === undefined ? range.from <= 0 && range.to >= 1 : at >= range.from && at <= range.to)) objects.set(twinOf(key)!, null);
         continue;
       }
       const object = objectOf(key);

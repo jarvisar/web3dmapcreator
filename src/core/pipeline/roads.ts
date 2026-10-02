@@ -23,6 +23,7 @@ import type { MultiPolygon, Polygon, Vec2 } from '../types';
 import { MINIMUM_BRIDGE_M } from './bridges';
 import { count, type Context } from './context';
 import { MINOR_ROAD_CLASSES, polylineLength, RAIL_CLASS, RAIL_WIDTH_M, SIDEPATH_SUBCLASSES, splitSegment, type SubSegment } from './linework';
+import { segmentLine, type SegmentLine } from './measure';
 import { tidyNetwork } from './network';
 import { fillThinHoles, gapStrips } from './network/gaps';
 import { projectLines, projectPolygons, str, type SourceFeature } from './source';
@@ -35,6 +36,8 @@ export type RoadGroup = 'road' | 'path' | 'rail';
 export interface RoadPiece extends SubSegment {
   group: RoadGroup;
   widthMm: number;
+  /** Where each point lies along the segment, 0 to 1, for edits to a block of it (measure.ts). Set once laid out. */
+  measure?: number[];
 }
 
 export interface RoadResult {
@@ -57,7 +60,7 @@ export function groupOf(piece: SubSegment): RoadGroup {
 export async function collectRoadPieces(
   features: SourceFeature[],
   ctx: Context,
-): Promise<{ pieces: RoadPiece[]; bridgeLines: Vec2[][] }> {
+): Promise<{ pieces: RoadPiece[]; bridgeLines: Vec2[][]; lines: Map<string, SegmentLine> }> {
   const { settings } = ctx;
   const roads = settings.roads;
   const mm = ctx.projection.mmPerMetre;
@@ -67,6 +70,8 @@ export async function collectRoadPieces(
   // Never built, but the tidy needs to know what an end met.
   const leftOut: Vec2[][] = [];
   const hidden: Vec2[][] = [];
+  // Each segment's whole line, which pieces are measured along at the end.
+  const lines = new Map<string, SegmentLine>();
 
   for (let index = 0; index < features.length; index++) {
     const feature = features[index];
@@ -76,7 +81,13 @@ export async function collectRoadPieces(
     } else if (subtype !== 'road') {
       continue;
     }
-    for (const line of projectLines(feature.geometry, ctx.projection)) {
+    const projected = projectLines(feature.geometry, ctx.projection);
+    // Overture segments are single lines. Anything else isn't measured.
+    if (projected.length === 1) {
+      const line = segmentLine(projected[0]);
+      if (line) lines.set(feature.id, line);
+    }
+    for (const line of projected) {
       const split =
         subtype === 'rail'
           ? splitSegment(feature.id, line, feature.props, { [RAIL_CLASS]: RAIL_WIDTH_M }, RAIL_CLASS)
@@ -137,7 +148,7 @@ export async function collectRoadPieces(
   const bridgeLines = pieces.filter((p) => p.flags.has('is_bridge')).map((p) => p.points);
   ctx.stats.road_pieces = pieces.length;
   ctx.stats.bridge_pieces = bridgeLines.length;
-  return { pieces, bridgeLines };
+  return { pieces, bridgeLines, lines };
 }
 
 /**

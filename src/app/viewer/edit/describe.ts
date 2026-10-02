@@ -1,5 +1,6 @@
 // Names for what's selected, as the inspector and the hover tip show them.
 
+import { roadSegment } from '../../../core/edit/blocks';
 import { kindOf, objectOf, type ObjectKind } from '../../../core/edit/keys';
 import type { AddedShape, ModelEdits } from '../../../core/edit/types';
 import type { EditData } from '../../state/model';
@@ -77,10 +78,12 @@ export function describeKey(key: string, data: EditData, edits: ModelEdits): Des
     }
     case 'road': {
       const lines = data.roads;
-      const piece = lines ? lines.keys.indexOf(key) : -1;
-      if (!lines || piece < 0) return { kind, title: 'Road', detail: '' };
+      const piece = lines ? lines.keys.indexOf(roadSegment(key)) : -1;
+      const block = key.includes('@');
+      if (!lines || piece < 0) return { kind, title: 'Road', detail: block ? 'One block' : '' };
       const cls = roadClassName(lines.classes[piece]);
-      return { kind, title: lines.names[piece] || cls, detail: lines.names[piece] ? cls : '' };
+      const detail = [lines.names[piece] ? cls : '', block ? 'one block' : ''].filter(Boolean).join(', ');
+      return { kind, title: lines.names[piece] || cls, detail: detail.charAt(0).toUpperCase() + detail.slice(1) };
     }
     case 'bridge':
       return { kind, title: facts?.name ? `${facts.name} bridge` : 'Bridge', detail: facts?.detail ? roadClassName(facts.detail) : '' };

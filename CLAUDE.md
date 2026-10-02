@@ -42,7 +42,7 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/lidar/` | LiDAR: `sources/` one module per provider (`common.ts` has the shared catalog helpers), `read/` EPT, COPC, I3S, plain LAZ/LAS and ZIP reading (`ept.ts`, `tiles.ts`, `i3s.ts`, `chunks.ts`, `zip.ts`) with an injected LAZ decoder and projector, measurement (`measure.ts`, ground, planes, terraces, selection), roofs cut from the LiDAR only surface (`surface.ts`, `rim.ts`), `prepare.ts` batching and checkpoints |
 | `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges, `network/` tidy), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
-| `src/core/edit/` | Model editor: the edits document (`types.ts`, `keys.ts`), `EditSession` applying it to a generated model in the worker, road tiles, land fill, terrain and water after edits (`earth.ts`), added shapes and what they stand on (`stand.ts`), road lines for picking |
+| `src/core/edit/` | Model editor: the edits document (`types.ts`, `keys.ts`), `EditSession` applying it to a generated model in the worker, road tiles, land fill, terrain and water after edits (`earth.ts`), added shapes and what they stand on (`stand.ts`), drawn roads on LiDAR only models (`drawn.ts`, `surfaceCut.ts`), road edits by block (`blocks.ts`), road lines for picking |
 | `src/core/tracks/` | Imported routes ("tracks" in the code, so they don't clash with the SVG maps' picked-road routes): reading GPX, KML, KMZ, TCX, GeoJSON and FIT (`parse.ts`, `fitfile.ts`), encoded polylines, snapping to roads (`snap.ts`), framing the area (`frame.ts`), start and finish markers. Map models lay them out in `pipeline/tracks.ts`, LiDAR only models rest them on the survey in `dsm/route.ts` |
 | `src/core/engine/` | Worker protocol and main-thread client |
 | `src/worker/engine.worker.ts` | Downloads, generates, meshes and exports off the main thread |
@@ -223,7 +223,12 @@ Imported routes (`src/core/tracks/`, `pipeline/tracks.ts`, `dsm/route.ts`, UI in
   download every road and path segment for it (`loadMapWater`).
 - Map models: a ribbon of `widthMm` at `heightMm` over the ground (0.8,
   a layer over 0.6 mm roads), draped like roads, keyed `rt:<id>` and
-  described for the editor. Its layer comes after roads, land and decks
+  described for the editor. Roads, rail, paths and land cover are cut away
+  under its ground, as land is under roads, so an STL (no part order) or a
+  slicer that ignores the order still prints the route over them. Airport
+  paving only gives way by order. The editor's road tiles and land fill give
+  them back when the route is removed (`RoadTiles` cuts, `ground` on its
+  object). Its layer comes after roads, land and decks
   and before buildings, so where GPS drifts into a building the building
   keeps the overlap and its walls stay its colour. Buildings aren't cut out
   of it: at a small scale a route 27 m wide was shredded into dashes by the
@@ -236,7 +241,7 @@ Imported routes (`src/core/tracks/`, `pipeline/tracks.ts`, `dsm/route.ts`, UI in
   route if it's removed in the editor), or wades with supports off. Trees
   avoid it. Without routes the model is unchanged.
 - LiDAR only models: a route rests on compose's bare ground grid
-  (`ground`, returned only with `clear`), never the surface, which a
+  (`ground`), never the surface, which a
   drifting track climbed every roof and crown of. Trees and clutter under 2 m
   are cleared to the ground along it first (`clear`, the ribbon plus a cell
   either side), so it shows through parks. Raised stretches (over 2.5 m) it
@@ -700,7 +705,7 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
 Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_WORKS.md`):
 
 - Edits are keyed by feature, never by mesh: `b:<building>[/<part>]`,
-  `r:<segment>`, `br:<segment>` (bridge decks), `w:<water>`, `t:<tree>`,
+  `r:<segment>[@<from>-<to>]`, `br:<segment>` (bridge decks), `w:<water>`, `t:<tree>`,
   `k:<rock>`, `s:<shape>` (`keys.ts`). They carry over when the model is
   generated again with other settings, and edits for things a model lacks
   are kept and ignored. Sizes are printed mm, apart from building heights
@@ -765,6 +770,28 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   that flag through later changes to the bridge. Decks are built again
   from their centrelines at a new width (`DeckPiece`), and piers are cut
   to a narrower deck.
+- Roads are edited by block (`blocks.ts`). A road edit covers a range of
+  its segment by fraction of its length (`r:<id>@0.25-0.5`, the plain key
+  is all of it), and the narrowest range wins a field at a time. Set a
+  field on a range and smaller ranges inside lose it, clear one and it's
+  carved out of wider ranges (`writeRoads`, which every road write in
+  `editActions.ts` goes through, `tidySegment` after). Splits live on the
+  segment's own edit (`splits`). A click picks a block: the stretch between
+  junctions, splits and edit ends (`blockBounds`). Junctions are inner
+  vertices another kept segment shares (`pipeline/measure.ts`), which gave
+  the same blocks as Overture's connectors on all of the Loop without
+  reading them (25% more segment data). Sidewalks that aren't printed don't
+  count, and ones within 0.5 mm are one. Pieces and decks are measured
+  along their segment once laid out (`measure`, `DeckPiece.at`), by
+  projecting onto the segment's own line, since the tidy moves lines. The
+  road tiles cut pieces at range ends (`styledPieces`), and a stretch with
+  a layer or height of its own is clipped flat at its cuts (`endMask`).
+  Without range edits nothing is cut, so exports with whole-segment edits
+  stay byte-identical (checked on the Loop). A deck takes the road's edit
+  at its middle (`editOf` with `at`, `ObjectFacts.at` for the viewer). The
+  viewer cuts its road lines into blocks (`viewer/blocks.ts`) only when
+  splits or edit ranges change (`blocksSignature`), and `Whole street`
+  selects whole segments.
 - Custom layers export as `layer:<id>` (building rank) and
   `layer:<id>:water` (water rank) with a `PartColour`. Shapes in a model
   colour export as `added-<group>` with building rank, so a water-coloured
@@ -805,6 +832,28 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   are opened by a micron (`openSlivers`): where the shape's outline and the
   water's nearly met, the slivers left made Constrainautor loop on the
   draped top, and the shape was missing from the export.
+- A drawn road (a `path` that follows the ground) on a LiDAR only model
+  rests on the bare ground through `routeProfile`, like a route
+  (`drawn.ts`). The edit context keeps compose's ground and a byte of
+  flags per cell (`profile`, `ProfileGrids`: water, cut, building,
+  tree). Trees and clutter over the road are cleared in a copy of the grid
+  around it, only where they stand over half the road's height above the
+  ground (clutter is kept by default, and clearing every parked car cut
+  holes all down a street). `TREE_CELL` is compose's canopy plus cells of
+  mostly vegetation with nothing solid over the ground, and cells compose
+  raised closing a crown's gap beside one: the canopy alone left crown rims
+  poking through the road. Routes still clear by the canopy, so their
+  output is unchanged. A road on something raised the whole way (a roof)
+  stands on it, since no edge is seen. Mostly hidden (`BURIED_SHARE`) it
+  gets the `surface` note.
+- What drawn roads clear is cut out of the city cap and filled with the
+  bare ground (`surfaceCut.ts`). The view splits the cap once into the
+  tiles the roads reach and the rest, meshed once, and only cuts those
+  tiles again: a whole cut and mesh was about 1 s per road edit on the
+  Loop, the tiles about 0.2 s. Exports cut the whole cap, since the split
+  leaves walls inside the solid. The hole grows by `JOIN_MM` first: cells
+  meeting at a corner pinched the land, and `cutSurface` pulled the whole
+  surface in by a micron.
 - A height edit scales everything above the building's ground
   (`heights.ts`). A part's own height beats its building's. A raised part
   left on air by a removed or lowered part is built down to the ground

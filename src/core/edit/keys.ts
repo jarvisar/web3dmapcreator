@@ -4,6 +4,7 @@
 //   b:<building id>            a building, with its parts
 //   b:<building id>/<part id>  one part (or the main mass) of it
 //   r:<segment id>             a road, path or railway
+//   r:<segment id>@<from>-<to> a range of one, by fraction of its length (blocks.ts)
 //   br:<segment id>            a bridge deck and its piers
 //   w:<feature id>             a body of water
 //   t:<feature id>, t:f<r>,<c> a mapped tree, a forest tree
@@ -11,6 +12,7 @@
 //   s:<shape id>               a shape added in the editor
 //   rt:<track id>              an imported route
 
+import { editAt, editOver, roadEdits, roadEditOf, roadSegment } from './blocks';
 import type { ModelEdits, ObjectEdit } from './types';
 
 export type ObjectKind = 'building' | 'road' | 'bridge' | 'water' | 'tree' | 'rock' | 'shape' | 'route';
@@ -50,15 +52,19 @@ export function shapeKey(id: string): string {
 }
 
 /**
- * An object's edit as it applies. A bridge deck is its road's segment, so it
+ * An object's edit as it applies. A road's comes from every range of its
+ * segment holding it (blocks.ts). A bridge deck is its road's segment, so it
  * goes, changes colour and widens with the road unless it has an edit of its
- * own. The road's height stays with the road: a deck's thickness is set with
- * the bridges.
+ * own: the road's edit at `at`, the deck's middle along the segment, when
+ * that's known, else the whole segment's. The road's height stays with the
+ * road: a deck's thickness is set with the bridges.
  */
-export function editOf(edits: ModelEdits, key: string): ObjectEdit | undefined {
+export function editOf(edits: ModelEdits, key: string, at?: number): ObjectEdit | undefined {
+  if (key.startsWith('r:')) return roadEditOf(edits.objects, key);
   const own = edits.objects[key];
   if (!key.startsWith('br:')) return own;
-  const road = edits.objects[`r:${key.slice(3)}`];
+  const entry = roadEdits(edits.objects).get(`r:${key.slice(3)}`);
+  const road = at === undefined ? editOver(entry, 0, 1) : editAt(entry, at);
   if (!road) return own;
   const inherited: ObjectEdit = {};
   if (road.removed) inherited.removed = true;
@@ -70,6 +76,6 @@ export function editOf(edits: ModelEdits, key: string): ObjectEdit | undefined {
 /** The bridge deck of a road's segment, and the other way round. */
 export function twinOf(key: string): string | null {
   if (key.startsWith('br:')) return `r:${key.slice(3)}`;
-  if (key.startsWith('r:')) return `br:${key.slice(2)}`;
+  if (key.startsWith('r:')) return `br:${roadSegment(key).slice(2)}`;
   return null;
 }

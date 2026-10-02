@@ -106,7 +106,7 @@ const TREE_MIN_M = 2;
 // Share of vegetation-like returns over 5 x 5 cells that makes a canopy, and
 // the mean roughness it needs. A rail deck or a steel roof returns twice like
 // a crown but is flat.
-const TREE_SHARE = 0.3;
+export const TREE_SHARE = 0.3;
 const TREE_ROUGH_M = 0.5;
 // Share of a canopy's cells whose highest other return lies well below its
 // top, or in a survey without vegetation and building classes, the share
@@ -231,8 +231,8 @@ export interface ComposeResult {
   detail: Float32Array;
   /** Highest ground (not buildings or trees) in model mm, same datum as heights. */
   groundMaxMm: number;
-  /** With `clear`: the bare ground in model mm, same datum as heights. */
-  ground?: Float32Array;
+  /** The bare ground in model mm, same datum as heights, for routes and roads drawn in the editor (route.ts). */
+  ground: Float32Array;
   counts: Record<string, number>;
 }
 
@@ -323,11 +323,8 @@ export function compose(
     for (let i = 0; i < n; i++) if (cut[i] && water[i]) waterTop[i] = surface[i];
   }
   if (counts.cut_water_cells) bankHeights(surface, cut, nx, ny, BANK_RINGS + (mapped ? Math.ceil(MAP_EDGE_M / Math.min(dx, dy)) : 0));
-  let groundMm: Float32Array | undefined;
-  if (clear) {
-    groundMm = new Float32Array(n);
-    for (let i = 0; i < n; i++) groundMm[i] = heightMm(ground[i], ground[i], 0, h) + shift;
-  }
+  const groundMm = new Float32Array(n);
+  for (let i = 0; i < n; i++) groundMm[i] = heightMm(ground[i], ground[i], 0, h) + shift;
   return { heights: surface, water, cut, waterTop, detail, groundMaxMm: groundMax + shift, ground: groundMm, counts };
 }
 

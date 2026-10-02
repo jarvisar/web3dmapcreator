@@ -2,6 +2,7 @@
 // the area it shares. Both are kept for every area, and a link for one city
 // carried a "Home" pin, and exactly where it is, from another.
 
+import { roadSegment } from '../../core/edit/blocks';
 import { kindOf, objectOf } from '../../core/edit/keys';
 import type { ModelEdits } from '../../core/edit/types';
 import { Projection } from '../../core/geo/projection';
@@ -48,7 +49,7 @@ export function editsForArea(edits: ModelEdits, area: AreaSpec, model: { data: E
     if (!model || !here) return false;
     const kind = kindOf(key);
     if (kind === 'tree') return model.trees;
-    if (kind === 'road') return roads.has(key);
+    if (kind === 'road') return roads.has(roadSegment(key));
     return objectOf(key) in model.data.objects;
   };
   const objects: ModelEdits['objects'] = {};

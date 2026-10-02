@@ -31,6 +31,7 @@ function town(): SourceData {
     release: 'test',
     features: {
       water: [feature({ type: 'Polygon', coordinates: rect(-900, -60, 900, 40) }, { subtype: 'river', class: 'river' })],
+      land_use: [feature({ type: 'Polygon', coordinates: rect(-300, -400, -100, -200) }, { subtype: 'park', class: 'park' })],
       segment: [
         feature({ type: 'LineString', coordinates: [at(-800, 200), at(800, 200)] }, { subtype: 'road', class: 'primary' }),
         feature({ type: 'LineString', coordinates: [at(0, -450), at(0, 450)] }, { subtype: 'road', class: 'residential' }),
@@ -200,6 +201,40 @@ describe('routes on a map model', () => {
     })(), data: town(), elevation: flat }).then((spec) => ({ spec }));
     expect(none.layers.map((layer) => layer.id)).toEqual(without.layers.map((layer) => layer.id));
     expect(none.stats).toEqual(without.stats);
+  });
+
+  it('cuts the roads and parks it lies on, and gives them back when removed in the editor', async () => {
+    // Along the street at x 0, and across the park.
+    const park: TrackLines = { id: 'park', name: 'Park', lines: [[at(-280, -300), at(-120, -300)]] };
+    const { spec, settings } = await build([run(), park]);
+    const solidsOf = (layers: typeof spec.layers, id: string) => (layers.find((layer) => layer.id === id)?.solids ?? []) as PrismSolid[];
+    const street = model(0, -300);
+    const lawn = model(-200, -300);
+    expect(covers(routeSolids(spec), street)).toBe(true);
+    expect(covers(solidsOf(spec.layers, 'roads'), street)).toBe(false);
+    // Away from it the street is still there.
+    expect(covers(solidsOf(spec.layers, 'roads'), model(0, 350))).toBe(true);
+    expect(covers(routeSolids(spec), lawn)).toBe(true);
+    expect(covers(solidsOf(spec.layers, 'land-green'), lawn)).toBe(false);
+    expect(covers(solidsOf(spec.layers, 'land-green'), model(-200, -250))).toBe(true);
+
+    const session = new EditSession(spec, settings, new Projection(area.center, area.rotationDeg, spec.mmPerMetre));
+    // A wider street near the route is rebuilt from its lines, and still gives way to the route.
+    const streetKey = spec.edit!.roads.find((piece) => piece.points.every(([x]) => Math.abs(x) < 0.5))!;
+    const wider = emptyEdits();
+    wider.objects[`r:${streetKey.sourceId}`] = { widthMm: 1.2 };
+    const widened = await session.edited(wider, DEFAULT_PALETTE);
+    expect(covers(solidsOf(widened.layers, 'roads'), street)).toBe(false);
+    expect(covers(solidsOf(widened.layers, 'roads'), model(6, -300))).toBe(true);
+
+    const removed = emptyEdits();
+    removed.objects['rt:run'] = { removed: true };
+    removed.objects['rt:park'] = { removed: true };
+    const edited = await session.edited(removed, DEFAULT_PALETTE);
+    expect(edited.layers.some((layer) => layer.id === 'routes')).toBe(false);
+    expect(covers(solidsOf(edited.layers, 'roads'), street)).toBe(true);
+    const lawnBack = edited.layers.filter((layer) => layer.id.startsWith('land-green')).flatMap((layer) => layer.solids as PrismSolid[]);
+    expect(covers(lawnBack, lawn)).toBe(true);
   });
 
   it('goes with its ground in the water when removed in the editor', async () => {

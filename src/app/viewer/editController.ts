@@ -10,11 +10,17 @@
 //
 // A drag follows the pointer that started it. A second finger during one
 // puts it back and hands both fingers to the view, for a pinch.
+//
+// With Split a road a click on a road splits it there into two blocks, and a
+// click on a split takes it out again (viewer/blocks.ts). Splits show as
+// orange bars across the road while editing, and the bar a click would make
+// follows the pointer.
 
 import {
   BufferGeometry,
   ConeGeometry,
   CylinderGeometry,
+  DoubleSide,
   Float32BufferAttribute,
   Group,
   Line,
@@ -22,13 +28,17 @@ import {
   LineLoop,
   Mesh,
   MeshBasicMaterial,
+  PlaneGeometry,
   RingGeometry,
   SphereGeometry,
   Vector3,
   type Object3D,
 } from 'three';
 import type { Projection } from '../../core/geo/projection';
+import { roadEdits, roadSegment } from '../../core/edit/blocks';
 import { kindOf } from '../../core/edit/keys';
+import { splitTarget, type SplitTarget } from './blocks';
+import type { RoadMark } from './roads';
 import type { ObjectFacts } from '../../core/edit/session';
 import { emptyEdits, followsGround, MAX_SHAPE_POINTS, type AddedShape, type ModelEdits } from '../../core/edit/types';
 import type { EditTool } from '../state/store';
@@ -48,6 +58,10 @@ const ARROW_GRAB_FROM = 0.45;
 const ARROW_MIN_SIN = 0.3;
 /** The ring round the arrow's foot, in handle units. */
 const RING_RADIUS = 0.24;
+/** A split's bar along the road, as a share of its distance from the camera, so it stays visible zoomed out. */
+const BAR_SCALE = 0.004;
+/** How far a split's bar reaches past the road's edges, in mm. */
+const BAR_REACH_MM = 0.25;
 
 export interface EditHandlers {
   /** `part` picks one part of a building rather than the whole of it. */
@@ -59,6 +73,8 @@ export interface EditHandlers {
   hover(target: HoverTarget | null, clientX: number, clientY: number): void;
   place(tool: EditTool, target: PickTarget): void;
   draw(tool: 'path' | 'area', points: Vector3[]): void;
+  /** A click with Split a road: split there, join a split, or nothing at a junction. */
+  split(target: SplitTarget): void;
   /** How far the tool's drawing has got, for the hint. */
   drawing(points: number): void;
   /** Finishing was asked for with fewer points than the shape needs. The drawing goes on. */
@@ -112,8 +128,13 @@ export class EditController {
   private handles: Handle[] = [];
   private readonly gizmo = new Group();
   private readonly guide = new Group();
+  /** The splits of every road, as bars across them. */
+  private readonly marks = new Group();
+  private marksKey = '';
   private drawingPoints: Vector3[] = [];
   private cursor: Vector3 | null = null;
+  /** Where the split tool's click would land, and what it would do. */
+  private splitPreview: { target: SplitTarget; mark: RoadMark } | null = null;
   private hoverTimer = 0;
   private lastHover = 0;
   private pending: { x: number; y: number } | null = null;
@@ -122,6 +143,9 @@ export class EditController {
   private readonly insertMaterial = new MeshBasicMaterial({ color: '#ffffff', depthTest: false, depthWrite: false, toneMapped: false });
   private readonly activeMaterial = new MeshBasicMaterial({ color: '#f76707', depthTest: false, depthWrite: false, toneMapped: false });
   private readonly lineMaterial = new LineBasicMaterial({ color: ACCENT, depthTest: false, toneMapped: false });
+  private readonly splitMaterial = new MeshBasicMaterial({ color: '#f76707', depthTest: false, depthWrite: false, toneMapped: false, side: DoubleSide });
+  private readonly joinMaterial = new MeshBasicMaterial({ color: '#ffffff', depthTest: false, depthWrite: false, toneMapped: false, side: DoubleSide });
+  private readonly barGeometry = new PlaneGeometry(1, 1);
 
   constructor(
     private readonly engine: ViewerEngine,
@@ -136,7 +160,7 @@ export class EditController {
     window.addEventListener('pointercancel', this.onCancel);
     engine.controls.addEventListener('change', this.layout);
     engine.geometryListeners.add(this.onGeometry);
-    engine.overlay.add(this.gizmo, this.guide);
+    engine.overlay.add(this.gizmo, this.guide, this.marks);
     this.box = document.createElement('div');
     this.box.className = 'viewer-box-select';
     this.box.hidden = true;
@@ -156,6 +180,7 @@ export class EditController {
     if (!state.enabled || state.tool !== 'select') this.setCursor(null);
     // A drag in progress keeps its handles where they are.
     if (!this.drag) this.rebuild();
+    this.rebuildMarks();
   }
 
   /** Finishes a path or area being drawn, as a double-click or Enter does. */
@@ -210,7 +235,11 @@ export class EditController {
     clearTimeout(this.hoverTimer);
     this.clearGroup(this.gizmo);
     this.clearGroup(this.guide);
-    this.engine.overlay.remove(this.gizmo, this.guide);
+    this.clearGroup(this.marks, true);
+    this.engine.overlay.remove(this.gizmo, this.guide, this.marks);
+    this.splitMaterial.dispose();
+    this.joinMaterial.dispose();
+    this.barGeometry.dispose();
     this.handleMaterial.dispose();
     this.insertMaterial.dispose();
     this.activeMaterial.dispose();
@@ -223,6 +252,8 @@ export class EditController {
   /** New geometry from the worker: the arrow goes on the new top. A drag keeps its own. */
   private readonly onGeometry = (): void => {
     if (!this.drag) this.rebuild();
+    this.marksKey = '';
+    this.rebuildMarks();
   };
 
   private readonly onDown = (event: PointerEvent): void => {
@@ -341,6 +372,7 @@ export class EditController {
   private readonly onLeave = (): void => {
     this.pending = null;
     this.cursor = null;
+    this.splitPreview = null;
     this.updateGuide();
     this.engine.setHover(null);
     this.handlers.hover(null, 0, 0);
@@ -410,8 +442,25 @@ export class EditController {
     }
   }
 
+  /** What the split tool would do at a point of the page, or null off the roads. */
+  private splitAt(x: number, y: number): SplitTarget | null {
+    const roads = this.engine.roads;
+    const pick = this.engine.roadPickAt(x, y);
+    if (!roads || !pick) return null;
+    const segment = roadSegment(pick.key);
+    const splits = roadEdits(this.state.edits.objects).get(segment)?.splits ?? [];
+    return splitTarget(roads, this.engine.blockBoundsOf(segment), splits, pick);
+  }
+
   private click(x: number, y: number, modifiers: { additive: boolean; part: boolean }): void {
     const tool = this.state.tool;
+    if (tool === 'split') {
+      const target = this.splitAt(x, y);
+      if (target) this.handlers.split(target);
+      this.splitPreview = null;
+      this.updateGuide();
+      return;
+    }
     const target = this.engine.pickAt(x, y);
     if (tool === 'select' || tool === 'several') {
       // With Select several a click beside everything keeps what's selected.
@@ -440,6 +489,15 @@ export class EditController {
     const at = this.pending;
     if (!at || this.drag) return;
     const tool = this.state.tool;
+    if (tool === 'split') {
+      const target = this.splitAt(at.x, at.y);
+      const pick = target ? this.engine.roadPickAt(at.x, at.y) : null;
+      this.engine.setHover(target?.kind === 'split' && pick ? pick.key : null);
+      this.handlers.hover(null, at.x, at.y);
+      this.splitPreview = target && pick ? { target, mark: target.kind === 'split' ? { piece: pick.piece, x: pick.x, y: pick.y, z: pick.z, dx: pick.dx, dy: pick.dy } : target.mark } : null;
+      this.updateGuide();
+      return;
+    }
     const selecting = tool === 'select' || tool === 'several';
     const target = selecting ? this.engine.hoverAt(at.x, at.y) : this.engine.pickAt(at.x, at.y);
     if (selecting) {
@@ -700,14 +758,49 @@ export class EditController {
     }
     const guide = this.guide.children;
     for (const child of guide) if (child.userData.scaled) child.scale.setScalar(camera.position.distanceTo(child.position) * 0.02);
+    for (const child of [...this.marks.children, ...guide]) if (child.userData.bar) child.scale.x = Math.max(0.08, camera.position.distanceTo(child.position) * BAR_SCALE);
     this.engine.requestRender();
   };
 
+  /** A bar across a road at a mark: orange for a split, white for one a click takes out. */
+  private bar(mark: RoadMark, material: MeshBasicMaterial): Mesh {
+    const across = this.engine.roadWidth(mark.piece) + 2 * BAR_REACH_MM;
+    const mesh = new Mesh(this.barGeometry, material);
+    mesh.position.set(mark.x, mark.y, mark.z + this.engine.roadHeight(mark.piece) + 0.05);
+    mesh.rotation.z = Math.atan2(mark.dy, mark.dx);
+    mesh.scale.set(0.1, across, 1);
+    mesh.userData.bar = true;
+    mesh.renderOrder = 11;
+    return mesh;
+  }
+
+  /** Bars across the roads at every split, while editing. */
+  private rebuildMarks(): void {
+    const roads = this.engine.roads;
+    const { enabled, edits } = this.state;
+    const key = enabled && roads ? JSON.stringify([...roadEdits(edits.objects)].filter(([, entry]) => entry.splits.length).map(([segment, entry]) => [segment, entry.splits])) : '';
+    if (key === this.marksKey) return;
+    this.marksKey = key;
+    this.clearGroup(this.marks, true);
+    if (!enabled || !roads) return;
+    for (const [segment, entry] of roadEdits(edits.objects)) {
+      for (const at of entry.splits) {
+        const mark = roads.markAt(segment, at);
+        if (mark && this.engine.roadShown(mark.piece)) this.marks.add(this.bar(mark, this.splitMaterial));
+      }
+    }
+    this.layout();
+  }
+
   private updateGuide(): void {
-    this.clearGroup(this.guide);
+    this.clearGroup(this.guide, true);
     const points = [...this.drawingPoints];
     const tool = this.state.tool;
-    if (this.state.enabled && tool !== 'select' && this.cursor) {
+    const preview = this.splitPreview;
+    if (this.state.enabled && tool === 'split' && preview && preview.target.kind !== 'end') {
+      this.guide.add(this.bar(preview.mark, preview.target.kind === 'join' ? this.joinMaterial : this.handleMaterial));
+    }
+    if (this.state.enabled && tool !== 'select' && tool !== 'split' && this.cursor) {
       if (tool === 'path' || tool === 'area') points.push(this.cursor);
       else {
         const ring = new Mesh(new RingGeometry(0.5, 0.75, 32), this.handleMaterial);
@@ -735,11 +828,12 @@ export class EditController {
     this.layout();
   }
 
-  private clearGroup(group: Group): void {
+  /** Empties a group, disposing its geometry except the bars' shared plane. */
+  private clearGroup(group: Group, bars = false): void {
     for (const child of [...group.children]) {
       child.traverse((object) => {
         const mesh = object as Mesh;
-        if (mesh.geometry) mesh.geometry.dispose();
+        if (mesh.geometry && !(bars && mesh.geometry === this.barGeometry)) mesh.geometry.dispose();
       });
       group.remove(child);
     }

@@ -34,16 +34,20 @@ import { meshLayers } from '../pipeline/mesh';
 import { LAND_NAMES, LAND_ROLES, type EditContext, type ModelSpec } from '../pipeline/generate';
 import type { ModelSettings, Palette, SurfaceCategory } from '../settings';
 import { Wading } from '../pipeline/wading';
+import { bareGround, drawnRoad, type DrawnRoad } from './drawn';
 import { EarthModel, isRecessed, type Earth } from './earth';
 import { FILL_REACH_MM, LandCover, type LandFill } from './land';
 import type { LoadedFont } from '../svgmap/text/outline';
 import type { ColourGroup, MaterialRole, MeshPart, MultiPolygon, PartColour, PartObjects, Polygon } from '../types';
 import { heightFactor, lowestBottom, lowestTop, scaleSolid, solidPeak } from './heights';
 import { editOf, isPartKey, kindOf, objectOf, partKey, shapeKey } from './keys';
-import { ROAD_PARTS, RoadTiles, TileGrid, type RoadBucket, type RoadStyle } from './roads';
+import { ROAD_PARTS, RoadStyles, RoadTiles, TileGrid, type RoadBucket, type RoadStyle } from './roads';
+import { SurfaceCut } from './surfaceCut';
 import { missingGlyphs, shapeFootprint, type MissingGlyphs } from './shapes';
 import { buriedIn, heldAt, heldPieces, holdersOf, levelOver, outlinePoints, pieceSolids, restPieces, standPieces, wetKey, wetUnder, type Held, type Holder, type StandPiece } from './stand';
 import { EDIT_LIMITS, followsGround, type AddedShape, type EditLayer, type ModelEdits, type ObjectEdit, type ShapeKind } from './types';
+
+const CUT_FAILED = "The trees over a drawn road couldn't be cleared from the surface, so parts of the road may be hidden under them.";
 
 export interface MeshData {
   positions: Float32Array;
@@ -115,6 +119,8 @@ export interface ObjectFacts {
   widthMm?: number;
   /** Water in a recess of its own, which is filled or kept once the water's left out. */
   recessed?: boolean;
+  /** A bridge's middle along its road's segment, so it takes the edit of the block it's in (keys.ts editOf). */
+  at?: number;
 }
 
 // A raised part clearing what's under it by less than a 0.2 mm layer rests on
@@ -252,6 +258,8 @@ interface Standing {
   ground: MultiPolygon;
   /** Its footprint less what's held, whatever the water under it does. */
   unheld: MultiPolygon;
+  /** A road drawn on a LiDAR only model: where the trees over it are cleared from the surface. */
+  cleared?: MultiPolygon;
 }
 
 /** What held a shape up, and the rest of its footprint, for a footprint that may stay the same. */
@@ -341,6 +349,10 @@ export class EditSession {
   private readonly generatedHolders = new Map<string, Holder[][]>();
   /** A LiDAR only model's water. */
   private readonly surfaceWater: { polygons: MultiPolygon; box: Box; floor: number | null }[];
+  /** Clears a LiDAR only model's surface over drawn roads, made the first time one clears anything. */
+  private cutter: SurfaceCut | null | undefined;
+  /** What was cleared in the surface the viewer has, '' for none. */
+  private sentCut = '';
 
   constructor(
     private readonly spec: ModelSpec,
@@ -398,6 +410,11 @@ export class EditSession {
         : new Wading(this.ctx.bodies.flatMap((body) => (isRecessed(body) ? [{ polygons: body.floors, footing: body.floor !== null ? body.floor - embed : spec.baseZ }] : [])));
   }
 
+  /** An object's edit as it applies, a bridge's with its road's at the deck (keys.ts). */
+  private editOf(edits: ModelEdits, key: string): ObjectEdit | undefined {
+    return editOf(edits, key, key.startsWith('br:') ? this.decks.get(key)?.[0]?.at : undefined);
+  }
+
   /** Object facts for the viewer: what it is, what it's called, how tall. */
   describe(): Record<string, ObjectFacts> {
     const out: Record<string, ObjectFacts> = {};
@@ -421,6 +438,7 @@ export class EditSession {
       }
       const decks = this.decks.get(key);
       if (info.kind === 'bridge' && decks?.length) entry.widthMm = round(Math.max(...decks.map((d) => d.widthMm)));
+      if (info.kind === 'bridge' && decks?.[0]?.at !== undefined) entry.at = decks[0].at;
       if (info.kind === 'water' && this.bodiesByKey.get(key)?.some((i) => isRecessed(this.ctx.bodies[i]))) entry.recessed = true;
       out[key] = entry;
     }
@@ -696,7 +714,7 @@ export class EditSession {
    * narrower keeps its heights.
    */
   private holdersNow(key: string, pass: Pass): (Holder[] | null)[] | null {
-    if (editOf(pass.edits, key)?.removed) return null;
+    if (this.editOf(pass.edits, key)?.removed) return null;
     if (kindOf(key) !== 'building') return this.holdersAsGenerated(key);
     return this.solidsOf(pass, key).map(({ solid }) => (solid.sub && pass.edits.objects[partKey(key, solid.sub)]?.removed ? null : holdersOf(solid, 'building')));
   }
@@ -750,12 +768,18 @@ export class EditSession {
     const held: MultiPolygon = [];
     let ground: MultiPolygon = top.polygons;
     let unheld: MultiPolygon = top.polygons;
+    let cleared: MultiPolygon | undefined;
     if (!hf) {
       // A LiDAR only model's surface holds everything, roofs and all. Over
       // its water a shape goes down to the floor, or through a cut to the base.
+      // A drawn road rests on the ground under it instead (drawn.ts).
       const cap = flat ? top.top! - 0.05 : Infinity;
-      const shapeTop: HeightFn | number = flat ? top.top! : (x, y) => ctx.heightAt(x, y) + rise;
-      const prism = (polygon: Polygon, bottom: number): PrismSolid => ({ kind: 'prism', role: 'building', polygon, top: shapeTop, bottom, drape: flat ? 0 : 1, key });
+      const road = !flat && shape.kind === 'path' ? this.drawnRoad(shape, embed) : null;
+      cleared = road?.cleared;
+      if (road && road.hidden >= BURIED_SHARE) buried = 'surface';
+      const shapeTop: HeightFn | number = flat ? top.top! : road ? (x, y) => road.restsOn(x, y) + rise : (x, y) => ctx.heightAt(x, y) + rise;
+      const drape = flat ? 0 : (road?.drape ?? 1);
+      const prism = (polygon: Polygon, bottom: HeightFn | number): PrismSolid => ({ kind: 'prism', role: 'building', polygon, top: shapeTop, bottom, drape, key });
       let land = top.polygons;
       let cut = false;
       solids = [];
@@ -771,7 +795,10 @@ export class EditSession {
       }
       if (cut) land = openSlivers(land);
       if (land.length) {
-        const bottom = Math.min(lowestGround(ctx, land) - SURFACE_DEPTH_MM, cap);
+        const floor = this.spec.baseZ + 0.05;
+        const bottom: HeightFn | number = road
+          ? (x, y) => Math.max(floor, Math.min(road.restsOn(x, y), road.surfaceAt(x, y)) - road.sink)
+          : Math.min(lowestGround(ctx, land) - SURFACE_DEPTH_MM, cap);
         for (const polygon of land) solids.push(prism(polygon, bottom));
       }
     } else {
@@ -810,9 +837,40 @@ export class EditSession {
         if (hidden < multiArea(top.polygons) * BURIED_SHARE) buried = null;
       }
     }
-    const standing = { signature, solids, buried, held, ground, unheld };
+    const standing = { signature, solids, buried, held, ground, unheld, cleared };
     this.standing.set(shape.id, standing);
     return standing;
+  }
+
+  /** A path drawn on a LiDAR only model, when it follows the ground (raised ones are flat on what they're over). */
+  private drawnRoad(shape: AddedShape, embed: number): DrawnRoad | null {
+    const grids = this.ctx.profile;
+    if (!grids || shape.points.length < 2) return null;
+    const line = shape.points.map(([lon, lat]) => this.projection.toModel(lon, lat));
+    return drawnRoad(line, shape.sizeMm, shape.heightMm, grids, embed);
+  }
+
+  /**
+   * What drawn roads clear from a LiDAR only surface (drawn.ts), which is
+   * cut out of it and filled with the bare ground in the city part. Null
+   * with nothing cleared.
+   */
+  private cleared(standing: Map<string, Standing>): { cut: SurfaceCut; hole: MultiPolygon; signature: string } | null {
+    const pieces = [...standing.values()].flatMap((s) => s.cleared ?? []);
+    if (!pieces.length) return null;
+    if (this.cutter === undefined) {
+      const grids = this.ctx.profile;
+      const city = this.spec.layers.find((layer) => layer.id === 'city');
+      const cell = grids ? Math.min(grids.ground.step, grids.ground.stepY ?? grids.ground.step) : 0;
+      this.cutter =
+        grids && city?.solids.some((solid) => solid.kind === 'cap')
+          ? new SurfaceCut(city, this.crop, this.surfaceWater.flatMap((w) => w.polygons), bareGround(grids), Math.max(2 * cell, 0.1))
+          : null;
+    }
+    if (!this.cutter) return null;
+    const signature = polygonSignature(pieces);
+    const hole = this.cutter.hole(pieces, signature);
+    return hole.length ? { cut: this.cutter, hole, signature } : null;
   }
 
   /**
@@ -874,7 +932,7 @@ export class EditSession {
 
   /** What a holder's shape depends on in the edits. */
   private holderState(key: string, pass: Pass, decks: Map<string, Deck>): string {
-    if (editOf(pass.edits, key)?.removed) return `${key}:gone`;
+    if (this.editOf(pass.edits, key)?.removed) return `${key}:gone`;
     if (key.startsWith('br:')) return `${key}:${decks.get(key)?.width ?? ''}`;
     const own = pass.reshaped.get(key);
     return own ? `${key}:${own.map(([k, e]) => `${k}=${e.heightM ?? ''}${e.removed ? ':gone' : ''}`).sort().join(',')}` : key;
@@ -883,7 +941,7 @@ export class EditSession {
   private holders(keys: string[], box: Box, pass: Pass, decks: Map<string, Deck>): Holder[] {
     const out: Holder[] = [];
     for (const key of keys) {
-      if (editOf(pass.edits, key)?.removed) continue;
+      if (this.editOf(pass.edits, key)?.removed) continue;
       const bridge = key.startsWith('br:');
       let solids: Solid[];
       if (bridge) {
@@ -908,7 +966,7 @@ export class EditSession {
       if (!ROAD_PART_IDS.has(layer.id)) continue;
       base.set(layer.id, layer.solids.flatMap((s) => (s.kind === 'prism' ? [s.polygon] : [])));
     }
-    this.roads = new RoadTiles(this.ctx.roads, base, this.crop, ringBounds(this.spec.crop[0]), this.settings);
+    this.roads = new RoadTiles(this.ctx.roads, base, this.crop, ringBounds(this.spec.crop[0]), this.settings, this.ctx.tracks);
     return this.roads;
   }
 
@@ -930,6 +988,8 @@ export class EditSession {
   private styles(edits: ModelEdits, roads: RoadTiles): Map<string, RoadStyle> {
     const out = new Map<string, RoadStyle>();
     for (const [key, edit] of Object.entries(edits.objects)) {
+      // A route taken out gives the roads it cut back.
+      if (key.startsWith('rt:') && edit.removed && roads.hasCut(key)) out.set(key, { removed: true });
       if (!key.startsWith('r:') || !roads.has(key)) continue;
       const layer = edit.layer && edits.layers.some((l) => l.id === edit.layer) ? edit.layer : undefined;
       const style: RoadStyle = {};
@@ -966,8 +1026,9 @@ export class EditSession {
     }
     const reached = new Set<number>();
     for (const [key, style] of styles) for (const tile of roads.tilesOf(key, style)) reached.add(tile);
+    const ranged = new RoadStyles(styles);
     for (const tile of changed) {
-      if (reached.has(tile)) tiles.set(tile, await roads.tile(tile, (key) => styles.get(key)));
+      if (reached.has(tile)) tiles.set(tile, await roads.tile(tile, ranged));
       else tiles.delete(tile);
     }
     return { styles: next, changed };
@@ -1023,7 +1084,7 @@ export class EditSession {
     const out = new Map<string, Deck>();
     for (const [key, pieces] of this.decks) {
       if (!this.objects.has(key)) continue;
-      const width = editOf(edits, key)?.widthMm;
+      const width = this.editOf(edits, key)?.widthMm;
       if (width === undefined) continue;
       let deck = this.deckCache.get(key);
       if (deck?.width !== width) this.deckCache.set(key, (deck = this.buildDeck(key, pieces, width)));
@@ -1146,10 +1207,10 @@ export class EditSession {
       }
     }
     const piers = this.wetPierList();
-    const piersChanged = piers.some((p) => editOf(edits, p.key)?.removed || decks.get(p.key)?.piers);
-    if (piersChanged) for (const p of piers) parts.push(`b${p.key}=${editOf(edits, p.key)?.removed ? 'gone' : (decks.get(p.key)?.width ?? '')}`);
+    const piersChanged = piers.some((p) => this.editOf(edits, p.key)?.removed || decks.get(p.key)?.piers);
+    if (piersChanged) for (const p of piers) parts.push(`b${p.key}=${this.editOf(edits, p.key)?.removed ? 'gone' : (decks.get(p.key)?.width ?? '')}`);
     // A route taken out takes the ground kept under it with it.
-    const routesGone = kept.tracks.filter((track) => editOf(edits, track.key)?.removed);
+    const routesGone = kept.tracks.filter((track) => this.editOf(edits, track.key)?.removed);
     for (const track of routesGone) parts.push(`r${track.key}`);
     const routes = routesGone.length ? kept.tracks.filter((track) => !routesGone.includes(track)).map((track) => track.pieces) : kept.tracks.map((track) => track.pieces);
     const structural = parts.length > 0;
@@ -1187,7 +1248,7 @@ export class EditSession {
     if (piersChanged) {
       pierGround = union(
         ...piers.flatMap((p) => {
-          if (editOf(edits, p.key)?.removed) return [];
+          if (this.editOf(edits, p.key)?.removed) return [];
           const deck = decks.get(p.key);
           return [deck?.piers ? intersection(p.pieces, deck.ribbon) : p.pieces];
         }),
@@ -1280,6 +1341,7 @@ export class EditSession {
     this.sentParts.clear();
     this.sentTerrain = null;
     this.sentWater = null;
+    this.sentCut = '';
     this.tiled = false;
     this.tiles = new Map();
     this.tileMeshes.clear();
@@ -1374,6 +1436,17 @@ export class EditSession {
       const note = this.noteFor(shape, footprints.get(shape.id) ?? [], stood.solids, stood.buried, text.get(shape.id));
       if (note) notes[key] = note;
       await offer(key, SHAPES_PART, 'building', stood.signature, () => stood.solids);
+    }
+    const cleared = this.cleared(standing);
+    if ((cleared?.signature ?? '') !== this.sentCut) {
+      let part: MeshPart | null = null;
+      try {
+        if (cleared) part = await cleared.cut.view(cleared.hole, (layer) => this.meshPart(layer));
+      } catch {
+        warnings.push(CUT_FAILED);
+      }
+      parts.push({ id: 'city', part });
+      this.sentCut = cleared?.signature ?? '';
     }
 
     // Land cover back where a removed road, building or body of water was.
@@ -1673,10 +1746,10 @@ export class EditSession {
     const partEdit = (key: string, sub?: string): ObjectEdit | undefined => (sub ? edits.objects[partKey(key, sub)] : undefined);
     const removed = (solid: Solid) => {
       const key = solid.key!;
-      return editOf(edits, key)?.removed || partEdit(key, solid.sub)?.removed || hidden.has(key);
+      return this.editOf(edits, key)?.removed || partEdit(key, solid.sub)?.removed || hidden.has(key);
     };
     const layerOf = (solid: Solid) => {
-      const layer = partEdit(solid.key!, solid.sub)?.layer ?? editOf(edits, solid.key!)?.layer;
+      const layer = partEdit(solid.key!, solid.sub)?.layer ?? this.editOf(edits, solid.key!)?.layer;
       return layer && layerIds.has(layer) ? layer : undefined;
     };
 
@@ -1690,6 +1763,13 @@ export class EditSession {
     const { earth, standing } = this.standAll(pass, roadTiles, decks, footprints);
     const shapeFootprints = [...standing.values()].flatMap((s) => (s.ground.length ? [s.ground] : []));
     const hidden = new Set(this.hiddenTrees(shapeFootprints, roadTiles, earth));
+    const cleared = this.cleared(standing);
+    let city: Layer | null = null;
+    try {
+      if (cleared) city = cleared.cut.layer(cleared.hole, cleared.signature);
+    } catch {
+      warnings.push(CUT_FAILED);
+    }
 
     // Solids an edit replaces: each by its new self, or a group of them by
     // what's there now, which goes where the first of them was.
@@ -1749,7 +1829,8 @@ export class EditSession {
         if (solids.length) layers.push({ ...layer, solids });
         continue;
       }
-      const source = layer.id === 'terrain' && earth?.terrain ? earth.terrain : layer.id === 'water' && earth?.water ? earth.water : layer.solids;
+      const source =
+        layer.id === 'terrain' && earth?.terrain ? earth.terrain : layer.id === 'water' && earth?.water ? earth.water : layer.id === 'city' && city ? city.solids : layer.solids;
       const kept: Solid[] = [];
       for (const original of source) {
         if (left.has(original)) continue;
@@ -1835,6 +1916,7 @@ const BURIED_NOTES: Record<string, string> = {
   building: "It's inside a building, so it won't show. Raise it to stand on the roof.",
   bridge: "It's inside a bridge, so it won't show. Raise it to stand on the deck.",
   shape: "It's inside another shape, so it won't show. Raise it to stand on top.",
+  surface: "It runs under buildings or overpasses, so it won't show. Raise it to stand on top.",
 };
 
 function peakOfSolid(solid: Solid): number {

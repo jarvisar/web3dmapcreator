@@ -175,7 +175,7 @@ await wait(600);
 await shot('edit-mode');
 
 // Find a street by name and give it a layer of its own, wider and raised.
-const find = page.getByPlaceholder('Find a street, building or water');
+const find = page.getByPlaceholder(/^Find a street/);
 await find.fill('Michigan');
 await wait(300);
 // The first match that's a road, not a building or water of that name.

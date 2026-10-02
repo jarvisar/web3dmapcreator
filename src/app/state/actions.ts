@@ -7,6 +7,7 @@ import { cloneSettings } from '../../core/settings';
 import { visibleTracks } from '../../core/tracks/track';
 import { downloadBlob, NARROW_QUERY } from '../lib/browser';
 import { formatBytes } from '../lib/format';
+import { roadSegment } from '../../core/edit/blocks';
 import { kindOf, objectOf } from '../../core/edit/keys';
 import type { ModelEdits } from '../../core/edit/types';
 import { fileBase, generationProblem, lidarCellLimit } from './derived';
@@ -82,7 +83,7 @@ function describe(error: unknown): string {
 function selectable(key: string, data: EditData, edits: ModelEdits): boolean {
   const kind = kindOf(key);
   if (kind === 'shape') return edits.shapes.some((shape) => `s:${shape.id}` === key);
-  if (kind === 'road') return data.roads?.keys.includes(key) ?? false;
+  if (kind === 'road') return data.roads?.keys.includes(roadSegment(key)) ?? false;
   return objectOf(key) in data.objects || kind === 'tree';
 }
 

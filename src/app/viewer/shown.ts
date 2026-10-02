@@ -13,12 +13,14 @@ export interface ShownContext {
   hiddenParts: ReadonlySet<string>;
   /** Objects other edits hide, like trees under a shape. */
   implicitHidden: ReadonlySet<string>;
+  /** A bridge's middle along its road's segment, so it takes the edit of the block it's in. */
+  deckAt?: (key: string) => number | undefined;
 }
 
 export const SHAPES_PART = 'shapes';
 
 /** The custom layer an entry is in, from its own edit or its object's. */
-export function layerOf(entry: Entry, edits: ModelEdits): string | null {
+export function layerOf(entry: Entry, edits: ModelEdits, deckAt?: ShownContext['deckAt']): string | null {
   const layers = edits.layers;
   if (entry.key.startsWith('s:')) {
     const shape = edits.shapes.find((s) => `s:${s.id}` === entry.key);
@@ -26,7 +28,7 @@ export function layerOf(entry: Entry, edits: ModelEdits): string | null {
     return layers.some((l) => l.id === shape.layer) ? shape.layer : null;
   }
   const own = entry.sub ? edits.objects[`${entry.key}/${entry.sub}`]?.layer : undefined;
-  const layer = own ?? editOf(edits, entry.key)?.layer;
+  const layer = own ?? editOf(edits, entry.key, deckAt?.(entry.key))?.layer;
   return layer && layers.some((l) => l.id === layer) ? layer : null;
 }
 
@@ -41,9 +43,9 @@ export function entryColour(entry: Entry, ctx: ShownContext, overridden: boolean
   const { key, sub } = entry;
   const edits = ctx.edits;
   if (overridden || ctx.implicitHidden.has(key)) return null;
-  if (editOf(edits, key)?.removed) return null;
+  if (editOf(edits, key, ctx.deckAt?.(key))?.removed) return null;
   if (sub && edits.objects[`${key}/${sub}`]?.removed) return null;
-  const layer = layerOf(entry, edits);
+  const layer = layerOf(entry, edits, ctx.deckAt);
   if (layer) return ctx.hiddenParts.has(`layer:${layer}`) ? null : `layer:${layer}`;
   if (key.startsWith('s:')) {
     if (ctx.hiddenParts.has(SHAPES_PART)) return null;

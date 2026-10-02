@@ -3,7 +3,8 @@
 // road stands proud of it. Routes never go through the road tidy. A
 // recorded track can be moved onto the roads it followed first
 // (tracks/snap.ts), using the road lines as tidied, so it sits on the roads
-// that are printed.
+// that are printed. Roads, paths and land cover are cut away under its
+// ground (generate.ts), so it never needs the slicer's order to win them.
 //
 // Buildings aren't cut out of a route. It's listed before them, so where GPS
 // drifts into a building the building keeps the overlap and its walls stay
@@ -148,7 +149,9 @@ export async function layOutTracks(tracks: readonly TrackLines[], ctx: Context, 
     });
     const key = `rt:${track.id}`;
     if (!ribbon.length && !decks.length) continue;
-    describeObject(ctx, key, { kind: 'route', name: track.name, detail: `${(trackLengthM(track.lines) / 1000).toFixed(1)} km` });
+    // Its ground keeps land cover off, and an editor that removes it gives that back.
+    const ground = ribbon.length ? new Map([['', ribbon]]) : undefined;
+    describeObject(ctx, key, { kind: 'route', name: track.name, detail: `${(trackLengthM(track.lines) / 1000).toFixed(1)} km`, ground });
     pieces.push({ key, ground: ribbon, decks });
   }
   if (snappedCount) ctx.stats.route_snapped_share = Math.round((snappedShare / snappedCount) * 100) / 100;

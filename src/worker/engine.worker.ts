@@ -169,7 +169,7 @@ async function startSession(id: number, spec: ModelSpec, request: GenerateReques
 }
 
 function roadTransfers(lines: NonNullable<GenerateResult['roads']>): Transferable[] {
-  return [lines.groups.buffer, lines.widths.buffer, lines.starts.buffer, lines.points.buffer];
+  return [lines.groups.buffer, lines.widths.buffer, lines.starts.buffer, lines.points.buffer, ...(lines.measures ? [lines.measures.buffer] : [])];
 }
 
 /** Applies the newest edit request, one at a time, never during a generation. */

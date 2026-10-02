@@ -25,14 +25,14 @@ import type { AreaSpec, ModelSettings } from '../settings';
 import { markerShapes } from '../tracks/markers';
 import { trackLengthM, type TrackLines } from '../tracks/track';
 import type { ModelStats, MultiPolygon, Polygon, Ring, Vec2 } from '../types';
-import { compose, ISLAND_MIN_MM2, MAP_EDGE_M } from './compose';
+import { compose, ISLAND_MIN_MM2, MAP_EDGE_M, TREE_SHARE } from './compose';
 import { FAIR_REACH_MM, FAIR_WINDOW_MM, fairFaces } from './filters';
 import { emptyLayers } from './layers';
 import { meshSurface, straightenWalls, surfaceLimits, wallDetail, WALL_STEP_CELLS, type HeightGrid, type TileJob, type TileResult } from './mesh';
 import type { PreparedSurface } from './prepare';
-import { ProfileIndex, routeProfile, type RouteProfile } from './route';
+import { BUILDING_CELL, CUT_CELL, ProfileIndex, routeProfile, TREE_CELL, WATER_CELL, type ProfileGrids, type RouteProfile } from './route';
 
-const CLUTTER_M = 2;
+export const CLUTTER_M = 2;
 // Land narrower than twice this beside cut water is opened away: it would
 // print as a wall too thin to stand between water. Pieces under
 // ISLAND_MIN_MM2 go, as compose does on the grid, since the area's shape
@@ -309,6 +309,8 @@ interface Composed {
   counts: Record<string, number>;
   /** What each route line rests on, with `routes`. */
   profiles?: RouteProfile[];
+  /** The surface, the bare ground and what each cell is, for routes and roads drawn in the editor. */
+  grids: ProfileGrids;
 }
 
 /**
@@ -368,32 +370,48 @@ function composeHeights(
   for (let i = 0; i < n; i++) keep[i] = result.water[i] | result.cut[i] | (result.detail[i] < 1 ? 1 : 0);
   stats.lidar_model_faired_cells = fairFaces(result.heights, nx, ny, cell, FAIR_WINDOW_MM, FAIR_REACH_MM, keep);
   const detail = wallDetail(result.heights, result.detail, nx, ny, WALL_STEP_CELLS * cell);
-  let profiles: RouteProfile[] | undefined;
-  if (routes && result.ground) {
-    const grid = { minX: cells.x0, minY: cells.y0, step: cells.dx, stepY: cells.dy, cols: nx, rows: ny };
-    // Cells with building returns, when the survey files buildings at all.
-    let filed = 0;
-    let returns = 0;
-    for (let i = 0; i < nx * ny; i++) {
-      if (layers.building[i]) filed++;
-      if (layers.count[i]) returns++;
-    }
-    const building = filed > BUILDING_FILED * returns ? Uint8Array.from(layers.building, (value) => (value ? 1 : 0)) : null;
-    const grids = {
-      surface: { ...grid, values: result.heights },
-      ground: { ...grid, values: result.ground },
-      water: result.water,
-      waterTop: result.waterTop,
-      // Cut water with no layer leaves nothing to rest on.
-      through: result.waterTop ? null : result.cut,
-      building,
-      mmPerMetre,
-      heightScale: input.settings.lidarModel.heightScale,
-      exaggeration: input.settings.terrain.exaggeration,
-    };
-    profiles = routes.lines.map((line) => routeProfile(line, grids));
+  // What each cell is, in a byte, for routes and for roads drawn in the editor.
+  let filed = 0;
+  let returns = 0;
+  const flags = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (layers.building[i]) filed++;
+    if (layers.count[i]) returns++;
+    // Compose's canopy leaves out the rim of many crowns, so cells of mostly
+    // vegetation with nothing solid over the ground count too.
+    const leafy = layers.vegetation[i] >= TREE_SHARE * layers.count[i] && layers.count[i] > 0 && !(layers.solid[i] > layers.ground[i] + CLUTTER_M);
+    const tree = result.detail[i] < 1 || (leafy && !layers.building[i]);
+    flags[i] = (result.water[i] ? WATER_CELL : 0) | (result.cut[i] ? CUT_CELL : 0) | (layers.building[i] ? BUILDING_CELL : 0) | (tree ? TREE_CELL : 0);
   }
-  return { heights: result.heights, cut: result.cut, waterTop: result.waterTop, detail, groundMaxMm: result.groundMaxMm, counts: result.counts, profiles };
+  // And cells whose returns are on the ground, raised by compose closing the
+  // gaps in a crown beside them.
+  const raisedMm = CLUTTER_M * mmPerMetre * input.settings.lidarModel.heightScale;
+  const filled: number[] = [];
+  for (let j = 0; j < ny; j++) {
+    for (let k = 0; k < nx; k++) {
+      const i = j * nx + k;
+      if (flags[i] || !(layers.top[i] - layers.ground[i] < CLUTTER_M) || !(result.heights[i] - result.ground[i] > raisedMm)) continue;
+      let beside = false;
+      for (let b = Math.max(0, j - 1); b <= Math.min(ny - 1, j + 1) && !beside; b++) {
+        for (let a = Math.max(0, k - 1); a <= Math.min(nx - 1, k + 1); a++) if (flags[b * nx + a] & TREE_CELL) beside = true;
+      }
+      if (beside) filled.push(i);
+    }
+  }
+  for (const i of filled) flags[i] |= TREE_CELL;
+  const frame = { minX: cells.x0, minY: cells.y0, step: cells.dx, stepY: cells.dy, cols: nx, rows: ny };
+  const grids: ProfileGrids = {
+    surface: { ...frame, values: result.heights },
+    ground: { ...frame, values: result.ground },
+    flags,
+    waterTop: result.waterTop,
+    filesBuildings: filed > BUILDING_FILED * returns,
+    mmPerMetre,
+    heightScale: input.settings.lidarModel.heightScale,
+    exaggeration: input.settings.terrain.exaggeration,
+  };
+  const profiles = routes ? routes.lines.map((line) => routeProfile(line, grids)) : undefined;
+  return { heights: result.heights, cut: result.cut, waterTop: result.waterTop, detail, groundMaxMm: result.groundMaxMm, counts: result.counts, profiles, grids };
 }
 
 /** Each route's lines in model mm, snapped to the road segments if asked. */
@@ -415,7 +433,7 @@ function routeLines(input: SurfaceModelInput, mmPerMetre: number, crop: Ring): {
  * The surface cut to a region inside `shape`, pulled a micron apart where two
  * outlines only meet at a point.
  */
-function cutSurface(tin: Tin, region: MultiPolygon, shape: MultiPolygon): Tin {
+export function cutSurface(tin: Tin, region: MultiPolygon, shape: MultiPolygon): Tin {
   let clipped = clipTin(tin, region);
   // The triangulation can get stuck on an outline grazing the TIN, and
   // pulling it in didn't help there. A micron more land did.
@@ -572,6 +590,7 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
     heightAt: (x, y) => groundAt(surfaceGrid, x, y),
     grid: surfaceGrid,
     surfaceWater,
+    profile: { ...result.grids, surface: surfaceGrid },
     roads: [],
     bodies: [],
     noGround: [],

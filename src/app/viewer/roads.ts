@@ -1,7 +1,9 @@
 // Roads in the viewer, by their centrelines. Widened and unioned, a city's
 // streets are one mesh, so a click on it is matched to the nearest line
-// instead, and a picked road is shown as a ribbon laid over it.
+// instead, and a picked road is shown as a ribbon laid over it. The lines
+// are cut into blocks (blocks.ts), so a pick is a block's key.
 
+import { parseRoadKey, roadSegment } from '../../core/edit/blocks';
 import type { RoadLines } from '../../core/edit/lines';
 
 const CELL_MM = 4;
@@ -12,11 +14,29 @@ export interface RoadPick {
   piece: number;
   key: string;
   distance: number;
+  /** The nearest point on the line, its direction there, and where it is along its segment (NaN when unknown). */
+  x: number;
+  y: number;
+  z: number;
+  dx: number;
+  dy: number;
+  at: number;
+}
+
+/** A point on a road's line with its direction, as for a mark across it. */
+export interface RoadMark {
+  piece: number;
+  x: number;
+  y: number;
+  z: number;
+  dx: number;
+  dy: number;
 }
 
 export class RoadIndex {
   private readonly grid = new Map<number, number[]>();
   private readonly byKey = new Map<string, number[]>();
+  private readonly bySegment = new Map<string, number[]>();
   /** Segment start point index per segment, and its piece. */
   private readonly segmentPiece: Int32Array;
   private readonly segmentStart: Int32Array;
@@ -31,6 +51,10 @@ export class RoadIndex {
       const list = this.byKey.get(lines.keys[piece]);
       if (list) list.push(piece);
       else this.byKey.set(lines.keys[piece], [piece]);
+      const segment = roadSegment(lines.keys[piece]);
+      const pieces = this.bySegment.get(segment);
+      if (pieces) pieces.push(piece);
+      else this.bySegment.set(segment, [piece]);
       for (let p = starts[piece]; p < starts[piece + 1] - 1; p++) {
         this.segmentPiece[s] = piece;
         this.segmentStart[s] = p;
@@ -56,11 +80,62 @@ export class RoadIndex {
   }
 
   has(key: string): boolean {
-    return this.byKey.has(key);
+    return this.byKey.has(key) || this.bySegment.has(key);
   }
 
+  /** The pieces of a block, a whole segment, or any range of one: those whose middle lies in it. */
   piecesOf(key: string): number[] {
-    return this.byKey.get(key) ?? [];
+    const exact = this.byKey.get(key);
+    if (exact) return exact;
+    const range = parseRoadKey(key);
+    if (!range) return [];
+    const pieces = this.bySegment.get(range.segment) ?? [];
+    if (range.from <= 0 && range.to >= 1) return pieces;
+    return pieces.filter((piece) => {
+      const at = this.middleAt(piece);
+      return at === at && at >= range.from - 1e-7 && at <= range.to + 1e-7;
+    });
+  }
+
+  /** A piece's line in plan. */
+  lineOf(piece: number): [number, number][] {
+    const { starts, points } = this.lines;
+    const out: [number, number][] = [];
+    for (let p = starts[piece]; p < starts[piece + 1]; p++) out.push([points[p * 3], points[p * 3 + 1]]);
+    return out;
+  }
+
+  /** Pieces of a segment, by its key. */
+  segmentPieces(segment: string): number[] {
+    return this.bySegment.get(segment) ?? [];
+  }
+
+  /** Where a piece's middle lies along its segment, NaN when unknown. */
+  middleAt(piece: number): number {
+    const m = this.lines.measures;
+    if (!m) return NaN;
+    return (m[this.lines.starts[piece]] + m[this.lines.starts[piece + 1] - 1]) / 2;
+  }
+
+  /** Where a segment's line is at a point along it, with its direction, or null where the model doesn't show it. */
+  markAt(segment: string, at: number): RoadMark | null {
+    const { starts, points, measures } = this.lines;
+    if (!measures) return null;
+    for (const piece of this.bySegment.get(segment) ?? []) {
+      for (let p = starts[piece]; p < starts[piece + 1] - 1; p++) {
+        const a = measures[p];
+        const b = measures[p + 1];
+        if (!(Math.min(a, b) <= at + 1e-7 && Math.max(a, b) >= at - 1e-7) || a === b) continue;
+        const t = (at - a) / (b - a);
+        const ax = points[p * 3];
+        const ay = points[p * 3 + 1];
+        const ex = points[p * 3 + 3] - ax;
+        const ey = points[p * 3 + 4] - ay;
+        const length = Math.hypot(ex, ey) || 1;
+        return { piece, x: ax + ex * t, y: ay + ey * t, z: points[p * 3 + 2] + (points[p * 3 + 5] - points[p * 3 + 2]) * t, dx: ex / length, dy: ey / length };
+      }
+    }
+    return null;
   }
 
   keys(): string[] {
@@ -87,11 +162,26 @@ export class RoadIndex {
           // Distance past the ribbon's edge, so a wide road wins over a thin path beside it.
           const past = d - widthOf(piece) / 2;
           if (past > reach) continue;
-          if (!best || past < best.distance) best = { piece, key: this.lines.keys[piece], distance: past };
+          if (!best || past < best.distance) best = this.pickOn(piece, this.segmentStart[s], x, y, past);
         }
       }
     }
     return best;
+  }
+
+  private pickOn(piece: number, point: number, x: number, y: number, distance: number): RoadPick {
+    const { points, measures } = this.lines;
+    const p = point * 3;
+    const ax = points[p];
+    const ay = points[p + 1];
+    const ex = points[p + 3] - ax;
+    const ey = points[p + 4] - ay;
+    const length2 = ex * ex + ey * ey;
+    const t = length2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / length2)) : 0;
+    const length = Math.sqrt(length2) || 1;
+    const at = measures ? measures[point] + (measures[point + 1] - measures[point]) * t : NaN;
+    const z = points[p + 2] + (points[p + 5] - points[p + 2]) * t;
+    return { piece, key: this.lines.keys[piece], distance, x: ax + ex * t, y: ay + ey * t, z, dx: ex / length, dy: ey / length, at };
   }
 
   /** Middle of a piece's line, for box selection. */

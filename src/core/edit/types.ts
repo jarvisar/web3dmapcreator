@@ -7,6 +7,7 @@
 // changes.
 
 import type { LonLat } from '../types';
+import { MAX_SPLITS, normalRoadKey, roundAt } from './blocks';
 
 /** Saved edits of another version are read as far as they still make sense. */
 export const EDITS_VERSION = 2;
@@ -34,6 +35,8 @@ export interface ObjectEdit {
   heightMm?: number;
   /** Roads and bridge decks: printed width. */
   widthMm?: number;
+  /** A road segment's own edit: where it's split into blocks, as fractions of its length (blocks.ts). */
+  splits?: number[];
 }
 
 export type ShapeKind = 'box' | 'cylinder' | 'pin' | 'text' | 'path' | 'area';
@@ -171,9 +174,16 @@ export function sanitizeEdits(raw: unknown): ModelEdits {
   }
 
   if (isObject(raw.objects)) {
-    for (const [key, value] of Object.entries(raw.objects)) {
-      if (!isObject(value) || key.length > 300 || !/^[a-z]{1,2}:/.test(key)) continue;
+    for (const [name, value] of Object.entries(raw.objects)) {
+      if (!isObject(value) || name.length > 300 || !/^[a-z]{1,2}:/.test(name)) continue;
+      // A range of a road is written one way, so one block has one key.
+      const key = name.startsWith('r:') ? normalRoadKey(name) : name;
+      if (!key) continue;
       const edit: ObjectEdit = {};
+      if (key.startsWith('r:') && !key.includes('@') && Array.isArray(value.splits)) {
+        const splits = [...new Set(value.splits.filter((v): v is number => finite(v) && v > 0 && v < 1).map(roundAt))].filter((v) => v > 0 && v < 1);
+        if (splits.length) edit.splits = splits.sort((a, b) => a - b).slice(0, MAX_SPLITS);
+      }
       if (value.removed === true) edit.removed = true;
       else if (value.removed === false && key.startsWith('br:')) edit.removed = false;
       if (key.startsWith('w:') && edit.removed && value.hollow === true) edit.hollow = true;

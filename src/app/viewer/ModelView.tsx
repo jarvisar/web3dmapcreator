@@ -12,8 +12,10 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Vector3 } from 'three';
-import { isPartKey, kindOf, objectOf, partKey } from '../../core/edit/keys';
-import { buildingHeightRange, EDIT_LIMITS, type AddedShape } from '../../core/edit/types';
+import { blockAt, blockBounds, parseRoadKey, roadEdits, roadKey, roadSegment, roundAt } from '../../core/edit/blocks';
+import { editOf, isPartKey, kindOf, objectOf, partKey, twinOf } from '../../core/edit/keys';
+import { buildingHeightRange, EDIT_LIMITS, MAX_SHAPE_POINTS, type AddedShape } from '../../core/edit/types';
+import { simplifyLine } from '../../core/tracks/track';
 import { Projection } from '../../core/geo/projection';
 import { printerByKey } from '../../core/settings';
 import { ROLE_GROUP, type ColourGroup } from '../../core/types';
@@ -26,9 +28,11 @@ import {
   deletePoint,
   duplicateShapes,
   editMark,
+  joinRoad,
   patchObjects,
   redoEdit,
   removeObjects,
+  replaceWithDrawnRoads,
   revertEdits,
   setActivePoint,
   setEditMode,
@@ -37,6 +41,7 @@ import {
   settleEdits,
   shapeDefaults,
   shiftShape,
+  splitRoad,
   stopEditUpdates,
   toggleSelected,
   undoEdit,
@@ -51,6 +56,7 @@ import { describeCounts, describeKey } from './edit/describe';
 import { EditToolbar, TOOLS } from './edit/EditToolbar';
 import { Inspector } from './edit/Inspector';
 import { EditController, type EditHandlers } from './editController';
+import { chainLines } from './blocks';
 import { SHAPES_PART, ViewerEngine } from './ViewerEngine';
 
 type Panel = 'parts' | 'info' | 'warnings' | null;
@@ -58,6 +64,7 @@ type Panel = 'parts' | 'info' | 'warnings' | null;
 const TOOL_HINTS: Record<EditTool, string> = {
   select: 'Click to select · Shift-drag to select in a box · Delete removes · Ctrl+Z undoes',
   several: 'Click things to add or drop them · Drag a box to add everything in it · Right-drag to pan',
+  split: 'Click a road where one block should end and the next begin · Click a split (orange) to join it again · Esc to stop',
   text: 'Click where the text goes. Esc to stop.',
   pin: 'Click the spot to mark. Esc to stop.',
   box: 'Click where the box goes. Esc to stop.',
@@ -69,6 +76,7 @@ const TOOL_HINTS: Record<EditTool, string> = {
 const TOUCH_HINTS: Record<EditTool, string> = {
   select: 'Tap to select · Drag to orbit · Pinch to zoom',
   several: 'Tap things to add or drop them',
+  split: 'Tap a road to split it there · Tap a split to join it',
   text: 'Tap where the text goes.',
   pin: 'Tap the spot to mark.',
   box: 'Tap where the box goes.',
@@ -368,6 +376,70 @@ export default function ModelView({ active }: { active: boolean }) {
     requestAnimationFrame(focusSelection);
   }, []);
 
+  /** The whole streets the roads are on, as whole segments, and the bridges along them. */
+  function streetOf(key: string): string[] {
+    const found = engineRef.current?.roads?.connected(key) ?? [key];
+    return [...new Set(found.map(roadSegment))];
+  }
+
+  /**
+   * Roads put in place of drawn ones along the same lines, in their width,
+   * height and colour, to be reshaped point by point. A bridge on them stays
+   * a bridge, and the drawn road runs up to it.
+   */
+  function makeDrawn(keys: string[]) {
+    const engine = engineRef.current;
+    const roads = engine?.roads;
+    const p = projectionRef.current;
+    if (!engine || !roads || !p) return;
+    const edits = useApp.getState().edits;
+    const data = getEditData();
+    const shapes: Omit<AddedShape, 'id'>[] = [];
+    const bridges = new Set<string>();
+    const done: string[] = [];
+    const clamp = (value: number, [low, high]: readonly [number, number]) => Math.min(high, Math.max(low, value));
+    for (const key of keys) {
+      if (kindOf(key) !== 'road') continue;
+      const pieces = roads.piecesOf(key).filter((piece) => engine.roadShown(piece));
+      if (!pieces.length) continue;
+      const edit = editOf(edits, key);
+      const width = Math.max(...pieces.map((piece) => engine.roadWidth(piece)));
+      const height = edit?.heightMm ?? roads.lines.thicknessMm;
+      const layer = edit?.layer && edits.layers.some((l) => l.id === edit.layer) ? edit.layer : 'roads';
+      for (const line of chainLines(pieces.map((piece) => roads.lineOf(piece)))) {
+        // Within a hundredth of a mm of the road's line, coarser for a very long one.
+        let tolerance = 0.01;
+        let points = simplifyLine(line, tolerance);
+        while (points.length > MAX_SHAPE_POINTS) points = simplifyLine(line, (tolerance *= 2));
+        const lonLats = points.map(([x, y]) => p.modelToGeo(x, y));
+        shapes.push({
+          kind: 'path',
+          layer,
+          at: lonLats[0],
+          points: lonLats,
+          rotationDeg: 0,
+          sizeMm: clamp(width, EDIT_LIMITS.pathWidthMm),
+          depthMm: clamp(width, EDIT_LIMITS.depthMm),
+          heightMm: clamp(height, EDIT_LIMITS.shapeHeightMm),
+          liftMm: 0,
+          followGround: true,
+          text: '',
+          font: 'montserrat',
+        });
+      }
+      done.push(key);
+      const twin = twinOf(key)!;
+      const bridge = data.objects[twin];
+      const range = parseRoadKey(key);
+      if (bridge && range && (bridge.at === undefined ? range.from <= 0 && range.to >= 1 : bridge.at >= range.from && bridge.at <= range.to)) bridges.add(twin);
+    }
+    if (!shapes.length) {
+      toast('Nothing of that road shows, so there is nothing to draw.');
+      return;
+    }
+    replaceWithDrawnRoads(done, shapes, [...bridges]);
+  }
+
   function heightOf(key: string): number | null {
     const engine = engineRef.current;
     const ground = getEditData().objects[objectOf(key)]?.groundZ;
@@ -400,7 +472,7 @@ export default function ModelView({ active }: { active: boolean }) {
       },
       place(tool, target) {
         const p = projectionRef.current;
-        if (!p || tool === 'select' || tool === 'several' || tool === 'path' || tool === 'area') return;
+        if (!p || tool === 'select' || tool === 'several' || tool === 'split' || tool === 'path' || tool === 'area') return;
         const [lon, lat] = p.modelToGeo(target.point.x, target.point.y);
         const ground = target.ground ?? target.point.z;
         // Put on a roof or a bridge, it stands on it.
@@ -409,6 +481,32 @@ export default function ModelView({ active }: { active: boolean }) {
         // Raised, it has a flat top that sits on the roof, whatever the tool's default.
         addShape({ ...shapeDefaults(tool), at: [lon, lat], points: [], rotationDeg: editData.frame?.rotationDeg ?? 0, liftMm: lift, ...(lift > 0 ? { followGround: false } : {}) });
         setTool('select');
+      },
+      split(target) {
+        const engine = engineRef.current;
+        const data = getEditData();
+        if (!engine || !data.roads) return;
+        if (target.kind === 'end') {
+          toast('A block already ends there, at a junction or where an edit ends.');
+          return;
+        }
+        const bounds = engine.blockBoundsOf(target.segment);
+        if (target.kind === 'join') {
+          joinRoad(target.segment, target.at, bounds);
+          return;
+        }
+        // A selected block that's split stays selected, as its two halves.
+        const before = blockAt(target.segment, bounds, target.at);
+        const selection = useApp.getState().ui.selection;
+        const junctions = data.roads.junctions?.[target.segment];
+        const done = splitRoad(target.segment, target.at, (objects) => {
+          if (!selection.includes(before)) return null;
+          const after = blockBounds(roadEdits(objects).get(target.segment), junctions);
+          const i = after.findIndex((v) => Math.abs(v - roundAt(target.at)) < 1e-6);
+          if (i <= 0 || i >= after.length - 1) return null;
+          return [...selection.filter((key) => key !== before), roadKey(target.segment, after[i - 1], after[i]), roadKey(target.segment, after[i], after[i + 1])];
+        });
+        if (!done) toast("This road can't be split any more there.");
       },
       draw(tool, points) {
         const p = projectionRef.current;
@@ -693,7 +791,8 @@ export default function ModelView({ active }: { active: boolean }) {
           {editing && panel === null && (
             <Inspector
               heightOf={heightOf}
-              streetOf={(key) => engineRef.current?.roads?.connected(key) ?? [key]}
+              streetOf={streetOf}
+              makeDrawn={makeDrawn}
               focus={focusSelection}
               preview={preview}
               focusOn={focusOn}

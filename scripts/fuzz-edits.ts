@@ -31,6 +31,7 @@ import { surfaceModel } from '../src/core/dsm/model';
 import { prepareSurface } from '../src/core/dsm/prepare';
 import { lidarRequest, prepareLidar } from '../src/core/lidar/prepare';
 import { roadLines } from '../src/core/edit/lines';
+import { addSplit, blockBounds, removeSplit, roadEdits, roadKey, writeRoads } from '../src/core/edit/blocks';
 import { EditSession, excludedParts, SHAPES_PART, type EditUpdate, type ObjectMesh } from '../src/core/edit/session';
 import { tinHeight } from '../src/core/edit/stand';
 import { tinBounds } from '../src/core/geometry/cap';
@@ -332,6 +333,65 @@ async function main() {
     ['road height', 2, () => roads.length > 0 && (set(pick(roads), { heightMm: 0.1 + rand() * 3 }), true)],
     ['remove road', 2, () => roads.length > 0 && (set(pick(roads), { removed: true }), true)],
     [
+      'road block',
+      4,
+      () => {
+        // One block of a road, written as the editor writes it: set, or cleared and carved out of the edit around it.
+        if (!roads.length) return false;
+        const segment = pick(roads);
+        const bounds = blockBounds(roadEdits(edits.objects).get(segment), spec.edit!.junctions?.get(segment));
+        const i = Math.floor(rand() * (bounds.length - 1));
+        const key = roadKey(segment, bounds[i], bounds[i + 1]);
+        const patch = pick<Partial<ObjectEdit>>([
+          { layer: layerId() },
+          { widthMm: 0.2 + rand() * 6 },
+          { heightMm: 0.1 + rand() * 3 },
+          { removed: true },
+          { layer: undefined },
+          { removed: undefined },
+          { widthMm: undefined, heightMm: undefined },
+        ]);
+        edits = { ...edits, objects: writeRoads(edits.objects, [key], patch).objects };
+        return true;
+      },
+    ],
+    [
+      'split road',
+      2,
+      () => {
+        if (!roads.length) return false;
+        const segment = pick(roads);
+        const objects = addSplit(edits.objects, segment, 0.02 + rand() * 0.96);
+        if (objects) edits = { ...edits, objects };
+        return Boolean(objects);
+      },
+    ],
+    [
+      'join split',
+      1,
+      () => {
+        const split = [...roadEdits(edits.objects)].filter(([, entry]) => entry.splits.length);
+        if (!split.length) return false;
+        const [segment, entry] = pick(split);
+        const joined = removeSplit(edits.objects, segment, pick(entry.splits), blockBounds(entry, spec.edit!.junctions?.get(segment)));
+        if (joined) edits = { ...edits, objects: joined.objects };
+        return Boolean(joined);
+      },
+    ],
+    [
+      'road range',
+      1,
+      () => {
+        // Any range, overlapping others part way, as a link from another release can bring.
+        if (!roads.length) return false;
+        const a = rand();
+        const b = Math.min(1, a + rand() * 0.6);
+        if (b - a < 0.01) return false;
+        set(roadKey(pick(roads), a, b), chance(0.5) ? { layer: layerId() } : { removed: true });
+        return true;
+      },
+    ],
+    [
       'street to a layer',
       2,
       () => {
@@ -482,7 +542,7 @@ async function main() {
   const viewerVolumes = (hiddenParts: ReadonlySet<string> = new Set()): Map<string, number> => {
     const out = new Map<string, number>();
     const add = (colour: string, v: number) => out.set(colour, (out.get(colour) ?? 0) + v);
-    const context = { edits, hiddenParts, implicitHidden: hidden };
+    const context = { edits, hiddenParts, implicitHidden: hidden, deckAt: (key: string) => facts[key]?.at };
     const ids = new Set([...generated.keys(), ...replaced.keys(), ...[...objectMeshes.values()].map((o) => o.part)]);
     for (const id of ids) {
       const base = replaced.get(id) ?? generated.get(id);

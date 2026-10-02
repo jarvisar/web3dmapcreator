@@ -14,7 +14,7 @@ import { compose } from './compose';
 import { gridSpec } from './grid';
 import { emptyLayers } from './layers';
 import { surfaceModel } from './model';
-import { ProfileIndex, routeProfile, type ProfileGrids } from './route';
+import { BUILDING_CELL, CUT_CELL, ProfileIndex, routeProfile, WATER_CELL, type ProfileGrids } from './route';
 
 const CELL = 0.5;
 const NX = 240;
@@ -28,10 +28,9 @@ function grids(surface: (i: number) => number, ground: (i: number) => number = (
   return {
     surface: { ...grid, values: values(surface) },
     ground: { ...grid, values: values(ground) },
-    water: Uint8Array.from({ length: NX * NY }, (_, k) => (water(k % NX) ? 1 : 0)),
+    flags: Uint8Array.from({ length: NX * NY }, (_, k) => (water(k % NX) ? WATER_CELL : 0)),
     waterTop: null,
-    through: null,
-    building: new Uint8Array(NX * NY),
+    filesBuildings: true,
     // 2.5 m over the ground is 0.25 mm at this scale.
     mmPerMetre: 0.1,
     heightScale: 1,
@@ -53,7 +52,7 @@ describe('what a route rests on', () => {
   it('stays on the ground through a building it drifts into', () => {
     const block = (i: number) => i >= 40 && i < 60;
     const g = grids((i) => (block(i) ? GROUND + 5 : GROUND));
-    g.building = Uint8Array.from({ length: NX * NY }, (_, k) => (block(k % NX) ? 1 : 0));
+    for (let k = 0; k < NX * NY; k++) if (block(k % NX)) g.flags[k] |= BUILDING_CELL;
     const profile = routeProfile(along, g);
     expect(zAt(profile, 25)).toBeCloseTo(GROUND, 4);
     expect(zAt(profile, 15)).toBeCloseTo(GROUND, 4);
@@ -82,7 +81,7 @@ describe('what a route rests on', () => {
     layer.waterTop = Float32Array.from({ length: NX * NY }, (_, k) => (wet(k % NX) ? GROUND - 0.25 : NaN));
     expect(zAt(routeProfile(along, layer), 40)).toBeCloseTo(GROUND - 0.25, 4);
     const cut = grids(() => GROUND, undefined, wet);
-    cut.through = cut.water;
+    for (let k = 0; k < NX * NY; k++) if (wet(k % NX)) cut.flags[k] |= CUT_CELL;
     expect(zAt(routeProfile(along, cut), 40)).toBeNaN();
   });
 
@@ -105,10 +104,10 @@ describe('what a route rests on', () => {
     expect(zAt(profile, 20)).toBeCloseTo(GROUND, 3);
     // Filed as building, or in a survey that files none, it stays under.
     const filed = grids((i) => GROUND + railway(i));
-    filed.building = Uint8Array.from({ length: NX * NY }, (_, k) => (railway(k % NX) ? 1 : 0));
+    for (let k = 0; k < NX * NY; k++) if (railway(k % NX)) filed.flags[k] |= BUILDING_CELL;
     expect(zAt(routeProfile(along, filed), 50)).toBeCloseTo(GROUND, 4);
     const unfiled = grids((i) => GROUND + railway(i));
-    unfiled.building = null;
+    unfiled.filesBuildings = false;
     expect(zAt(routeProfile(along, unfiled), 50)).toBeCloseTo(GROUND, 4);
     // A short one, like an overpass, keeps it under.
     expect(zAt(routeProfile(along, grids((i) => (i >= 120 && i < 126 ? GROUND + 0.7 : GROUND))), 61.5)).toBeCloseTo(GROUND, 4);
@@ -148,8 +147,7 @@ describe('compose along a route', () => {
     expect(at(plain.heights, 11) - at(plain.heights, 5)).toBeGreaterThan(1);
     expect(at(along.heights, 11)).toBeCloseTo(at(along.heights, 5), 3);
     expect(at(along.heights, 35) - at(along.heights, 5)).toBeGreaterThan(10);
-    expect(plain.ground).toBeUndefined();
-    expect(along.ground![10 * grid.nx + 35]).toBeCloseTo(at(along.heights, 5), 3);
+    expect(along.ground[10 * grid.nx + 35]).toBeCloseTo(at(along.heights, 5), 3);
     expect(along.counts.route_cleared_cells).toBeGreaterThan(0);
   });
 });

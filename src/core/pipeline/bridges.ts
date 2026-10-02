@@ -83,6 +83,8 @@ interface Node {
 /** A deck as it was laid out, so the editor can build it again at another width. */
 export interface DeckPiece {
   key: string;
+  /** Its middle along its road's segment, 0 to 1, for edits to a block of the road. Set once laid out. */
+  at?: number;
   points: Vec2[];
   widthMm: number;
   top: HeightFn;

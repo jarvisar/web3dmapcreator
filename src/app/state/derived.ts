@@ -19,6 +19,7 @@ import { ROLE_GROUP } from '../../core/types';
 import type { ColourGroup } from '../../core/types';
 import { areaInBox, withRim } from '../lib/area';
 import { cleanFileName, slugify } from '../lib/browser';
+import { roadSegment } from '../../core/edit/blocks';
 import { editOf, objectOf } from '../../core/edit/keys';
 import type { ModelEdits } from '../../core/edit/types';
 import type { RoadLines } from '../../core/engine/protocol';
@@ -94,7 +95,7 @@ export function downloadParts(result: ResultMeta, edits: ModelEdits, data: Pick<
   if (!data.editable) return ids;
   const trees = ids.includes('trees');
   const roads = roadKeys(data.roads);
-  const has = (key: string) => (key.startsWith('t:') ? trees : key.startsWith('r:') ? roads.has(key) : objectOf(key) in data.objects);
+  const has = (key: string) => (key.startsWith('t:') ? trees : key.startsWith('r:') ? roads.has(roadSegment(key)) : objectOf(key) in data.objects);
   const filled = new Set(edits.shapes.map((shape) => shape.layer));
   for (const [key, edit] of Object.entries(edits.objects)) {
     if (!edit.layer || edit.removed || editOf(edits, objectOf(key))?.removed) continue;

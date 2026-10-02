@@ -1,5 +1,6 @@
-import { Copy, Crosshair, Eraser, Plus, RotateCcw, Route, Search, Trash2, TriangleAlert, Undo2, X } from 'lucide-react';
+import { Copy, Crosshair, Eraser, Plus, RotateCcw, Route, Search, Spline, Trash2, TriangleAlert, Undo2, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
+import { parseRoadKey, roadSegment } from '../../../core/edit/blocks';
 import { editOf, isPartKey, kindOf, objectOf, partKey, shapeKey, twinOf } from '../../../core/edit/keys';
 import { buildingHeightRange, EDIT_LIMITS, editCount, followsGround, MAX_TEXT_LENGTH, type AddedShape, type EditLayer, type ModelEdits } from '../../../core/edit/types';
 import { Projection } from '../../../core/geo/projection';
@@ -46,6 +47,8 @@ export interface InspectorProps {
   heightOf: (key: string) => number | null;
   /** The whole street a road is part of. */
   streetOf: (key: string) => string[];
+  /** Puts drawn roads in place of these roads, to reshape. */
+  makeDrawn: (keys: string[]) => void;
   focus: () => void;
   /** Highlights something in the view while the pointer is over its row, or nothing. */
   preview: (key: string | null) => void;
@@ -68,7 +71,7 @@ export function Inspector(props: InspectorProps) {
 
 // ------------------------------------------------------------- selection
 
-function SelectionPanel({ keys, edits, data, heightOf, streetOf, focus, preview }: InspectorProps & { keys: string[]; edits: ModelEdits; data: EditData }) {
+function SelectionPanel({ keys, edits, data, heightOf, streetOf, makeDrawn, focus, preview }: InspectorProps & { keys: string[]; edits: ModelEdits; data: EditData }) {
   const single = keys.length === 1 ? describeKey(keys[0], data, edits) : null;
   const kinds = new Set(keys.map((key) => kindOf(key)));
   const coarse = useMediaQuery(COARSE_QUERY);
@@ -94,7 +97,7 @@ function SelectionPanel({ keys, edits, data, heightOf, streetOf, focus, preview 
         {shapes.length > 0 && objects.length === 0 ? (
           <ShapeControls keys={shapes} edits={edits} data={data} />
         ) : (
-          <ObjectControls keys={objects} kinds={kinds} edits={edits} data={data} heightOf={heightOf} streetOf={streetOf} preview={preview} />
+          <ObjectControls keys={objects} kinds={kinds} edits={edits} data={data} heightOf={heightOf} streetOf={streetOf} makeDrawn={makeDrawn} preview={preview} />
         )}
       </div>
       {!coarse && (
@@ -113,6 +116,7 @@ function ObjectControls({
   data,
   heightOf,
   streetOf,
+  makeDrawn,
   preview,
 }: {
   keys: string[];
@@ -121,23 +125,34 @@ function ObjectControls({
   data: EditData;
   heightOf: InspectorProps['heightOf'];
   streetOf: InspectorProps['streetOf'];
+  makeDrawn: InspectorProps['makeDrawn'];
   preview: InspectorProps['preview'];
 }) {
-  const allRemoved = keys.every((key) => editOf(edits, key)?.removed);
-  const layers = new Set(keys.map((key) => editOf(edits, key)?.layer ?? ''));
+  const applied = (key: string) => editOf(edits, key, data.objects[key]?.at);
+  const allRemoved = keys.every((key) => applied(key)?.removed);
+  const layers = new Set(keys.map((key) => applied(key)?.layer ?? ''));
   const layer = layers.size === 1 ? [...layers][0] : MIXED;
   // Once per change of the edits, not every render: each key against every
   // edit took 2.6 s a hover with thousands of both.
   const editedKeys = useMemo(() => new Set(Object.keys(edits.objects).flatMap((k) => [k, objectOf(k)])), [edits.objects]);
-  const edited = keys.some((key) => editedKeys.has(key));
+  // A block of a road is edited when an edit of the road reaches it.
+  const edited = keys.some((key) => editedKeys.has(key) || (kindOf(key) === 'road' && Object.keys(applied(key) ?? {}).length > 0));
   const only = (kind: string) => kinds.size === 1 && kinds.has(kind);
   const streets = [...kinds].every((kind) => kind === 'road' || kind === 'bridge');
   const tag = keys.join(',');
   const water = kinds.has('water');
   const building = only('building') && keys.length === 1 ? keys[0] : null;
   const recessed = keys.filter((key) => kindOf(key) === 'water' && data.objects[key]?.recessed);
-  // A bridge on a selected road's segment goes, widens and changes colour with it.
-  const bridges = keys.filter((key) => kindOf(key) === 'road' && data.objects[twinOf(key)!] && !keys.includes(twinOf(key)!));
+  // A bridge on a selected road goes, widens and changes colour with it, when it's in the block.
+  const bridges = keys.filter((key) => {
+    const twin = twinOf(key);
+    const at = twin ? data.objects[twin]?.at : undefined;
+    const range = parseRoadKey(key);
+    if (kindOf(key) !== 'road' || !twin || !data.objects[twin] || keys.includes(twin) || !range) return false;
+    return at === undefined ? range.from <= 0 && range.to >= 1 : at >= range.from && at <= range.to;
+  });
+  const roads = only('road');
+  const blocks = keys.some((key) => key.includes('@'));
 
   return (
     <>
@@ -178,6 +193,12 @@ function ObjectControls({
             Whole street
           </button>
         )}
+        {roads && !allRemoved && (
+          <button type="button" className="btn btn-sm" onClick={() => makeDrawn(keys)} title="Put a drawn road in its place along the same line, to reshape point by point">
+            <Spline size={14} aria-hidden="true" />
+            Make it a drawn road
+          </button>
+        )}
         {edited && (
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => resetObjects(keys)} title="Undo every change to the selection">
             <RotateCcw size={14} aria-hidden="true" />
@@ -186,6 +207,11 @@ function ObjectControls({
         )}
       </div>
       {bridges.length > 0 && <p className="inspector-hint">{keys.length === 1 ? 'Its bridge changes with it.' : 'Bridges on these roads change with them.'}</p>}
+      {roads && blocks && (
+        <p className="inspector-hint">
+          A click picks one block, between junctions. Whole street takes all of it, and Split a road (X) ends a block somewhere else.
+        </p>
+      )}
       {building && <BuildingParts key={building} buildingKey={building} data={data} preview={preview} />}
     </>
   );
@@ -278,18 +304,18 @@ function RoadSize({ keys, edits, data, tag }: { keys: string[]; edits: ModelEdit
   const lines = data.roads;
   const roads = keys.filter((key) => kindOf(key) === 'road');
   const widthOf = (key: string) => {
-    const edited = editOf(edits, key)?.widthMm;
+    const edited = editOf(edits, key, data.objects[key]?.at)?.widthMm;
     if (edited !== undefined) return edited;
     if (kindOf(key) === 'bridge') return data.objects[key]?.widthMm ?? 0.5;
-    const piece = lines ? lines.keys.indexOf(key) : -1;
+    const piece = lines ? lines.keys.indexOf(roadSegment(key)) : -1;
     return piece >= 0 ? lines!.widths[piece] : 0.5;
   };
   const widths = keys.map(widthOf);
-  const heights = roads.map((key) => edits.objects[key]?.heightMm ?? lines?.thicknessMm ?? 0);
+  const heights = roads.map((key) => editOf(edits, key)?.heightMm ?? lines?.thicknessMm ?? 0);
   const sameWidth = widths.every((w) => Math.abs(w - widths[0]) < 0.005);
   const sameHeight = heights.every((h) => Math.abs(h - heights[0]) < 0.005);
-  const widthEdited = keys.some((key) => edits.objects[key]?.widthMm !== undefined);
-  const heightEdited = roads.some((key) => edits.objects[key]?.heightMm !== undefined);
+  const widthEdited = keys.some((key) => editOf(edits, key, data.objects[key]?.at)?.widthMm !== undefined);
+  const heightEdited = roads.some((key) => editOf(edits, key)?.heightMm !== undefined);
   const width = sameWidth ? widths[0] : Math.max(...widths);
   if (!widths.length) return null;
   return (
@@ -688,7 +714,7 @@ function LayerField({ label, value, groups, onChange, help }: { label: string; v
 
 /** Whether an edit's key is in the model shown, so edits made on another area can be told apart. */
 function inModel(key: string, data: EditData): boolean {
-  if (kindOf(key) === 'road') return data.roads?.keys.includes(key) ?? false;
+  if (kindOf(key) === 'road') return data.roads?.keys.includes(roadSegment(key)) ?? false;
   if (kindOf(key) === 'tree') return true;
   return objectOf(key) in data.objects;
 }

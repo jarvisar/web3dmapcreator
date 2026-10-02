@@ -22,6 +22,9 @@
 // The model's own surface is listed after the route in an export, so
 // anything of the route under a roof or an overpass prints in the surface's
 // colour, as the viewer shows it.
+//
+// Roads drawn in the editor rest on the ground the same way (edit/drawn.ts),
+// with the trees over them cleared from a copy of the surface instead.
 
 import { groundAt, type GroundGrid } from '../edit/ground';
 import type { HeightFn } from '../geometry/solid';
@@ -57,19 +60,29 @@ export interface RouteProfile {
   z: Float64Array;
 }
 
+// What a cell of the surface is, in ProfileGrids.flags.
+export const WATER_CELL = 1;
+/** Cut out of the surface for water (compose's `cut`), through the base unless there's a water layer. */
+export const CUT_CELL = 2;
+/** The survey filed building returns there. */
+export const BUILDING_CELL = 4;
+/** Canopy or the skirt around it, or mostly vegetation returns with nothing solid over the ground. */
+export const TREE_CELL = 8;
+
 export interface ProfileGrids {
-  /** The surface as meshed, model mm. */
+  /**
+   * The surface as meshed, model mm. It can be a window of the model's grid
+   * (a drawn road's cleared copy), so cells are found on `ground`.
+   */
   surface: GroundGrid;
   /** The bare ground, model mm. */
   ground: GroundGrid;
-  /** Per cell: 1 where the surface is water. */
-  water: Uint8Array;
-  /** Per cell, with a water layer: its surface, NaN elsewhere. */
+  /** Per cell of `ground`, the bits above. */
+  flags: Uint8Array;
+  /** Per cell, with a water layer: its surface, NaN elsewhere. Cut cells without one go through the base. */
   waterTop: Float32Array | null;
-  /** Per cell: 1 where the surface is cut away through the base. */
-  through: Uint8Array | null;
-  /** Per cell: 1 where the survey filed building returns, or null when it files no buildings. */
-  building: Uint8Array | null;
+  /** The survey files buildings at all. In one that doesn't, BUILDING_CELL says nothing. */
+  filesBuildings: boolean;
   /** Model mm per real metre across. */
   mmPerMetre: number;
   /** What heights over the ground are multiplied by, and the ground's own rise. */
@@ -77,7 +90,7 @@ export interface ProfileGrids {
   exaggeration: number;
 }
 
-function cellIndex(grid: GroundGrid, x: number, y: number): number {
+export function cellIndex(grid: GroundGrid, x: number, y: number): number {
   const c = Math.min(grid.cols - 1, Math.max(0, Math.round((x - grid.minX) / grid.step)));
   const r = Math.min(grid.rows - 1, Math.max(0, Math.round((y - grid.minY) / (grid.stepY ?? grid.step))));
   return r * grid.cols + c;
@@ -105,7 +118,9 @@ function closeOpen(mask: Uint8Array, gap: number): void {
 
 /** Heights a route line rests on, sampled every half cell. */
 export function routeProfile(line: readonly Vec2[], grids: ProfileGrids): RouteProfile {
-  const { surface, ground, water, waterTop, through, building, mmPerMetre, heightScale, exaggeration } = grids;
+  const { surface, ground, flags, waterTop, filesBuildings, mmPerMetre, heightScale, exaggeration } = grids;
+  // Cut water with no layer leaves nothing to rest on.
+  const through = waterTop ? 0 : CUT_CELL;
   const cell = Math.min(surface.step, surface.stepY ?? surface.step);
   const step = cell / 2;
   const xs: number[] = [];
@@ -132,10 +147,10 @@ export function routeProfile(line: readonly Vec2[], grids: ProfileGrids): RouteP
   for (let k = 0; k < count; k++) {
     h[k] = groundAt(surface, xs[k], ys[k]);
     g[k] = groundAt(ground, xs[k], ys[k]);
-    const i = cellIndex(surface, xs[k], ys[k]);
-    wet[k] = water[i] || (through ? through[i] : 0);
+    const f = flags[cellIndex(ground, xs[k], ys[k])];
+    wet[k] = f & (WATER_CELL | through) ? 1 : 0;
     raised[k] = !wet[k] && h[k] - g[k] > raisedMm ? 1 : 0;
-    filed[k] = building?.[i] ?? 0;
+    filed[k] = filesBuildings && f & BUILDING_CELL ? 1 : 0;
   }
 
   // Raised stretches the surface rises to gently carry the route. Water
@@ -172,7 +187,7 @@ export function routeProfile(line: readonly Vec2[], grids: ProfileGrids): RouteP
 
   // Long stretches under something that isn't a building.
   const cover = new Uint8Array(count);
-  if (building) {
+  if (filesBuildings) {
     const covered = raised.slice();
     const gap = Math.round((COVER_GAP_M * mmPerMetre) / step);
     for (let j = 0; j < count; ) {
@@ -221,8 +236,8 @@ export function routeProfile(line: readonly Vec2[], grids: ProfileGrids): RouteP
       const to = b < count && on[b] ? h[b] : NaN;
       z[j] = from === from && to === to ? from + ((to - from) * (j - a)) / (b - a) : from === from ? from : to === to ? to : h[j];
     } else if (wet[j]) {
-      const i = cellIndex(surface, xs[j], ys[j]);
-      if (through?.[i]) z[j] = NaN;
+      const i = cellIndex(ground, xs[j], ys[j]);
+      if (flags[i] & through) z[j] = NaN;
       else if (waterTop && waterTop[i] === waterTop[i]) z[j] = waterTop[i];
       else z[j] = h[j];
     } else z[j] = g[j];

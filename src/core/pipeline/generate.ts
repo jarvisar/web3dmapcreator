@@ -3,6 +3,7 @@
 // draped on it, and the ground kept under structures over water depends on
 // the road and building footprints, so the terrain solid is built last.
 
+import type { ProfileGrids } from '../dsm/route';
 import type { GroundGrid } from '../edit/ground';
 import { areaGeoBounds, areaModelRing, DATA_MARGIN_M, effectiveScale } from '../geo/area';
 import { Projection } from '../geo/projection';
@@ -16,6 +17,7 @@ import {
   multiBounds,
   offsetPolygons,
   ringBounds,
+  separateTouching,
   union,
   type Box,
 } from '../geometry/polygon';
@@ -37,6 +39,7 @@ import { solveWater, waterBottom, type WaterKind } from './water';
 import { shapeBeaches } from './beaches';
 import { layOutTracks, type TrackLayout } from './tracks';
 import { buildTrees } from './trees';
+import { measureRoads } from './measure';
 
 export interface ModelSpec {
   layers: Layer[];
@@ -65,8 +68,14 @@ export interface EditContext {
    * cut out through the base.
    */
   surfaceWater?: { polygons: MultiPolygon; floor: number | null }[];
+  /** A LiDAR only model's bare ground and what each cell is, which drawn roads rest on (edit/drawn.ts). */
+  profile?: ProfileGrids;
   /** Ground road pieces as they were widened: bridges left out, demoted decks back in. */
   roads: RoadPiece[];
+  /** Where blocks of each road segment end, by its key `r:<id>` (pipeline/measure.ts). Segments with none aren't listed. */
+  junctions?: Map<string, number[]>;
+  /** Imported routes on the ground, which roads and paths were cut away for. */
+  tracks?: TrackGround[];
   /** Water bodies with their levels, for editing water and what stands in it (edit/earth.ts). */
   bodies: EditWater[];
   /** Cut water and basins before any ground was kept in them. */
@@ -91,7 +100,7 @@ export interface EditContext {
   land?: { regions: Partial<Record<SurfaceCategory, MultiPolygon>>; water: MultiPolygon };
 }
 
-/** An imported route's ground in cut water and basins, which goes with the route. */
+/** An imported route's ground, or what of it is in cut water and basins. Either goes with the route. */
 export interface TrackGround {
   key: string;
   pieces: MultiPolygon;
@@ -225,6 +234,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   let pierGround: MultiPolygon = [];
   let deckPieces: DeckPiece[] = [];
   let groundRoads: RoadPiece[] = [];
+  let roadJunctions = new Map<string, number[]>();
   // The road lines as tidied, decks included, for snapping routes to.
   let roadLines: Vec2[][] = [];
   if (settings.roads.enabled) {
@@ -248,6 +258,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
       }
     }
     roads = { ...ribbons, bridgeLines: collected.bridgeLines };
+    roadJunctions = measureRoads(collected.lines, groundRoads, deckPieces);
   }
   let airport: MultiPolygon = [];
   if (settings.roads.enabled && settings.roads.includeAirports) {
@@ -300,6 +311,15 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
         structures.push(wet);
       }
     }
+    // Roads and paths give way to routes, as land gives way to roads, so a
+    // route never depends on the slicer's order to win: an STL export has
+    // none. Airport paving only gives way by that order.
+    if (tracks.ground.length) {
+      const cut = new ClipSet([tracks.ground]);
+      for (const group of ['road', 'rail', 'path'] as const) {
+        if (roads[group].length) roads[group] = separateTouching(dropSmall(differenceSet(roads[group], cut), 0.02));
+      }
+    }
   }
   const standing = union(...structures);
   const cutFinal = standing.length ? difference(water.cut, standing) : water.cut;
@@ -325,7 +345,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
         ctx,
         {
           water: water.all,
-          roads: roads.footprint,
+          roads: tracks?.ground.length ? [...roads.footprint, ...tracks.ground] : roads.footprint,
           buildings: buildings.footprint,
           bridgeLines: roads.bridgeLines,
         },
@@ -547,6 +567,8 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     heightAt: (x, y) => hf.heightAt(x, y),
     heightfield: hf,
     roads: groundRoads,
+    junctions: roadJunctions,
+    tracks: tracks?.pieces.map((piece) => ({ key: piece.key, pieces: piece.ground })),
     // Recorded with the water off too, since the recesses stay.
     bodies: water.bodies.map((body, i): EditWater => {
       const entry = settled[i];

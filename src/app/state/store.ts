@@ -63,7 +63,7 @@ export type SectionKey =
   | 'data';
 export type LayerKey = 'terrain' | 'water' | 'land' | 'roads' | 'bridges' | 'buildings' | 'lidar' | 'trees' | 'rim';
 /** What a click does in the 3D editor: select, select several, or add a shape. */
-export type EditTool = 'select' | 'several' | 'text' | 'box' | 'cylinder' | 'pin' | 'path' | 'area';
+export type EditTool = 'select' | 'several' | 'split' | 'text' | 'box' | 'cylinder' | 'pin' | 'path' | 'area';
 
 export interface EditHistory {
   past: EditStep[];

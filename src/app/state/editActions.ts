@@ -3,7 +3,8 @@
 // edits goes through commitEdits, so each one can be undone.
 
 import { CancelledError } from '../../core/engine/client';
-import { kindOf, objectOf, shapeKey, twinOf } from '../../core/edit/keys';
+import { addSplit, parseRoadKey, removeSplit, segmentKeys, writeRoads } from '../../core/edit/blocks';
+import { editOf, kindOf, objectOf, shapeKey, twinOf } from '../../core/edit/keys';
 import {
   editCount,
   emptyEdits,
@@ -344,28 +345,52 @@ export function setTool(tool: EditTool): void {
 
 // --------------------------------------------------------------- objects
 
-/** Keys the same edit applies to: a part's edit or its whole object's, as selected. */
+/**
+ * Whether the road a bridge is on is removed where the bridge is, whatever
+ * the bridge's own edit says. A copy, since `objects` is being written and
+ * edits are indexed per object.
+ */
+function roadGoneAt(objects: ModelEdits['objects'], bridge: string): boolean {
+  const own = { ...objects };
+  delete own[bridge];
+  return Boolean(editOf({ ...emptyEdits(), objects: own }, bridge, getEditData().objects[bridge]?.at)?.removed);
+}
+
+/**
+ * Keys the same edit applies to: a part's edit or its whole object's, as
+ * selected. Roads are written by range (blocks.ts): a block of a street
+ * changes on its own, and the whole street over its blocks.
+ */
 export function patchObjects(keys: string[], patch: Partial<ObjectEdit>, coalesce?: string): void {
   const edits = get().edits;
-  const objects = { ...edits.objects };
+  const roads = keys.filter((key) => parseRoadKey(key));
+  const written = writeRoads(edits.objects, roads, patch);
+  const objects = written.objects;
   for (const key of keys) {
-    if (kindOf(key) === 'shape') continue;
+    if (kindOf(key) === 'shape' || roads.includes(key)) continue;
     const next: ObjectEdit = { ...objects[key], ...patch };
     for (const field of Object.keys(next) as (keyof ObjectEdit)[]) if (next[field] === undefined) delete next[field];
     // A bridge kept while its road is removed has to say so, or it goes with the road again.
-    if (next.removed === false && !(key.startsWith('br:') && objects[twinOf(key)!]?.removed)) delete next.removed;
+    if (next.removed === false && !(key.startsWith('br:') && roadGoneAt(objects, key))) delete next.removed;
     if (Object.keys(next).length) objects[key] = next;
     else delete objects[key];
   }
-  commitEdits({ ...edits, objects }, coalesce, keys);
+  commitEdits({ ...edits, objects }, coalesce, [...keys, ...written.touched]);
 }
 
-/** Back as generated: every edit of these objects, and of their parts, dropped. */
+/**
+ * Back as generated: every edit of these objects, and of their parts,
+ * dropped. A whole road goes back with every block and split of it. A block
+ * goes back on its own, carved out of any edit of the road around it.
+ */
 export function resetObjects(keys: string[]): void {
   const edits = get().edits;
-  const objects = { ...edits.objects };
-  const targets = new Set(keys);
-  const dropped: string[] = [];
+  const blocks = keys.filter((key) => key.startsWith('r:') && key.includes('@'));
+  const written = writeRoads(edits.objects, blocks, { removed: undefined, layer: undefined, heightMm: undefined, widthMm: undefined });
+  const objects = written.objects;
+  const targets = new Set(keys.filter((key) => !blocks.includes(key)));
+  for (const key of keys) if (key.startsWith('r:') && !key.includes('@')) for (const range of segmentKeys(objects, key)) targets.add(range);
+  const dropped: string[] = [...written.touched];
   for (const key of Object.keys(objects)) {
     if (!targets.has(key) && !targets.has(objectOf(key))) continue;
     delete objects[key];
@@ -380,21 +405,26 @@ export function removeObjects(keys: string[]): void {
   const shapes = new Set(keys.filter((key) => kindOf(key) === 'shape'));
   const others = keys.filter((key) => !shapes.has(key));
   const edits = get().edits;
-  const objects = { ...edits.objects };
-  for (const key of others) objects[key] = { ...objects[key], removed: true };
-  commitEdits({ ...edits, objects, shapes: edits.shapes.filter((s) => !shapes.has(shapeKey(s.id))) }, undefined, others);
+  const roads = others.filter((key) => parseRoadKey(key));
+  const written = writeRoads(edits.objects, roads, { removed: true });
+  const objects = written.objects;
+  for (const key of others) if (!roads.includes(key)) objects[key] = { ...objects[key], removed: true };
+  const touched = [...others, ...written.touched];
+  commitEdits({ ...edits, objects, shapes: edits.shapes.filter((s) => !shapes.has(shapeKey(s.id))) }, undefined, touched);
   // Water stays selected, for the choice of keeping its hollow.
   if (!others.length || others.some((key) => kindOf(key) !== 'water')) setSelection([]);
   const deleted = edits.shapes.filter((s) => shapes.has(shapeKey(s.id)));
   if (keys.length) {
-    toast(`Removed ${describeCounts(keys)}`, 'info', undoAction(get().edits, (now) => putShapes(putObjects(now, others, edits), deleted)));
+    toast(`Removed ${describeCounts(keys)}`, 'info', undoAction(get().edits, (now) => putShapes(putObjects(now, touched, edits), deleted)));
   }
 }
 
 export function restoreObjects(keys: string[]): void {
   const edits = get().edits;
-  const objects = { ...edits.objects };
-  const touched: string[] = [];
+  const roads = keys.filter((key) => parseRoadKey(key));
+  const written = writeRoads(edits.objects, roads, { removed: undefined });
+  const objects = written.objects;
+  const touched: string[] = [...written.touched];
   const put = (key: string, edit: ObjectEdit) => {
     touched.push(key);
     if (Object.keys(edit).length) objects[key] = edit;
@@ -402,18 +432,81 @@ export function restoreObjects(keys: string[]): void {
   };
   for (const key of keys) {
     if (kindOf(key) === 'shape') continue;
+    const twin = twinOf(key);
+    if (roads.includes(key)) {
+      // A road put back takes its bridge back with it, once nothing of the road there is removed.
+      if (twin && objects[twin]?.removed === false && !roadGoneAt(objects, twin)) {
+        const { removed: _kept, ...bridge } = objects[twin];
+        put(twin, bridge);
+      }
+      continue;
+    }
     const { removed: _removed, hollow: _hollow, ...rest } = objects[key] ?? {};
     // A bridge goes with its road, so one put back on its own says so.
-    const twin = twinOf(key);
-    if (key.startsWith('br:') && twin && objects[twin]?.removed) put(key, { ...rest, removed: false });
+    if (key.startsWith('br:') && roadGoneAt({ ...objects, [key]: rest }, key)) put(key, { ...rest, removed: false });
     else put(key, rest);
-    // A road put back takes its bridge back with it.
-    if (key.startsWith('r:') && twin && objects[twin]?.removed === false) {
-      const { removed: _kept, ...bridge } = objects[twin];
-      put(twin, bridge);
-    }
   }
   commitEdits({ ...edits, objects }, undefined, touched);
+}
+
+// ----------------------------------------------------------------- roads
+
+/**
+ * Splits a road where it was clicked, so a block of it can be edited apart
+ * from the rest. A selected block that was split stays selected as its two
+ * halves.
+ */
+export function splitRoad(segment: string, at: number, halves: (objects: ModelEdits['objects']) => string[] | null): boolean {
+  const edits = get().edits;
+  const objects = addSplit(edits.objects, segment, at);
+  if (!objects) return false;
+  commitEdits({ ...edits, objects }, undefined, [segment]);
+  const replaced = halves(objects);
+  if (replaced) setSelection(replaced);
+  return true;
+}
+
+/**
+ * Takes a split back out. The blocks either side become one, with the
+ * longer one's edits where they differed, which a toast says.
+ */
+export function joinRoad(segment: string, at: number, bounds: readonly number[]): boolean {
+  const edits = get().edits;
+  const joined = removeSplit(edits.objects, segment, at, bounds);
+  if (!joined) return false;
+  commitEdits({ ...edits, objects: joined.objects }, undefined, joined.touched);
+  const selection = get().ui.selection.filter((key) => !(key.startsWith(`${segment}@`) && key !== segment));
+  if (selection.length !== get().ui.selection.length) setSelection(selection);
+  if (joined.differed) toast('Joined. The two blocks were edited differently, so it now has the longer one\'s edits.', 'info', undoAction(get().edits, (now) => putObjects(now, joined.touched, edits)));
+  return true;
+}
+
+/**
+ * Generated roads put in place of drawn ones that follow the same lines:
+ * the blocks are removed, a bridge on them stays, and the drawn roads are
+ * added and selected, as one step.
+ */
+export function replaceWithDrawnRoads(keys: string[], shapes: Omit<AddedShape, 'id'>[], bridges: string[]): void {
+  if (!shapes.length || shapesFull(shapes.length)) return;
+  const edits = get().edits;
+  const written = writeRoads(edits.objects, keys, { removed: true });
+  const objects = written.objects;
+  const touched = [...written.touched];
+  // The deck stays a bridge: the drawn road runs up to it.
+  for (const bridge of bridges) {
+    if (!roadGoneAt(objects, bridge)) continue;
+    objects[bridge] = { ...objects[bridge], removed: false };
+    touched.push(bridge);
+  }
+  const added = shapes.map((shape) => ({ ...shape, id: newId() }));
+  commitEdits({ ...edits, objects, shapes: [...edits.shapes, ...added] }, undefined, touched);
+  setSelection(added.map((shape) => shapeKey(shape.id)));
+  const what = added.length === 1 ? 'a drawn road' : `${added.length} drawn roads`;
+  toast(`Made it ${what}. Drag its points to reshape it.`, 'info', undoAction(get().edits, (now) => {
+    const back = putObjects(now, touched, edits);
+    const ids = new Set(added.map((shape) => shape.id));
+    return { ...back, shapes: back.shapes.filter((shape) => !ids.has(shape.id)) };
+  }));
 }
 
 // ---------------------------------------------------------------- layers

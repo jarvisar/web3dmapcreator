@@ -262,7 +262,7 @@ describe('editOf', () => {
     expect(editOf(edits, 'br:x')).toEqual({ removed: true, layer: 'L', widthMm: 2 });
     expect(editOf({ ...edits, objects: { ...edits.objects, 'br:x': { removed: false, widthMm: 1 } } }, 'br:x')).toEqual({ removed: false, layer: 'L', widthMm: 1 });
     expect(editOf(edits, 'br:y')).toEqual({ widthMm: 1 });
-    expect(editOf(edits, 'r:x')).toBe(edits.objects['r:x']);
+    expect(editOf(edits, 'r:x')).toEqual({ removed: true, layer: 'L', widthMm: 2, heightMm: 3 });
   });
 });
 

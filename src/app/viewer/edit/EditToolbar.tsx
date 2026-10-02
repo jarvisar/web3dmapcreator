@@ -1,4 +1,4 @@
-import { Box, Cylinder, MapPin, MousePointer2, Pentagon, Redo2, Spline, SquareDashedMousePointer, Type, Undo2 } from 'lucide-react';
+import { Box, Cylinder, MapPin, MousePointer2, Pentagon, Redo2, Scissors, Spline, SquareDashedMousePointer, Type, Undo2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { ToolButton } from '../../components/ToolButton';
 import { REDO_KEYS, UNDO_KEYS } from '../../lib/browser';
@@ -8,6 +8,7 @@ import { useApp, type EditTool } from '../../state/store';
 export const TOOLS: { tool: EditTool; label: string; key: string; icon: ReactNode }[] = [
   { tool: 'select', label: 'Select', key: 'V', icon: <MousePointer2 size={15} aria-hidden="true" /> },
   { tool: 'several', label: 'Select several', key: 'M', icon: <SquareDashedMousePointer size={15} aria-hidden="true" /> },
+  { tool: 'split', label: 'Split a road', key: 'X', icon: <Scissors size={15} aria-hidden="true" /> },
   { tool: 'text', label: 'Add text', key: 'T', icon: <Type size={15} aria-hidden="true" /> },
   { tool: 'pin', label: 'Add a map pin', key: 'P', icon: <MapPin size={15} aria-hidden="true" /> },
   { tool: 'box', label: 'Add a box', key: 'B', icon: <Box size={15} aria-hidden="true" /> },
