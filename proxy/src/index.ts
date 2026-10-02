@@ -8,7 +8,7 @@
 // are passed through and the body is streamed, never buffered, so a 300 MB
 // tile costs the Worker almost no CPU or memory.
 
-import { PROXIED } from '../../src/core/data/corsProxy';
+import { PROXY_AGENT, proxyRule } from '../../src/core/data/corsProxy';
 
 export interface Env {
   /** Origins allowed to use the proxy, comma separated. */
@@ -19,7 +19,6 @@ const FORWARDED = ['range', 'if-range', 'if-none-match', 'if-modified-since'];
 const RETURNED = ['content-type', 'content-range', 'accept-ranges', 'etag', 'last-modified'];
 const EXPOSED = 'Content-Range, Content-Length, Accept-Ranges, ETag, Last-Modified';
 const MAX_REDIRECTS = 3;
-const AGENT = 'citymodel-lidar-proxy (+https://citymodel.jarvisar.com)';
 
 export function allowedOrigin(origin: string | null, env: Env): origin is string {
   if (!origin) return false;
@@ -38,7 +37,7 @@ export function allowedTarget(url: string): string | null {
   } catch {
     return null;
   }
-  return PROXIED.some((prefix) => href.startsWith(prefix)) ? href : null;
+  return proxyRule(href) ? href : null;
 }
 
 /** The file a request asks for: its path and query after the Worker's own host. */
@@ -65,7 +64,9 @@ export async function handle(request: Request, env: Env): Promise<Response> {
   let target = targetOf(request.url);
   if (!target) return text(403, "That isn't a file this proxy reads.", cors);
 
-  const headers = new Headers({ 'User-Agent': AGENT });
+  // Bavaria's server gzips LAZ for anyone who accepts gzip, and then ignores
+  // Range and sends no length. Byte ranges have to be of the file itself.
+  const headers = new Headers({ 'User-Agent': PROXY_AGENT, 'Accept-Encoding': 'identity' });
   for (const name of FORWARDED) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);

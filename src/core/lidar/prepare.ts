@@ -118,6 +118,9 @@ const BATCH_M = 400;
 const MIN_WIDTH_MM = 0.1;
 const MIN_STEP_MM = 0.05;
 const DAY_MS = 24 * 3600 * 1000;
+/** Progress once the surveys are found and ranked, when reading starts. */
+export const SURVEYS_FOUND = 0.08;
+const MEASURED_ALL = 0.98;
 
 let resultStore: { get(key: string): Promise<ArrayBuffer | undefined>; put(key: string, data: ArrayBuffer): Promise<void> } | null = null;
 
@@ -387,8 +390,22 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
   const resolved = new Set<string>();
   const tried = new Map<string, Set<string>>(eligible.map((f) => [f.id, new Set<string>()]));
   const used = new Map<string, SurveyUse>();
-  let done = 0;
-  const total = eligible.length;
+  // How far along reading is: buildings read, over those and every one known
+  // to be still ahead, the survey's not read yet and any with a survey not
+  // tried. Batches that only found whole-file tiles to offer cost nothing,
+  // so they don't count. Shared out per survey, an offer-only survey read
+  // first took 92% of the bar in an instant.
+  let read = 0;
+  let share = 0;
+  const inFlight = new Set<string>();
+  const reshare = () => {
+    let ahead = inFlight.size;
+    for (const f of eligible) {
+      if (inFlight.has(f.id) || resolved.has(f.id)) continue;
+      if (orders.get(f.id)!.some((r) => !tried.get(f.id)!.has(r.candidate.url))) ahead++;
+    }
+    share = Math.max(share, read / Math.max(1, read + ahead));
+  };
   // The default runner shares the discovery fetcher, which counts its bytes.
   const runner: BatchRunner = input.runner ?? { concurrency: 1, run: async (job, report) => ({ outcome: await runBatch(job, fetcher, report), downloaded: 0 }) };
   // Batches a whole-file survey would have read without approval. Their
@@ -408,7 +425,11 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
     const url = [...groups.keys()].sort((a, b) => (globalRank.get(a)! - globalRank.get(b)!) || (a < b ? -1 : 1))[0];
     const survey = ranked.find((r) => r.candidate.url === url)!.candidate;
     const members = groups.get(url)!;
-    for (const f of members) tried.get(f.id)!.add(url);
+    for (const f of members) {
+      tried.get(f.id)!.add(url);
+      inFlight.add(f.id);
+    }
+    reshare();
     const batches = new Map<string, MetricFeature[]>();
     for (const f of members) {
       const [cx, cy] = centroid(f.geometry);
@@ -421,7 +442,7 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
     const lane = async () => {
       while (queue.length) {
         const batch = queue.shift()!;
-        const context = { frame, halo, settings: { ...settings, xyScale, zScale }, surface, partsByParent, sourcePartsByParent, neighboursById, runner, approved: input.approved, progress: (label: string, detail?: string) => progress(label, 0.08 + 0.9 * (done / total), detail) };
+        const context = { frame, halo, settings: { ...settings, xyScale, zScale }, surface, partsByParent, sourcePartsByParent, neighboursById, runner, approved: input.approved, progress: (label: string, detail?: string) => progress(label, SURVEYS_FOUND + (MEASURED_ALL - SURVEYS_FOUND) * share, detail) };
         const outcome = await measureBatch(batch, survey, context).catch((error: unknown) => {
           if ((error as Error)?.name === 'BudgetExceeded' && batch.length > 1) {
             queue.unshift(...splitBatch(batch));
@@ -434,10 +455,15 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
           return undefined;
         });
         if (outcome === null) continue;
-        done += batch.length;
-        if (!outcome) continue;
+        for (const f of batch) inFlight.delete(f.id);
+        if (!outcome?.pending) read += batch.length;
+        if (!outcome) {
+          reshare();
+          continue;
+        }
         if (outcome.pending) {
           pending.push({ survey, ids: batch.map((f) => f.id), tiles: outcome.pending });
+          reshare();
           continue;
         }
         result.downloadedBytes += outcome.downloaded;
@@ -453,6 +479,7 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
           if (observation) (observations.get(f.id) ?? observations.set(f.id, []).get(f.id)!).push({ ...observation, source: survey.name });
           if (outcome.rejected[f.id]) rejected[f.id] = outcome.rejected[f.id];
         }
+        reshare();
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, Math.min(runner.concurrency, queue.length)) }, lane));

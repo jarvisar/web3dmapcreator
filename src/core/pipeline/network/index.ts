@@ -53,6 +53,8 @@ export interface NetworkInput {
   mergeDivided: boolean;
   joinEnds: boolean;
   removeFragments: boolean;
+  /** Told how far along the tidy is, 0 to 1, between its passes. */
+  progress?: (fraction: number) => void;
 }
 
 export interface NetworkStats {
@@ -68,14 +70,20 @@ export interface NetworkStats {
   network_pruned_mm: number;
 }
 
+// Where each pass starts, as a share of the tidy's time.
+const TIDY_SHARES = { merge: 0.08, cull: 0.45, join: 0.65, prune: 0.75 };
+
 export function tidyNetwork(input: NetworkInput): { pieces: RoadPiece[]; stats: NetworkStats } {
   const gap = Math.max(0, input.gapMm);
+  const report = input.progress ?? (() => {});
   const candidates = input.pieces.map((p) => candidate(p, input.isDeck(p))).filter((c) => c.points.length >= 2);
   const origins = endOrigins(candidates, input.leftOut, input.hidden, input.onEdge, NODE_MM);
   const length = (parts: { points: Vec2[] }[]) => parts.reduce((sum, p) => sum + polylineLength(p.points), 0);
 
   let parts = wholeParts(candidates, origins);
+  report(TIDY_SHARES.merge);
   const merged = input.mergeDivided ? mergeDivided(parts, candidates, gap, NODE_MM) : { pairs: 0, droppedMm: 0 };
+  report(TIDY_SHARES.cull);
   const afterMerge = length(parts);
   let culled = { droppedRoutes: 0, hiddenParts: 0 };
   if (input.removeDoubled) {
@@ -86,7 +94,9 @@ export function tidyNetwork(input: NetworkInput): { pieces: RoadPiece[]; stats: 
     culled = result;
   }
   const afterCull = length(parts);
+  report(TIDY_SHARES.join);
   const joined = input.joinEnds ? joinEnds(parts, candidates, gap, NODE_MM) : 0;
+  report(TIDY_SHARES.prune);
   const afterJoin = length(parts);
   const pruned = input.removeFragments
     ? prune(parts, candidates, { stub: STUB_MM, island: ISLAND_MM, tolerance: NODE_MM })

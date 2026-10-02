@@ -29,6 +29,7 @@ import {
   triangleCount,
   writeOrder,
   type PreparedModel,
+  type RowTally,
 } from './common';
 import { escapeText, fixed6, quoteattr } from './format';
 import { sideBySide } from './sections';
@@ -49,7 +50,7 @@ function prusaPlacement(bounds: [number, number, number, number][], bedWidth: nu
   return sideBySide(bounds, bedWidth, bedDepth);
 }
 
-export function writePrusaProject(model: PreparedModel, printer: Printer, title = 'City Model'): Blob {
+export function writePrusaProject(model: PreparedModel, printer: Printer, title = 'City Model', tally?: RowTally): Blob {
   const bottom = model.extents.minZ;
   const extruders = modelFilaments(model);
   const layout = model.plates.map((plate, index) => {
@@ -69,7 +70,7 @@ export function writePrusaProject(model: PreparedModel, printer: Printer, title 
   );
 
   const zip = new ZipWriter();
-  const out = new ModelStream(zip.entry(MODEL_PATH));
+  const out = new ModelStream(zip.entry(MODEL_PATH), tally);
   // Version3mf is required. At version 0 PrusaSlicer 2.x bakes the item
   // transform into the first volume only and then resets it, which leaves
   // every other part at the origin.

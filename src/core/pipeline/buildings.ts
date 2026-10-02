@@ -218,7 +218,8 @@ export async function buildBuildings(
   const partFeatures = usable(parts);
   await ctx.progress.checkpoint(0);
   const selection = selectBuildingGeometry(buildingFeatures, partFeatures, settings.restoreMainBodies);
-  await ctx.progress.checkpoint(0.1);
+  // Selection is about a third of the time, the buildings themselves the rest.
+  await ctx.progress.checkpoint(0.3);
 
   for (const key of STAT_KEYS) stat(key, 0);
   ctx.stats.building_height_scale = Math.round(scale * 1e6) / 1e6;
@@ -487,7 +488,7 @@ export async function buildBuildings(
           maximumSlenderness,
         )
       : null;
-  await ctx.progress.checkpoint(0.15);
+  await ctx.progress.checkpoint(0.33);
 
   const emit = (surfaces: RoofRegion[], mass: Mass, bottom: HeightFn | number, grounded: boolean, tidy: boolean, key: string, sub: string): number => {
     let added = 0;
@@ -541,7 +542,7 @@ export async function buildBuildings(
   const segments = new Map<string, Segment[]>();
 
   for (let index = 0; index < jobs.length; index++) {
-    if (index % 100 === 0) await ctx.progress.checkpoint(0.15 + (0.8 * index) / jobs.length);
+    if (index % 100 === 0) await ctx.progress.checkpoint(0.33 + (0.67 * index) / jobs.length);
     const { feature, isPart } = jobs[index];
     const id = feature.id;
     const restoring = !isPart && selection.suppressedParentIds.has(id);
@@ -712,8 +713,10 @@ export async function buildBuildings(
     stat('lidar_buildings');
   }
 
+  // The footprint union is most of the time in big cities (2.5 s of 3.1 s in San Francisco).
+  ctx.progress.begin('footprints', 'Joining building footprints');
   stat('elevated_masses_settled', settleOnMassesBelow(solids));
-  await ctx.progress.checkpoint(0.95);
+  await ctx.progress.checkpoint(0.1);
   return { solids, measured, rock, footprint: groundPieces.length ? union(groundPieces) : [] };
 }
 

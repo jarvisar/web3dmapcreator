@@ -5,7 +5,7 @@
 // section's files together as one multipart object keeps them aligned.
 
 import type { MeshPart } from '../types';
-import { filamentUse, triangleCount, type PreparedModel, type PreparedPlate } from './common';
+import { filamentUse, triangleCount, type PreparedModel, type PreparedPlate, type RowTally } from './common';
 import { asciiBytes } from './format';
 import { BlobBuilder, ZipWriter } from './zip';
 
@@ -86,7 +86,7 @@ function plateOffset(bounds: [number, number, number, number], bottom: number): 
 
 // One binary STL in chunks. The sink must be done with a chunk when it
 // returns: `scratch` is reused.
-function streamStl(sink: (chunk: Uint8Array) => void, parts: MeshPart[], offset: Offset, scratch: Uint8Array, header = STL_HEADER): void {
+function streamStl(sink: (chunk: Uint8Array) => void, parts: MeshPart[], offset: Offset, scratch: Uint8Array, header = STL_HEADER, tally?: RowTally): void {
   const total = parts.reduce((sum, part) => sum + triangleCount(part), 0);
   checkCount(total);
   const head = new Uint8Array(84);
@@ -105,26 +105,28 @@ function streamStl(sink: (chunk: Uint8Array) => void, parts: MeshPart[], offset:
       t += take;
       if (used === capacity) {
         sink(scratch.subarray(0, used * RECORD));
+        tally?.(used);
         used = 0;
       }
     }
   }
   if (used) sink(scratch.subarray(0, used * RECORD));
+  tally?.(used);
 }
 
 /** Every part of one plate in one file: XY centred on the plate bounds, lowest point at z = 0. */
-export function writeStl(plate: PreparedPlate, header = STL_HEADER): Blob {
+export function writeStl(plate: PreparedPlate, header = STL_HEADER, tally?: RowTally): Blob {
   const out = new BlobBuilder();
   const parts = plate.parts.map((p) => p.part);
   const offset = plateOffset(plate.bounds, plate.extents.minZ);
   // The builder keeps its chunks, so each one is copied out of the scratch buffer.
-  streamStl((chunk) => out.push(chunk.slice()), parts, offset, new Uint8Array(CHUNK_RECORDS * RECORD), header);
+  streamStl((chunk) => out.push(chunk.slice()), parts, offset, new Uint8Array(CHUNK_RECORDS * RECORD), header, tally);
   return out.finish(MIME_STL);
 }
 
-function zipStl(zip: ZipWriter, name: string, parts: MeshPart[], offset: Offset, scratch: Uint8Array, header: string): void {
+function zipStl(zip: ZipWriter, name: string, parts: MeshPart[], offset: Offset, scratch: Uint8Array, header: string, tally?: RowTally): void {
   const entry = zip.entry(name);
-  streamStl((chunk) => entry.bytes(chunk), parts, offset, scratch, header);
+  streamStl((chunk) => entry.bytes(chunk), parts, offset, scratch, header, tally);
   entry.close();
 }
 
@@ -144,6 +146,7 @@ export interface StlZipOptions {
   /** One file per plate instead of one per colour. */
   combined?: boolean;
   header?: string;
+  tally?: RowTally;
 }
 
 /**
@@ -168,7 +171,7 @@ export function writeStlZip(model: PreparedModel, base: string, options: StlZipO
     const offset = plateOffset(plate.bounds, bottom);
     const parts = plate.parts.map((p) => p.part);
     if (options.combined) {
-      zipStl(zip, `${name}.stl`, parts, offset, scratch, header);
+      zipStl(zip, `${name}.stl`, parts, offset, scratch, header, options.tally);
       return;
     }
     for (const slot of [...new Set(slots[i])].sort((a, b) => a - b)) {
@@ -176,7 +179,7 @@ export function writeStlZip(model: PreparedModel, base: string, options: StlZipO
       // Custom layer names can hold anything a file name can't.
       const label = labels[slot - 1].map((l) => l.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '') || 'Layer').join('+');
       const file = `${name}_${String(slot).padStart(digits, '0')}_${label}_${hex.slice(1)}.stl`;
-      zipStl(zip, file, parts.filter((_, k) => slots[i][k] === slot), offset, scratch, header);
+      zipStl(zip, file, parts.filter((_, k) => slots[i][k] === slot), offset, scratch, header, options.tally);
     }
   });
   return zip.finish();

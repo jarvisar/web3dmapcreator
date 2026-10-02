@@ -1,7 +1,7 @@
 // Finding surveys a browser can read over an area. Each provider is its own
 // module: a catalog it asks, and the areas it's asked about. Only publishers
 // whose catalogs and point files answer cross-origin requests (CORS) are
-// here, since there is no server in between.
+// here, apart from files on hosts the site's proxy reads (data/corsProxy.ts).
 //
 // Everything returned is in lon/lat. Spatial tests against buildings happen
 // later, in the metric frame.
@@ -10,38 +10,57 @@ import { HttpError, NetworkError } from '../../data/http';
 import type { GeoBounds } from '../../types';
 import type { Fetcher } from '../read/fetcher';
 import { overlaps, type Candidate, type Failure, type Provider } from './common';
+import { ahn } from './ahn';
 import { aist3ddb } from './aist3ddb';
 import { alaska } from './alaska';
+import { anchorage } from './anchorage';
 import { arpai } from './arpai';
 import { basque } from './basque';
+import { bavaria } from './bavaria';
 import { berlin } from './berlin';
 import { brandenburg } from './brandenburg';
+import { brussels } from './brussels';
 import { dc } from './dc';
+import { estonia } from './estonia';
 import { flai } from './flai';
 import { genova } from './genova';
 import { geonb } from './geonb';
 import { halle } from './halle';
 import { helsinki } from './helsinki';
+import { icgc } from './icgc';
 import { ign } from './ign';
 import { illinois } from './illinois';
 import { indiana } from './indiana';
 import { japan } from './japan';
 import { kyfromabove } from './kyfromabove';
+import { lidarbc } from './lidarbc';
 import { luxembourg } from './luxembourg';
+import { madrid } from './madrid';
+import { montevideo } from './montevideo';
+import { navarra } from './navarra';
 import { noaa } from './noaa';
 import { nrcan } from './nrcan';
 import { nrw } from './nrw';
 import { opentopography } from './opentopography';
+import { poland } from './poland';
+import { quebec } from './quebec';
 import { rlp } from './rlp';
+import { salzburg } from './salzburg';
+import { saarland } from './saarland';
 import { saoPaulo } from './saopaulo';
+import { saxony } from './saxony';
 import { sceneLayers } from './scenelayers';
 import { scotland } from './scotland';
 import { slovenia } from './slovenia';
 import { swisstopo } from './swisstopo';
+import { texas } from './texas';
+import { thuringia } from './thuringia';
 import { trentino } from './trentino';
 import { turku } from './turku';
 import { usgs } from './usgs';
 import { usgsStaged } from './usgsstaged';
+import { vorarlberg } from './vorarlberg';
+import { winnipeg } from './winnipeg';
 import { wisconsin } from './wisconsin';
 
 export type { Box, Candidate, Failure, Format, Provider, Tile } from './common';
@@ -51,7 +70,12 @@ export { USGS_CATALOG } from './usgs';
 
 // Registry order is the order candidates come out in, which ranking falls
 // back on, so it stays the same however the requests finish.
-export const PROVIDERS: Provider[] = [usgs, usgsStaged, kyfromabove, indiana, illinois, wisconsin, dc, alaska, arpai, flai, ign, nrcan, swisstopo, nrw, rlp, brandenburg, berlin, halle, luxembourg, scotland, slovenia, basque, trentino, genova, helsinki, turku, geonb, noaa, saoPaulo, japan, aist3ddb, sceneLayers, opentopography];
+export const PROVIDERS: Provider[] = [
+  usgs, usgsStaged, kyfromabove, indiana, illinois, wisconsin, dc, alaska, anchorage, arpai, texas,
+  flai, ign, nrcan, lidarbc, quebec, winnipeg, swisstopo, nrw, rlp, saarland, brandenburg, berlin, halle, bavaria, saxony, thuringia, salzburg, vorarlberg,
+  ahn, brussels, luxembourg, scotland, slovenia, poland, estonia, basque, navarra, madrid, icgc, trentino, genova, helsinki, turku, geonb,
+  noaa, saoPaulo, montevideo, japan, aist3ddb, sceneLayers, opentopography,
+];
 
 const TIMEOUT_MS = 90_000;
 

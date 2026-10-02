@@ -12,7 +12,7 @@
 // the user agrees to download it.
 
 import type { GeoBounds, Polygon } from '../../types';
-import { crsFromEpsg, crsFromWkt, lonLatTransforms } from '../read/crs';
+import { crsFromEpsg, crsFromWkt, lonLatTransforms, type CrsInfo } from '../read/crs';
 import type { Fetcher } from '../read/fetcher';
 import { projectYear } from '../selection';
 import { dateOnly, geoPolygons, keyPath, overlaps, pagedFeatures, ringBox, s3Keys, sphericalArea, type Candidate, type Provider, type Tile } from './common';
@@ -42,6 +42,16 @@ const common = (id: number, title: string) => ({
   projectYearHint: projectYear(title),
 });
 
+/** Transforms for a CRS, or null when there's no definition for it. */
+function transformsOf(crs: CrsInfo): ReturnType<typeof lonLatTransforms> | null {
+  try {
+    return lonLatTransforms(crs);
+  } catch (error) {
+    if (/^No definition/.test((error as Error).message)) return null;
+    throw error;
+  }
+}
+
 /** A survey's tiles under the area from its zipped index, or null when it has none. */
 async function tiled(fetcher: Fetcher, id: number, title: string, bbox: GeoBounds): Promise<Candidate | null> {
   const year = projectYear(title);
@@ -55,9 +65,13 @@ async function tiled(fetcher: Fetcher, id: number, title: string, bbox: GeoBound
     // Every row names its file's EPSG code. The .prj is the ESRI kind, without one.
     const srs = String(dbfRowAt(index.dbf, 0).srs ?? '');
     const epsg = Number(/^EPSG:(\d+)$/i.exec(srs)?.[1]);
-    const crs = epsg ? crsFromEpsg(epsg) : index.prj ? crsFromWkt(index.prj) : null;
-    if (!crs) throw new Error(`The NOAA ${id} tile index has no coordinate system`);
-    const { toLonLat, fromLonLat } = lonLatTransforms(crs);
+    // Where the grid has no code of its own, as with NAD83(CORS96) / UTM zone
+    // 10N (Olympic Peninsula 2017), the row names its geographic CRS instead
+    // (6783), so the .prj is the better guide.
+    const byCode = epsg ? transformsOf(crsFromEpsg(epsg)) : null;
+    const crs = byCode ? null : index.prj ? crsFromWkt(index.prj) : null;
+    if (!byCode && !crs) throw new Error(`The NOAA ${id} tile index has no usable coordinate system (${srs || 'none'})`);
+    const { toLonLat, fromLonLat } = byCode ?? lonLatTransforms(crs!);
     const corners = [fromLonLat(bbox.west, bbox.south), fromLonLat(bbox.east, bbox.south), fromLonLat(bbox.east, bbox.north), fromLonLat(bbox.west, bbox.north)];
     const query: [number, number, number, number] = [Math.min(...corners.map((c) => c[0])), Math.min(...corners.map((c) => c[1])), Math.max(...corners.map((c) => c[0])), Math.max(...corners.map((c) => c[1]))];
     const tiles: Tile[] = [];
@@ -70,7 +84,7 @@ async function tiled(fetcher: Fetcher, id: number, title: string, bbox: GeoBound
       const polygon: Polygon = [[toLonLat(x0, y0), toLonLat(x1, y0), toLonLat(x1, y1), toLonLat(x0, y1)]];
       const box = ringBox(polygon);
       if (!overlaps(box, bbox)) continue;
-      tiles.push({ url, bbox: box, horizontalCrs: epsg ? `EPSG:${epsg}` : undefined });
+      tiles.push({ url, bbox: box, horizontalCrs: byCode ? `EPSG:${epsg}` : undefined });
       coverage.push(polygon);
     }
     if (!tiles.length) return null;

@@ -43,6 +43,9 @@ function lineMeetsPolygon(line: Vec2[], polygon: Polygon): boolean {
   return clipLines([line], [polygon]).length > 0;
 }
 
+// Collecting the polygons takes about a quarter of the time.
+const COLLECTED = 0.25;
+
 /**
  * `regions`, when given, gets each category's ground before water, roads and
  * buildings are cleared from it, for the editor to fill what a removed road
@@ -65,7 +68,7 @@ export async function buildLand(
   for (const type of types) {
     for (const feature of data.features[type] ?? []) {
       seen++;
-      if (seen % 64 === 0) await ctx.progress.checkpoint((0.5 * seen) / total);
+      if (seen % 64 === 0) await ctx.progress.checkpoint((COLLECTED * seen) / total);
       if (!isPolygonal(feature.geometry)) continue;
       const category = classifySurface(type, feature);
       if (!category) continue;
@@ -88,6 +91,11 @@ export async function buildLand(
 
   const order = ctx.settings.land.priority;
   const result = {} as LandSurfaces;
+  // Paved and green are most of the time, so each category's share of the
+  // rest goes by its vertices.
+  const weights = order.map((category) => 1 + collected[category].reduce((n, polygon) => n + polygon.reduce((m, ring) => m + ring.length, 0), 0));
+  const weight = weights.reduce((a, b) => a + b, 0);
+  let done = 0;
   let owned: MultiPolygon = [];
   // Roads, water and buildings own their ground. Buildings stand on the
   // terrain, so no slab is left hidden inside them.
@@ -104,7 +112,8 @@ export async function buildLand(
     region = tiled(region, tile, TILE_MARGIN_MM, (local) => openSharp(differenceSet(local, cleared), SLIVER_MM));
     result[category] = dropSmall(intersection(region, ctx.cropSet), SPECK_MM2);
     ctx.stats[`land_${category}_polygons`] = result[category].length;
-    await ctx.progress.checkpoint(0.5 + (0.5 * (i + 1)) / order.length);
+    done += weights[i];
+    await ctx.progress.checkpoint(COLLECTED + ((1 - COLLECTED) * done) / weight);
   }
   for (const category of ['paved', 'sand', 'rock', 'green', 'forest'] as SurfaceCategory[]) {
     result[category] ??= [];

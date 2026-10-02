@@ -257,11 +257,20 @@ const TRIANGLE_START = asciiBytes('     <triangle v1="');
 const TRIANGLE_V2 = asciiBytes('" v2="');
 const TRIANGLE_V3 = asciiBytes('" v3="');
 
+/** Told how many mesh rows (vertices, triangles) were written since it was last called, for the export's progress. */
+export type RowTally = (rows: number) => void;
+
+// Rows between calls to a tally.
+const TALLY_ROWS = 65536;
+
 /** A 3MF model entry: markup as text, mesh rows as ASCII bytes, kept in order. */
 export class ModelStream {
   private readonly ascii: AsciiBuffer;
 
-  constructor(private readonly entry: ZipEntry) {
+  constructor(
+    private readonly entry: ZipEntry,
+    private readonly tally?: RowTally,
+  ) {
     this.ascii = new AsciiBuffer((chunk) => entry.bytes(chunk));
   }
 
@@ -298,6 +307,7 @@ export class ModelStream {
   private vertices(positions: Float32Array): void {
     const out = this.ascii;
     for (let i = 0; i < positions.length; i += 3) {
+      if (this.tally && i && i % (3 * TALLY_ROWS) === 0) this.tally(TALLY_ROWS);
       out.reserve(160);
       out.bytes(VERTEX_START);
       out.fixed6(positions[i]);
@@ -307,11 +317,13 @@ export class ModelStream {
       out.fixed6(positions[i + 2]);
       out.bytes(ROW_END);
     }
+    this.tallyRest(positions.length / 3);
   }
 
   private triangles(indices: Uint32Array, offset: number): void {
     const out = this.ascii;
     for (let i = 0; i < indices.length; i += 3) {
+      if (this.tally && i && i % (3 * TALLY_ROWS) === 0) this.tally(TALLY_ROWS);
       out.reserve(80);
       out.bytes(TRIANGLE_START);
       out.int(indices[i] + offset);
@@ -321,6 +333,12 @@ export class ModelStream {
       out.int(indices[i + 2] + offset);
       out.bytes(ROW_END);
     }
+    this.tallyRest(indices.length / 3);
+  }
+
+  /** The rows of a run of `rows` the loop's whole chunks didn't count. */
+  private tallyRest(rows: number): void {
+    if (this.tally && rows > 0) this.tally(rows - Math.floor((rows - 1) / TALLY_ROWS) * TALLY_ROWS);
   }
 
   close(): void {

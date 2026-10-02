@@ -50,7 +50,6 @@ const DEFINITIONS: Record<number, string> = {
   3035: `+proj=laea +lat_0=52 +lon_0=10 +x_0=4321000 +y_0=3210000 ${GRS80}`,
   2193: `+proj=tmerc +lat_0=0 +lon_0=173 +k=0.9996 +x_0=1600000 +y_0=10000000 ${GRS80}`,
   3765: `+proj=tmerc +lat_0=0 +lon_0=16.5 +k=0.9999 +x_0=500000 +y_0=0 ${GRS80}`,
-  2177: `+proj=tmerc +lat_0=0 +lon_0=18 +k=0.999923 +x_0=6500000 +y_0=0 ${GRS80}`,
   3059: `+proj=tmerc +lat_0=0 +lon_0=24 +k=0.9996 +x_0=500000 +y_0=-6000000 ${GRS80}`,
   4083: `+proj=utm +zone=28 ${GRS80}`,
   29902: '+proj=tmerc +lat_0=53.5 +lon_0=-8 +k=1.000035 +x_0=200000 +y_0=250000 +ellps=mod_airy +towgs84=482.5,-130.6,564.6,-1.042,-0.214,-0.631,8.15 +units=m +no_defs',
@@ -59,8 +58,13 @@ const DEFINITIONS: Record<number, string> = {
   3877: `+proj=tmerc +lat_0=0 +lon_0=23 +k=1 +x_0=23500000 +y_0=0 ${GRS80}`,
   // RDN2008 / UTM zone 32N (Genoa).
   7791: `+proj=utm +zone=32 ${GRS80}`,
-  // NAD83(CSRS) / MTM zone 8 (Montreal).
-  2950: `+proj=tmerc +lat_0=0 +lon_0=-73.5 +k=0.9999 +x_0=304800 +y_0=0 ${GRS80}`,
+  // SIRGAS-ROU98 / UTM zone 21S (Montevideo).
+  5382: '+proj=utm +zone=21 +south +ellps=WGS84 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs',
+  // NAD83(2011) / Pennsylvania South, US feet (PASDA's copy of USGS's PA_17County_2024).
+  6565: '+proj=lcc +lat_0=39.3333333333333 +lon_0=-77.75 +lat_1=40.9666666666667 +lat_2=39.9333333333333 +x_0=600000 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=us-ft +no_defs',
+  // NAD83(2011) / Texas Central and South Central, US feet (TxGIO).
+  6578: '+proj=lcc +lat_0=29.6666666666667 +lon_0=-100.333333333333 +lat_1=31.8833333333333 +lat_2=30.1166666666667 +x_0=699999.999898399 +y_0=3000000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=us-ft +no_defs',
+  6588: '+proj=lcc +lat_0=27.8333333333333 +lon_0=-99 +lat_1=30.2833333333333 +lat_2=28.3833333333333 +x_0=600000 +y_0=3999999.9998984 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=us-ft +no_defs',
   // NAD83(PA11) and NAD83(MA11) UTM: Hawaii, American Samoa, Guam and the Marianas (NOAA).
   6634: `+proj=utm +zone=4 ${GRS80}`,
   6635: `+proj=utm +zone=5 ${GRS80}`,
@@ -74,6 +78,22 @@ const DEFINITIONS: Record<number, string> = {
   5514: '+proj=krovak +lat_0=49.5 +lon_0=24.8333333333333 +alpha=30.2881397527778 +k=0.9999 +x_0=0 +y_0=0 +ellps=bessel +towgs84=589,76,480,0,0,0,0 +units=m +no_defs',
 };
 
+// NAD83(CSRS) / MTM zones 3-10 (Montreal, Quebec's MRNF).
+for (let zone = 3; zone <= 10; zone++) {
+  DEFINITIONS[2942 + zone] = `+proj=tmerc +lat_0=0 +lon_0=${-(49.5 + 3 * zone)} +k=0.9999 +x_0=304800 +y_0=0 ${GRS80}`;
+}
+// Poland's CS2000 zones 5-8 (GUGiK's sheets).
+for (let zone = 5; zone <= 8; zone++) {
+  DEFINITIONS[2171 + zone] = `+proj=tmerc +lat_0=0 +lon_0=${3 * zone} +k=0.999923 +x_0=${zone * 1000000 + 500000} +y_0=0 ${GRS80}`;
+}
+// MGI / Austria GK West, Central, East (31254-31256) and M28, M31, M34
+// (31257-31259). Vorarlberg's COPC names 31254 in a WKT without a datum
+// shift, which put points about 70 m off.
+[10.3333333333333, 13.3333333333333, 16.3333333333333].forEach((lon, k) => {
+  const mgi = '+ellps=bessel +towgs84=577.326,90.129,463.919,5.137,1.474,5.297,2.4232 +units=m +no_defs';
+  DEFINITIONS[31254 + k] = `+proj=tmerc +lat_0=0 +lon_0=${lon} +k=1 +x_0=0 +y_0=-5000000 ${mgi}`;
+  DEFINITIONS[31257 + k] = `+proj=tmerc +lat_0=0 +lon_0=${lon} +k=1 +x_0=${150000 + k * 300000} +y_0=-5000000 ${mgi}`;
+});
 // Gauss-Kruger zones on DHDN, still used by some German states.
 for (let zone = 2; zone <= 5; zone++) {
   DEFINITIONS[31464 + zone] = `+proj=tmerc +lat_0=0 +lon_0=${3 * zone} +k=1 +x_0=${zone * 1000000 + 500000} +y_0=0 +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +units=m +no_defs`;
@@ -120,6 +140,8 @@ function definition(code: number): string | null {
   if (code >= 32701 && code <= 32760) return `+proj=utm +zone=${code - 32700} +south +datum=WGS84 +units=m +no_defs`;
   if (code >= 25828 && code <= 25838) return `+proj=utm +zone=${code - 25800} ${GRS80}`;
   if (code >= 26901 && code <= 26923) return `+proj=utm +zone=${code - 26900} +datum=NAD83 +units=m +no_defs`;
+  // NAD83(HARN) UTM zones 10-19 (NOAA's older Washington surveys).
+  if (code >= 3740 && code <= 3749) return `+proj=utm +zone=${code - 3730} ${GRS80}`;
   if (CSRS[code]) return `+proj=utm +zone=${CSRS[code]} ${GRS80}`;
   // NAD83(2011) UTM zones 1-19 (NOAA), SIRGAS 2000 UTM zones 17-25 south (Brazil and neighbours).
   if (code >= 6330 && code <= 6348) return `+proj=utm +zone=${code - 6329} ${GRS80}`;
@@ -137,11 +159,30 @@ export interface CrsInfo {
   geographic: boolean;
 }
 
-/** The horizontal EPSG code of a WKT: the last AUTHORITY/ID of its outermost projected or geographic CRS. */
+/**
+ * The horizontal EPSG code of a WKT: the AUTHORITY/ID of its outermost
+ * projected or geographic CRS itself. Codes deeper in are its unit's or
+ * datum's: an ESRI WKT of Alaska zone 4 has no EPSG code of its own and
+ * ended in its unit's, 9003, and NAD83(CORS96) / UTM zone 10N in its
+ * geographic CRS's, 6783.
+ */
 export function wktEpsg(wkt: string): number | null {
   const horizontal = horizontalPart(wkt);
-  const matches = [...horizontal.matchAll(/(?:AUTHORITY|ID)\[\s*"EPSG"\s*,\s*"?(\d+)"?\s*\]/gi)];
-  return matches.length ? Number(matches[matches.length - 1][1]) : null;
+  let depth = 0;
+  let quoted = false;
+  let code: number | null = null;
+  for (let i = 0; i < horizontal.length; i++) {
+    const c = horizontal[i];
+    if (c === '"') quoted = !quoted;
+    if (quoted) continue;
+    if (c === '[' || c === '(') depth++;
+    else if (c === ']' || c === ')') depth--;
+    else if (depth === 1 && (c === 'A' || c === 'I' || c === 'a' || c === 'i')) {
+      const match = /^(?:AUTHORITY|ID)\[\s*"EPSG"\s*,\s*"?(\d+)"?\s*[\],]/i.exec(horizontal.slice(i, i + 40));
+      if (match && /[,[(\s]/.test(horizontal[i - 1] ?? '')) code = Number(match[1]);
+    }
+  }
+  return code;
 }
 
 /** The horizontal CRS of a compound WKT, or the whole WKT. */

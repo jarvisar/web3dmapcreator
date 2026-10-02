@@ -45,7 +45,7 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/edit/` | Model editor: the edits document (`types.ts`, `keys.ts`), `EditSession` applying it to a generated model in the worker, road tiles, land fill, terrain and water after edits (`earth.ts`), added shapes and what they stand on (`stand.ts`), road lines for picking |
 | `src/core/engine/` | Worker protocol and main-thread client |
 | `src/worker/engine.worker.ts` | Downloads, generates, meshes and exports off the main thread |
-| `proxy/` | The LiDAR CORS proxy, a Cloudflare Worker: only the prefixes in `src/core/data/corsProxy.ts`, only the site's origins, bodies streamed |
+| `proxy/` | The LiDAR CORS proxy, a Cloudflare Worker: only the URLs `PROXIED` in `src/core/data/corsProxy.ts` matches, only the site's origins, GET and HEAD, bodies streamed |
 | `src/worker/svg.worker.ts` | Renders SVG maps, separate so a preview updates while a model generates |
 | `src/core/svgmap/` | SVG maps: tile fetch/decode/stitch, piece layout (`layout/`), line cleanup (`lines/`), fills and hatching, titles (`text/`), SVG writer, `service.ts` (the render with its caches) |
 | `src/app/` | React UI: state (zustand), MapLibre area editor, panels, three.js viewer. The model editor is `viewer/editController.ts` (pointer tools), `picker.ts`, `highlight.ts`, `shown.ts` (what the view hides and colours), `viewer/edit/` (toolbar, inspector) and `state/editActions.ts` (edits, undo). `src/app/svgmap/` has the SVG sections, preview, render client, route picker, piece fitting and share encoding |
@@ -180,6 +180,13 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 - `pipeline/dataPlan.ts` selects data types and filters rows from small
   columns before geometry is read. Its requirements also key the worker's
   cached download. Keep the filter in step with the classifiers.
+- Progress is planned in seconds (`pipeline/estimate.ts`, `Progress.plan`)
+  and the bar is the share of that time done, shared out again when an
+  estimate changes so it never goes back. A step that can take more than a
+  moment needs its own `begin` and an estimate, and its fraction should
+  follow time, not item counts (meshing goes by `meshCost`, not solids).
+  Code that can't yield can still `report`: the worker's messages go out
+  mid-call. Fixed shares had meshing at 10% of the bar for 40% of the time.
 
 Road network tidy (`pipeline/network/`, `roads.tidy`, run in `collectRoadPieces`
 before bridges are split off):
@@ -309,10 +316,11 @@ LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
 LiDAR sources (`src/core/lidar/sources/`, notes in `docs/LIDAR_SOURCES.md`):
 
 - A publisher is only usable when its index and its files both answer
-  cross-origin requests. Check in a real browser (fetch from another
-  origin, plainly and with `Range`): curl headers misled more than once, and
-  redirects need CORS at every hop. The doc lists what was checked and why it
-  isn't used, so it isn't checked again.
+  cross-origin requests, or go through the proxy. Check in a real browser
+  (fetch from another origin, plainly and with `Range`): curl headers misled
+  more than once, and redirects need CORS at every hop. For the proxy, check
+  from a server with its User-Agent and no cookies instead. The doc lists
+  what was checked and why it isn't used, so it isn't checked again.
 - Each provider has `areas` and is only asked inside them. `discover` gives
   each one a deadline (90 s, NRCan 180) and marks its failures as searches,
   which the worker words apart from failed reads. Catalogs are kept a day,
@@ -323,11 +331,19 @@ LiDAR sources (`src/core/lidar/sources/`, notes in `docs/LIDAR_SOURCES.md`):
   a tile decodes every chunk and saves each chunk's box as a Fetcher note.
   Later reads fetch only the 8 MB runs they need. Runs are fixed per file so
   they come from the cache.
-- ZIPs: a stored member is read in place by range (Luxembourg's COPC), a
-  deflated LAZ member is fetched in 4 MB pieces six at a time and inflated
-  (Brandenburg's server gives 80 KB/s per connection), and deflated LAS is
-  cropped as it inflates (`readStream`), so a 470 MB Berlin tile is never
-  held. `whole` tiles (Helsinki) ignore Range and come in one download.
+- ZIPs: a stored member is read in place by range (Luxembourg's COPC). A
+  deflated member is fetched in pieces six at a time (4 MB, 16 MB through the
+  proxy, which counts requests) and inflated as they arrive, never held
+  compressed: LAZ into its output (up to 768 MiB, Texas's members reach
+  830), LAS cropped on the way (`readStream`), so a 2.9 GB Brussels tile is
+  never held. `whole` tiles (Helsinki, Poland) ignore Range and come in one
+  download.
+- `wktOf` ignores a WKT record that isn't one (GUGiK's las2las sheets have
+  `''`) and unquotes one LAStools wrote as a JSON string (Estonia 2024), so
+  the GeoKeys decide. `wktEpsg` only takes the CRS's own code: deeper ones
+  are its unit's (9003 in Anchorage's ESRI WKT) or its geographic CRS's
+  (6783 for NOAA's NAD83(CORS96) / UTM zone 10N, which has no code and is
+  read through its WKT).
 - Flai's README lags its bucket: the provider also lists the bucket's
   folders for countries near the area, skips its copy of IGN (read
   directly), finds the index-less PNOA 2022-2025 by tile name and the UTM
@@ -364,9 +380,13 @@ LiDAR sources (`src/core/lidar/sources/`, notes in `docs/LIDAR_SOURCES.md`):
 - USGS's own LAZ is only on `rockyweb.usgs.gov` (no CORS) and
   `s3://usgs-lidar` (requester pays, so anonymous requests are refused).
   `usgsstaged.ts` reads the work units Hobu hasn't built from rockyweb
-  through the proxy, found with USGS's product search. NOAA's bucket is the
-  other US source of tiles: its EPTs, and for a survey without one, the
-  zipped tile index in `laz/<datum>/<id>/`.
+  through the proxy, found with USGS's product search (which repeats items,
+  so they're deduped). rockyweb gives each connection about 50 KB/s, so
+  Pennsylvania's 2024 units come from PASDA's copy (2,500 ft State Plane
+  tiles, `pasdaName`) and New York's from the state's (`COPIES`), only where
+  the copy has every tile of the area. NOAA's bucket is the other US source
+  of tiles: its EPTs, and for a survey without one, the zipped tile index in
+  `laz/<datum>/<id>/`.
 - The proxy (`data/corsProxy.ts`, `proxy/`) only rewrites the request:
   cache keys stay the file's own URL. The browser workers get its address
   from `VITE_LIDAR_PROXY` at build time, Node goes direct (`setUpLidar`), and
@@ -374,11 +394,31 @@ LiDAR sources (`src/core/lidar/sources/`, notes in `docs/LIDAR_SOURCES.md`):
   Worker streams bodies through: 128 MB of memory per isolate wouldn't hold
   a tile. Over the free plan's 100,000 requests a day it answers without
   CORS headers, which the site only sees as a network error.
+- `PROXIED` rules are a `prefix`, or a `pattern` where a random share id
+  comes first (Montevideo's Alfresco), plus `noHead` where a HEAD gets no
+  length (Nextcloud, FileBrowser, Alfresco, and Bavaria, which gzips LAZ
+  for anyone accepting gzip and then ignores Range), so sizes come from a
+  two byte range, and `firstByteMs` where the host can take minutes to
+  start (Poland). Only GET and HEAD go through. The Worker sends
+  `PROXY_AGENT` (TxGIO's CloudFront wants `Mozilla/5.0` first) and
+  `Accept-Encoding: identity`, and Node sends the same agent going direct
+  (`directHeaders`), since Node's own gets a 403 from TxGIO.
+- Hosts answer missing files oddly, so providers never guess where it
+  costs: AHN's bucket says 403 (tiles are HEADed), Madrid 302s to a
+  maintenance page (names come from its grid shapefile), Estonia sends 206
+  with a web page (names come from each sheet's listing). Saxony's and
+  Saarland's Nextcloud shares lock out an address after failed requests,
+  and every user shares the Worker's, so Saxony's tiles come from GeoSN's
+  WMS and Saarland's from its ZIPs' directories. ICGC's server didn't
+  answer US addresses at all, hence its 20 s deadline, and a survey's
+  density gets 20 s before its catalog figure stands (`measureDensities`).
 - Copies can move heights to another datum. AIST 3DDB's COPC of Tokyo's
   wards is on the ellipsoid, 36-38 m over the T.P. of Tama's and
   Kanagawa's tiles beside it, so each tile carries `zOffset` (the API's
   original minz less the header's). Without it a model across the wards'
-  edge stepped 37 m. Surveys with no classes at all (`unclassified`: ARPA-I,
+  edge stepped 37 m. Navarra's are on the ellipsoid too, and go down by
+  Spain's own geoid (EGM08-REDNAP, a 0.125° table in `navarra.ts`) per tile:
+  EGM2008 left them 0.8 m under Flai's PNOA. Surveys with no classes at all (`unclassified`: ARPA-I,
   Open Nagasaki) only go into LiDAR only models, never building measurement.
 - Esri I3S scene layers (`read/i3s.ts`, LEPCC in `read/lepcc.ts`) answer a
   missing resource with HTTP 200 and a JSON body, so a node resource is

@@ -153,8 +153,17 @@ export interface OvertureProgress {
    * the geometry pages they need. Never below `bytes`.
    */
   bytesTotal: number;
+  /**
+   * How far along the whole download is, 0 to 1. It never goes down when
+   * the estimate grows, and the footers only take the first part: with
+   * bytes alone the bar reached the end on the footers and went back to
+   * the start once the rest was known.
+   */
+  fraction: number;
   /** Rows kept so far, which become features unless their geometry is unreadable. */
   features: number;
+  /** Rows kept per type, once every row is read and only their geometry is left. */
+  rows?: Partial<Record<OvertureType, number>>;
 }
 
 export type OvertureFilter = (type: OvertureType, props: Record<string, unknown>, bbox: [number, number, number, number]) => boolean;
@@ -671,6 +680,16 @@ function perType<T>(make: (type: OvertureType) => T): Record<OvertureType, T> {
   return Object.fromEntries(OVERTURE_TYPES.map((type) => [type, make(type)])) as Record<OvertureType, T>;
 }
 
+// The share of the download bar the footers take. They're many small reads,
+// so they take longer than their bytes say.
+const FOOTER_SHARE = 0.15;
+// Attribute pages came in at about a third the rate of geometry in Edge
+// (3 MB/s against 8 or more for San Francisco), many small reads decoded as
+// they come, so each of their bytes counts three times.
+const ATTRIBUTE_WEIGHT = 3;
+// The share of a row group's geometry the bar expects to be read, before any group says.
+const GEOMETRY_READ = 0.3;
+
 class Tracker {
   readonly stats = perType(emptyStats);
   private readonly pending = perType(() => 0);
@@ -678,6 +697,17 @@ class Tracker {
   private bytes = 0;
   private total = 0;
   private kept = 0;
+  // Bytes read, each counted by how slowly its pass reads them (`weight`).
+  private work = 0;
+  weight = 1;
+  // The fraction the current estimate started from, at this much work, where
+  // it runs to and the work likely done by then (`total` is the most bytes).
+  private mark = 0;
+  private markWork = 0;
+  private end = 0;
+  private likely = 0;
+  private shown = 0;
+  private rows: Partial<Record<OvertureType, number>> | undefined;
   private verb = '';
   private message = '';
   private type: OvertureType | undefined;
@@ -694,21 +724,44 @@ class Tracker {
     this.emit(true);
   }
 
-  /** Sets the estimate to `bytes` more than what has been read so far. */
-  expectMore(bytes: number): void {
+  /** Sets the estimate to at most `bytes` more than what has been read so far, and the work likely left. */
+  expectMore(bytes: number, likely = bytes * this.weight): void {
+    this.expectLikely(likely);
+    // After the fraction so far is settled, or the footers' would count to the end.
+    this.end = this.end === 0 ? FOOTER_SHARE : 1;
     this.total = this.bytes + bytes;
+  }
+
+  /** A better guess at the work still to come, bytes times their pass's weight, for the fraction only. */
+  expectLikely(work: number): void {
+    this.shown = this.fraction();
+    this.mark = this.shown;
+    this.markWork = this.work;
+    this.likely = this.work + work;
+  }
+
+  get read(): number {
+    return this.bytes;
+  }
+
+  private fraction(): number {
+    const left = this.likely - this.markWork;
+    const share = left > 0 ? Math.min(1, (this.work - this.markWork) / left) : 0;
+    return Math.max(this.shown, this.mark + (this.end - this.mark) * share);
   }
 
   add(type: OvertureType, bytes: number, cached: boolean): void {
     this.bytes += bytes;
+    this.work += bytes * this.weight;
     this.stats[type].bytes += bytes;
     if (cached) this.stats[type].cachedBytes += bytes;
     this.emit(false);
   }
 
   /** Starts a pass over row groups, `counts` of them per type. */
-  begin(verb: string, counts: Record<OvertureType, number>): void {
+  begin(verb: string, counts: Record<OvertureType, number>, rows = false): void {
     this.verb = verb;
+    if (rows) this.rows = Object.fromEntries(this.types.map((type) => [type, this.stats[type].rowsKept]));
     for (const type of this.types) {
       this.pending[type] = counts[type];
       if (!counts[type] && !this.stats[type].seconds) this.stats[type].seconds = this.elapsed();
@@ -733,6 +786,7 @@ class Tracker {
   finish(features: number): void {
     this.kept = features;
     this.total = this.bytes;
+    this.shown = 1;
     this.say(`Downloaded ${features.toLocaleString('en-US')} features`);
   }
 
@@ -756,7 +810,9 @@ class Tracker {
       message: this.message,
       bytes: this.bytes,
       bytesTotal: Math.max(this.total, this.bytes),
+      fraction: (this.shown = this.fraction()),
       features: this.kept,
+      rows: this.rows,
     });
   }
 }
@@ -1082,7 +1138,18 @@ export async function fetchOverture(options: FetchOvertureOptions): Promise<Over
     const jobs: Job[] = opened.flatMap((open) =>
       open.plan.groups.map((group, i) => ({ open, group, rowGroup: open.plan.metadata.row_groups[i], kept: [], reads: [] })),
     );
-    tracker.expectMore(types.reduce((sum, type) => sum + attributes[type], 0) + geometryMost);
+    // Most rows in a row group's box are dropped by the row filter, so only
+    // some of its geometry is read: 9 of 33 MB in the Chicago Loop. The bar
+    // starts from a guess and follows the share planned as groups are read.
+    // Counting the most it could read, the bar crawled through this pass and
+    // jumped at the end.
+    const attributesTotal = types.reduce((sum, type) => sum + attributes[type], 0);
+    const readingFrom = tracker.read;
+    let groupsGeometry = 0;
+    let plannedGeometry = 0;
+    const likelyGeometry = () => plannedGeometry + (geometryMost - groupsGeometry) * ((plannedGeometry + GEOMETRY_READ * 4e6) / (groupsGeometry + 4e6));
+    tracker.weight = ATTRIBUTE_WEIGHT;
+    tracker.expectMore(attributesTotal + geometryMost, ATTRIBUTE_WEIGHT * attributesTotal + likelyGeometry());
     tracker.begin('Reading', perType((type) => jobs.filter((job) => job.open.type === type).length));
     await mapLimit(
       jobs,
@@ -1096,6 +1163,9 @@ export async function fetchOverture(options: FetchOvertureOptions): Promise<Over
           throw describe(error, signal, jobName(job));
         }
         geometry[job.open.type] += readsBytes(job.reads);
+        groupsGeometry += job.group.geometryBytes;
+        plannedGeometry += readsBytes(job.reads);
+        tracker.expectLikely(ATTRIBUTE_WEIGHT * Math.max(0, attributesTotal - (tracker.read - readingFrom)) + likelyGeometry());
         checkBudget(perType((type) => floor[type] + geometry[type]), budget, true);
         tracker.groupDone(job.open.type);
       },
@@ -1106,8 +1176,9 @@ export async function fetchOverture(options: FetchOvertureOptions): Promise<Over
     checkBudget(perType((type) => readSoFar(type) + geometry[type]), budget);
 
     const withRows = jobs.filter((job) => job.kept.length);
+    tracker.weight = 1;
     tracker.expectMore(types.reduce((sum, type) => sum + geometry[type], 0));
-    tracker.begin('Downloading', perType((type) => withRows.filter((job) => job.open.type === type).length));
+    tracker.begin('Downloading', perType((type) => withRows.filter((job) => job.open.type === type).length), true);
     const results = await mapLimit(
       withRows,
       biggestFirst(withRows, (job) => readsBytes(job.reads)),

@@ -37,7 +37,7 @@ export async function buildPlates(spec: ModelSpec, options: PlateOptions): Promi
   const zShift = -spec.baseZ;
 
   if (!options.multiPlate) {
-    const meshed = await meshLayers(layers, { zShift, progress: options.progress, span: [0, 0.8] });
+    const meshed = await meshLayers(layers, { zShift, progress: options.progress });
     return { plates: [{ name: 'Map', parts: meshed.parts, bounds: [west, south, east, north] }], failed: meshed.failed };
   }
 
@@ -57,7 +57,7 @@ export async function buildPlates(spec: ModelSpec, options: PlateOptions): Promi
   let failed = 0;
   for (let i = 0; i < cells.length; i++) {
     const { cell, clip } = cells[i];
-    const span: [number, number] = [(0.8 * i) / cells.length, (0.8 * (i + 1)) / cells.length];
+    const span: [number, number] = [i / cells.length, (i + 1) / cells.length];
     const meshed = await meshLayers(layers, { clip, zShift, progress: options.progress, span });
     failed += meshed.failed;
     if (!meshed.parts.length) continue;

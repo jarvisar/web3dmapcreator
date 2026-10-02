@@ -112,9 +112,10 @@ export async function collectRoadPieces(
         }
       }
     }
-    if (index % 64 === 0) await ctx.progress.checkpoint((0.5 * index) / features.length);
+    if (index % 64 === 0) await ctx.progress.checkpoint(index / features.length);
   }
   if (roads.tidy && (roads.removeDoubled || roads.mergeDivided || roads.joinEnds || roads.removeFragments)) {
+    ctx.progress.begin('tidy', 'Tidying the road network');
     const edges = new EdgeIndex(window, 2);
     const minDeck = MINIMUM_BRIDGE_M * mm;
     const tidied = tidyNetwork({
@@ -128,6 +129,7 @@ export async function collectRoadPieces(
       mergeDivided: roads.mergeDivided,
       joinEnds: roads.joinEnds,
       removeFragments: roads.removeFragments,
+      progress: (fraction) => ctx.progress.report(fraction),
     });
     pieces = tidied.pieces;
     Object.assign(ctx.stats, tidied.stats);
@@ -145,6 +147,8 @@ export async function collectRoadPieces(
 export async function bufferRoads(
   pieces: RoadPiece[],
   ctx: Pick<Context, 'settings' | 'cropSet' | 'progress' | 'stats'>,
+  /** The share of the current progress step this call reports over. */
+  span: [number, number] = [0, 1],
 ): Promise<{ road: MultiPolygon; path: MultiPolygon; rail: MultiPolygon; footprint: MultiPolygon }> {
   // Ground too thin to print between two roads side by side is filled in
   // (network/gaps.ts), in the same union as the roads either side of it.
@@ -160,22 +164,29 @@ export async function bufferRoads(
       ribbons = filled.polygons;
       holes += filled.filled;
     }
-    await ctx.progress.checkpoint(fraction);
+    await ctx.progress.checkpoint(span[0] + (span[1] - span[0]) * fraction);
     return ribbons;
   };
-  let road = await buffer('road', 0.65);
-  let rail = await buffer('rail', 0.75);
-  let path = await buffer('path', 0.85);
+  let road = await buffer('road', RIBBON_SHARES.road);
+  let rail = await buffer('rail', RIBBON_SHARES.rail);
+  let path = await buffer('path', RIBBON_SHARES.path);
   if (holes) count(ctx, 'road_holes_filled', holes);
 
   // One owner per spot: streets over rail at level crossings, both over paths.
+  const clipped = (fraction: number) => ctx.progress.checkpoint(span[0] + (span[1] - span[0]) * fraction);
   road = separateTouching(dropSmall(intersection(road, ctx.cropSet), 0.02));
+  await clipped(RIBBON_SHARES.roadClip);
   rail = separateTouching(dropSmall(differenceSet(intersection(rail, ctx.cropSet), new ClipSet([road])), 0.02));
+  await clipped(RIBBON_SHARES.railClip);
   path = separateTouching(dropSmall(differenceSet(intersection(path, ctx.cropSet), new ClipSet([road, rail])), 0.02));
 
   // The groups are disjoint now. Later booleans take touching polygons as they are.
   return { road, path, rail, footprint: [...road, ...rail, ...path] };
 }
+
+// Where each group's buffer ends, then its clip, as a share of bufferRoads'
+// time. The clips took as long as the buffers, the paths' longest.
+const RIBBON_SHARES = { road: 0.4, rail: 0.43, path: 0.48, roadClip: 0.62, railClip: 0.68 };
 
 // Airport paving from base/infrastructure (subtype airport). Aprons and
 // helipads are mapped as areas, runways and taxiways as centerlines, widened

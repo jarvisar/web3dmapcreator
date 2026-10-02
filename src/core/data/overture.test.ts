@@ -428,6 +428,13 @@ describe('fetchOverture (offline)', () => {
     expect(progress.some((p) => p.message === 'Reading buildings' && p.type === 'building')).toBe(true);
     expect(progress.some((p) => p.message === 'Downloading buildings' && p.type === 'building')).toBe(true);
     for (let i = 1; i < progress.length; i++) expect(progress[i].bytes).toBeGreaterThanOrEqual(progress[i - 1].bytes);
+    // The estimate grows twice, but the fraction never goes back.
+    for (let i = 1; i < progress.length; i++) expect(progress[i].fraction).toBeGreaterThanOrEqual(progress[i - 1].fraction);
+    expect(last.fraction).toBe(1);
+    // The footers only take the first part of the bar.
+    expect(progress.find((p) => p.message.startsWith('Reading'))!.fraction).toBeLessThanOrEqual(0.15 + 1e-9);
+    const downloading = progress.find((p) => p.message === 'Downloading buildings')!;
+    expect(downloading.rows).toMatchObject({ water: expect.any(Number), building: expect.any(Number), segment: expect.any(Number) });
   });
 
   it('returns nothing for a type with no file near the area', async () => {

@@ -35,6 +35,8 @@ const VERSION = 5;
 const PROBE_VERSION = 2;
 // A block counts as covered once this share of it is inside a survey.
 const COVERED = 0.995;
+/** Progress once the surveys are found and ranked, when blocks start being read. */
+export const BLOCKS_START = 0.1;
 const BLOCK_POINTS = 40e6;
 // Provider codes with a surface meaning, kept out of the provider's own
 // mapping since that one shapes building measurement too.
@@ -583,7 +585,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
         let outcome: SurfaceOutcome;
         try {
           const job: SurfaceJob = { ...origin, survey: slim(survey.candidate, geo), query: geo, grid, block, resolutionM };
-          outcome = await runner.surface(job, (_label, detail) => progress(`Reading LiDAR block ${done + 1} of ${all.length}`, 0.1 + (0.9 * done) / all.length, detail ?? name));
+          outcome = await runner.surface(job, (_label, detail) => progress(`Reading LiDAR block ${done + 1} of ${all.length}`, BLOCKS_START + ((1 - BLOCKS_START) * done) / all.length, detail ?? name));
         } catch (error) {
           if ((error as Error).name === 'AbortError' || input.signal?.aborted) throw error;
           // Once per survey and reason, not once per block.
@@ -618,7 +620,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     noise += blockNoise;
     placeBlock(layers, grid, piece);
     done++;
-    await progress(`Reading LiDAR block ${Math.min(done + 1, all.length)} of ${all.length}`, 0.1 + (0.9 * done) / all.length, `${points.toLocaleString('en-US')} returns`);
+    await progress(`Reading LiDAR block ${Math.min(done + 1, all.length)} of ${all.length}`, BLOCKS_START + ((1 - BLOCKS_START) * done) / all.length, `${points.toLocaleString('en-US')} returns`);
   };
 
   let next = 0;

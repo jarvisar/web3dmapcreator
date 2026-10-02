@@ -25,6 +25,28 @@ import type { ResultMeta } from './store';
 let run = 0;
 let version = 0;
 
+// How long generating took on this machine against the worker's estimates,
+// so the first time left after a reload starts from it.
+const SPEED_KEY = 'jarvizar-city-model:speed';
+
+function savedSpeed(): number | undefined {
+  try {
+    const speed = Number(localStorage.getItem(SPEED_KEY));
+    return speed > 0 && Number.isFinite(speed) ? speed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveSpeed(speed: number | undefined) {
+  if (!(speed !== undefined && speed > 0 && Number.isFinite(speed))) return;
+  try {
+    localStorage.setItem(SPEED_KEY, speed.toFixed(3));
+  } catch {
+    // Private mode. The worker still keeps it while it lives.
+  }
+}
+
 // Progress can arrive faster than it is worth drawing, so at most one update
 // per frame goes into the store for each target.
 type Target = 'generation' | 'exporting';
@@ -38,9 +60,12 @@ function queueProgress(event: ProgressEvent, target: Target) {
     progressFrame[target] = 0;
     const next = pendingProgress[target];
     pendingProgress[target] = null;
-    if (!next || useApp.getState()[target].status !== 'running') return;
-    if (target === 'generation') patchGeneration({ progress: next });
-    else patchExporting({ progress: next });
+    const current = useApp.getState()[target];
+    if (!next || current.status !== 'running') return;
+    // The worker's bar never goes back. This holds it if that ever slips.
+    const progress = { ...next, fraction: Math.max(next.fraction, current.progress?.fraction ?? 0) };
+    if (target === 'generation') patchGeneration({ progress });
+    else patchExporting({ progress });
   };
   progressFrame[target] = document.hidden ? window.setTimeout(flush, 100) : requestAnimationFrame(flush);
 }
@@ -100,10 +125,20 @@ export async function generateModel(options: { approveTiles?: string[] } = {}): 
   const key = snapshotKey(area, settings);
   patchGeneration({ status: 'running', progress: null, startedAt: Date.now(), error: null, cancelling: false });
   try {
-    const request = { area, settings, edits: structuredClone(state.edits), editsVersion: nextEditVersion(), baseUrl: document.baseURI, maxCells: lidarCellLimit(state.ui.largeGrids), approveTiles: options.approveTiles };
+    const request = {
+      area,
+      settings,
+      edits: structuredClone(state.edits),
+      editsVersion: nextEditVersion(),
+      baseUrl: document.baseURI,
+      maxCells: lidarCellLimit(state.ui.largeGrids),
+      approveTiles: options.approveTiles,
+      speed: savedSpeed(),
+    };
     const result = await getEngine().generate(request, (event) => {
       if (id === run) queueProgress(event, 'generation');
     });
+    saveSpeed(result.speed);
     if (id !== run) return;
     const data: EditData = {
       editable: result.editable === true,

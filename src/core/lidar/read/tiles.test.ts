@@ -263,6 +263,20 @@ describe('tiles in ZIPs', () => {
     expect(Math.max(...read.z)).toBeCloseTo(49.49, 6);
   });
 
+  it('inflates a member that comes in several pieces as they arrive', async () => {
+    // Random points, so the member stays bigger than one 4 MB piece compressed.
+    let seed = 1;
+    const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const many: Pt[] = Array.from({ length: 1000000 }, (_, i) => ({ x: (i % 2) * 500 + random() * 499, y: 5621000 + random() * 200, z: random() * 100, cls: 2 }));
+    const zip = zipSync({ 'big.las': [tile(many), { level: 6 }] });
+    const { fetcher, requested } = fakeFetcher({ [zipUrl]: zip });
+    const { points: read } = await readTiles(fetcher, [{ url: zipUrl, bbox: entry().bbox, size: zip.length }], bboxOf(0, 5621000, 500, 5621200), { frame, maxPoints: 1e6 });
+    const pieces = requested.map((r) => /#(\d+)-(\d+)$/.exec(r)).filter((m) => m && Number(m[2]) - Number(m[1]) === 4 * 1024 * 1024);
+    expect(pieces.length).toBeGreaterThan(0);
+    // Every other point is in the western half.
+    expect(read.count).toBe(1000000 / 2);
+  });
+
   it('inflates a deflated LAZ member whole', async () => {
     const zip = zipSync({ 'west.laz': [tile(points, 2), { level: 6 }] });
     const { fetcher } = fakeFetcher({ [zipUrl]: zip });

@@ -208,6 +208,26 @@ describe('NOAA Digital Coast', () => {
     expect(surveys[0].url).toBe(`${folder}10296/`);
     expect(requested.some((url) => url.includes(encodeURIComponent('/1468/')))).toBe(false);
   });
+
+  it("falls back to the index's .prj when its rows name a geographic code", async () => {
+    // Olympic Peninsula 2017: NAD83(CORS96) / UTM zone 10N has no code, so rows say 6783.
+    const { fromLonLat } = lonLatTransforms(crsFromEpsg(26910));
+    const [x, y] = fromLonLat(-122.6326, 47.5673);
+    const prj = 'PROJCS["NAD_1983_CORS96_UTM_Zone_10N",GEOGCS["GCS_NAD_1983_CORS96",DATUM["D_NAD_1983_CORS96",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",-123.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]';
+    const folder = 'https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/laz/geoid18/9072/';
+    const index = zippedShapefile([[x - 300, y - 300, x + 300, y + 300]], [['srs', 9], ['url', 100]], [['EPSG:6783', `${folder}block_1a/q47122E8118.copc.laz`]], prj);
+    const { fetcher } = fakeFetcher((url) => {
+      if (url.startsWith('https://coast.noaa.gov/')) return collection([{ type: 'Feature', geometry: null, properties: { id: 9072, title: '2017 USGS Lidar: Olympic Peninsula, WA' } }]);
+      if (url.includes(encodeURIComponent('laz/geoid18/9072/tileindex_'))) return listing([['laz/geoid18/9072/tileindex_m9072.zip', 1e6]]);
+      if (url.endsWith('tileindex_m9072.zip')) return index;
+      if (url.includes('list-type=2')) return listing([]);
+      return undefined;
+    });
+    const failures: { source: string; reason: string }[] = [];
+    const surveys = await noaa.discover(fetcher, { west: -122.634, south: 47.566, east: -122.631, north: 47.568 }, failures);
+    expect(failures).toEqual([]);
+    expect(surveys.map((s) => [s.id, s.format, s.tiles!.map((t) => [t.url.split('/').pop(), t.horizontalCrs])])).toEqual([['9072', 'COPC', [['q47122E8118.copc.laz', undefined]]]]);
+  });
 });
 
 describe('Sao Paulo', () => {

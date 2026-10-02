@@ -4,7 +4,7 @@ import type { ExportRequest, ExportResult } from '../engine/protocol';
 import { DEFAULT_PRINTER, filamentName, printerByKey, type Printer } from '../settings';
 import type { Plate } from '../types';
 import { writeBambuProject } from './bambu';
-import { filamentUse, preparePlates, type PreparedModel } from './common';
+import { filamentUse, preparePlates, type PreparedModel, type RowTally } from './common';
 import { formatG } from './format';
 import { PRUSA_MAX_BEDS, writePrusaProject } from './prusa';
 import { creditHeader, fileStem, STL_HEADER, writeStl, writeStlZip } from './stl';
@@ -82,7 +82,7 @@ function prusaNotes(model: PreparedModel, printer: Printer): string[] {
  * `credits` are attributions beyond the map data, such as the LiDAR surveys a
  * model used. A LiDAR Only model uses no map data, so it credits only those.
  */
-export function exportPlates(plates: Plate[], request: ExportRequest, credits: string[] = [], mapData = true): ExportResult {
+export function exportPlates(plates: Plate[], request: ExportRequest, credits: string[] = [], mapData = true, onProgress?: (fraction: number) => void): ExportResult {
   const printer = printerByKey(request.printer);
   const kept = printablePlates(plates, request.excludeParts);
   if (!kept.length) throw new Error('Nothing to export: every part is hidden or empty');
@@ -91,6 +91,11 @@ export function exportPlates(plates: Plate[], request: ExportRequest, credits: s
   const header = mapData ? STL_HEADER : creditHeader(model.attribution);
   const warnings = sizeWarnings(model, printer);
   const result = (fileName: string, data: Blob): ExportResult => ({ fileName, data, plates: kept.length, warnings });
+  // 3MF writes every vertex and triangle as a row of text, STL only triangles.
+  const stl = request.format === 'stl' || request.format === 'stl-zip';
+  const rows = model.plates.reduce((sum, plate) => plate.parts.reduce((n, { part }) => n + part.indices.length / 3 + (stl ? 0 : part.positions.length / 3), sum), 0);
+  let written = 0;
+  const tally: RowTally | undefined = onProgress && ((count) => onProgress(Math.min(1, (written += count) / Math.max(1, rows))));
 
   switch (request.format) {
     case 'bambu': {
@@ -104,19 +109,19 @@ export function exportPlates(plates: Plate[], request: ExportRequest, credits: s
             `with a ${formatG(printer.width)} x ${formatG(printer.depth)} mm bed.`,
         );
       }
-      return result(`${base}.3mf`, writeBambuProject(model, target));
+      return result(`${base}.3mf`, writeBambuProject(model, target, tally));
     }
     case 'prusa':
       warnings.push(...prusaNotes(model, printer));
-      return result(`${base}.3mf`, writePrusaProject(model, printer, base));
+      return result(`${base}.3mf`, writePrusaProject(model, printer, base, tally));
     case '3mf':
-      return result(`${base}.3mf`, writeGeneric3mf(model, printer, base));
+      return result(`${base}.3mf`, writeGeneric3mf(model, printer, base, tally));
     case 'stl-zip':
-      return result(`${base}-stl.zip`, writeStlZip(model, base, { header }));
+      return result(`${base}-stl.zip`, writeStlZip(model, base, { header, tally }));
     case 'stl':
       // Sections are separate prints: one file each, zipped.
-      if (model.plates.length > 1) return result(`${base}-stl.zip`, writeStlZip(model, base, { combined: true, header }));
-      return result(`${base}.stl`, writeStl(model.plates[0], header));
+      if (model.plates.length > 1) return result(`${base}-stl.zip`, writeStlZip(model, base, { combined: true, header, tally }));
+      return result(`${base}.stl`, writeStl(model.plates[0], header, tally));
     default:
       throw new Error(`Unknown export format: ${String(request.format)}`);
   }

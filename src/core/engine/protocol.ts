@@ -24,6 +24,8 @@ export interface GenerateRequest {
   maxCells?: number;
   /** Offered LiDAR tiles the user just agreed to download (LidarOffer.tiles). The worker remembers them with the LiDAR cache. */
   approveTiles?: string[];
+  /** How long work took here against the estimates, from the last job (GenerateResult.speed). */
+  speed?: number;
 }
 
 export interface EditRequest {
@@ -32,27 +34,45 @@ export interface EditRequest {
   baseUrl?: string;
 }
 
+/** The steps a job's progress is planned in (`Progress.plan`), in the order they run. */
 export type Stage =
+  // Map models
   | 'data'
-  | 'elevation'
-  | 'terrain'
-  | 'water'
-  | 'land'
-  | 'roads'
-  | 'buildings'
-  | 'trees'
+  | 'surveys'
   | 'lidar'
+  | 'grid'
+  | 'water'
+  | 'roads'
+  | 'tidy'
+  | 'ribbons'
+  | 'bridges'
+  | 'buildings'
+  | 'footprints'
+  | 'land'
+  | 'close'
+  | 'trees'
+  // LiDAR only models, after 'surveys' and 'lidar'
+  | 'mapwater'
+  | 'compose'
+  | 'surface'
+  | 'cut'
+  // Both
   | 'mesh'
-  | 'export';
+  | 'session'
+  // Exports
+  | 'plates'
+  | 'write';
 
 export interface ProgressEvent {
   stage: Stage;
   /** Short sentence for the UI, e.g. "Downloading buildings". */
   label: string;
-  /** Overall progress, 0 to 1. */
+  /** Overall progress, 0 to 1. Never goes down during a job. */
   fraction: number;
   /** Extra detail such as "3.2 MB" or "1,204 buildings". */
   detail?: string;
+  /** Seconds the job should still take, when there's enough to go on. */
+  remaining?: number;
 }
 
 export interface GenerateResult {
@@ -66,6 +86,8 @@ export interface GenerateResult {
   warnings: string[];
   /** Seconds per phase. */
   timings: Record<string, number>;
+  /** Seconds taken per second the progress plan expected, for the next request's estimates. */
+  speed?: number;
   /** What LiDAR measured, when it was on. */
   lidar?: LidarSummary;
   /** What a LiDAR Only model was read from. */

@@ -185,6 +185,18 @@ What the 3D view shows and what exports come from different code: the view hides
 
 With multi-plate export the model is cut into equal sections no bigger than the bed. Each section is centred on its own plate and all plates share one Z datum.
 
+## Progress
+
+The bar used to give each stage a fixed share, and those were far off. Meshing got 10% of the bar for 40% of the time, and the download's byte total grew part way through, so the bar ran to 28% on the file footers and went back to 5%.
+
+Now every step of a job has an estimate in seconds (`src/core/pipeline/estimate.ts`), worked out from the feature counts, and the bar is the share of that time done (`Progress` in `pipeline/context.ts`). The estimates came from timing the CLI on the regression areas. They're rough. Roads took 150 to 580 µs a segment depending on the city, and Las Vegas' interchanges are the slow end. So each step's own pace takes over from its estimate as it goes.
+
+Estimates change during a job: the download's row counts come in before the geometry, meshing is sized from the actual solids, and a step can turn out slow. When that happens the bar stays where it is and the rest of it is shared out again, so it never goes back. A step with a real estimate that finishes early moves the bar to the end of its share. A wait that was only a guess (the download before its row counts, finding LiDAR surveys) doesn't, since what's left of a guess grows while it's stuck. One survey search stuck for 3 minutes sent the bar from 10% to 78% when it ended.
+
+The time left shows after a couple of seconds, and only once every step ahead has a real estimate. Until the download has its row counts, or while LiDAR surveys are still being found, there's nothing to go on, so it isn't shown. Estimates are scaled by how this machine has done against them so far, and that figure is kept in localStorage for the next visit.
+
+On eight regression areas in the CLI the bar stays within 3 to 14% of a straight line in time (San Francisco was 45% off before). Nine times out of ten the time left is within 15% of the real finish for six of them. Las Vegas and Rome are 20 to 27% off, since Las Vegas' road ribbons and Rome's land cover take about three times their estimates.
+
 ## Known limits
 
 - Bridges are schematic: decks on evenly spaced piers, without towers, arches or trusses.

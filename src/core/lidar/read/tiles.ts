@@ -9,7 +9,8 @@
 // chunk. The box each chunk covers is noted then, and later reads (the next
 // batch or block in the same tile) only fetch and decode the chunks they need.
 
-import { Inflate, inflateSync } from 'fflate';
+import { Inflate } from 'fflate';
+import { needsProxy } from '../../data/corsProxy';
 import { Projection } from '../../geo/projection';
 import type { GeoBounds } from '../../types';
 import { emptyPoints, type Points } from '../points';
@@ -55,6 +56,7 @@ const MAX_TABLE_BYTES = 64 * 1024 * 1024;
 const MAX_INFLATED = 768 * 1024 * 1024;
 // A deflated member is fetched in pieces of this many bytes.
 const PIECE_BYTES = 4 * 1024 * 1024;
+const PROXIED_PIECE_BYTES = 16 * 1024 * 1024;
 
 /** Where a tile's bytes come from: the file, or a member of a ZIP around it. */
 interface Source {
@@ -80,7 +82,7 @@ function memorySource(key: string, bytes: Uint8Array): Source {
  * tile's own, or null for a ZIP that lacks the member asked for (a border
  * block holds fewer than its full set).
  */
-async function tileSource(fetcher: Fetcher, tile: PointTile, progress?: ReadOptions['progress'], peek = false): Promise<{ source: Source; first: Uint8Array | null } | { stream: Uint8Array; name: string } | null> {
+async function tileSource(fetcher: Fetcher, tile: PointTile, progress?: ReadOptions['progress'], peek = false): Promise<{ source: Source; first: Uint8Array | null } | { stream: AsyncIterable<Uint8Array>; name: string } | null> {
   const { url } = tile;
   let file: Source;
   // Only a look at the header, so nothing that would download the file.
@@ -103,20 +105,37 @@ async function tileSource(fetcher: Fetcher, tile: PointTile, progress?: ReadOpti
   }
   if (peek) return null;
   // In pieces, several at once: some servers are slow per connection
-  // (Brandenburg's gives about 80 KB/s each), and pieces cache better.
-  const compressed = new Uint8Array(member.compressedSize);
-  const pieces: number[] = [];
-  for (let at = 0; at < member.compressedSize; at += PIECE_BYTES) pieces.push(at);
-  let done = 0;
-  for await (const body of ahead(pieces, 6, (at) => file.range(base + at, base + Math.min(at + PIECE_BYTES, member.compressedSize)))) {
-    compressed.set(new Uint8Array(body), pieces[done++]);
-    await progress?.(`Downloading ${member.name}: ${Math.round((done * PIECE_BYTES) / 1e6)} of ${Math.round(member.compressedSize / 1e6)} MB`);
+  // (Brandenburg's gives about 80 KB/s each), and pieces cache better. Bigger
+  // pieces through the proxy, which counts requests: a 650 MB Austin member
+  // is 160 requests in 4 MB pieces.
+  const step = needsProxy(url) ? PROXIED_PIECE_BYTES : PIECE_BYTES;
+  const { name, compressedSize } = member;
+  const starts: number[] = [];
+  for (let at = 0; at < compressedSize; at += step) starts.push(at);
+  async function* pieces(): AsyncGenerator<Uint8Array> {
+    let done = 0;
+    for await (const body of ahead(starts, 6, (at) => file.range(base + at, base + Math.min(at + step, compressedSize)))) {
+      done++;
+      await progress?.(`Downloading ${name}: ${Math.round(Math.min(done * step, compressedSize) / 1e6)} of ${Math.round(compressedSize / 1e6)} MB`);
+      yield new Uint8Array(body);
+    }
   }
-  // Uncompressed LAS is read as it inflates, so it's never held whole:
-  // Berlin's and Tokyo's tiles inflate to 200-500 MB each.
-  if (/\.las$/i.test(member.name)) return { stream: compressed, name: member.name };
-  if (member.size > MAX_INFLATED) throw new Error(`${member.name} is too large to inflate (${Math.round(member.size / 1e6)} MB)`);
-  return { source: memorySource(key, inflateSync(compressed, { out: new Uint8Array(member.size) })), first: null };
+  // Inflated as the pieces arrive, so the compressed member is never held
+  // whole. Uncompressed LAS isn't held at all: Berlin's and Tokyo's tiles
+  // inflate to 200-500 MB, Brussels' to 2.9 GB.
+  if (/\.las$/i.test(name)) return { stream: pieces(), name };
+  if (member.size > MAX_INFLATED) throw new Error(`${name} is too large to inflate (${Math.round(member.size / 1e6)} MB)`);
+  const out = new Uint8Array(member.size);
+  let filled = 0;
+  const inflater = new Inflate((data) => {
+    if (filled + data.length > out.length) throw new Error(`${name} inflates past its stated size`);
+    out.set(data, filled);
+    filled += data.length;
+  });
+  for await (const piece of pieces()) inflater.push(piece);
+  inflater.push(new Uint8Array(0), true);
+  if (filled !== out.length) throw new Error(`${name} inflated to ${filled} bytes, not ${out.length}`);
+  return { source: memorySource(key, out), first: null };
 }
 
 /**
@@ -167,19 +186,31 @@ export async function tileDensity(fetcher: Fetcher, tile: PointTile): Promise<nu
 // Deflate input fed to the inflater at a time.
 const STREAM_STEP = 1 << 20;
 
-/** Points from a deflated member of uncompressed LAS, inflated a piece at a time. */
-async function readStream(compressed: Uint8Array, name: string, tile: PointTile, bbox: GeoBounds, options: ReadOptions, sink: NonNullable<ReadOptions['sink']>, maxPoints: number, label: string): Promise<{ crs: string; zFactor: number; slabs: number } | null> {
+/** Points from a deflated member of uncompressed LAS, inflated as its pieces arrive. */
+async function readStream(stream: AsyncIterable<Uint8Array>, name: string, tile: PointTile, bbox: GeoBounds, options: ReadOptions, sink: NonNullable<ReadOptions['sink']>, maxPoints: number, label: string): Promise<{ crs: string; zFactor: number; slabs: number } | null> {
   let out: Uint8Array[] = [];
   let length = 0;
   const inflater = new Inflate((data) => {
     out.push(data);
     length += data.length;
   });
+  const pieces = stream[Symbol.asyncIterator]();
+  let piece: Uint8Array = new Uint8Array(0);
   let pushed = 0;
-  const more = () => {
-    if (pushed >= compressed.length) return false;
-    const end = Math.min(pushed + STREAM_STEP, compressed.length);
-    inflater.push(compressed.subarray(pushed, end), end === compressed.length);
+  let ended = false;
+  const more = async () => {
+    if (ended) return false;
+    if (pushed >= piece.length) {
+      const next = await pieces.next();
+      if (next.done) {
+        inflater.push(new Uint8Array(0), true);
+        ended = true;
+        return true;
+      }
+      [piece, pushed] = [next.value, 0];
+    }
+    const end = Math.min(pushed + STREAM_STEP, piece.length);
+    inflater.push(piece.subarray(pushed, end));
     pushed = end;
     return true;
   };
@@ -187,39 +218,44 @@ async function readStream(compressed: Uint8Array, name: string, tile: PointTile,
     if (out.length > 1) out = [concat(out, length)];
     return out[0] ?? new Uint8Array(0);
   };
-  while (length < 375 && more());
-  let start = joined();
-  const header = readHeader(start);
-  if (!header.pointCount) return null;
-  if (header.pointDataOffset > 4 * 1024 * 1024) throw new Error('LAS header records are too large');
-  while (length < header.pointDataOffset && more());
-  start = joined();
-  const { vlrs, complete } = readVlrs(start, header);
-  if (!complete) throw new Error(`${name} header records run past the point data`);
-  const { crs, normalize } = tileSetup({ header, vlrs, tableAt: -1 }, tile, bbox, options);
-  // Records as they come, whole ones only. What's left of a record waits for the next piece.
-  let carry = start.subarray(header.pointDataOffset);
-  out = [];
-  length = 0;
-  let left = header.pointCount;
-  let slabs = 0;
-  for (;;) {
-    const records = Math.min(left, Math.floor(carry.length / header.pointSize));
-    if (records > 0) {
-      normalizeRecords(carry, records, header.pointSize, normalize, sink);
-      if (sink.count > maxPoints) throw new BudgetExceeded('Cropped LiDAR point budget reached');
-      left -= records;
-      carry = carry.subarray(records * header.pointSize);
-      if (++slabs % 16 === 0) await options.progress?.(`Inflating LAS ${label}, ${(header.pointCount - left).toLocaleString('en-US')} of ${header.pointCount.toLocaleString('en-US')} points`);
-    }
-    if (!left) break;
-    if (!more()) throw new Error(`${name} ends before its last point`);
-    if (!length) continue;
-    carry = concat([carry, ...out], carry.length + length);
+  try {
+    while (length < 375 && (await more()));
+    let start = joined();
+    const header = readHeader(start);
+    if (!header.pointCount) return null;
+    if (header.pointDataOffset > 4 * 1024 * 1024) throw new Error('LAS header records are too large');
+    while (length < header.pointDataOffset && (await more()));
+    start = joined();
+    const { vlrs, complete } = readVlrs(start, header);
+    if (!complete) throw new Error(`${name} header records run past the point data`);
+    const { crs, normalize } = tileSetup({ header, vlrs, tableAt: -1 }, tile, bbox, options);
+    // Records as they come, whole ones only. What's left of a record waits for the next piece.
+    let carry = start.subarray(header.pointDataOffset);
     out = [];
     length = 0;
+    let left = header.pointCount;
+    let slabs = 0;
+    for (;;) {
+      const records = Math.min(left, Math.floor(carry.length / header.pointSize));
+      if (records > 0) {
+        normalizeRecords(carry, records, header.pointSize, normalize, sink);
+        if (sink.count > maxPoints) throw new BudgetExceeded('Cropped LiDAR point budget reached');
+        left -= records;
+        carry = carry.subarray(records * header.pointSize);
+        if (++slabs % 16 === 0) await options.progress?.(`Inflating LAS ${label}, ${(header.pointCount - left).toLocaleString('en-US')} of ${header.pointCount.toLocaleString('en-US')} points`);
+      }
+      if (!left) break;
+      if (!(await more())) throw new Error(`${name} ends before its last point`);
+      if (!length) continue;
+      carry = concat([carry, ...out], carry.length + length);
+      out = [];
+      length = 0;
+    }
+    return { crs: crs.key, zFactor: normalize.zFactor, slabs };
+  } finally {
+    // Stops the downloads when reading ends early or fails.
+    await pieces.return?.(undefined);
   }
-  return { crs: crs.key, zFactor: normalize.zFactor, slabs };
 }
 
 function concat(parts: Uint8Array[], length: number): Uint8Array {

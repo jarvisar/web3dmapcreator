@@ -9,7 +9,7 @@ import type { Fetcher } from '../read/fetcher';
 import { alaska } from './alaska';
 import { arpai } from './arpai';
 import { setCorsProxy } from '../../data/corsProxy';
-import { usgsStaged } from './usgsstaged';
+import { pasdaName, usgsStaged } from './usgsstaged';
 import { dc } from './dc';
 import { illinois } from './illinois';
 import { wisconsin } from './wisconsin';
@@ -167,8 +167,10 @@ describe('USGS staged LAZ', () => {
     if (url.startsWith('https://raw.githubusercontent.com/')) return { features: [{ properties: { name: 'OH_StatewideP3_7_B21' } }, { properties: { name: 'USGS_LPC_IL_4County_Cook_2017_LAS_2019' } }] };
     if (url.startsWith('https://tnmaccess.nationalmap.gov/'))
       return {
-        total: 5,
+        total: 6,
         items: [
+          item('OH_Statewide_Phase3_2021_B21/OH_StatewideP3_6_B21/LAZ/USGS_LPC_OH_Statewide_Phase3_2021_B21_BS13960417.laz'),
+          // TNM repeats items now and then.
           item('OH_Statewide_Phase3_2021_B21/OH_StatewideP3_6_B21/LAZ/USGS_LPC_OH_Statewide_Phase3_2021_B21_BS13960417.laz'),
           item('OH_Statewide_Phase3_2021_B21/OH_StatewideP3_7_B21/LAZ/a.laz'),
           item('IL_4County_Cook_2017/IL_4County_Cook_2017/LAZ/b.laz'),
@@ -186,6 +188,67 @@ describe('USGS staged LAZ', () => {
       const surveys = await usgsStaged.discover(fakeFetcher(route).fetcher, clifton, []);
       expect(surveys.map((s) => [s.id, s.format, s.projectYearHint])).toEqual([['OH_StatewideP3_6_B21', 'LAZ', 2021]]);
       expect(surveys[0].tiles).toEqual([expect.objectContaining({ url: expect.stringMatching(/BS13960417\.laz$/), size: 22312578 })]);
+    } finally {
+      setCorsProxy(null);
+    }
+  });
+
+  it("reads Long Island 2024 from New York State's copy when it has every tile", async () => {
+    const hempstead: GeoBounds = { west: -73.62, south: 40.705, east: -73.617, north: 40.707 };
+    const li = (tile: string) => item(`NY_LongIsland_A24/NY_LongIsland_1_A24/LAZ/USGS_LPC_NY_LongIsland_A24_${tile}.laz`, { minX: -73.63, minY: 40.7, maxX: -73.61, maxY: 40.71 });
+    const fetcher = (have: string[]) =>
+      ({
+        json: async (url: string) => (url.startsWith('https://raw.githubusercontent.com/') ? { features: [] } : { total: 2, items: [li('u_6150050600'), li('u_6165050600')] }),
+        size: async (url: string) => {
+          if (!have.some((tile) => url.endsWith(`/NYS_LongIsland2024/${tile}.las`))) throw new Error('Download failed with HTTP 404');
+          return 215937490;
+        },
+      }) as unknown as Fetcher;
+    setCorsProxy('direct');
+    try {
+      const [copied] = await usgsStaged.discover(fetcher(['u_6150050600', 'u_6165050600']), hempstead, []);
+      expect(copied.tiles!.map((t) => [t.url.split('/').slice(-2).join('/'), t.size])).toEqual([
+        ['NYS_LongIsland2024/u_6150050600.las', 215937490],
+        ['NYS_LongIsland2024/u_6165050600.las', 215937490],
+      ]);
+      const [kept] = await usgsStaged.discover(fetcher(['u_6150050600']), hempstead, []);
+      expect(kept.tiles!.every((t) => t.url.startsWith('https://rockyweb.usgs.gov/'))).toBe(true);
+    } finally {
+      setCorsProxy(null);
+    }
+  });
+
+  it("names PASDA's 2,500 ft tiles from their corner", () => {
+    expect(pasdaName(2692500, 235000)).toBe('24002690PAS_NW_SE.laz');
+    expect(pasdaName(2690000, 230000)).toBe('24002690PAS_SW_SW.laz');
+    expect(pasdaName(2697500, 237500)).toBe('24002690PAS_NE_NE.laz');
+  });
+
+  it("reads Pennsylvania's 2024 work units from PASDA when it has every tile", async () => {
+    const cityHall: GeoBounds = { west: -75.1645, south: 39.952, east: -75.1625, north: 39.9532 };
+    const pa = (unit: string, tile: string) => item(`PA_17County_D24/${unit}/LAZ/${tile}.laz`, { minX: -75.17, minY: 39.95, maxX: -75.16, maxY: 39.96 });
+    const fetcher = (missing: boolean) =>
+      ({
+        json: async (url: string) => {
+          if (url.startsWith('https://raw.githubusercontent.com/')) return { features: [] };
+          return { total: 2, items: [pa('PA_17Co_5_D24', 'a'), pa('PA_17Co_4_D24', 'b')] };
+        },
+        size: async (url: string) => {
+          if (!url.startsWith('https://www.pasda.psu.edu/')) throw new Error(url);
+          if (missing) throw new Error('Download failed with HTTP 404');
+          return 204958204;
+        },
+      }) as unknown as Fetcher;
+    setCorsProxy('direct');
+    try {
+      const copied = await usgsStaged.discover(fetcher(false), cityHall, []);
+      expect(copied.map((s) => [s.id, s.tiles!.map((t) => [t.url.split('/').pop(), t.size])])).toEqual([['PA_17Co_5_D24', [['24002690PAS_NW_SE.laz', 204958204]]]]);
+      // Without every tile on PASDA, rockyweb's stay.
+      const kept = await usgsStaged.discover(fetcher(true), cityHall, []);
+      expect(kept.map((s) => [s.id, s.tiles!.map((t) => t.url.split('/').pop())])).toEqual([
+        ['PA_17Co_5_D24', ['a.laz']],
+        ['PA_17Co_4_D24', ['b.laz']],
+      ]);
     } finally {
       setCorsProxy(null);
     }

@@ -200,7 +200,19 @@ export function recordReader(header: Pick<LasHeader, 'pointFormat' | 'scale' | '
 /** The OGC WKT of a header's CRS record, if it has one. */
 export function wktOf(vlrs: Vlr[]): string | null {
   const vlr = findVlr(vlrs, 'LASF_Projection', 2112);
-  return vlr ? text(vlr.data).trim() : null;
+  if (!vlr) return null;
+  let wkt = text(vlr.data).trim();
+  // LAStools has written it as a JSON string (Estonia's 2024 tiles) and as
+  // '' (GUGiK's sheets through las2las). Anything that isn't WKT leaves the
+  // GeoKeys to say.
+  if (wkt.startsWith('"')) {
+    try {
+      wkt = String(JSON.parse(wkt)).trim();
+    } catch {
+      return null;
+    }
+  }
+  return /^[A-Z_]+\s*\[/i.test(wkt) ? wkt : null;
 }
 
 /** GeoTIFF keys from the GeoKeyDirectory record: key id to value (tag location 0 only). */

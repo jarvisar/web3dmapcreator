@@ -1,9 +1,12 @@
 // What every provider returns, and the helpers they share: lon/lat boxes,
-// GeoJSON outlines, paged feature services, S3 listings and tile grids.
+// GeoJSON outlines, paged feature services, S3 listings, tile grids, and the
+// first bytes of LAS files and ZIPs for providers without a date index.
 
 import type { GeoBounds, Polygon, Ring } from '../../types';
+import { HttpError } from '../../data/http';
 import { crsFromEpsg, lonLatTransforms, type Transform } from '../read/crs';
 import type { Fetcher } from '../read/fetcher';
+import { readHeader } from '../read/las';
 
 /** EPT and I3S (an Esri scene layer) are one tree for a survey. COPC and LAZ come as tiles; LAZ tiles have no index, so they're read whole. */
 export type Format = 'EPT' | 'I3S' | 'COPC' | 'LAZ';
@@ -245,4 +248,123 @@ export class Surveys {
   list(): Candidate[] {
     return [...this.byKey.values()];
   }
+}
+
+/** What a request for a file gives, or null when the server says it isn't there. */
+export async function unlessMissing<T>(request: Promise<T>): Promise<T | null> {
+  try {
+    return await request;
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+export interface LasStart {
+  points: number;
+  /** West, south, east, north in the file's own coordinates. */
+  box: [number, number, number, number];
+  /** When the first point was taken, if the file keeps GPS time as a date. */
+  date?: string;
+  /** The flight year from `date`, else the year the file was made, or null. */
+  year: number | null;
+}
+
+/**
+ * What a LAS or LAZ file's header says, and the date of its first point.
+ * The header's own date is when the file was written, which can be a year
+ * after the flight. Two small range reads, kept by the cache.
+ */
+export async function lasStart(fetcher: Fetcher, url: string, size?: number): Promise<LasStart> {
+  const bytes = new Uint8Array(await fetcher.range(url, 0, size ? Math.min(375, size) : 375));
+  // Salzburg lists files of a few hundred bytes for sheets without points.
+  if (bytes.length < 227) return { points: 0, box: [0, 0, 0, 0], year: null };
+  const header = readHeader(bytes);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const made = view.getUint16(92, true);
+  const box: LasStart['box'] = [header.min[0], header.min[1], header.max[0], header.max[1]];
+  const start: LasStart = { points: header.pointCount, box, year: made > 1990 ? made : null };
+  // GPS time is at 20 in formats 1 and 3-5 and at 22 from 6 on, and only a
+  // date when the file says it's adjusted standard time. A LAZ file's first
+  // chunk follows the 8 byte chunk table offset and starts with a raw point.
+  const at = [1, 3, 4, 5].includes(header.pointFormat) ? 20 : header.pointFormat >= 6 ? 22 : -1;
+  if (!header.pointCount || at < 0 || !(header.globalEncoding & 1)) return start;
+  const first = header.pointDataOffset + (header.compressed ? 8 : 0);
+  if (size && first + at + 8 > size) return start;
+  const point = new DataView(await fetcher.range(url, first, first + at + 8));
+  const seconds = point.getFloat64(at, true) + 1e9;
+  const date = new Date(Date.UTC(1980, 0, 6) + seconds * 1000);
+  const year = date.getUTCFullYear();
+  if (!Number.isFinite(year) || year < 1995 || year > new Date().getUTCFullYear() + 1) return start;
+  return { ...start, date: date.toISOString().slice(0, 10), year };
+}
+
+/** A projected box as a lon/lat polygon, densified along its sides. */
+export function boxPolygon(toLonLat: Transform, [w, s, e, n]: [number, number, number, number], steps = 4): Polygon {
+  const ring: Ring = [];
+  const edge = (ax: number, ay: number, bx: number, by: number) => {
+    for (let k = 0; k < steps; k++) ring.push(toLonLat(ax + ((bx - ax) * k) / steps, ay + ((by - ay) * k) / steps));
+  };
+  edge(w, s, e, s);
+  edge(e, s, e, n);
+  edge(e, n, w, n);
+  edge(w, n, w, s);
+  return [ring];
+}
+
+export const clipBox = (a: [number, number, number, number], b: [number, number, number, number]): [number, number, number, number] => [
+  Math.max(a[0], b[0]),
+  Math.max(a[1], b[1]),
+  Math.min(a[2], b[2]),
+  Math.min(a[3], b[3]),
+];
+
+/** Tiles found by year, with the dates they were flown when known. */
+export class YearGroups {
+  private readonly groups = new Map<string, { tiles: Tile[]; coverage: Polygon[]; dates: string[]; undated: number; year: number | null }>();
+
+  add(key: string, year: number | null, tile: Tile, coverage: Polygon, dates: string[] = []): void {
+    let group = this.groups.get(key);
+    if (!group) this.groups.set(key, (group = { tiles: [], coverage: [], dates: [], undated: 0, year }));
+    group.tiles.push(tile);
+    group.coverage.push(coverage);
+    group.dates.push(...dates);
+    if (!dates.length) group.undated++;
+  }
+
+  /**
+   * One survey per group, newest first. Dates run from the first to the last
+   * when every tile had one, else over the whole year.
+   */
+  list(make: (key: string, year: number | null) => Omit<Candidate, 'coverage' | 'tiles' | 'acquisitionStart' | 'acquisitionEnd'>): Candidate[] {
+    return [...this.groups]
+      .sort((a, b) => (b[1].year ?? 0) - (a[1].year ?? 0))
+      .map(([key, group]) => {
+        const dates = [...group.dates].sort();
+        const dated = dates.length > 0 && !group.undated;
+        return {
+          ...make(key, group.year),
+          coverage: group.coverage,
+          tiles: group.tiles,
+          acquisitionStart: dated ? dates[0] : group.year ? `${group.year}-01-01` : undefined,
+          acquisitionEnd: dated ? dates[dates.length - 1] : group.year ? `${group.year}-12-31` : undefined,
+        };
+      });
+  }
+}
+
+/** The first member of a ZIP from its local header: name, where its data starts and, when the header has it, its compressed size. */
+export function localMember(bytes: Uint8Array): { name: string; dataAt: number; compressedSize?: number; method: number } | null {
+  if (bytes.length < 30) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint32(0, true) !== 0x04034b50) return null;
+  const flags = view.getUint16(6, true);
+  const compressed = view.getUint32(18, true);
+  const nameLength = view.getUint16(26, true);
+  const extraLength = view.getUint16(28, true);
+  if (30 + nameLength > bytes.length) return null;
+  const name = new TextDecoder().decode(bytes.subarray(30, 30 + nameLength));
+  // Sizes written after the data, or in a ZIP64 extra field, aren't here.
+  const known = !(flags & 8) && compressed > 0 && compressed !== 0xffffffff;
+  return { name, dataAt: 30 + nameLength + extraLength, compressedSize: known ? compressed : undefined, method: view.getUint16(8, true) };
 }

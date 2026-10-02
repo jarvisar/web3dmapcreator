@@ -259,6 +259,9 @@ function rivalsOf(head: Ranked, list: Ranked[], rules: SurveyRules, group: (a: R
 // the middle of where the survey reaches.
 const DENSITY_SPAN_M = 512;
 const DENSITIES_AT_ONCE = 4;
+// A host that doesn't answer (ICGC's from US addresses) mustn't hold up the
+// order. Its request carries on into the cache.
+const DENSITY_DEADLINE_MS = 20_000;
 
 /** Fills in each survey's localDensity, where its index can tell. A failure leaves the catalog's. */
 export async function measureDensities(fetcher: Fetcher, ranked: Ranked[], frame: Projection, signal?: AbortSignal): Promise<void> {
@@ -276,11 +279,15 @@ export async function measureDensities(fetcher: Fetcher, ranked: Ranked[], frame
         const [x, y] = frame.toLocal(lon, lat);
         return contains(r.coverage, x, y);
       };
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const density = await localDensity(fetcher, r.candidate, box, inside);
+        const late = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), DENSITY_DEADLINE_MS)));
+        const density = await Promise.race([localDensity(fetcher, r.candidate, box, inside), late]);
         if (density) r.localDensity = density;
       } catch (error) {
         if ((error as Error)?.name === 'AbortError' || signal?.aborted) throw error;
+      } finally {
+        clearTimeout(timer);
       }
     }
   };

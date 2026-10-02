@@ -20,12 +20,13 @@ import {
   modelRelationship,
   writeOrder,
   type PreparedModel,
+  type RowTally,
 } from './common';
 import { escapeText, fixed6, quoteattr } from './format';
 import { sideBySide } from './sections';
 import { ZipWriter } from './zip';
 
-export function writeGeneric3mf(model: PreparedModel, printer: Printer, title = 'City Model'): Blob {
+export function writeGeneric3mf(model: PreparedModel, printer: Printer, title = 'City Model', tally?: RowTally): Blob {
   const bottom = model.extents.minZ;
   const materials = modelFilaments(model);
   let nextId = 2;
@@ -40,7 +41,7 @@ export function writeGeneric3mf(model: PreparedModel, printer: Printer, title = 
   );
 
   const zip = new ZipWriter();
-  const out = new ModelStream(zip.entry(MODEL_PATH));
+  const out = new ModelStream(zip.entry(MODEL_PATH), tally);
   out.text(
     XML_HEADER +
       `<model unit="millimeter" xml:lang="en-US" xmlns="${CORE_NAMESPACE}">\n` +

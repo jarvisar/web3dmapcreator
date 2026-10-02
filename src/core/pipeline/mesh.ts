@@ -1,6 +1,7 @@
 // Layers of solids to printable parts.
 
 import { clipRegion, MeshBuilder, meshSolid, newMeshStats, type CapCache } from '../geometry/mesher';
+import { polygonArea, ringPerimeter } from '../geometry/polygon';
 import type { Layer, Solid } from '../geometry/solid';
 import type { MeshPart, MultiPolygon, PartObjects } from '../types';
 import type { Progress } from './context';
@@ -60,23 +61,55 @@ export class ObjectRuns {
   }
 }
 
+/**
+ * Roughly how long a solid takes to mesh, in prism triangles: a prism's time
+ * follows the triangles it makes. A draped cap is cut from every lattice cell
+ * under it, so it goes by area, and its walls are split where the outline
+ * crosses the lattice. Counting solids instead, the road layer's 20 solids
+ * took a second while thousands of buildings went by. A cap's TIN and a
+ * tree's mesh are mostly copied, so their triangles count for much less: a
+ * LiDAR only surface of 700,000 meshed in 0.1 s.
+ */
+export function meshCost(solid: Solid): number {
+  if (solid.kind === 'mesh') return 0.1 * (solid.indices.length / 3);
+  if (solid.kind === 'cap') return 0.2 * (solid.triangles.length / 3);
+  let vertices = 0;
+  let perimeter = 0;
+  for (const ring of solid.polygon) {
+    vertices += ring.length;
+    perimeter += ringPerimeter(ring);
+  }
+  if (!(solid.drape > 0)) return 4 * vertices;
+  const cell = solid.drape;
+  const draped = (typeof solid.top === 'function' ? 1 : 0) + (typeof solid.bottom === 'function' ? 1 : 0);
+  const capTriangles = (2 * polygonArea(solid.polygon)) / (cell * cell) + (2 * perimeter) / cell + vertices;
+  return draped * capTriangles + (2 - draped) * vertices + 2 * (vertices + (1.5 * perimeter) / cell);
+}
+
 export async function meshLayers(layers: Layer[], options: MeshOptions = {}): Promise<MeshResult> {
   const parts: MeshPart[] = [];
   const stats = newMeshStats();
-  const total = layers.reduce((n, layer) => n + layer.solids.length, 0) || 1;
+  const costs = options.progress ? layers.map((layer) => layer.solids.map(meshCost)) : null;
+  const total = costs ? costs.reduce((sum, list) => list.reduce((s, c) => s + c, sum), 0) || 1 : 1;
   const [from, to] = options.span ?? [0, 1];
   const clip = options.clip ? clipRegion(options.clip) : undefined;
   let done = 0;
-  for (const layer of layers) {
+  let solids = 0;
+  for (let l = 0; l < layers.length; l++) {
+    const layer = layers[l];
     const out = new MeshBuilder();
     const runs = options.objects ? new ObjectRuns() : null;
-    for (const solid of layer.solids) {
+    for (let s = 0; s < layer.solids.length; s++) {
+      const solid = layer.solids[s];
       const triStart = out.indexCount / 3;
       const vertStart = out.vertexCount;
       meshSolid(solid, out, clip, stats, options.caps);
       runs?.add(solid, triStart, out.indexCount / 3, vertStart, out.vertexCount);
-      done++;
-      if (options.progress && done % 64 === 0) await options.progress.checkpoint(from + ((to - from) * done) / total);
+      if (costs) {
+        const cost = costs[l][s];
+        done += cost;
+        if (++solids % 16 === 0 || cost > 5000) await options.progress!.checkpoint(from + ((to - from) * done) / total);
+      }
     }
     if (!out.indexCount) continue;
     const { positions, indices } = out.finish();

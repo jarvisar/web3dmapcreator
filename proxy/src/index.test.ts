@@ -32,6 +32,12 @@ describe('LiDAR CORS proxy', () => {
     expect(targetOf(`${worker}/rockyweb.usgs.gov/elsewhere/tile.laz`)).toBeNull();
     expect(targetOf(`${worker}/rockyweb.usgs.gov.example.com/vdelivery/Datasets/Staged/Elevation/LPC/Projects/a.laz`)).toBeNull();
     expect(targetOf(`${worker}/example.com/${file}`)).toBeNull();
+    // Share links are matched by pattern, so other files on the same host stay out.
+    expect(targetOf(`${worker}/imnube.montevideo.gub.uy/share/s/6Q_g8cksRMCTdg8l3IyNSA/content/LIDAR_MVD_2024_K-29-D-6-O-5.laz`)).toBe('https://imnube.montevideo.gub.uy/share/s/6Q_g8cksRMCTdg8l3IyNSA/content/LIDAR_MVD_2024_K-29-D-6-O-5.laz');
+    expect(targetOf(`${worker}/imnube.montevideo.gub.uy/share/s/6Q_g8cksRMCTdg8l3IyNSA/content/minutes.pdf`)).toBeNull();
+    // Query strings are part of the match.
+    expect(targetOf(`${worker}/geoportaal.maaruum.ee/index.php?lang_id=1&plugin_act=otsing&kaardiruut=474659&dl=1&f=474659_2024_madal.laz`)).not.toBeNull();
+    expect(targetOf(`${worker}/geoportaal.maaruum.ee/index.php?lang_id=1&plugin_act=admin`)).toBeNull();
     // Dot segments are resolved before the check.
     expect(targetOf(`${worker}/rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/../../../../../secret`)).toBeNull();
   });
@@ -51,6 +57,9 @@ describe('LiDAR CORS proxy', () => {
     const sent = new Headers(init.headers);
     expect(sent.get('Range')).toBe('bytes=0-99');
     expect(sent.get('Cookie')).toBeNull();
+    // TxGIO's CloudFront only lets through agents that start with Mozilla/5.0.
+    expect(sent.get('User-Agent')).toMatch(/^Mozilla\/5\.0 \(compatible; citymodel-lidar-proxy; /);
+    expect(sent.get('Accept-Encoding')).toBe('identity');
   });
 
   it('gives a HEAD its size', async () => {

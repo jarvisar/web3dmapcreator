@@ -15,23 +15,37 @@ import { fetchRaceways, withRaceways, type Raceways } from '../core/data/raceway
 import { MAX_FIXED_CELLS, requestedCell } from '../core/dsm/grid';
 import { surfaceModel } from '../core/dsm/model';
 import { emptyLayers } from '../core/dsm/layers';
-import { prepareSurface, unpackLayers, type PreparedSurface } from '../core/dsm/prepare';
+import { BLOCKS_START, prepareSurface, unpackLayers, type PreparedSurface } from '../core/dsm/prepare';
 import { groundGrid } from '../core/edit/ground';
 import { roadLines } from '../core/edit/lines';
 import { EditSession, excludedParts, type EditUpdate } from '../core/edit/session';
 import { emptyEdits, hasEdits, sanitizeEdits } from '../core/edit/types';
-import type { EditRequest, ExportRequest, FromWorker, GenerateRequest, GenerateResult, LidarSummary, ProgressEvent, SurfaceSummary, SurveyChoice, ToWorker } from '../core/engine/protocol';
+import type { EditRequest, ExportRequest, FromWorker, GenerateRequest, GenerateResult, LidarSummary, SurfaceSummary, SurveyChoice, ToWorker } from '../core/engine/protocol';
 import { effectiveScale } from '../core/geo/area';
 import { Projection } from '../core/geo/projection';
 import { download } from '../core/svgmap/download';
 import { FontLoader } from '../core/svgmap/text/loadFont';
-import { findSurveys, lidarRequest, prepareLidar, setCheckpointStore, type PreparedLidar } from '../core/lidar/prepare';
+import { findSurveys, lidarRequest, prepareLidar, setCheckpointStore, SURVEYS_FOUND, type PreparedLidar } from '../core/lidar/prepare';
 import type { SurveyQuery } from '../core/lidar/query';
 import { OffersError, reopened } from '../core/lidar/offers';
 import type { Failure } from '../core/lidar/sources';
 import { exportPlates } from '../core/export';
 import { BAMBU_MAX_PLATES } from '../core/export/sections';
-import { CancelError, Progress } from '../core/pipeline/context';
+import { CancelError, Progress, type PlannedStep } from '../core/pipeline/context';
+import {
+  downloadGuess,
+  generationSteps,
+  guessCounts,
+  LIDAR_SECONDS_PER_BUILDING,
+  LIDAR_SECONDS_PER_CELL,
+  lidarSteps,
+  meshSeconds,
+  sessionSeconds,
+  surfaceCells,
+  surfaceSteps,
+  writeSeconds,
+  type FeatureCounts,
+} from '../core/pipeline/estimate';
 import { dataPlan } from '../core/pipeline/dataPlan';
 import { dataBoundsFor, generateModel, type ModelSpec } from '../core/pipeline/generate';
 import { meshLayers, partsBounds } from '../core/pipeline/mesh';
@@ -57,6 +71,8 @@ let running: Running | null = null;
 /** Exports under way, so a cancel reaches their progress. */
 const exporting = new Map<number, Progress>();
 let lastSpec: ModelSpec | null = null;
+// Its triangles as generated, for how long a file of it takes to write.
+let lastTriangles = 0;
 let session: EditSession | null = null;
 /** The newest edit request not applied yet. Older ones waiting are dropped. */
 let pendingEdit: { id: number; request: EditRequest } | null = null;
@@ -72,6 +88,8 @@ let elevation: { key: string; dem: DemMosaic } | null = null;
 let prepared: { key: string; lidar: PreparedLidar } | null = null;
 // Kept as its block checkpoints, not its layers (unpackLayers).
 let surface: { key: string; prepared: PreparedSurface } | null = null;
+// How long work took here against the estimates, carried from job to job.
+let speed: number | undefined;
 
 setCheckpointStore(lidarCache);
 installLidarCodecs(lazWasmUrl);
@@ -186,37 +204,63 @@ function post(message: FromWorker, transfer?: Transferable[]) {
   ctx.postMessage(message, transfer);
 }
 
-async function loadData(request: GenerateRequest, job: Running, report: (e: ProgressEvent) => void) {
+function dataKey(request: GenerateRequest): string {
+  const bounds = dataBoundsFor(request.area);
+  return `${boundsKey(bounds)}|${dataPlan(request.settings, bounds).key}`;
+}
+
+function featureCounts(data: OvertureData): FeatureCounts {
+  return Object.fromEntries(Object.entries(data.features).map(([type, list]) => [type, list?.length ?? 0]));
+}
+
+/**
+ * Map data, elevation and raceways, downloaded together. `onRows` hears the
+ * row counts once they're known, before the geometry comes in.
+ */
+async function loadData(request: GenerateRequest, job: Running, onRows: (counts: FeatureCounts) => void) {
   const { area, settings } = request;
   const bounds = dataBoundsFor(area);
   const plan = dataPlan(settings, bounds);
-  const key = `${boundsKey(bounds)}|${plan.key}`;
+  const key = dataKey(request);
   const mb = (bytes: number) => `${(bytes / 1e6).toFixed(1)} MB`;
   let downloaded = 0;
   let overtureDone = false;
+  // The bar follows the map data. Elevation is a few tiles, given a twentieth
+  // so the bar still finishes on them when they're the last to come in.
+  let mapShare = 0;
+  let demShare = 1;
+  let label = 'Finding map data';
+  let detail: string | undefined;
+  const show = () => job.progress.report(0.95 * mapShare + 0.05 * demShare, detail, label);
 
   const loadOverture = async (): Promise<OvertureData> => {
     if (overture?.key === key) {
       overtureDone = true;
+      mapShare = 1;
       return overture.data;
     }
     // Let the last area's data go before the next one comes in.
     overture = null;
+    let counted = false;
     const data = await fetchOverture({
       bounds,
       types: plan.types,
       keep: plan.keep,
       signal: job.abort.signal,
-      onProgress: (p) =>
-        report({
-          stage: 'data',
-          label: p.message,
-          fraction: 0.02 + 0.26 * Math.min(1, p.bytesTotal ? p.bytes / p.bytesTotal : 0),
-          detail: p.bytesTotal ? `${mb(p.bytes)} of ${mb(p.bytesTotal)}` : undefined,
-        }),
+      onProgress: (p) => {
+        mapShare = p.fraction;
+        label = p.message;
+        detail = p.bytesTotal ? `${mb(p.bytes)} of ${mb(p.bytesTotal)}` : undefined;
+        if (p.rows && !counted) {
+          counted = true;
+          onRows(p.rows);
+        }
+        show();
+      },
     });
     overture = { key, data };
     overtureDone = true;
+    mapShare = 1;
     for (const stats of Object.values(data.stats)) downloaded += stats.bytes - stats.cachedBytes;
     return data;
   };
@@ -229,18 +273,23 @@ async function loadData(request: GenerateRequest, job: Running, report: (e: Prog
     if (elevation?.key === demKey) return elevation.dem;
     elevation = null;
     let demDownloaded = 0;
+    demShare = 0;
     const dem = await fetchDem({
       bounds,
       targetSpacingM: cellM,
       signal: job.abort.signal,
       onProgress: (p) => {
         demDownloaded = p.downloaded;
-        // The map data drives the bar. Elevation only shows if it is still going after that.
+        demShare = p.tilesTotal ? p.tilesDone / p.tilesTotal : 0;
+        // The map data's label stays up while it's still coming in.
         if (overtureDone) {
-          report({ stage: 'elevation', label: 'Downloading elevation', fraction: 0.28, detail: `${p.tilesDone} of ${p.tilesTotal} tiles` });
+          label = 'Downloading elevation';
+          detail = `${p.tilesDone} of ${p.tilesTotal} tiles`;
         }
+        show();
       },
     });
+    demShare = 1;
     elevation = { key: demKey, dem };
     downloaded += demDownloaded;
     return dem;
@@ -261,9 +310,21 @@ async function loadData(request: GenerateRequest, job: Running, report: (e: Prog
   return { data: withRaceways(data, found), dem, downloaded };
 }
 
-// LiDAR takes this share of the progress bar, and generation the rest after it.
-const LIDAR_START = 0.3;
-const LIDAR_END = 0.6;
+/**
+ * A survey preparation's progress, which reports one fraction, as two steps:
+ * finding the surveys, then reading them from `reading` on. Reading gets a
+ * step of its own so its pace isn't mixed up with the search's.
+ */
+function surveyProgress(progress: Progress, reading: number) {
+  let started = false;
+  return (label: string, fraction: number, detail?: string) => {
+    if (!started && fraction >= reading) {
+      started = true;
+      progress.begin('lidar', label, detail);
+    }
+    return progress.checkpoint(started ? (fraction - reading) / (1 - reading) : fraction / reading, detail, label);
+  };
+}
 
 const APPROVED_KEY = 'lidar-approved-tiles';
 
@@ -300,7 +361,7 @@ async function loadLidar(request: GenerateRequest, data: OvertureData, job: Runn
   if (prepared?.key === key && !reopened(prepared.lidar.offers, approved)) return prepared.lidar;
   prepared = null;
   const progress = job.progress;
-  progress.begin('lidar', 'Preparing LiDAR buildings', LIDAR_START, LIDAR_END - LIDAR_START);
+  progress.begin('surveys', 'Finding LiDAR surveys');
   // Browsers without nested workers read and measure in this worker instead.
   const pool = typeof Worker === 'undefined' ? null : lidarPool(lidarPoolSize(), job.abort.signal);
   let lidar: PreparedLidar;
@@ -312,7 +373,7 @@ async function loadLidar(request: GenerateRequest, data: OvertureData, job: Runn
       parts: data.features.building_part ?? [],
       land: data.features.land ?? [],
       signal: job.abort.signal,
-      progress: (label, fraction, detail) => progress.checkpoint(fraction, detail, label),
+      progress: surveyProgress(progress, SURVEYS_FOUND),
       runner: pool ?? undefined,
       approved,
     });
@@ -372,10 +433,15 @@ type Pool = ReturnType<typeof lidarPool>;
  * session keeps the blocks packed, about a fifth of the layers, so the
  * layers can go while the model is meshed (releaseLayers).
  */
-async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | null): Promise<PreparedSurface> {
+function surfaceKey(request: GenerateRequest): { cell: number; key: string } {
   const { area, settings } = request;
   const cell = requestedCell(settings.lidarModel, effectiveScale(area, settings.scale), area.widthM, area.heightM);
-  const key = JSON.stringify([area.center, area.rotationDeg, area.widthM, area.heightM, cell, settings.lidar.survey, settings.lidar.surveyPreference, settings.lidar.olderYears]);
+  return { cell, key: JSON.stringify([area.center, area.rotationDeg, area.widthM, area.heightM, cell, settings.lidar.survey, settings.lidar.surveyPreference, settings.lidar.olderYears]) };
+}
+
+async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | null): Promise<PreparedSurface> {
+  const { area, settings } = request;
+  const { cell, key } = surfaceKey(request);
   const approved = await approvedTiles(request);
   if (surface?.key === key && !reopened(surface.prepared.offers, approved)) {
     const kept = surface.prepared;
@@ -384,13 +450,13 @@ async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | 
   // Let the last grid go before the next one comes in.
   surface = null;
   const progress = job.progress;
-  progress.begin('lidar', 'Reading the LiDAR survey', 0.02, 0.58);
+  progress.begin('surveys', 'Finding LiDAR surveys');
   const result = await prepareSurface({
     area,
     cellM: cell,
     maxCells: settings.lidarModel.cellMode === 'metres' ? (request.maxCells ?? MAX_FIXED_CELLS) : undefined,
     signal: job.abort.signal,
-    progress: (label, fraction, detail) => progress.checkpoint(fraction, detail, label),
+    progress: surveyProgress(progress, BLOCKS_START),
     runner: pool ?? undefined,
     approved,
     survey: settings.lidar.survey || undefined,
@@ -445,11 +511,22 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
   const pool = typeof Worker === 'undefined' ? null : lidarPool(surfacePoolSize(), job.abort.signal);
   // Downloaded while the survey is read. The model is still built without it.
   const pending = request.settings.lidarModel.mapWater ? loadMapWater(request, job).catch((error: Error) => error) : null;
+  const { area, settings } = request;
+  const cut = area.shape !== 'rectangle' || settings.lidarModel.waterMode !== 'recess';
+  // Waiting on map water that hasn't come in by the time the survey's read is rare and short.
+  const waiting: PlannedStep[] = pending ? [{ stage: 'mapwater', seconds: 0.2, wait: true }] : [];
   try {
+    const { cell, key } = surfaceKey(request);
+    const maxCells = settings.lidarModel.cellMode === 'metres' ? (request.maxCells ?? MAX_FIXED_CELLS) : undefined;
+    const cells = surfaceCells(area, cell, maxCells);
+    // As loadSurface decides whether to read the survey again.
+    const kept = surface?.key === key && !reopened(surface.prepared.offers, await approvedTiles(request));
+    job.progress.plan([...(kept ? [] : lidarSteps(LIDAR_SECONDS_PER_CELL * cells)), ...waiting, ...surfaceSteps(cells, cut)]);
     const prepared = await loadSurface(request, job, pool);
     timings.lidar = (performance.now() - started) / 1000;
     const t1 = performance.now();
-    job.progress.begin('data', 'Downloading map water', 0.6, 0.02);
+    job.progress.plan([...waiting, ...surfaceSteps(prepared.layers.nx * prepared.layers.ny, cut)]);
+    job.progress.begin('mapwater', 'Downloading map water');
     const water = await pending;
     if (water instanceof Error && (water.name === 'AbortError' || job.abort.signal.aborted)) throw water;
     const mapWater = water instanceof Error ? null : water;
@@ -465,10 +542,12 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
     });
     timings.generate = (performance.now() - t1) / 1000;
     const t2 = performance.now();
-    job.progress.begin('mesh', 'Building meshes', 0.92, 0.08);
-    const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ, progress: job.progress, span: [0, 1], objects: true });
+    job.progress.plan([{ stage: 'mesh', seconds: meshSeconds(spec.layers) }, { stage: 'session', seconds: 0.05 }]);
+    job.progress.begin('mesh', 'Building meshes');
+    const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ, progress: job.progress, objects: true });
     timings.mesh = (performance.now() - t2) / 1000;
     lastSpec = spec;
+    lastTriangles = meshed.parts.reduce((n, part) => n + part.indices.length / 3, 0);
     lastCredits = [...new Set(prepared.surveys.map((s) => `LiDAR: ${s.attribution}`))];
     lastMapData = Boolean(mapWater?.features.length);
     const warnings = [...spec.warnings];
@@ -487,11 +566,20 @@ async function generateSurface(id: number, request: GenerateRequest, job: Runnin
       timings,
       surface: surfaceSummary(prepared),
     };
+    job.progress.begin('session', 'Getting the editor ready');
     const transfers = await startSession(id, spec, request, result);
+    result.speed = finishJob(job);
     post({ type: 'generated', id, result }, [...partTransfers(meshed.parts), ...transfers]);
   } finally {
     pool?.close();
   }
+}
+
+/** Ends a job's progress and keeps how fast this machine was for the next one. */
+function finishJob(job: Running): number {
+  job.progress.finish();
+  speed = job.progress.speed;
+  return speed;
 }
 
 async function generate(id: number, request: GenerateRequest) {
@@ -499,20 +587,23 @@ async function generate(id: number, request: GenerateRequest) {
   if (request.settings.modelSource === 'lidar') return generateLidarOnly(id, request);
   const started = performance.now();
   const timings: Record<string, number> = {};
-  const report = (event: ProgressEvent) => post({ type: 'progress', id, progress: event });
-  const useLidar = request.settings.lidar.enabled && request.settings.buildings.enabled;
-  // With LiDAR on, generation's own fractions (from 0.3) are squeezed in after it.
-  const remapped = (event: ProgressEvent) => {
-    if (!useLidar || event.stage === 'lidar' || event.fraction < LIDAR_START) report(event);
-    else report({ ...event, fraction: LIDAR_END + ((event.fraction - LIDAR_START) * (1 - LIDAR_END)) / (1 - LIDAR_START) });
-  };
-  const job: Running = { id, progress: new Progress(remapped), abort: new AbortController() };
-  running = job;
+  const { area, settings } = request;
+  const useLidar = settings.lidar.enabled && settings.buildings.enabled;
+  const job = startJob(id, request);
+  // Until the row counts are in, everything after the download is a guess
+  // from the area's size, and no time left is shown.
+  const after = (counts: FeatureCounts | null): PlannedStep[] => [
+    ...(useLidar ? lidarSteps(LIDAR_SECONDS_PER_BUILDING * ((counts ?? guessCounts(area)).building ?? 0)) : []),
+    ...generationSteps(counts ?? guessCounts(area), settings, area, !counts),
+  ];
   try {
-    report({ stage: 'data', label: 'Finding map data', fraction: 0.01 });
-    const { data, dem, downloaded } = await loadData(request, job, report);
+    const kept = overture?.key === dataKey(request) ? overture.data : null;
+    job.progress.plan([{ stage: 'data', seconds: kept ? 0 : downloadGuess(area), wait: true, guess: !kept }, ...after(kept && featureCounts(kept))]);
+    job.progress.begin('data', 'Finding map data');
+    const { data, dem, downloaded } = await loadData(request, job, (rows) => job.progress.plan(after(rows)));
     timings.download = (performance.now() - started) / 1000;
     if (job.progress.cancelled) throw new CancelError();
+    job.progress.plan(after(featureCounts(data)));
 
     let lidar: PreparedLidar | null = null;
     if (useLidar) {
@@ -533,10 +624,12 @@ async function generate(id: number, request: GenerateRequest) {
     timings.generate = (performance.now() - t1) / 1000;
 
     const t2 = performance.now();
-    job.progress.begin('mesh', 'Building meshes', 0.9, 0.1);
-    const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ, progress: job.progress, span: [0, 1], objects: true });
+    job.progress.plan([{ stage: 'mesh', seconds: meshSeconds(spec.layers) }, { stage: 'session', seconds: sessionSeconds(featureCounts(data)) }]);
+    job.progress.begin('mesh', 'Building meshes');
+    const meshed = await meshLayers(spec.layers, { zShift: -spec.baseZ, progress: job.progress, objects: true });
     timings.mesh = (performance.now() - t2) / 1000;
     lastSpec = spec;
+    lastTriangles = meshed.parts.reduce((n, part) => n + part.indices.length / 3, 0);
 
     const warnings = [...data.warnings, ...spec.warnings];
     if (dem?.tilesMissing) {
@@ -569,7 +662,9 @@ async function generate(id: number, request: GenerateRequest) {
       timings,
       lidar: lidar ? lidarSummary(lidar) : undefined,
     };
+    job.progress.begin('session', 'Getting the editor ready');
     const transfers = await startSession(id, spec, request, result);
+    result.speed = finishJob(job);
     post({ type: 'generated', id, result }, [...partTransfers(meshed.parts), ...transfers]);
   } catch (error) {
     const cancelled = error instanceof CancelError || job.progress.cancelled || (error as Error)?.name === 'AbortError';
@@ -583,10 +678,15 @@ async function generate(id: number, request: GenerateRequest) {
   }
 }
 
-async function generateLidarOnly(id: number, request: GenerateRequest) {
-  const report = (event: ProgressEvent) => post({ type: 'progress', id, progress: event });
-  const job: Running = { id, progress: new Progress(report), abort: new AbortController() };
+function startJob(id: number, request: GenerateRequest): Running {
+  // This worker's own figure counts exports too. The page's survives a new worker and a reload.
+  const job: Running = { id, progress: new Progress((event) => post({ type: 'progress', id, progress: event }), { speed: speed ?? request.speed }), abort: new AbortController() };
   running = job;
+  return job;
+}
+
+async function generateLidarOnly(id: number, request: GenerateRequest) {
+  const job = startJob(id, request);
   try {
     await generateSurface(id, request, job);
   } catch (error) {
@@ -600,14 +700,19 @@ async function generateLidarOnly(id: number, request: GenerateRequest) {
 }
 
 async function exportModel(id: number, request: ExportRequest) {
-  const progress = new Progress((event) => post({ type: 'progress', id, progress: { ...event, stage: 'export' } }));
+  const progress = new Progress((event) => post({ type: 'progress', id, progress: event }), { speed });
   exporting.set(id, progress);
   try {
     if (!lastSpec) throw new Error('Generate a model first.');
     const printer = printerByKey(request.printer);
-    progress.begin('export', 'Preparing parts', 0, 0.8);
     const edits = request.edits ? sanitizeEdits(request.edits) : null;
     const withEdits = edits !== null && hasEdits(edits);
+    // Sections cut every solid, which adds to the meshing.
+    progress.plan([
+      { stage: 'plates', seconds: meshSeconds(lastSpec.layers, true) * (request.multiPlate ? 1.3 : 1) + (withEdits && session ? 0.2 : 0) },
+      { stage: 'write', seconds: writeSeconds(lastTriangles) },
+    ]);
+    progress.begin('plates', 'Preparing parts');
     const spec = session && withEdits ? await session.edited(edits, request.palette) : lastSpec;
     const { plates, failed } = await buildPlates(spec, {
       multiPlate: request.multiPlate,
@@ -619,8 +724,12 @@ async function exportModel(id: number, request: ExportRequest) {
       maxPlates: request.format === 'bambu' ? BAMBU_MAX_PLATES : undefined,
       progress,
     });
-    post({ type: 'progress', id, progress: { stage: 'export', label: 'Writing the file', fraction: 0.85 } });
-    const result = exportPlates(plates, request, lastCredits, lastMapData);
+    const triangles = plates.reduce((sum, plate) => plate.parts.reduce((n, part) => n + part.indices.length / 3, sum), 0);
+    progress.plan([{ stage: 'write', seconds: writeSeconds(triangles) }]);
+    progress.begin('write', 'Writing the file');
+    const result = exportPlates(plates, request, lastCredits, lastMapData, (fraction) => progress.report(fraction));
+    progress.finish();
+    speed = progress.speed;
     // Said, not skipped quietly: the file looks finished either way.
     if (withEdits && !session) result.warnings.unshift("This model couldn't be edited, so the file is the model as generated, without your edits.");
     if (failed) {

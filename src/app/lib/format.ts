@@ -53,6 +53,16 @@ export function formatElapsed(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+/** A rough time left, rounded so it doesn't flicker: "about 25 s left", "about 3 min left". */
+export function formatTimeLeft(seconds: number): string {
+  if (seconds < 5) return 'a few seconds left';
+  if (seconds < 60) return `about ${Math.ceil(seconds / 5) * 5} s left`;
+  if (seconds < 90) return 'about 1 min left';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `about ${minutes} min left`;
+  return `about ${Math.floor(minutes / 60)} h ${minutes % 60} min left`;
+}
+
 export function formatSeconds(seconds: number): string {
   if (seconds < 1) return `${Math.round(seconds * 1000)} ms`;
   if (seconds < 60) return `${formatNumber(seconds, 1)} s`;

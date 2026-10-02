@@ -162,7 +162,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   const features = (type: SourceType) => data.features[type] ?? [];
 
   // ------------------------------------------------------------- terrain grid
-  progress.begin('terrain', 'Building the terrain grid', 0.3, 0.05);
+  progress.begin('grid', 'Building the terrain grid');
   const resolution = settings.terrain.resolution;
   const pad = (Math.max(cropBox[2] - cropBox[0], cropBox[3] - cropBox[1]) / resolution) * 1.5;
   const gridBox: Box = [cropBox[0] - pad, cropBox[1] - pad, cropBox[2] + pad, cropBox[3] + pad];
@@ -199,7 +199,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   ctx.stats.terrain_grid = `${heightfield.cols} x ${heightfield.rows}`;
 
   // -------------------------------------------------------------------- water
-  progress.begin('water', 'Solving water levels', 0.35, 0.08);
+  progress.begin('water', 'Solving water levels');
   const mappedDecks: Polygon[] = [];
   for (const type of ['infrastructure', 'land', 'land_use'] as SourceType[]) {
     for (const feature of features(type)) {
@@ -209,7 +209,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   const water = await solveWater(features('water'), ctx, mappedDecks);
 
   // -------------------------------------------------------------------- roads
-  progress.begin('roads', 'Laying out roads', 0.43, 0.12);
+  progress.begin('roads', 'Laying out roads');
   let roads: RoadResult = { road: [], path: [], rail: [], footprint: [], bridgeLines: [] };
   let bridgeSolids: PrismSolid[] = [];
   let pierGround: MultiPolygon = [];
@@ -220,16 +220,18 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     let groundPieces: RoadPiece[] = collected.pieces;
     let decks: RoadPiece[] = [];
     if (settings.bridges.enabled) ({ ground: groundPieces, decks } = splitDecks(collected.pieces, ctx, water.mappedCut));
+    progress.begin('ribbons', 'Widening roads');
     let ribbons = await bufferRoads(groundPieces, ctx);
     groundRoads = groundPieces;
     if (decks.length) {
+      progress.begin('bridges', 'Building bridges');
       const bridges = await buildBridges(decks, ctx, { groundRoads: ribbons.footprint, cutWater: water.mappedCut });
       bridgeSolids = bridges.solids;
       pierGround = bridges.pierGround;
       deckPieces = bridges.decks;
       if (bridges.demoted.length) {
         groundRoads = [...groundPieces, ...bridges.demoted];
-        ribbons = await bufferRoads(groundRoads, ctx);
+        ribbons = await bufferRoads(groundRoads, ctx, [0.5, 1]);
       }
     }
     roads = { ...ribbons, bridgeLines: collected.bridgeLines };
@@ -260,7 +262,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   if (water.decks.length) structures.push((kept.decks = water.decks));
 
   // ---------------------------------------------------------------- buildings
-  progress.begin('buildings', 'Building footprints and roofs', 0.55, 0.2);
+  progress.begin('buildings', 'Building footprints and roofs');
   const buildings = settings.buildings.enabled
     ? await buildBuildings(features('building'), features('building_part'), ctx, {
         clipAway: [],
@@ -286,7 +288,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   ctx.stats.ground_kept_under_structures_mm2 = Math.round(multiArea(groundKept) * 10) / 10;
 
   // --------------------------------------------------------------- land cover
-  progress.begin('land', 'Draping parks and land cover', 0.75, 0.1);
+  progress.begin('land', 'Draping parks and land cover');
   const landRegions: Partial<Record<SurfaceCategory, MultiPolygon>> = {};
   const land = settings.land.enabled
     ? await buildLand(
@@ -303,7 +305,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     : null;
 
   // ----------------------------------------------------------- terrain solid
-  progress.begin('terrain', 'Closing the terrain solid', 0.85, 0.03);
+  progress.begin('close', 'Closing the terrain solid');
   const hf = ctx.heightfield;
   // Cut water and basins less the ground kept under structures. The water's
   // underside is the top of a terrain floor, which the base runs under like
@@ -457,7 +459,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
 
   // --------------------------------------------------------------------- trees
   if (settings.trees.enabled) {
-    progress.begin('trees', 'Planting trees', 0.88, 0.04);
+    progress.begin('trees', 'Planting trees');
     const trees = await buildTrees(data, ctx, {
       roads: roads.footprint,
       structures: [...buildings.footprint, ...decks.map((deck) => deck.polygon)],

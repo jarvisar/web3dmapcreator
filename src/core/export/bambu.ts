@@ -23,6 +23,7 @@ import {
   modelRelationship,
   writeOrder,
   type PreparedModel,
+  type RowTally,
 } from './common';
 import { escapeText, fixed6, formatG, quoteattr } from './format';
 import { BAMBU_MAX_PLATES, plateOrigin } from './sections';
@@ -47,7 +48,7 @@ interface PlacedPart {
   mesh: MeshPart;
 }
 
-export function writeBambuProject(model: PreparedModel, printer: Printer): Blob {
+export function writeBambuProject(model: PreparedModel, printer: Printer, tally?: RowTally): Blob {
   const presets = printer.bambu;
   if (!presets) throw new Error(`${printer.model} has no Bambu Studio presets`);
   if (model.plates.length > BAMBU_MAX_PLATES) throw new Error(`Bambu Studio supports at most ${BAMBU_MAX_PLATES} plates`);
@@ -62,7 +63,7 @@ export function writeBambuProject(model: PreparedModel, printer: Printer): Blob 
   });
 
   const zip = new ZipWriter();
-  const out = new ModelStream(zip.entry(MODEL_PATH));
+  const out = new ModelStream(zip.entry(MODEL_PATH), tally);
   out.text(
     XML_HEADER +
       `<model unit="millimeter" xml:lang="en-US" xmlns="${CORE_NAMESPACE}" xmlns:BambuStudio="${BAMBU_NAMESPACE}">\n` +

@@ -44,6 +44,8 @@ const OUTLINE_CELLS = 1.5;
 const SEAM_MM = 0.005;
 // Steps a cut takes from the map's shoreline back to the survey's (followMap).
 const TAPER_STEPS = 4;
+// The share of the surface step meshSurface takes. Straightening the walls takes the rest.
+const SURFACE_MESHED = 0.8;
 
 export interface SurfaceModelInput {
   area: AreaSpec;
@@ -327,20 +329,20 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
   const warnings: string[] = [];
   const cells: CellGrid = { nx, ny, x0, y0, dx, dy };
 
-  progress.begin('terrain', 'Finding ground, water and trees', 0.62, 0.08);
+  progress.begin('compose', 'Finding ground, water and trees');
   await progress.checkpoint();
   const mapOutline = input.mapWater?.length ? mappedWater(input.mapWater, area, mmPerMetre, cells) : null;
   const result = composeHeights(input, mmPerMetre, crop, rectangle, cells, mapOutline, stats);
   if (input.releaseLayers) surface.layers = emptyLayers(0, 0);
   const cell = Math.min(dx, dy);
 
-  progress.begin('mesh', 'Meshing the LiDAR surface', 0.7, 0.2);
+  progress.begin('surface', 'Meshing the LiDAR surface');
   const field: HeightGrid = { heights: result.heights, detail: result.detail, nx, ny, x0, y0, x1, y1, dx, dy };
   const limits = surfaceLimits(cell);
-  let tin: Tin = await meshSurface(field, limits, { runTile: input.runTile, concurrency: input.concurrency, progress: (fraction) => progress.checkpoint(fraction) });
+  let tin: Tin = await meshSurface(field, limits, { runTile: input.runTile, concurrency: input.concurrency, progress: (fraction) => progress.checkpoint(SURFACE_MESHED * fraction) });
   // Twice, since the first pass joins up roof edges the second can straighten further.
   for (let pass = 0; pass < 2; pass++) {
-    await progress.checkpoint();
+    await progress.checkpoint(SURFACE_MESHED + ((1 - SURFACE_MESHED) * pass) / 2);
     tin = straightenWalls(tin, field, limits, cell);
   }
   stats.lidar_model_surface_triangles = tin.triangles.length / 3;
@@ -348,6 +350,7 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
   let water: PrismSolid[] = [];
   // Where a shape added in the editor goes down to a floor, or through a cut to the base.
   let surfaceWater: { polygons: MultiPolygon; floor: number | null }[] = [];
+  if (result.counts.cut_water_cells || !rectangle) progress.begin('cut', 'Cutting the surface to shape');
   if (result.counts.cut_water_cells) {
     let cut = maskOutline(result.cut, nx, ny, x0, y0, dx, dy);
     if (mapOutline) cut = followMap(cut, mapOutline, MAP_EDGE_M * mmPerMetre);
@@ -388,7 +391,7 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
       `The survey is too sparse for ${surface.requestedCellM.toFixed(2)} m cells, so the model uses ${grid.cell.toFixed(2)} m cells. Smaller cells won't add points the survey doesn't have.`,
     );
   }
-  for (const failure of surface.failures.slice(0, 3)) warnings.push(`LiDAR from ${failure.source} could not be read: ${failure.reason}`);
+  // Failed reads are added by the caller (lidarFailure in the worker), which words searches apart.
   // Nothing in the surface can be picked out, but shapes can stand on it.
   const surfaceGrid: GroundGrid = { minX: x0, minY: y0, step: dx, stepY: dy, cols: nx, rows: ny, values: result.heights };
   const edit: EditContext = {

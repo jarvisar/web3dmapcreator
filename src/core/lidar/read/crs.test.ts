@@ -1,6 +1,6 @@
 import proj4 from 'proj4';
 import { describe, expect, it } from 'vitest';
-import { crsFromEpsg, crsFromWkt, lonLatTransforms, setProjector } from './crs';
+import { crsFromEpsg, crsFromWkt, lonLatTransforms, setProjector, wktEpsg } from './crs';
 
 setProjector((from, to) => proj4(from, to));
 
@@ -24,5 +24,24 @@ describe('state plane zones in US feet', () => {
     const wkt =
       'COMPD_CS["x",PROJCS["NAD83 / Kentucky Single Zone (ftUS)",GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["standard_parallel_1",37.0833333333333],PARAMETER["standard_parallel_2",38.6666666666667],PARAMETER["latitude_of_origin",36.3333333333333],PARAMETER["central_meridian",-85.75],PARAMETER["false_easting",4921250],PARAMETER["false_northing",3280833.333],UNIT["US survey foot",0.304800609601219],AXIS["X",EAST],AXIS["Y",NORTH],AUTHORITY["EPSG","99999"]],VERT_CS["NAVD88 height (ftUS)",VERT_DATUM["North American Vertical Datum 1988",2005],UNIT["US survey foot",0.304800609601219],AXIS["Up",UP]]]';
     near(lonLatTransforms(crsFromWkt(wkt)).toLonLat(5270000, 4285000), [-84.52156, 39.08463]);
+  });
+});
+
+describe('codes from a WKT', () => {
+  it("takes the CRS's own code, not its unit's or datum's", () => {
+    const lambert = 'PROJCS["RGF93 v1 / Lambert-93",GEOGCS["RGF93 v1",DATUM["Reseau_Geodesique_Francais_1993_v1",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]],AUTHORITY["EPSG","6171"]],AUTHORITY["EPSG","4171"]],PROJECTION["Lambert_Conformal_Conic_2SP"],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AUTHORITY["EPSG","2154"]]';
+    expect(wktEpsg(lambert)).toBe(2154);
+    expect(wktEpsg('PROJCRS["ETRS89 / UTM zone 32N",BASEGEOGCRS["ETRS89",DATUM["x",ELLIPSOID["GRS 1980",6378137,298.257222101]],ID["EPSG",4258]],CONVERSION["UTM zone 32N",METHOD["Transverse Mercator",ID["EPSG",9807]]],ID["EPSG",25832]]')).toBe(25832);
+    // Anchorage's ESRI WKT ends in its unit's code.
+    expect(wktEpsg('PROJCS["NAD_1983_2011_StatePlane_Alaska_4_FIPS_5004_Feet",GEOGCS["GCS_NAD_1983_2011",DATUM["D_NAD_1983_2011",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],UNIT["US survey foot",0.3048006096012192,AUTHORITY["EPSG","9003"]]]')).toBeNull();
+  });
+
+  it('reads a grid without a code of its own through its WKT', () => {
+    // NOAA's Olympic Peninsula 2017: no code for the grid, 6783 for its geographic CRS.
+    const wkt =
+      'COMPD_CS["NAD83(CORS96) / UTM zone 10N + NAVD88 height",PROJCS["NAD83(CORS96) / UTM zone 10N",GEOGCS["NAD83(CORS96)",DATUM["NAD83_Continuously_Operating_Reference_Station_1996",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]],AUTHORITY["EPSG","1133"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","6783"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",-123],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]],VERT_CS["NAVD88 height",VERT_DATUM["North American Vertical Datum 1988",2005,AUTHORITY["EPSG","5103"]],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Gravity-related height",UP],AUTHORITY["EPSG","5703"]]]';
+    const crs = crsFromWkt(wkt);
+    expect(crs.epsg).toBeNull();
+    near(lonLatTransforms(crs).toLonLat(502482, 5269695), lonLatTransforms(crsFromEpsg(26910)).toLonLat(502482, 5269695));
   });
 });

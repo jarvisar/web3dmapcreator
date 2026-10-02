@@ -4,7 +4,7 @@
 
 import type { AsyncBuffer } from 'hyparquet';
 import { persistentCache, type ByteCache } from './cache';
-import { requestUrl } from './corsProxy';
+import { directHeaders, proxyRule, requestUrl } from './corsProxy';
 
 export interface HttpConfig {
   /** Requests in flight to one host. Browsers allow 6 per host over HTTP/1.1 anyway. */
@@ -285,6 +285,11 @@ async function readBody(response: Response, expected: number | undefined, onChun
   }
 }
 
+/** How long to wait for a host's first byte: some take minutes to start (Poland's file server at times) and then stream steadily. */
+function firstByteMs(url: string, idle: number): number {
+  return Math.max(idle, proxyRule(url)?.firstByteMs ?? 0);
+}
+
 async function transferOnce(t: Transfer): Promise<ArrayBuffer> {
   const queue = queueFor(t.url);
   await acquire(queue, t.signal);
@@ -294,27 +299,31 @@ async function transferOnce(t: Transfer): Promise<ArrayBuffer> {
   let stalled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const idle = t.idleTimeoutMs ?? config.idleTimeoutMs;
-  const arm = () => {
+  let waiting = idle;
+  const arm = (ms: number) => {
     clearTimeout(timer);
+    waiting = ms;
     timer = setTimeout(() => {
       stalled = true;
       controller.abort();
-    }, idle);
+    }, ms);
   };
   let received = 0;
   try {
     // Waiting for a slot gave the signal time to abort before anything listened.
     if (t.signal?.aborted) forward();
-    arm();
+    arm(firstByteMs(t.url, idle));
     const init: RequestInit = { signal: controller.signal };
-    // Only range reads send a header. Any other header makes the browser send
-    // a CORS preflight, which stac.overturemaps.org rejects.
-    if (t.range) init.headers = { Range: `bytes=${t.range[0]}-${t.range[1] === undefined ? '' : t.range[1] - 1}` };
+    // Only range reads send a header in the browser. Any other header makes it
+    // send a CORS preflight, which stac.overturemaps.org rejects.
+    const headers = directHeaders(t.url);
+    if (t.range) headers.Range = `bytes=${t.range[0]}-${t.range[1] === undefined ? '' : t.range[1] - 1}`;
     if (t.post) {
       init.method = 'POST';
       init.body = t.post.body;
-      init.headers = { 'Content-Type': t.post.type };
+      headers['Content-Type'] = t.post.type;
     }
+    if (Object.keys(headers).length) init.headers = headers;
     const response = await fetch(requestUrl(t.url), init);
     if (!response.ok) {
       response.body?.cancel().catch(() => undefined);
@@ -328,14 +337,14 @@ async function transferOnce(t: Transfer): Promise<ArrayBuffer> {
       }
     }
     return await readBody(response, t.range && t.range[1] !== undefined ? t.range[1] - t.range[0] : undefined, (bytes) => {
-      arm();
+      arm(idle);
       received += bytes;
       t.onBytes?.(bytes, false);
     });
   } catch (error) {
     if (received) t.onBytes?.(-received, false);
     if (stalled && !t.signal?.aborted) {
-      throw new TransferError(`No data received for ${Math.round(idle / 1000)} s`);
+      throw new TransferError(`No data received for ${Math.round(waiting / 1000)} s`);
     }
     throw error;
   } finally {
@@ -414,7 +423,7 @@ export function fetchBytes(url: string, signal?: AbortSignal, options: Omit<Requ
   return cachedTransfer(url, { url, signal, onBytes: options.onBytes, idleTimeoutMs: options.idleTimeoutMs }, options);
 }
 
-/** File size from a HEAD request, for files the Overture index gives no size for. */
+/** File size from a HEAD request, for files their index gives no size for. */
 export function fetchByteLength(url: string, signal?: AbortSignal): Promise<number> {
   const queue = queueFor(url);
   return withRetries(url, signal, async () => {
@@ -424,19 +433,25 @@ export function fetchByteLength(url: string, signal?: AbortSignal): Promise<numb
     const forward = () => controller.abort(signal?.reason);
     signal?.addEventListener('abort', forward, { once: true });
     let stalled = false;
+    const wait = firstByteMs(url, config.idleTimeoutMs);
     const timer = setTimeout(() => {
       stalled = true;
       controller.abort();
-    }, config.idleTimeoutMs);
+    }, wait);
     try {
       if (signal?.aborted) forward();
-      const response = await fetch(requestUrl(url), { method: 'HEAD', signal: controller.signal });
+      // Hosts that refuse HEAD give the size in Content-Range instead. Two
+      // bytes, since Nextcloud answers bytes=0-0 with the whole file.
+      const ranged = proxyRule(url)?.noHead === true;
+      const headers = directHeaders(url);
+      const response = await fetch(requestUrl(url), ranged ? { headers: { ...headers, Range: 'bytes=0-1' }, signal: controller.signal } : { method: 'HEAD', headers, signal: controller.signal });
       if (!response.ok) throw new HttpError(response.status, url, parseRetryAfter(response.headers.get('retry-after')));
-      const length = Number(response.headers.get('content-length'));
+      if (ranged) response.body?.cancel().catch(() => undefined);
+      const length = ranged ? Number(/\/(\d+)\s*$/.exec(response.headers.get('content-range') ?? '')?.[1]) : Number(response.headers.get('content-length'));
       if (!Number.isFinite(length) || length <= 0) throw new Error(`No file size for ${url}`);
       return length;
     } catch (error) {
-      if (stalled && !signal?.aborted) throw new TransferError(`No answer for ${Math.round(config.idleTimeoutMs / 1000)} s`);
+      if (stalled && !signal?.aborted) throw new TransferError(`No answer for ${Math.round(wait / 1000)} s`);
       throw error;
     } finally {
       clearTimeout(timer);

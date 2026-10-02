@@ -27,6 +27,7 @@ function Progress() {
       percent={percent}
       detail={progress?.detail ?? ''}
       startedAt={startedAt}
+      remaining={progress?.remaining}
       onCancel={cancelGeneration}
       cancelling={cancelling}
     />
