@@ -65,6 +65,25 @@ const UNSEEN_M = 20;
 // bodies that share theirs with others at their level (upperSurfaces).
 const TIDE_M = 1;
 const SHARED_M2 = 5000;
+// For unfiledWater: mapped water with water returns in under UNFILED_WET of
+// its cells with returns and bare ground in at least MIN_BARE of them, its
+// band of water at most MAP_BAND_M deep and its bare ground's middle at
+// least BANK_DROP_M under the bare ground BANK_FROM_M to BANK_TO_M outside it.
+const UNFILED_WET = 0.01;
+const MIN_BARE = 0.05;
+const MAP_BAND_M = 8;
+const BANK_DROP_M = 0.2;
+const BANK_FROM_M = 2;
+const BANK_TO_M = 6;
+// A surface in the band at least this large (or SURFACE_SHARE of a smaller
+// feature), its neighbours never more than WATER_STEP_M apart, is water.
+const FLAT_WATER_M2 = 5000;
+const SURFACE_SHARE = 0.25;
+const WATER_STEP_M = 0.35;
+// Cells in the band within GROW_M of the bare ground's mean within LOCAL_M,
+// or of the highest of it within NEAR_CELLS, are water.
+const NEAR_CELLS = 2;
+const LOCAL_M = 8;
 // Without clutter, land standing alone in water smaller than this, no longer
 // than BOAT_M, with half of it no higher than BOAT_HIGH_M over the water (a
 // mast doesn't count), ground returns in under half of it and mostly not
@@ -221,8 +240,10 @@ export interface ComposeResult {
  * scale only sizes cut water, like in the add-on. With `inside` (1 per cell
  * in the area's shape), only those cells decide where the base is and the
  * highest ground. `mapped` (1 per cell in mapped water) adds water the
- * survey missed (see findWater), and `shore` (the mapped sea and lakes)
- * moves the waterline on beaches to the map's (see followShore).
+ * survey missed (see findWater), `shore` (the mapped sea and lakes) moves
+ * the waterline on beaches to the map's (see followShore), and `pieces`
+ * (which mapped water feature each cell is in, of those that can be
+ * trusted, or -1) gives water to surveys that file none (unfiledWater).
  */
 export function compose(
   layers: SurfaceLayers,
@@ -234,11 +255,12 @@ export function compose(
   inside?: Uint8Array,
   mapped?: Uint8Array,
   shore?: Uint8Array,
+  pieces?: Int32Array,
 ): ComposeResult {
   const s = { ...DEFAULT_COMPOSE, ...settings };
   const { nx, ny } = layers;
   const n = nx * ny;
-  const { surface, ground, water, canopy, skirt, counts } = composeSurface(layers, dx, dy, s, mapped, shore);
+  const { surface, ground, water, canopy, skirt, counts } = composeSurface(layers, dx, dy, s, mapped, shore, pieces);
 
   let cut: Uint8Array = new Uint8Array(n);
   const layer = s.water === 'layer';
@@ -312,6 +334,7 @@ export function composeSurface(
   settings: Pick<ComposeSettings, 'trees' | 'removeClutter' | 'clutterHeightM'>,
   mapped?: Uint8Array,
   shore?: Uint8Array,
+  pieces?: Int32Array,
 ): ComposedSurface {
   const s = settings;
   const { nx, ny } = layers;
@@ -322,7 +345,7 @@ export function composeSurface(
 
   const counts: Record<string, number> = {};
   const ground = groundGrid(layers, dx, counts);
-  const { surface, water } = fillSurface(layers, ground, dx, dy, counts, mapped);
+  const { surface, water } = fillSurface(layers, ground, dx, dy, counts, mapped, pieces);
   if (shore?.includes(1)) Object.assign(counts, followShore(layers, surface, ground, water, shore, mapped ?? shore, dx, dy));
   if (s.removeClutter) counts.boat_cells = clearBoats(layers, surface, water, dx, dy);
   const canopy = treeMask(layers, surface, ground);
@@ -744,14 +767,16 @@ function fillSurface(
   dy: number,
   counts: Record<string, number>,
   mapped?: Uint8Array,
+  pieces?: Int32Array,
 ): { surface: Float32Array; water: Uint8Array } {
   const { nx, ny, top } = layers;
   const n = nx * ny;
-  const { water, shadow, level, bodies, grown, fromMap } = findWater(layers, ground, dx, dy, mapped?.includes(1) ? mapped : undefined);
+  const { water, shadow, level, bodies, grown, fromMap, unfiled } = findWater(layers, ground, dx, dy, mapped?.includes(1) ? mapped : undefined, pieces);
   counts.water_bodies = bodies;
   counts.water_cells = countSet(water);
   counts.water_grown_cells = grown;
   if (mapped) counts.water_map_cells = fromMap;
+  if (pieces) counts.water_unfiled_cells = unfiled;
   counts.shadow_cells = countSet(shadow);
   const surface = new Float32Array(n);
   const land = new Uint8Array(n);
@@ -787,6 +812,8 @@ interface Water {
   grown: number;
   /** Cells that are water because of mapped water. */
   fromMap: number;
+  /** Cells with returns taken for mapped water the survey files none of (unfiledWater). */
+  unfiled: number;
 }
 
 // Flat water with one level per body. A survey that files water says where
@@ -794,13 +821,14 @@ interface Water {
 // shadow at the foot of a tower (Philadelphia's came out as pits in its
 // streets), so it has to be large with its shore mostly on the ground.
 // Mapped water only ever fills cells the survey has no returns in, so it
-// can't take a bridge, a pier or a boat (mappedHoles, and the growth below).
-function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: number, mapped?: Uint8Array): Water {
+// can't take a bridge, a pier or a boat (mappedHoles, and the growth below),
+// except in mapped water the survey files none of at all (unfiledWater).
+function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: number, mapped?: Uint8Array, pieces?: Int32Array): Water {
   const { nx, ny, count, top, waterZ } = layers;
   const n = nx * ny;
   const water = new Uint8Array(n);
   const shadow = new Uint8Array(n);
-  const none: Water = { water, shadow, level: new Float32Array(0), bodies: 0, grown: 0, fromMap: 0 };
+  const none: Water = { water, shadow, level: new Float32Array(0), bodies: 0, grown: 0, fromMap: 0, unfiled: 0 };
 
   // No returns at all, or mostly water returns.
   const candidate = new Uint8Array(n);
@@ -810,6 +838,14 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
     const wet = layers.water[i];
     if (wet > 0) filesWater = true;
     if (count[i] === 0 || (wet > 0 && wet * 2 >= count[i])) {
+      candidate[i] = 1;
+      anyCandidate = true;
+    }
+  }
+  const mapLevels = pieces ? unfiledWater(layers, pieces, dx, dy) : null;
+  if (mapLevels) {
+    for (let i = 0; i < n; i++) {
+      if (mapLevels[i] !== mapLevels[i]) continue;
       candidate[i] = 1;
       anyCandidate = true;
     }
@@ -894,6 +930,19 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
     else onGround[r] = near >= SHADOW_SHARE ? 1 : 0;
   }
   let fromMap = mapped ? mappedHoles(region, levels, onGround, shoreLow, mapped, nx, ny) : 0;
+  // A region holding unfiled mapped water and no water returns is water at
+  // the lowest level of the mapped water in it.
+  let taken = 0;
+  if (mapLevels) {
+    const mapLevel = new Float64Array(regions).fill(Infinity);
+    for (let i = 0; i < n; i++) if (region[i] >= 0 && mapLevels[i] === mapLevels[i]) mapLevel[region[i]] = Math.min(mapLevel[region[i]], mapLevels[i]);
+    for (let r = 0; r < regions; r++) {
+      if (wetCount[r] || mapLevel[r] === Infinity) continue;
+      levels[r] = mapLevel[r];
+      onGround[r] = 0;
+    }
+    for (let i = 0; i < n; i++) if (count[i] && mapLevels[i] === mapLevels[i] && region[i] >= 0 && levels[region[i]] === levels[region[i]]) taken++;
+  }
   const upper = upperSurfaces(region, levels, area, top, waterZ, wetCount);
   let bodies = 0;
   for (let r = 0; r < regions; r++) if (levels[r] === levels[r]) bodies++;
@@ -1000,7 +1049,7 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
 
   const level = new Float32Array(cells + grown);
   for (let i = 0, k = 0; i < n; i++) if (water[i]) level[k++] = levels[region[i]];
-  return { water, shadow, level, bodies, grown, fromMap };
+  return { water, shadow, level, bodies, grown, fromMap, unfiled: taken };
 }
 
 /**
@@ -1054,6 +1103,180 @@ function unseen(count: Uint16Array, mapped: Uint8Array, nx: number, ny: number, 
   for (let i = 0; i < n; i++) far[i] = near[i] || mapped[i] ? 0 : 1;
   const out = dilate(far, nx, ny, r + 1);
   for (let i = 0; i < n; i++) out[i] &= count[i] === 0 && !mapped[i] ? 1 : 0;
+  return out;
+}
+
+/**
+ * Not in the add-on: water the map has and the survey files none of. The
+ * Environment Agency's 2012 survey of London has no water class at all and
+ * returns over all of the Thames, so it came out as land 2 m under the
+ * embankments. In each mapped feature (`pieces`) the survey has no water
+ * returns in, the level is the low tenth of its bare ground (ground returns
+ * with nothing standing on them), and the band of water runs from there to
+ * the high tenth, short of the banks: the river at every stage of the tide
+ * the flight lines saw it at, -2.1 to +3.3 m at Westminster. The bare ground
+ * in the band is water, and so is anything else in it close to the bare
+ * ground beside it or in a large flat surface (one flight line over the City
+ * filed no ground on the Thames at all). Bridges, boats, pontoons and quays
+ * stand higher and stay, whatever the tide was under them. Only where the
+ * water sits BANK_DROP_M below the bare ground around it, so a dock filled
+ * in and paved over that the map still has isn't taken. Returns each
+ * cell's level, NaN elsewhere, or null when no feature qualifies.
+ */
+export function unfiledWater(layers: SurfaceLayers, pieces: Int32Array, dx: number, dy: number): Float32Array | null {
+  const { nx, ny, count, top } = layers;
+  const n = nx * ny;
+  let features = 0;
+  for (let i = 0; i < n; i++) if (pieces[i] >= features) features = pieces[i] + 1;
+  if (!features) return null;
+  const bare = (i: number) => {
+    const g = layers.ground[i];
+    return count[i] > 0 && g === g && top[i] - g <= BARE_M && !layers.building[i];
+  };
+  const cells = new Int32Array(features);
+  const returns = new Int32Array(features);
+  const wet = new Int32Array(features);
+  const bareCount = new Int32Array(features);
+  const bankCount = new Int32Array(features);
+  // The bank: bare cells outside all mapped water, BANK_FROM_M to BANK_TO_M
+  // from a feature. Outlines run a metre or two short of the water, so the
+  // cells right beside Millwall Inner Dock's were its water.
+  const wet0 = new Uint8Array(n);
+  for (let i = 0; i < n; i++) wet0[i] = pieces[i] >= 0 ? 1 : 0;
+  const inner = dilate(wet0, nx, ny, Math.ceil(BANK_FROM_M / Math.min(dx, dy)));
+  const near = new Float32Array(n);
+  for (let i = 0; i < n; i++) near[i] = pieces[i];
+  windowMax(near, nx, ny, Math.ceil(BANK_TO_M / Math.min(dx, dy)), near);
+  const bankOf = (i: number) => (inner[i] ? -1 : near[i]);
+  for (let i = 0; i < n; i++) {
+    const p = pieces[i];
+    if (p < 0) {
+      if (bare(i)) {
+        const q = bankOf(i);
+        if (q >= 0) bankCount[q]++;
+      }
+      continue;
+    }
+    cells[p]++;
+    if (!count[i]) continue;
+    returns[p]++;
+    if (layers.water[i]) wet[p]++;
+    if (bare(i)) bareCount[p]++;
+  }
+  const bareStart = offsets(bareCount);
+  const bankStart = offsets(bankCount);
+  const bareZ = new Float32Array(bareStart[features]);
+  const bankZ = new Float32Array(bankStart[features]);
+  const bareAt = bareStart.slice();
+  const bankAt = bankStart.slice();
+  for (let i = 0; i < n; i++) {
+    if (!bare(i)) continue;
+    const p = pieces[i];
+    if (p >= 0) bareZ[bareAt[p]++] = top[i];
+    else {
+      const q = bankOf(i);
+      if (q >= 0) bankZ[bankAt[q]++] = top[i];
+    }
+  }
+  const low = new Float64Array(features).fill(NaN);
+  const high = new Float64Array(features).fill(NaN);
+  let any = false;
+  for (let p = 0; p < features; p++) {
+    if (cells[p] * dx * dy < WATER_MIN_M2 || wet[p] > UNFILED_WET * returns[p] || bareCount[p] < MIN_BARE * returns[p]) continue;
+    const z = bareZ.subarray(bareStart[p], bareStart[p + 1]).sort();
+    const q = (f: number) => z[Math.floor(f * (z.length - 1))];
+    const banks = bankZ.subarray(bankStart[p], bankStart[p + 1]).sort();
+    const bank = banks.length ? banks[banks.length >> 1] : Infinity;
+    if (bank - q(0.5) < BANK_DROP_M) continue;
+    low[p] = q(0.1);
+    high[p] = Math.min(q(0.9) + GROW_M, bank - BANK_DROP_M, low[p] + MAP_BAND_M);
+    any = true;
+  }
+  if (!any) return null;
+  // Nothing in the water is lower than it: what is, is noise on its surface.
+  const inBand = (i: number, p: number) => top[i] >= low[p] - MAP_BAND_M && top[i] <= high[p];
+  // Its bare ground in the band is water: the river at each stage of the
+  // tide the flight lines saw it at, and the foreshore.
+  const taken = new Float32Array(n);
+  const heights = new Float32Array(n);
+  const beside = new Float32Array(n);
+  const open = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const p = pieces[i];
+    if (p < 0 || low[p] !== low[p] || !count[i] || layers.building[i] || !inBand(i, p)) {
+      beside[i] = -Infinity;
+      continue;
+    }
+    open[i] = 1;
+    taken[i] = bare(i) ? 1 : 0;
+    heights[i] = taken[i] ? top[i] : 0;
+    beside[i] = taken[i] ? top[i] : -Infinity;
+  }
+  // So is anything else in the band within GROW_M of the bare ground around
+  // it (the mean within LOCAL_M), or of the highest of it right beside it:
+  // unclassified returns over the water are noisier than the ground-filed
+  // ones next to them, and stood over the mean in specks all over the
+  // Thames. Bridges, boats, pontoons and quays stand higher and stay.
+  const r = Math.max(1, Math.round(LOCAL_M / Math.min(dx, dy)));
+  const share = boxMean(taken, nx, ny, r);
+  const mean = boxMean(heights, nx, ny, r);
+  windowMax(beside, nx, ny, NEAR_CELLS, beside);
+  // And large flat surfaces in the band, wherever the survey filed no
+  // ground on them: one flight line over the City filed none on the Thames.
+  // A small feature needs a share of its own area.
+  const least = new Int32Array(features);
+  for (let p = 0; p < features; p++) least[p] = Math.ceil(Math.min(FLAT_WATER_M2 / (dx * dy), SURFACE_SHARE * cells[p]));
+  const flat = flatSurfaces(open, top, nx, ny, (i) => least[pieces[i]]);
+  const out = new Float32Array(n).fill(NaN);
+  for (let i = 0; i < n; i++) {
+    const p = pieces[i];
+    if (p < 0 || low[p] !== low[p]) continue;
+    if (!count[i] || taken[i] || flat[i] || (open[i] && ((share[i] > 0 && top[i] - mean[i] / share[i] <= GROW_M) || top[i] - beside[i] <= GROW_M))) out[i] = low[p];
+  }
+  // Where two of them meet at different levels, the higher one's edge stays
+  // land, so a dock behind a lock doesn't join the tidal river as one body
+  // at the river's level.
+  const edge: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (out[i] !== out[i]) continue;
+    const x = i % nx;
+    for (const j of [x > 0 ? i - 1 : -1, x + 1 < nx ? i + 1 : -1, i >= nx ? i - nx : -1, i + nx < n ? i + nx : -1]) {
+      if (j >= 0 && out[j] < out[i] - GROW_M) {
+        edge.push(i);
+        break;
+      }
+    }
+  }
+  for (const i of edge) out[i] = NaN;
+  return out;
+}
+
+/**
+ * Cells of `mask` in pieces of at least `minCells` (of where they start) joined by neighbours less
+ * than WATER_STEP_M apart in `z`.
+ */
+function flatSurfaces(mask: Uint8Array, z: Float32Array, nx: number, ny: number, minCells: (seed: number) => number): Uint8Array {
+  const n = nx * ny;
+  const seen = new Uint8Array(n);
+  const out = new Uint8Array(n);
+  const queue = new Int32Array(n);
+  for (let seed = 0; seed < n; seed++) {
+    if (!mask[seed] || seen[seed]) continue;
+    let head = 0;
+    let tail = 0;
+    queue[tail++] = seed;
+    seen[seed] = 1;
+    while (head < tail) {
+      const i = queue[head++];
+      const x = i % nx;
+      for (const j of [x > 0 ? i - 1 : -1, x + 1 < nx ? i + 1 : -1, i >= nx ? i - nx : -1, i + nx < n ? i + nx : -1]) {
+        if (j < 0 || seen[j] || !mask[j] || Math.abs(z[j] - z[i]) > WATER_STEP_M) continue;
+        seen[j] = 1;
+        queue[tail++] = j;
+      }
+    }
+    if (tail >= minCells(seed)) for (let k = 0; k < tail; k++) out[queue[k]] = 1;
+  }
   return out;
 }
 

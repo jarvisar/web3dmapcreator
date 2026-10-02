@@ -629,10 +629,22 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   line by twice that. The survey decides wherever they part by more. Keep it
   that conservative: taking returns at the water's level took floating docks
   and boats, and mapped pilings under 6 m across became columns at bridge
-  deck height until small map islands were ignored. The one exception is
+  deck height until small map islands were ignored. One exception is
   sea and lake beaches (`followShore`): only bare ground within `BEACH_M` of
   the water, or survey water outside all mapped water with such ground
   behind it, and only strips wholly within `SHORE_M` of the map's line.
+  The other is mapped water the survey files none of (`unfiledWater`, the
+  EA's 2012 London survey has no water class): per mapped feature
+  (`waterPieces`, smallest wins, only `trustedWater`, so no intermittent,
+  covered or dry water), its bare ground from the low tenth to the high
+  tenth short of the banks, and what's within `GROW_M` of the bare ground
+  beside it or in a flat surface over `FLAT_WATER_M2`. Bridges, boats,
+  pontoons and quays step up and stay. It has to sit `BANK_DROP_M` below
+  banks sampled 2 to 6 m out (outlines run short of the water), and never
+  runs where the survey files water in the feature (`UNFILED_WET`). Tried
+  and dropped: flat surfaces alone (Canary Wharf's noisy docks broke into
+  small pieces) and the lowest smoothed height within 15 m (lost the
+  Thames where flight lines overlap at different tides).
 - A water layer sits `WATER_DROP_MM` (0.25 mm) under its bank like map
   models' water. `waterDepthMm` is for recessed water only.
 

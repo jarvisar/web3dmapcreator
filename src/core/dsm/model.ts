@@ -13,7 +13,7 @@ import { clipToBox, difference, intersection, offsetPolygons, openSharp, PINCH_M
 import { rowCrossings } from '../geometry/scanline';
 import type { CapSolid, Layer, PrismSolid } from '../geometry/solid';
 import { clipTin, type Tin } from '../geometry/tinclip';
-import { isPrintableWater } from '../pipeline/classify';
+import { isPrintableWater, sourceTags } from '../pipeline/classify';
 import { WATER_DROP_MM } from '../pipeline/water';
 import { Progress } from '../pipeline/context';
 import type { EditContext, ModelSpec } from '../pipeline/generate';
@@ -121,6 +121,44 @@ function mappedWater(features: SourceFeature[], area: AreaSpec, mmPerMetre: numb
   for (const feature of features) if (isPrintableWater(feature)) polygons.push(...projectPolygons(feature.geometry, projection));
   const { nx, ny, x0, y0, dx, dy } = grid;
   return clipToBox(polygons, [x0, y0, x0 + (nx - 1) * dx, y0 + (ny - 1) * dy], 2 * Math.max(dx, dy));
+}
+
+// Water classes that are tanks and works, or not open water.
+const UNTRUSTED_WATER = new Set(['wastewater', 'sewage', 'water_storage', 'reflecting_pool', 'shoal', 'spring']);
+// Basins kept for these are mapped as water whether they hold any or not.
+// Canary Wharf's docks are basins too (OSM's water=basin with waterway=dock).
+const DRY_BASINS = new Set(['detention', 'infiltration', 'evaporation', 'dry']);
+
+/** Mapped water that should hold water whenever the survey flew over it. */
+function trustedWater(feature: SourceFeature): boolean {
+  if (!isPrintableWater(feature) || feature.props.is_intermittent || UNTRUSTED_WATER.has(String(feature.props.class ?? ''))) return false;
+  const tags = sourceTags(feature);
+  if (tags.covered === 'yes' || tags.amenity === 'fountain' || tags.intermittent === 'yes' || tags.seasonal === 'yes') return false;
+  return !DRY_BASINS.has(tags.basin ?? '');
+}
+
+/**
+ * Which mapped water feature each cell is in, or -1, for water the survey
+ * files none of (unfiledWater in compose). The smallest where they overlap,
+ * so an impounded dock beside a tidal river keeps its own level. Only
+ * trustedWater.
+ */
+export function waterPieces(features: SourceFeature[], area: AreaSpec, mmPerMetre: number, grid: CellGrid): Int32Array {
+  const projection = new Projection(area.center, area.rotationDeg, mmPerMetre);
+  const { nx, ny, x0, y0, dx, dy } = grid;
+  const box: [number, number, number, number] = [x0, y0, x0 + (nx - 1) * dx, y0 + (ny - 1) * dy];
+  const shapes: { polygons: Polygon[]; size: number }[] = [];
+  for (const feature of features) {
+    if (!trustedWater(feature)) continue;
+    const polygons = clipToBox(projectPolygons(feature.geometry, projection), box, 2 * Math.max(dx, dy));
+    if (polygons.length) shapes.push({ polygons, size: polygons.reduce((sum, p) => sum + Math.abs(ringArea(p[0])), 0) });
+  }
+  shapes.sort((a, b) => b.size - a.size);
+  const out = new Int32Array(nx * ny).fill(-1);
+  shapes.forEach(({ polygons }, k) => {
+    for (const polygon of polygons) cellRuns(polygon, grid, (from, to) => out.fill(k, from, to));
+  });
+  return out;
 }
 
 /**
@@ -272,6 +310,7 @@ function composeHeights(input: SurfaceModelInput, mmPerMetre: number, crop: Ring
   const { nx, ny } = cells;
   const inside = rectangle ? undefined : cellsIn([[crop]], cells);
   const mapped = mapOutline ? cellsIn(mapOutline, cells) : undefined;
+  const pieces = input.mapWater?.length ? waterPieces(input.mapWater, area, mmPerMetre, cells) : undefined;
   const coast = input.mapWater?.some(coastal) ? cellsIn(mappedWater(input.mapWater.filter(coastal), area, mmPerMetre, cells), cells) : undefined;
   const lidar = settings.lidarModel;
   const result = compose(
@@ -296,6 +335,7 @@ function composeHeights(input: SurfaceModelInput, mmPerMetre: number, crop: Ring
     inside,
     mapped,
     coast,
+    pieces,
   );
   for (const [key, value] of Object.entries(result.counts)) stats[`lidar_model_${key}`] = value;
   const cell = Math.min(cells.dx, cells.dy);

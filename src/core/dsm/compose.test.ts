@@ -749,3 +749,91 @@ describe('ground no survey reached', () => {
     expect(at(result.heights, 150, 80, 10)).toBeGreaterThan(at(result.heights, 150, 10, 100));
   });
 });
+
+// Not in the add-on.
+describe('mapped water the survey files none of', () => {
+  // A river 2 m down filed as ground, with a bridge 6 m over the bank and a
+  // boat 1.5 m out of the water. A dock beside it a metre higher, and a
+  // paved square the map has as water, level with the street.
+  const nx = 120;
+  const ny = 100;
+  function river(filed = false): SurfaceLayers {
+    const layers = blank(ny, nx);
+    for (const layer of [layers.top, layers.solid, layers.ground]) fill(layer, nx, 20, 50, 0, nx, GROUND - 2);
+    // One flight line saw the river half a metre lower.
+    for (const layer of [layers.top, layers.solid, layers.ground]) fill(layer, nx, 20, 50, 60, nx, GROUND - 2.5);
+    fill(layers.top, nx, 20, 50, 40, 44, GROUND + 6);
+    fill(layers.ground, nx, 20, 50, 40, 44, NaN);
+    fill(layers.top, nx, 30, 34, 70, 80, GROUND - 1);
+    fill(layers.ground, nx, 30, 34, 70, 80, NaN);
+    for (const layer of [layers.top, layers.solid, layers.ground]) fill(layer, nx, 50, 66, 0, 40, GROUND - 1);
+    if (filed) for (const layer of [layers.water]) fill(layer, nx, 20, 50, 0, nx, 3);
+    if (filed) fill(layers.waterZ, nx, 20, 50, 0, nx, GROUND - 2);
+    return layers;
+  }
+  const pieces = new Int32Array(nx * ny).fill(-1);
+  fill(pieces, nx, 20, 50, 0, nx, 0);
+  fill(pieces, nx, 50, 66, 0, 40, 1);
+  fill(pieces, nx, 70, 85, 50, 80, 2);
+  const mapped = new Uint8Array(nx * ny);
+  for (let i = 0; i < pieces.length; i++) mapped[i] = pieces[i] >= 0 ? 1 : 0;
+
+  it('takes the river at every height its flight lines saw, but not a bridge, a boat or a square', () => {
+    const without = compose(river(), CELL, CELL, 1, 1, { removeClutter: false }, undefined, mapped);
+    expect(at(without.water, nx, 35, 20)).toBe(0);
+    const result = compose(river(), CELL, CELL, 1, 1, { removeClutter: false }, undefined, mapped, undefined, pieces);
+    for (const [r, c] of [[35, 20], [25, 100], [45, 65]]) expect(at(result.water, nx, r, c)).toBe(1);
+    for (const [r, c] of [[35, 42], [32, 75], [77, 60]]) expect(at(result.water, nx, r, c)).toBe(0);
+    // One level, the lower flight line's.
+    expect(at(result.heights, nx, 35, 20)).toBeCloseTo(at(result.heights, nx, 35, 100), 6);
+    expect(result.counts.water_unfiled_cells).toBeGreaterThan(20 * nx);
+    // The dock keeps its own level.
+    expect(at(result.water, nx, 58, 10)).toBe(1);
+    expect(at(result.heights, nx, 58, 10)).toBeGreaterThan(at(result.heights, nx, 35, 20) + 1);
+  });
+
+  it('leaves water the survey files to the survey', () => {
+    // Filed in the river: only the dock, which files none, is taken from the map.
+    const filed = compose(river(true), CELL, CELL, 1, 1, { removeClutter: false }, undefined, mapped, undefined, pieces);
+    expect(filed.counts.water_unfiled_cells).toBe(16 * 40);
+    expect(at(filed.water, nx, 35, 20)).toBe(1);
+  });
+});
+
+// Not in the add-on.
+describe('mapped water with a stretch nobody filed', () => {
+  it('takes a large flat stretch with no ground filed and noise over wavy water, but not a boat', () => {
+    // 1 m cells. A river 100 m wide: the west half filed as ground with waves
+    // 0.3 m high, a third of its cells unclassified and 0.5 m up, the east half
+    // flown with nothing filed at all, half a metre lower, and a boat on it.
+    const nx = 200;
+    const layers = blank(150, nx);
+    const rng = new NumpyRandom(5);
+    const noisy = new Uint8Array(nx * 150);
+    for (let i = 0; i < noisy.length; i++) noisy[i] = rng.random() < 1 / 3 ? 1 : 0;
+    noisy[21 * nx] = 1;
+    for (let r = 20; r < 120; r++) {
+      for (let c = 0; c < nx; c++) {
+        const i = r * nx + c;
+        if (c < 100) {
+          const wave = (r + c) % 2 ? 0.3 : 0;
+          const noise = noisy[i] === 1;
+          layers.top[i] = layers.solid[i] = GROUND - 2 + (noise ? 0.5 : wave);
+          layers.ground[i] = noise ? NaN : GROUND - 2 + wave;
+        } else {
+          layers.top[i] = layers.solid[i] = GROUND - 2.5;
+          layers.ground[i] = NaN;
+        }
+      }
+    }
+    fill(layers.top, nx, 60, 66, 140, 155, GROUND - 1);
+    const pieces = new Int32Array(nx * 150).fill(-1);
+    fill(pieces, nx, 20, 120, 0, nx, 0);
+    const mapped = new Uint8Array(nx * 150);
+    for (let i = 0; i < mapped.length; i++) mapped[i] = pieces[i] >= 0 ? 1 : 0;
+    const result = compose(layers, 1, 1, 1, 1, { removeClutter: false }, undefined, mapped, undefined, pieces);
+    // (21, 0) is unclassified.
+    expect([[50, 30], [21, 0], [50, 150], [100, 190]].map(([r, c]) => at(result.water, nx, r, c))).toEqual([1, 1, 1, 1]);
+    expect(at(result.water, nx, 63, 147)).toBe(0);
+  });
+});
