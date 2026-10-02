@@ -126,7 +126,10 @@ function ObjectControls({
   const allRemoved = keys.every((key) => editOf(edits, key)?.removed);
   const layers = new Set(keys.map((key) => editOf(edits, key)?.layer ?? ''));
   const layer = layers.size === 1 ? [...layers][0] : MIXED;
-  const edited = keys.some((key) => Object.keys(edits.objects).some((k) => k === key || objectOf(k) === key));
+  // Once per change of the edits, not every render: each key against every
+  // edit took 2.6 s a hover with thousands of both.
+  const editedKeys = useMemo(() => new Set(Object.keys(edits.objects).flatMap((k) => [k, objectOf(k)])), [edits.objects]);
+  const edited = keys.some((key) => editedKeys.has(key));
   const only = (kind: string) => kinds.size === 1 && kinds.has(kind);
   const streets = [...kinds].every((kind) => kind === 'road' || kind === 'bridge');
   const tag = keys.join(',');

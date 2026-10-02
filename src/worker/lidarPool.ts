@@ -6,6 +6,7 @@
 
 import type { TileJob, TileResult } from '../core/dsm/mesh';
 import type { SurfaceOutcome, SurfaceRunner } from '../core/dsm/prepare';
+import type { FromWorker } from '../core/engine/protocol';
 import type { BatchOutcome, BatchProgress, BatchRunner } from '../core/lidar/prepare';
 import { Fetcher } from '../core/lidar/read/fetcher';
 import { answer, type FromLidarWorker, type ToLidarWorker } from './lidarProtocol';
@@ -40,9 +41,20 @@ export interface WorkerLike {
 
 const webWorker = () => new Worker(new URL('./lidar.worker.ts', import.meta.url), { type: 'module', name: 'lidar' }) as unknown as WorkerLike;
 
-export function lidarPool(size: number, signal?: AbortSignal, create: () => WorkerLike = webWorker): BatchRunner & SurfaceRunner & { tile(job: TileJob): Promise<TileResult>; close(): void; downloaded(): number } {
+// The browser's pool runs in the engine worker, so this reaches the page, which offers a reload.
+const tellPage = () => (self as unknown as { postMessage(message: FromWorker): void }).postMessage({ type: 'outdated' });
+
+/** `onStale` hears of a worker that never loaded, which in the browser tells the page to offer a reload. */
+export function lidarPool(
+  size: number,
+  signal?: AbortSignal,
+  create: () => WorkerLike = webWorker,
+  onStale: (() => void) | undefined = create === webWorker ? tellPage : undefined,
+): BatchRunner & SurfaceRunner & { tile(job: TileJob): Promise<TileResult>; close(): void; downloaded(): number } {
   const idle: WorkerLike[] = [];
   const all = new Set<WorkerLike>();
+  // Workers that have sent anything, so loaded.
+  const spoke = new WeakSet<WorkerLike>();
   const waiting: ((worker: WorkerLike) => void)[] = [];
   const running = new Map<number, { reject: (error: Error) => void; worker: WorkerLike }>();
   let nextId = 0;
@@ -71,6 +83,7 @@ export function lidarPool(size: number, signal?: AbortSignal, create: () => Work
     idle.length = 0;
     for (const { reject } of running.values()) reject(reason ?? new DOMException('Aborted', 'AbortError'));
     running.clear();
+    fetcher.release();
   };
   signal?.addEventListener('abort', () => close(), { once: true });
 
@@ -86,6 +99,7 @@ export function lidarPool(size: number, signal?: AbortSignal, create: () => Work
       return await new Promise<Outcome>((resolve, reject) => {
         running.set(id, { reject, worker });
         worker.onmessage = ({ data }) => {
+          spoke.add(worker);
           if (data.type === 'request') {
             answer(fetcher, data.rid, data.request, (reply) => worker.postMessage(reply));
             return;
@@ -107,7 +121,12 @@ export function lidarPool(size: number, signal?: AbortSignal, create: () => Work
           event.preventDefault?.();
           all.delete(worker);
           worker.terminate();
-          reject(new Error(`The LiDAR worker stopped: ${event.message || 'out of memory?'}`));
+          // Silent from the start and no reason given: the script didn't load.
+          // A tab still on the last version asks for a chunk a deploy removed.
+          if (!spoke.has(worker) && !event.message) {
+            onStale?.();
+            reject(new Error('The LiDAR reader could not load, probably because the site was updated. Reload the page and try again.'));
+          } else reject(new Error(`The LiDAR worker stopped: ${event.message || 'out of memory?'}`));
         };
         worker.postMessage(message(id));
       });
@@ -130,6 +149,10 @@ export function lidarPool(size: number, signal?: AbortSignal, create: () => Work
       return { outcome: (await dispatch((id) => ({ type: 'job', id, job }), progress)) as BatchOutcome, downloaded: 0 };
     },
     surface: (job, progress) => dispatch((id) => ({ type: 'surface', id, job }), progress) as Promise<SurfaceOutcome>,
-    tile: (job) => dispatch((id) => ({ type: 'tile', id, job })) as Promise<TileResult>,
+    tile: (job) => {
+      // Meshing comes after the reading, so held tiles (up to a GB) aren't needed any more.
+      fetcher.release();
+      return dispatch((id) => ({ type: 'tile', id, job })) as Promise<TileResult>;
+    },
   };
 }

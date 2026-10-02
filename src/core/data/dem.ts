@@ -134,6 +134,206 @@ export interface DemMosaic extends DemGrid {
   sample(lon: number, lat: number): number;
 }
 
+// Terrarium's no data, an all-black pixel. Clearwater's causeway, Waikiki
+// and Charleston have blocks of it at zoom 15.
+export const VOID_M = -32768;
+// Some coastal tiles also carry seabed garbage: lines and specks of -100 to
+// -15,000 m one to five pixels wide, often on land (Sydney had -934 m beside
+// +30 m). One of them sets the base for the whole model, so a 1.5 km area
+// came out a metre tall. A pixel below sea level counts as garbage when it's
+// more than PIT_MARGIN_M under what a 45 degree slope from anything within
+// PIT_REACH pixels allows. Real ground above sea level is never touched, and
+// polders, harbours and seabed are far gentler than that.
+const PIT_SLOPE = 1;
+const PIT_MARGIN_M = 20;
+const PIT_REACH = 3;
+
+/**
+ * Fills voids and seabed garbage from the pixels around them, in place.
+ * `pixelM` is the mosaic's pixel size in metres. Returns the pixels filled.
+ */
+export function repairElevation(grid: DemGrid, pixelM: number): number {
+  const { columns, rows, values } = grid;
+  const n = columns * rows;
+  let any = false;
+  for (let i = 0; i < n; i++) {
+    if (values[i] < 0) {
+      any = true;
+      break;
+    }
+  }
+  if (!any) return 0;
+
+  const bad = new Uint8Array(n);
+  const offX: number[] = [];
+  const offY: number[] = [];
+  const offDrop: number[] = [];
+  for (let dy = -PIT_REACH; dy <= PIT_REACH; dy++) {
+    for (let dx = -PIT_REACH; dx <= PIT_REACH; dx++) {
+      if (!dx && !dy) continue;
+      offX.push(dx);
+      offY.push(dy);
+      offDrop.push(PIT_SLOPE * pixelM * Math.hypot(dx, dy));
+    }
+  }
+  let count = 0;
+  let minC = columns;
+  let minR = rows;
+  let maxC = -1;
+  let maxR = -1;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < columns; c++) {
+      const i = r * columns + c;
+      const v = values[i];
+      if (v >= 0) continue;
+      let pit = v === VOID_M;
+      if (!pit) {
+        let allowed = -Infinity;
+        for (let k = 0; k < offX.length; k++) {
+          const cc = c + offX[k];
+          const rr = r + offY[k];
+          if (cc < 0 || cc >= columns || rr < 0 || rr >= rows) continue;
+          const q = values[rr * columns + cc];
+          if (q !== VOID_M && q - offDrop[k] > allowed) allowed = q - offDrop[k];
+        }
+        pit = allowed - v > PIT_MARGIN_M;
+      }
+      if (!pit) continue;
+      bad[i] = 1;
+      count++;
+      if (c < minC) minC = c;
+      if (c > maxC) maxC = c;
+      if (r < minR) minR = r;
+      if (r > maxR) maxR = r;
+    }
+  }
+  if (!count) return 0;
+  count += enclosedPits(grid, bad, [minC, minR, maxC, maxR]);
+  fillFromNeighbours(grid, bad, count);
+  return count;
+}
+
+/**
+ * Marks what a ring of garbage encloses, when all of it is below sea level,
+ * so a blob wider than the reach is filled whole instead of leaving its core
+ * as a smaller pit. Returns the pixels marked.
+ */
+function enclosedPits(grid: DemGrid, bad: Uint8Array, [minC, minR, maxC, maxR]: [number, number, number, number]): number {
+  const { columns, values } = grid;
+  // Only what lies inside the marked pixels' box can be enclosed by them.
+  const c0 = Math.max(0, minC - 1);
+  const r0 = Math.max(0, minR - 1);
+  const c1 = Math.min(columns - 1, maxC + 1);
+  const r1 = Math.min(grid.rows - 1, maxR + 1);
+  const width = c1 - c0 + 1;
+  const height = r1 - r0 + 1;
+  // 0 unseen, 1 reached from outside the box, 2 part of an enclosed component.
+  const state = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  const local = (c: number, r: number) => (r - r0) * width + (c - c0);
+  const isOpen = (c: number, r: number) => !bad[r * columns + c];
+  let head = 0;
+  let tail = 0;
+  const touchesOutside = (c: number, r: number) => c === c0 || c === c1 || r === r0 || r === r1;
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
+      if (!touchesOutside(c, r) || !isOpen(c, r)) continue;
+      state[local(c, r)] = 1;
+      queue[tail++] = local(c, r);
+    }
+  }
+  const flood = (mark: number, inside?: number[]) => {
+    while (head < tail) {
+      const k = queue[head++];
+      const c = c0 + (k % width);
+      const r = r0 + Math.floor(k / width);
+      inside?.push(r * columns + c);
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const cc = c + dx;
+          const rr = r + dy;
+          if (cc < c0 || cc > c1 || rr < r0 || rr > r1) continue;
+          const j = local(cc, rr);
+          if (state[j] || !isOpen(cc, rr)) continue;
+          state[j] = mark;
+          queue[tail++] = j;
+        }
+      }
+    }
+  };
+  flood(1);
+  let marked = 0;
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
+      const k = local(c, r);
+      if (state[k] || !isOpen(c, r)) continue;
+      state[k] = 2;
+      head = tail = 0;
+      queue[tail++] = k;
+      const inside: number[] = [];
+      flood(2, inside);
+      // An island ringed by steep seabed stays.
+      if (inside.some((i) => values[i] >= 0)) continue;
+      for (const i of inside) bad[i] = 1;
+      marked += inside.length;
+    }
+  }
+  return marked;
+}
+
+/** Each marked pixel gets the mean of its known neighbours, working in from the edges of what's marked. */
+function fillFromNeighbours(grid: DemGrid, bad: Uint8Array, count: number): void {
+  const { columns, rows, values } = grid;
+  const queue = new Int32Array(count);
+  const queued = new Uint8Array(bad.length);
+  let head = 0;
+  let tail = 0;
+  const push = (i: number) => {
+    if (!queued[i]) {
+      queued[i] = 1;
+      queue[tail++] = i;
+    }
+  };
+  const neighbours = (i: number, visit: (j: number) => void) => {
+    const c = i % columns;
+    const r = (i - c) / columns;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const cc = c + dx;
+        const rr = r + dy;
+        if ((dx || dy) && cc >= 0 && cc < columns && rr >= 0 && rr < rows) visit(rr * columns + cc);
+      }
+    }
+  };
+  for (let i = 0; i < bad.length; i++) {
+    if (!bad[i]) continue;
+    let known = false;
+    neighbours(i, (j) => {
+      if (!bad[j]) known = true;
+    });
+    if (known) push(i);
+  }
+  while (head < tail) {
+    const i = queue[head++];
+    let sum = 0;
+    let n = 0;
+    neighbours(i, (j) => {
+      if (bad[j]) return;
+      sum += values[j];
+      n++;
+    });
+    values[i] = sum / n;
+    bad[i] = 0;
+    neighbours(i, (j) => {
+      if (bad[j]) push(j);
+    });
+  }
+  // Nothing known to fill from: the whole mosaic was void.
+  for (let i = 0; i < bad.length; i++) {
+    if (bad[i]) values[i] = 0;
+  }
+}
+
 /** Bilinear sample of a row-major grid at pixel coordinates, clamped to the grid. */
 export function bilinear(values: ArrayLike<number>, columns: number, rows: number, x: number, y: number): number {
   const cx = Math.min(Math.max(x, 0), columns - 1);
@@ -299,7 +499,10 @@ export async function fetchDem(options: FetchDemOptions): Promise<DemMosaic> {
     await Promise.all(tiles);
     if (!used) throw new Error('No elevation tiles are available for this area. Turn elevation off to build a flat base.');
     report(true);
-    return createDemMosaic({ zoom, tileX0: range.x0, tileY0: range.y0, columns, rows, values }, bounds, used, missing);
+    const grid: DemGrid = { zoom, tileX0: range.x0, tileY0: range.y0, columns, rows, values };
+    // After decoding, so tiles from the byte cache are repaired too.
+    repairElevation(grid, groundResolutionM((south + north) / 2, zoom));
+    return createDemMosaic(grid, bounds, used, missing);
   } catch (error) {
     controller.abort(error);
     throw outer?.aborted ? outer.reason : error;

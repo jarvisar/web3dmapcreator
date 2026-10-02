@@ -170,6 +170,7 @@ export function loadSaved(): SavedState {
   // They're what's in storage now, so saving them again waits for a change.
   written.set(EDITS_KEY, [edits]);
   written.set(PICKS_KEY, [picks.routes, picks.hiddenLines]);
+  loadedHash = typeof raw.hash === 'string' ? raw.hash : undefined;
   return {
     output: raw.output === 'svg' || raw.output === 'model' ? raw.output : undefined,
     area: readArea(raw.area),
@@ -191,6 +192,13 @@ export function loadSaved(): SavedState {
     largeGrids: typeof ui.largeGrids === 'boolean' ? ui.largeGrids : undefined,
     hash: typeof raw.hash === 'string' ? raw.hash : undefined,
   };
+}
+
+let loadedHash: string | undefined;
+
+/** The hash the saved settings had when this page loaded them. */
+export function savedHash(): string | undefined {
+  return loadedHash;
 }
 
 let saving = true;
@@ -319,6 +327,8 @@ export function saveState(
     ui: { sections: object; basemap: string; showBed: boolean; sizeUnit: string; mapHintDismissed: boolean; previewLook: string; largeGrids?: boolean };
   },
   hash: string,
+  /** False leaves the settings key alone, for a tab that hasn't changed them. */
+  settings = true,
 ): boolean {
   if (!saving) return true;
   const { sections, basemap, showBed, sizeUnit, mapHintDismissed, previewLook, largeGrids } = state.ui;
@@ -338,7 +348,7 @@ export function saveState(
     ui: { sections, basemap, showBed, sizeUnit, mapHintDismissed, previewLook, largeGrids },
   };
   // Private browsing or storage full: what doesn't fit just isn't remembered.
-  let ok = write(KEY, null, () => JSON.stringify(data));
+  let ok = settings ? write(KEY, null, () => JSON.stringify(data)) : true;
   ok = write(EDITS_KEY, [state.edits], () => JSON.stringify(state.edits)) && ok;
   ok = write(PICKS_KEY, [routes, hiddenLines], () => JSON.stringify({ routes, hiddenLines })) && ok;
   return ok;

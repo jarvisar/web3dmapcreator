@@ -97,6 +97,35 @@
 - Keyboard focus now goes into the Presets menu and the colour picker, and back to `Settings` when the phone drawer closes.
 - Saved settings outside the allowed ranges are clamped when loaded instead of breaking generation.
 - A roof cap or LiDAR only surface whose flat underside couldn't be triangulated from its outline got a copy of its whole top surface underneath. A constrained triangulation of the outline is tried first now, so a surface cut along a river no longer doubles in size.
+- Some coastal areas came out with a base hundreds of millimetres thick and pits in the ground. The elevation tiles have holes and specks of nonsense seabed down to -15,000 m, sometimes right on land, and one of them set the base for the whole model: Waikiki came out over a metre tall, Charleston and the Clearwater causeway 40 to 80 cm, and the Sydney preset had 17 mm too much base. They're filled from the ground around them now.
+- Dutch LiDAR (AHN5, AHN6 and Open LiDAR Data's AHN4) was read about 170 m from where it belongs, so a Rotterdam model measured 3 of 129 buildings. It measures about half of them now, like elsewhere. Results saved with the old positions are measured again.
+- Open LiDAR Data's 2022-2025 PNOA tiles for Aragón and Extremadura were read at places like Ponferrada, Bragança and Dénia, a model of another part of Spain at the wrong height. Dublin's LiDAR couldn't be read at all.
+- Helsinki's own surveys (about 60 returns per m²) were never offered over Open LiDAR Data's 0.6, and a sheet with no file behind it failed every sheet read with it.
+- Illinois surveys from 2012-2015 counted about a tenth of their real density, so they ranked behind sparser surveys.
+- Turned, round and six-sided areas measured every building in the box around them, so LiDAR downloaded and took 2 to 4 times longer than needed, and `Model details` counted buildings that weren't in the model.
+- Offers of whole LiDAR tiles counted buildings another survey had already measured as ones nothing else measured, and could offer a copy of the survey that was just read (86 MB for nothing new in São Paulo). A building is only offered from one whole-file survey now, and only when it's clearly newer or denser than what already read it. Approved tiles were forgotten after a download bigger than the LiDAR cache, and the offer said tiles over 250 MB were kept when they aren't.
+- A LiDAR only model whose readable survey failed for a moment said a multi-GB whole-file survey had "the only LiDAR for this area", and hid the real error.
+- "No LiDAR survey covers these buildings" showed when a survey did, but every building was under `Smallest footprint` or none could be measured from it. Those have their own messages now.
+- A LiDAR catalog that answered with an error once (ArcGIS sends those as a normal page) was left out for a day. One that didn't answer made every Generate wait 90 s or more for it. It's skipped for 5 minutes now. 45 OpenTopography forest surveys in California were always reported as failed searches.
+- LiDAR stopped working after a deploy until the page was reloaded, with the message "out of memory?". The LiDAR reader is part of the installed app now, and if it still can't load the page asks for a reload.
+- LiDAR network errors, including the proxy's daily limit, were reported as "Could not reach the map data server". A LiDAR host that's down is named as such instead of blaming the proxy's limit.
+- Whole LiDAR tiles from DC were downloaded again for every block that read them, and zipped Texas tiles were unpacked once per worker, which could run the tab out of memory. Each is downloaded and unpacked once per model now.
+- Multi-plate exports of round or six-sided LiDAR only models with water could leave a section's city out, or fail with "Nothing to export". A six-sided one could fail to generate, and water on a round edge could be left out.
+- A LiDAR only model now warns when part of the area is outside every survey it read, since that part is filled in and can come out flat or as water.
+- After some edits, an export could lose most of a part, like Venice's terrain or paths, with only a note that one piece was missing.
+- Closing a tab that hadn't been used overwrote the settings and area another tab had saved since.
+- Without WebGL the whole app showed an error screen offering to reset settings. The map and 3D view say what's wrong now, and generating, downloads and SVG maps still work.
+- Options files with a fractional `Older by up to` or a title dragged left or up couldn't be imported back.
+- `Reset LiDAR settings` (and resetting Trees, Bridges or Rim) turned the layer off.
+- Coordinates typed as longitude, latitude jumped to the pole with an error.
+- A share link with a stray character on the end, like a full stop from a sentence, lost its edits without a word. A link that can't be read says so now.
+- Old SVGmap links opened at 1:20,000 instead of the width they were shared at.
+- An SVG title in some loaded fonts (Calibri, Cambria) or in Arabic made every render fail, even after a reload. A long picked road made large-scale renders fail in every area. A loaded subtitle font with no subtitle failed renders too.
+- An SVG map took 90 s to fail when the tile server was down, and missing glyphs in a title were drawn as `?` or boxes without a warning.
+- Areas within 25 m of the 180th meridian downloaded elevation for the whole width of the world and then failed as "too large".
+- With a base thinner than `Embed` or thick bridge decks, roads, land or decks reached under the base and lifted it off the bed.
+- Selecting thousands of objects with many saved edits froze the inspector.
+- The browser now asks before leaving the page while a model is being made or hasn't been downloaded yet.
 
 ## 1.0.0
 

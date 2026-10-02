@@ -58,11 +58,20 @@ export async function buildPlates(spec: ModelSpec, options: PlateOptions): Promi
   for (let i = 0; i < cells.length; i++) {
     const { cell, clip } = cells[i];
     const span: [number, number] = [i / cells.length, (i + 1) / cells.length];
-    const meshed = await meshLayers(layers, { clip, zShift, progress: options.progress, span });
+    let meshed = await meshLayers(layers, { clip, zShift, progress: options.progress, span });
+    // A single plate isn't cut to the outline, so the section's box alone
+    // cuts the same. Cut along a round outline as well, a LiDAR only surface
+    // could leave the triangulation stuck and the section came out without it.
+    if (meshed.failed) {
+      const plain = await meshLayers(layers, { clip: rectangle(...cell.bounds), zShift });
+      if (plain.failed < meshed.failed) meshed = plain;
+    }
     failed += meshed.failed;
     if (!meshed.parts.length) continue;
     plates.push({ name: cell.name, parts: meshed.parts, bounds: cell.bounds });
   }
+  // Every section failing is a meshing failure, not an empty model.
+  if (!plates.length && failed) throw new Error('The model could not be cut into sections. Try another section size, or export it as one plate.');
   if (!plates.length) throw new Error('Nothing to export: every part is hidden or empty');
   return { plates, failed };
 }

@@ -135,6 +135,8 @@ export default function ModelView({ active }: { active: boolean }) {
   const engineRef = useRef<ViewerEngine | null>(null);
   const controllerRef = useRef<EditController | null>(null);
   const [lost, setLost] = useState(false);
+  // No WebGL2 at all, which a reload won't fix.
+  const [failed, setFailed] = useState(false);
   const [panel, setPanel] = useState<Panel>(null);
   const [hover, setHover] = useState<{ key: string; x: number; y: number } | null>(null);
   const [drawing, setDrawing] = useState(0);
@@ -181,7 +183,7 @@ export default function ModelView({ active }: { active: boolean }) {
         onBounds: (bounds) => versionRef.current !== undefined && setShownBounds(versionRef.current, bounds),
       });
     } catch {
-      setLost(true);
+      setFailed(true);
       return;
     }
     engineRef.current = engine;
@@ -732,7 +734,18 @@ export default function ModelView({ active }: { active: boolean }) {
         </div>
       )}
 
-      {lost && (
+      {failed && (
+        <div className="viewer-lost">
+          <div className="viewer-card floating">
+            <h3>This browser can't show the 3D view</h3>
+            <p>
+              WebGL2 is off or not supported here. The model was still made and can be downloaded. To see it, turn on graphics
+              or hardware acceleration in the browser's settings and reload, or try another browser.
+            </p>
+          </div>
+        </div>
+      )}
+      {lost && !failed && (
         <div className="viewer-lost">
           <div className="viewer-card floating">
             <h3>The 3D view stopped</h3>

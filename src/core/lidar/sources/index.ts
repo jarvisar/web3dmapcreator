@@ -6,10 +6,9 @@
 // Everything returned is in lon/lat. Spatial tests against buildings happen
 // later, in the metric frame.
 
-import { HttpError, NetworkError } from '../../data/http';
 import type { GeoBounds } from '../../types';
 import type { Fetcher } from '../read/fetcher';
-import { overlaps, type Candidate, type Failure, type Provider } from './common';
+import { briefly, overlaps, type Candidate, type Failure, type Provider } from './common';
 import { ahn } from './ahn';
 import { aist3ddb } from './aist3ddb';
 import { alaska } from './alaska';
@@ -64,7 +63,7 @@ import { winnipeg } from './winnipeg';
 import { wisconsin } from './wisconsin';
 
 export type { Box, Candidate, Failure, Format, Provider, Tile } from './common';
-export { geoPolygons, sphericalArea } from './common';
+export { briefly, geoPolygons, sphericalArea } from './common';
 export { flaiInventory } from './flai';
 export { USGS_CATALOG } from './usgs';
 
@@ -78,13 +77,6 @@ export const PROVIDERS: Provider[] = [
 ];
 
 const TIMEOUT_MS = 90_000;
-
-/** Why a catalog failed, without the URL that network errors spell out. */
-export function briefly(error: unknown): string {
-  if (error instanceof HttpError) return `it answered HTTP ${error.status}`;
-  if (error instanceof NetworkError) return "it couldn't be reached";
-  return (error as Error)?.message ?? String(error);
-}
 
 /** Providers that may have data in `bbox`. */
 export function providersFor(bbox: GeoBounds, providers = PROVIDERS): Provider[] {

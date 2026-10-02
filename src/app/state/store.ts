@@ -27,7 +27,8 @@ import type { BorderSettings } from '../../core/svgmap/layout/layout';
 import type { CleanupSettings } from '../../core/svgmap/lines/cleanup';
 import { PRODUCT_PRESETS } from '../../core/svgmap/presets';
 import { LASER_PALETTES, type ModeStyle, type OutputMode, PRINT_THEMES, type PlotterSettings, printStyle } from '../../core/svgmap/settings';
-import type { LabelSettings } from '../../core/svgmap/text/label';
+import { DEFAULT_LABEL, type LabelSettings } from '../../core/svgmap/text/label';
+import { CUSTOM_FONT_ID } from '../../core/svgmap/text/fonts';
 import { mergePicks, type Picks } from '../../core/svgmap/routes';
 import type { FeatureFilters } from '../../core/svgmap/tiles/schema';
 import type { ColourGroup, MaterialRole, ModelStats } from '../../core/types';
@@ -41,7 +42,7 @@ import { type CleanupPreset, type LaserPalette, type PieceSize, type SvgSettings
 import { stepBetween, type EditStep } from './history';
 import { hasPicks, loadSaved, readBackup, writeBackup, type Backup } from './persist';
 import type { Options } from './options';
-import { type Output, readHash } from './shareLink';
+import { type Output, readHash, unreadableText } from './shareLink';
 
 export type { Output };
 /** The map, or what was made from it: the 3D model or the SVG preview. */
@@ -129,7 +130,8 @@ export interface ExportState {
   status: 'idle' | 'running';
   progress: ProgressEvent | null;
   error: string | null;
-  last: { fileName: string; format: ExportFormat; plates: number; warnings: string[]; bytes: number } | null;
+  /** `version` is the model's (ResultMeta.version). */
+  last: { fileName: string; format: ExportFormat; plates: number; warnings: string[]; bytes: number; version: number } | null;
 }
 
 export interface MapFocus {
@@ -276,6 +278,7 @@ export function keepReplaced(brought: Brought, reason: 'link' | 'import', curren
 }
 
 let openedLink: Brought | null = null;
+let openedProblem: string | null = null;
 
 /** What the share link the app was opened with brought, once. */
 export function takeOpenedLink(): Brought | null {
@@ -284,10 +287,18 @@ export function takeOpenedLink(): Brought | null {
   return brought;
 }
 
+/** What couldn't be read of the share link the app was opened with, once. */
+export function takeLinkProblem(): string | null {
+  const problem = openedProblem;
+  openedProblem = null;
+  return problem;
+}
+
 function initialState(): AppState {
   const saved = loadSaved();
   // The app keeps its own area in the hash too. Only a different hash is a share link.
   const shared = typeof location !== 'undefined' && location.hash !== saved.hash ? readHash() : null;
+  openedProblem = shared ? unreadableText(shared) : null;
   const output = shared?.output ?? saved.output ?? 'model';
   // A link's edits and picks are added to what's here. Its SVG settings
   // don't carry picks, so they never clear them.
@@ -570,9 +581,13 @@ export function setSupports(supports: boolean): void {
   });
 }
 
-export function resetSettingsSection(key: SettingsSection): void {
+/** `keep` names fields that stay as they are, like the switch that turns a layer on. */
+export function resetSettingsSection(key: SettingsSection, keep: readonly string[] = []): void {
   set((state) => {
-    const settings = { ...state.settings, [key]: structuredClone(DEFAULT_SETTINGS[key]) } as ModelSettings;
+    const fresh = structuredClone(DEFAULT_SETTINGS[key]) as Record<string, unknown>;
+    const current = state.settings[key] as Record<string, unknown>;
+    for (const field of keep) if (field in fresh) fresh[field] = current[field];
+    const settings = { ...state.settings, [key]: fresh } as ModelSettings;
     return { settings, generation: withStale(state.generation, state.area, settings) };
   });
 }
@@ -804,6 +819,18 @@ export function setSvgScale(scale: number): void {
 
 export function setCustomFont(customFontName: string | null, customFontId: string | null): void {
   set({ customFontName, customFontId });
+}
+
+/**
+ * A title in the custom font, from someone else's link or after storage was
+ * cleared, falls back to the default when no font file is loaded here.
+ * Otherwise every render fails asking for the file.
+ */
+export function dropMissingFont(): void {
+  const { svg, customFontId } = get();
+  if (customFontId) return;
+  if (svg.label.font === CUSTOM_FONT_ID) setLabel({ font: DEFAULT_LABEL.font });
+  if (svg.label.subtitleFont === CUSTOM_FONT_ID) setLabel({ subtitleFont: '' });
 }
 
 // -------------------------------------------------------------------- ui

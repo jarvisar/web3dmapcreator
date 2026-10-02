@@ -32,6 +32,24 @@ describe('CORS proxy', () => {
     expect(needsProxy('https://imnube.montevideo.gub.uy/share/s/6Q_g8cksRMCTdg8l3IyNSA/content/budget.pdf')).toBe(false);
   });
 
+  it('never proxies paths with encoded slashes or dots', () => {
+    setCorsProxy('https://proxy.example.workers.dev');
+    for (const path of ['..%2F..%2Fsecret', '..%5Csecret', '%2e%2e%2fsecret', 'tile%2Elaz']) {
+      const url = `https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/${path}`;
+      expect(needsProxy(url), path).toBe(false);
+      expect(requestUrl(url)).toBe(url);
+    }
+    expect(needsProxy('https://nrs.objectstore.gov.bc.ca/gdwuts/?list-type=2&prefix=watershed%2F092%2F')).toBe(true);
+  });
+
+  it('only proxies the Estonian listings and files the provider asks for', () => {
+    const base = 'https://geoportaal.maaruum.ee/index.php?lang_id=1&plugin_act=otsing&';
+    expect(needsProxy(`${base}page_id=614&kaardiruut=474659&andmetyyp=lidar_laz_madal`)).toBe(true);
+    expect(needsProxy(`${base}kaardiruut=474659&andmetyyp=lidar_laz_tava&dl=1&f=474659_2025_tava.laz&page_id=614`)).toBe(true);
+    expect(needsProxy(`${base}page_id=614&kaardiruut=474659&andmetyyp=lidar_laz_madal&plugin_act=admin`)).toBe(false);
+    expect(needsProxy(`${base}page_id=1`)).toBe(false);
+  });
+
   it('asks hosts that refuse HEAD for two bytes to learn a size', async () => {
     setCorsProxy('https://proxy.example.workers.dev');
     const file = 'https://geocloud.landesvermessung.sachsen.de/public.php/dav/files/EpkzyJHScGb5ndd/lsc_33410_5656_2_sn_laz.zip';
@@ -88,5 +106,16 @@ describe('CORS proxy', () => {
       throw new TypeError('Failed to fetch');
     });
     await expect(fetchBytes(file, undefined, { store: null, retries: 0 })).rejects.toThrow(/LiDAR proxy, which may be over its daily limit/);
+  });
+
+  it("says the host didn't answer when the proxy couldn't reach it, not the daily limit", async () => {
+    setCorsProxy('https://proxy.example.workers.dev');
+    vi.stubGlobal('fetch', async () => new Response("rockyweb.usgs.gov didn't answer.", { status: 502 }));
+    const error = await fetchBytes(file, undefined, { store: null, retries: 0 }).catch((e: Error) => e);
+    expect(String(error)).toMatch(/rockyweb\.usgs\.gov didn't answer the LiDAR proxy \(HTTP 502\)/);
+    expect(String(error)).not.toMatch(/daily limit/);
+    // A 502 from a host read directly keeps the usual wording.
+    const direct = await fetchBytes('https://example.com/tile.laz', undefined, { store: null, retries: 0 }).catch((e: Error) => e);
+    expect(String(direct)).toMatch(/Download failed with HTTP 502/);
   });
 });

@@ -8,7 +8,16 @@ import { geoPolygons, pagedFeatures, ringBox, Surveys, type Provider } from './c
 
 const SHEETS = 'https://kartta.hel.fi/ws/geoserver/avoindata/wfs';
 const FILES = 'https://ptp.hel.fi/DataHandlers/Lidar_kaikki/Default.ashx';
-const YEARS = [2021, 2017];
+// Each year with its returns per m², from sheet headers (46-83 in 2021, 30-40
+// in 2017). Whole files give no density before they're downloaded, and
+// without one neither was ever offered over Flai's 0.6.
+const YEARS: [number, number][] = [
+  [2021, 60],
+  [2017, 32],
+];
+// The grid runs out to sea and into Espoo and Vantaa, and a sheet a year
+// doesn't have answers 200 with 65 bytes of text.
+const MISSING_BYTES = 1000;
 
 export const helsinki: Provider = {
   id: 'helsinki',
@@ -22,36 +31,40 @@ export const helsinki: Provider = {
       (offset, count) =>
         `${SHEETS}?service=WFS&version=2.0.0&request=GetFeature&typeNames=avoindata:Karttalehtijako_05x05_km&outputFormat=application/json&srsName=EPSG:4326&bbox=${box},urn:ogc:def:crs:EPSG::4326&count=${count}&startIndex=${offset}`,
     );
-    const surveys = new Surveys();
-    for (const row of rows) {
+    const sheets = rows.flatMap((row) => {
       const sheet = String(row.properties.tunnus ?? '');
-      if (!/^\d{6}[a-d]$/.test(sheet)) continue;
       const outline = geoPolygons(row.geometry);
-      if (!outline.length) continue;
-      for (const year of YEARS) {
-        surveys.add(
-          String(year),
-          () => ({
-            provider: 'City of Helsinki',
-            id: String(year),
-            name: `Helsinki laser data ${year}`,
-            url: `${FILES}#${year}`,
-            format: 'LAZ',
-            verticalUnits: 'm',
-            acquisitionStart: `${year}-01-01`,
-            acquisitionEnd: `${year}-12-31`,
-            license: 'CC BY 4.0',
-            attribution: 'City of Helsinki, Kaupunkimittauspalvelut',
-            sourcePage: 'https://hri.fi/data/en_GB/dataset/helsingin-laserkeilausaineistot',
-            authoritative: true,
-            projectYearHint: year,
-          }),
-          // The files have no CRS records: ETRS-GK25 (EPSG:3879), N2000 heights.
-          { url: `${FILES}?q=${sheet}&y=${year}`, bbox: ringBox(outline.flat()), horizontalCrs: 'EPSG:3879', whole: true },
-          outline,
-        );
-      }
-    }
+      return /^\d{6}[a-d]$/.test(sheet) && outline.length ? YEARS.map(([year, density]) => ({ url: `${FILES}?q=${sheet}&y=${year}`, year, density, outline })) : [];
+    });
+    // A failed HEAD keeps the sheet: the file itself says if it's there.
+    const sizes = await Promise.all(sheets.map(({ url }) => fetcher.size(url).catch(() => undefined)));
+    const surveys = new Surveys();
+    sheets.forEach(({ url, year, density, outline }, i) => {
+      const size = sizes[i];
+      if (size !== undefined && size < MISSING_BYTES) return;
+      surveys.add(
+        String(year),
+        () => ({
+          provider: 'City of Helsinki',
+          id: String(year),
+          name: `Helsinki laser data ${year}`,
+          url: `${FILES}#${year}`,
+          format: 'LAZ',
+          verticalUnits: 'm',
+          acquisitionStart: `${year}-01-01`,
+          acquisitionEnd: `${year}-12-31`,
+          densityM2: density,
+          license: 'CC BY 4.0',
+          attribution: 'City of Helsinki, Kaupunkimittauspalvelut',
+          sourcePage: 'https://hri.fi/data/en_GB/dataset/helsingin-laserkeilausaineistot',
+          authoritative: true,
+          projectYearHint: year,
+        }),
+        // The files have no CRS records: ETRS-GK25 (EPSG:3879), N2000 heights.
+        { url, bbox: ringBox(outline.flat()), horizontalCrs: 'EPSG:3879', whole: true, size },
+        outline,
+      );
+    });
     return surveys.list();
   },
 };

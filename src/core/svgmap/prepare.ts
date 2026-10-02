@@ -137,6 +137,8 @@ export function prepareArea(plan: TilePlan, layout: Layout, data: TileData): Pre
   let bytes = 0;
   const warnings = [...plan.warnings];
   let missing = 0;
+  let unreadable = 0;
+  let decodedTiles = 0;
   // Tiles past the antimeridian are fetched with a wrapped x, so each one goes
   // on the copy of the world nearest the map centre.
   const worldTiles = 2 ** plan.zoom;
@@ -152,7 +154,15 @@ export function prepareArea(plan: TilePlan, layout: Layout, data: TileData): Pre
     if (!buffer) continue; // an empty tile: nothing mapped there
     bytes += buffer.byteLength;
     const x = tile.x + worldTiles * Math.round((centreTile - tile.x) / worldTiles);
-    const decoded = decodeTile(buffer, x, tile.y);
+    let decoded: ReturnType<typeof decodeTile>;
+    try {
+      decoded = decodeTile(buffer, x, tile.y);
+    } catch {
+      // A raster tile, or a web page served as a tile, failed the whole map with "Unimplemented type: 6".
+      unreadable++;
+      continue;
+    }
+    decodedTiles++;
     for (const line of decoded.lines) {
       if (line.layer === 'aeroway') {
         const widthM = aerowayLineWidth(line.props);
@@ -178,6 +188,12 @@ export function prepareArea(plan: TilePlan, layout: Layout, data: TileData): Pre
   }
   if (missing > 0) {
     warnings.push(`${missing} map tile(s) could not be downloaded, so parts of the map may be missing.`);
+  }
+  if (unreadable > 0 && decodedTiles === 0) {
+    throw new Error("The map data source didn't send vector tiles. Check the tile address under Map data: it has to be OpenMapTiles vector tiles, not map images.");
+  }
+  if (unreadable > 0) {
+    warnings.push(`${unreadable} map tile(s) weren't vector tiles, so parts of the map are missing. Check the tile address under Map data.`);
   }
 
   // Stitch while still in world units, where tile edges are exact.

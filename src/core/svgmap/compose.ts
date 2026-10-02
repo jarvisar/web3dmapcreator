@@ -110,6 +110,7 @@ export function compose(
 
   // Title
   const built = buildLabel(layout, s.label, fonts.title, fonts.subtitle);
+  warnings.push(...built.warnings);
   if (built.error) warnings.push(built.error);
   const label: LabelArtwork | null = built.artwork;
   const knockoutPoly: Path | null = label

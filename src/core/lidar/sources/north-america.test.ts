@@ -177,6 +177,9 @@ describe('LidarBC', () => {
     expect(flightDates('bc_092b044_1_3_2_xyes_8_utm10_2019.laz', 2019)).toEqual({ start: '2019-01-01', end: '2019-12-31' });
   });
 
+  const nrcanListing = (keys: string[]) =>
+    `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated>${keys.map((key) => `<Contents><Key>pointclouds_nuagespoints/BC/${key}</Key><Size>100</Size><ETag>&quot;x&quot;</ETag></Contents>`).join('')}</ListBucketResult>`;
+
   it('groups tiles by operation and year, leaving out the ones NRCan has as COPC', async () => {
     setCorsProxy('direct');
     const store = 'https://nrs.objectstore.gov.bc.ca/gdwuts/092/092g/';
@@ -191,7 +194,7 @@ describe('LidarBC', () => {
           tile('bc_082e083_4_3_3_xyes_8_utm11_170607.laz', 2017, 'NDMP Okanagan 2017', 'utm11'),
         ]);
       // NRCan has one of the two Fraser tiles.
-      if (url.endsWith('/BC/Lower_Mainland_2016/bc_092g025_3_4_1_xyes_8_utm10_20170713.copc.laz')) return new Uint8Array(100);
+      if (url.includes('canelevation') && url.includes('list-type=2')) return nrcanListing(['Lower_Mainland_2016/bc_092g025_3_4_1_xyes_8_utm10_20170713.copc.laz', 'Lower_Mainland_2016/bc_092g025_4_4_4_xyes_8_utm10_20170714.copc.laz']);
       return undefined;
     });
     const surveys = await lidarbc.discover(fetcher, around(-123.116, 49.282), []);
@@ -204,8 +207,41 @@ describe('LidarBC', () => {
     expect(surveys.map((s) => s.tiles![0].horizontalCrs)).toEqual(['EPSG:3157', 'EPSG:3157', 'EPSG:2955']);
     expect(surveys[0]).toMatchObject({ verticalUnits: 'm', format: 'LAZ' });
     expect(surveys[0].classification).toBeUndefined();
-    // Only Fraser's tiles were looked for on NRCan.
-    expect(requested.filter((url) => url.includes('canelevation'))).toHaveLength(2);
+    // Only Fraser's tiles were looked for on NRCan, in one listing of their sheet.
+    expect(requested.filter((url) => url.includes('canelevation'))).toEqual([
+      'https://canelevation-lidar-point-clouds.s3.ca-central-1.amazonaws.com/?list-type=2&prefix=pointclouds_nuagespoints%2FBC%2FLower_Mainland_2016%2Fbc_092g025_&max-keys=1000',
+    ]);
+  });
+
+  it('finds copies NRCan renamed, but not another year of the same tile', async () => {
+    setCorsProxy('direct');
+    const tile = (filename: string, year: number, operation: string) =>
+      feature({ filename, year, oper_name: operation, projection: 'utm10', s3Url: `https://nrs.objectstore.gov.bc.ca/gdwuts/092/092f/${year}/pointcloud/${filename}` }, square(-123.125, 49.275, -123.105, 49.29));
+    const { fetcher } = fakeFetcher((url) => {
+      if (url.includes('LiDAR_BC_S3_Public'))
+        return collection([
+          tile('bc_092g025_3_4_2_xyes_8_utm10_20170713.laz', 2016, 'NDMP Fraser 2016'),
+          tile('bc_092f037_3_4_4_xyes_8_utm10_2018.laz', 2018, 'NDMP VI 2018'),
+          tile('bc_092f037_3_4_4_xyes_8_utm10_2019.laz', 2019, 'NDMP VI 2019'),
+        ]);
+      if (url.includes('Lower_Mainland_2016')) return nrcanListing(['Lower_Mainland_2016/bc_092g025_3_4_2_xyes_8_utm10_2018.copc.laz']);
+      if (url.includes('Vancouver_Island_Sunshine_Coast_2018')) return nrcanListing(['Vancouver_Island_Sunshine_Coast_2018/bc_092f037_3_4_4_xyes_8_utm10_2019.copc.laz']);
+      return undefined;
+    });
+    const surveys = await lidarbc.discover(fetcher, around(-123.116, 49.282), []);
+    // Fraser's tile is NRCan's _2018 copy, and VI 2019's is on NRCan. VI 2018 flew that tile a year before.
+    expect(surveys.map((s) => [s.name, s.tiles!.map((t) => t.url.split('/').at(-1))])).toEqual([['LidarBC NDMP VI 2018', ['bc_092f037_3_4_4_xyes_8_utm10_2018.laz']]]);
+  });
+
+  it("keeps the tiles when NRCan can't be asked", async () => {
+    setCorsProxy('direct');
+    const { fetcher } = fakeFetcher((url) =>
+      url.includes('LiDAR_BC_S3_Public')
+        ? collection([feature({ filename: 'bc_092g025_3_4_2_xyes_8_utm10_20170713.laz', year: 2016, oper_name: 'NDMP Fraser 2016', projection: 'utm10', s3Url: 'https://nrs.objectstore.gov.bc.ca/gdwuts/092/092g/2016/pointcloud/bc_092g025_3_4_2_xyes_8_utm10_20170713.laz' }, square(-123.125, 49.275, -123.105, 49.29))])
+        : undefined,
+    );
+    const surveys = await lidarbc.discover(fetcher, around(-123.116, 49.282), []);
+    expect(surveys.map((s) => s.tiles!.length)).toEqual([1]);
   });
 });
 

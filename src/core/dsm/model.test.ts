@@ -55,6 +55,45 @@ function lidarSettings(patch: (s: ModelSettings) => void = () => undefined): Mod
 
 const area = (shape: AreaSpec['shape']): AreaSpec => ({ center: [-87.63, 41.88], widthM: 160, heightM: 120, rotationDeg: 0, shape, cornerRadius: 0.2 });
 
+/** A grid of `widthM` x `heightM` at 1 m cells, water where `wet` says, ground at 100 m and anything else at `height`. */
+function painted(widthM: number, heightM: number, wet: (x: number, y: number) => boolean, height: (x: number, y: number) => number = () => 100): PreparedSurface {
+  const grid = gridSpec(widthM, heightM, 1);
+  const layers = emptyLayers(grid.nx, grid.ny);
+  for (let j = 0; j < grid.ny; j++) {
+    for (let i = 0; i < grid.nx; i++) {
+      const k = j * grid.nx + i;
+      const [x, y] = [grid.x0 + i * grid.dx, grid.y0 + j * grid.dy];
+      const water = wet(x, y);
+      const z = water ? GROUND - 2 : height(x, y);
+      layers.count[k] = 6;
+      layers.top[k] = layers.solid[k] = z;
+      if (water) layers.water[k] = 6;
+      if (water) layers.waterZ[k] = z;
+      else layers.ground[k] = z;
+    }
+  }
+  return { layers, checkpoints: [], grid, requestedCellM: 1, densityM2: 10, coverage: 1, points: 0, noise: 0, surveys: [], failures: [], downloadedBytes: 0, blocks: 1, reusedBlocks: 0, offers: [], found: [] };
+}
+
+/** A round or six-sided area with a few lakes and rows of taller blocks, its water mode and section size, from a seed. */
+function lakes(seed: number) {
+  const random = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  const shape = (['circle', 'hexagon', 'rounded'] as const)[Math.floor(random() * 3)];
+  const side = 120 + Math.round(random() * 120);
+  const [widthM, heightM] = shape === 'hexagon' ? [side, Math.round((side * Math.sqrt(3)) / 2)] : [side, side];
+  const centres = Array.from({ length: 1 + Math.floor(random() * 4) }, () => [(random() - 0.5) * widthM, (random() - 0.5) * heightM, 10 + random() * 40]);
+  const phase = random() * 10;
+  const surface = painted(
+    widthM,
+    heightM,
+    (x, y) => centres.some(([cx, cy, r]) => Math.hypot(x - cx, y - cy) < r + 3 * Math.sin(x / 5 + phase)),
+    (x) => (Math.sin(x / 9 + phase) > 0.8 ? 120 : 100),
+  );
+  const area: AreaSpec = { center: [-87.63, 41.88], widthM, heightM, rotationDeg: Math.round(random() * 90), shape, cornerRadius: 0.05 + random() * 0.3 };
+  const mode = random() < 0.5 ? ('layer' as const) : ('cut' as const);
+  return { area, surface, mode, section: 15 + Math.round(random() * 30) };
+}
+
 function closed(part: MeshPart) {
   const report = edgeReport(part.indices, part.positions.length / 3);
   expect([report.open, report.repeated]).toEqual([0, 0]);
@@ -263,6 +302,57 @@ describe('surfaceModel', () => {
     // A swimming pool isn't open water.
     const pool = await surfaceModel({ area: area('rectangle'), settings, surface: pond(prepared(area('rectangle'))), mapWater: [{ ...mapWater[0], props: { class: 'swimming_pool' } }] });
     expect(pool.stats.lidar_model_water_bodies).toBe(without.stats.lidar_model_water_bodies);
+  });
+
+  it('meshes the water between islands on a round area', async () => {
+    // The land's opening reached a unit past the circle, and the water cut
+    // from the circle around it came out with a ring crossing itself.
+    const area: AreaSpec = { center: [-87.63, 41.88], widthM: 200, heightM: 150, rotationDeg: 0, shape: 'circle', cornerRadius: 0.2 };
+    const surface = painted(200, 150, (x, y) => Math.sin(x / 7) + Math.cos(y / 5) <= 0.6, (x, y) => 100 + 2.5 * (Math.sin(x / 7) + Math.cos(y / 5)));
+    const spec = await surfaceModel({ area, settings: lidarSettings((s) => (s.lidarModel.waterMode = 'layer')), surface });
+    const { parts, failed } = await meshLayers(spec.layers);
+    expect(failed).toBe(0);
+    for (const part of parts) closed(part);
+  });
+
+  it('cuts a six-sided area along water where the first clip gets stuck', async () => {
+    // Pulling the land in by a micron didn't get it clear, and the model failed.
+    const centres = [[4.503115, 56.752053, 45.403657], [18.789128, -72.959096, 16.719519]];
+    const phase = 6.281233;
+    const surface = painted(209, 181, (x, y) => centres.some(([cx, cy, r]) => Math.hypot(x - cx, y - cy) < r + 3 * Math.sin(x / 5 + phase)), (x) => (Math.sin(x / 9 + phase) > 0.8 ? 120 : 100));
+    const area: AreaSpec = { center: [-87.63, 41.88], widthM: 209, heightM: 181, rotationDeg: 13, shape: 'hexagon', cornerRadius: 0.1 };
+    const settings = lidarSettings((s) => {
+      s.lidarModel.waterMode = 'cut';
+      s.water.cutMinAreaM2 = 100;
+    });
+    const spec = await surfaceModel({ area, settings, surface });
+    const { parts, failed } = await meshLayers(spec.layers);
+    expect(failed).toBe(0);
+    closed(parts[0]);
+  });
+
+  it('cuts round areas with water into sections without losing any', async () => {
+    // Each lost a section's surface, and the last all of them: the cut along
+    // the water left the triangulation stuck on a section's round edge.
+    for (const seed of [22, 25, 26, 38, 47, 258]) {
+      const { area, surface, mode, section } = lakes(seed);
+      const settings = lidarSettings((s) => {
+        s.lidarModel.waterMode = mode;
+        s.water.cutMinAreaM2 = 100;
+      });
+      const spec = await surfaceModel({ area, settings, surface });
+      const { plates, failed } = await buildPlates(spec, { multiPlate: true, sectionWidthMm: section, sectionHeightMm: section, bedWidth: 256, bedDepth: 256 });
+      expect(failed, `seed ${seed}`).toBe(0);
+      for (const plate of plates) for (const part of plate.parts) closed(part);
+    }
+  }, 60_000);
+
+  it('says how much of the area no survey covers', async () => {
+    const surface = prepared(area('rectangle'));
+    const quiet = await surfaceModel({ area: area('rectangle'), settings: lidarSettings(), surface: { ...surface, uncovered: 0.01 } });
+    expect(quiet.warnings.join(' ')).not.toMatch(/outside every LiDAR survey/);
+    const told = await surfaceModel({ area: area('rectangle'), settings: lidarSettings(), surface: { ...prepared(area('rectangle')), uncovered: 0.3 } });
+    expect(told.warnings.join(' ')).toMatch(/About 30% of the area is outside every LiDAR survey/);
   });
 
   it('lifts what stands on the ground by the height scale only', async () => {

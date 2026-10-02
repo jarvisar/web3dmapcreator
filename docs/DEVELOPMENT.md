@@ -114,7 +114,7 @@ When changing geometry, check closure and winding on real areas as well as the t
 
 `.github/workflows/deploy.yml` tests, builds and publishes the site to GitHub Pages on every push to `main`. In the repository settings, set `Pages > Build and deployment > Source` to `GitHub Actions` once. Asset paths are relative, so the site works from any subpath.
 
-The build includes a service worker (`vite-plugin-pwa`, set up in `vite.config.ts`). It precaches the app, the engine workers and the title fonts, and caches OpenFreeMap tiles as they're used. The LiDAR worker and decoder load on first use instead. A new deploy waits for the reload notice. There's no service worker under `npm run dev`, so check offline behaviour with `npm run build` and `npm run preview`.
+The build includes a service worker (`vite-plugin-pwa`, set up in `vite.config.ts`). It precaches the app, the engine and LiDAR workers, the LAZ decoder and the title fonts, and caches OpenFreeMap tiles as they're used. The LiDAR files used to load on first use, but then a tab still on the last version after a deploy asked for files the deploy had removed, and LiDAR failed until it reloaded. A new deploy waits for the reload notice. There's no service worker under `npm run dev`, so check offline behaviour with `npm run build` and `npm run preview`.
 
 ## Data services
 

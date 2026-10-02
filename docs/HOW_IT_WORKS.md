@@ -26,6 +26,8 @@ Downloaded byte ranges are kept in the browser's IndexedDB (up to 400 MB), so ge
 
 Elevation comes from the AWS Terrain Tiles open dataset in its Terrarium PNG encoding. The zoom level is picked so a tile pixel is about as fine as the terrain grid.
 
+Some coastal tiles have holes (black pixels, -32768 m) and specks of seabed garbage down to -15,000 m, sometimes right on land. One of them set the base for the whole model, so Waikiki came out a metre tall. They're filled from the pixels around them before anything samples the tiles (`repairElevation` in `src/core/data/dem.ts`). Only pixels below sea level that drop far more steeply than real ground can are touched.
+
 ## The terrain grid
 
 The elevation is resampled once onto a square grid in model millimetres, 192 cells across the longer side by default, and lightly smoothed with a 3 x 3 mean. The tiles carry a metre or two of pixel noise, which at this scale is a fifth of a layer and prints as bumps along every draped road.
@@ -97,7 +99,7 @@ Buildings and building parts follow the add-on's rules (`src/core/pipeline/build
 
 With `LiDAR` on, buildings are measured from public LiDAR surveys before the model is built (`src/core/lidar/`). It's a port of the add-on's LiDAR pipeline, limited to publishers a browser can read from directly.
 
-Surveys are found per provider, one module each in `sources/`: USGS 3DEP through Hobu's EPT mirror, NOAA, KyFromAbove, Indiana, IGN, NRCan, swisstopo, several German states, Luxembourg, Scotland, Slovenia, the Basque Country, Trentino, Helsinki, Japanese prefectures, OpenTopography and Open LiDAR Data by Flai. [LiDAR sources](LIDAR_SOURCES.md) has the list, and the open surveys that couldn't be used. Each provider is only asked inside a box around its territory, and one that fails or takes over 90 s is reported while the others carry on. A survey can measure a building when its outline holds the whole footprint. Surveys that only come as whole files are offered rather than downloaded (`offers.ts`): the model is made without them and the action bar says what downloading them would add and cost.
+Surveys are found per provider, one module each in `sources/`: USGS 3DEP through Hobu's EPT mirror, NOAA, KyFromAbove, Indiana, IGN, NRCan, swisstopo, several German states, Luxembourg, Scotland, Slovenia, the Basque Country, Trentino, Helsinki, Japanese prefectures, OpenTopography and Open LiDAR Data by Flai. [LiDAR sources](LIDAR_SOURCES.md) has the list, and the open surveys that couldn't be used. Each provider is only asked inside a box around its territory, and one that fails or takes over 90 s is reported while the others carry on. One that didn't answer is left out of searches for the next 5 minutes, or every Generate waited out its deadline again. A survey can measure a building when its outline holds the whole footprint. Surveys that only come as whole files are offered rather than downloaded (`offers.ts`): the model is made without them and the action bar says what downloading them would add and cost.
 
 Reading (`read/`):
 
@@ -107,7 +109,7 @@ Reading (`read/`):
 - Points are cropped, noise and withheld returns dropped, and classes mapped to ground, building, vegetation and unclassified. Z units come from the header or the catalog. Without either, metres are assumed only outside regions with a height system in feet (the US, Ireland, Kuwait and the Cayman Islands).
 - LAZ is decompressed in WebAssembly by [laz-rs](https://github.com/tmontaigu/laz-rs) (`@voxelkloud/wasm-codecs`), skipping colour and intensity. Grids other than web Mercator go through proj4, with definitions for the national grids the providers use built in.
 
-Buildings are measured in 400 m batches, each read with a 30 m margin so every roof and the ground around it is whole. A read stops at 8 million points and the batch is split in two. Up to four batches run at once, each in a worker of its own (one fewer than the cores). Batch results are kept in the LiDAR cache, and the whole area's result is reused for a day if nothing failed. The workers' downloads go through the engine worker, which fetches each file once for all of them and keeps recent ones in memory, since every batch reads the same coarse EPT nodes. The `Chicago - The Loop (small)` preset measures 610 of its 1,308 buildings from about 790 MB in 3.5 to 4 minutes the first time, and in about 70 s once the survey is downloaded.
+Buildings are measured in 400 m batches, each read with a 30 m margin so every roof and the ground around it is whole. A read stops at 8 million points and the batch is split in two. A single building still over that is skipped. Up to four batches run at once, each in a worker of its own (one fewer than the cores). Batch results are kept in the LiDAR cache, and the whole area's result is reused for a day if nothing failed. The workers' downloads go through the engine worker, which fetches each file once for all of them and keeps recent ones in memory, since every batch reads the same coarse EPT nodes. The `Chicago - The Loop (small)` preset measures 610 of its 1,308 buildings from about 790 MB in 3.5 to 4 minutes the first time, and in about 70 s once the survey is downloaded.
 
 Measuring follows the add-on:
 
@@ -148,7 +150,7 @@ With `LiDAR only`, nothing is measured per building. The survey is read over the
 
 ## Meshes
 
-Almost everything is a 2.5D prism: a polygon with a top and bottom height at every point and vertical walls (`src/core/geometry/solid.ts`). Trees and measured LiDAR roofs are the exceptions. The mesher (`src/core/geometry/mesher.ts`) triangulates the polygon once and uses it for both caps. Where a surface follows the terrain it adds interior points on the grid's lattice and uses a constrained Delaunay triangulation, so the outline stays exact. Walls run along every boundary edge. Each shell is closed and consistently wound by construction, and the mesher checks that every cap covers its polygon exactly before using it. Polygons whose rings touch at a single point are shrunk by a tenth of a micron so four walls never share one edge.
+Almost everything is a 2.5D prism: a polygon with a top and bottom height at every point and vertical walls (`src/core/geometry/solid.ts`). Trees and measured LiDAR roofs are the exceptions. The mesher (`src/core/geometry/mesher.ts`) triangulates the polygon once and uses it for both caps. Where a surface follows the terrain it adds interior points on the grid's lattice and uses a constrained Delaunay triangulation, so the outline stays exact. Walls run along every boundary edge. Each shell is closed and consistently wound by construction, and the mesher checks that every cap covers its polygon exactly before using it. Polygons whose rings touch at a single point are shrunk by a tenth of a micron so four walls never share one edge, and by up to a micron if they're still pinched after that.
 
 Because solids stay 2D until the end, cropping to a circle or hexagon and splitting into plates are plain polygon clips. Every section's parts are closed shells, like the whole model.
 
@@ -160,7 +162,7 @@ PrusaSlicer, Bambu Studio and OrcaSlicer give an overlap to the part listed late
 
 Edits are a small document kept next to the settings (`src/core/edit/types.ts`), keyed by what they change: Overture IDs for buildings, building parts, road segments and water, and IDs of the app's own for trees and added shapes. Nothing in it points into the mesh, so edits carry over when the model is generated again with other settings. Changes for things a model doesn't have are kept and ignored, and the editor offers to clear them. Sizes are printed millimetres except a building's height, which is real metres, so an edited building keeps its place in the skyline at another scale.
 
-Since edits aren't tied to a place, there's one document for every area. A share link or an options file adds its edits to the ones saved in the browser rather than replacing them. Whatever of yours it changes is kept aside, like what `Undo all` and the crash screen's reset clear, and the editor offers it back (`Backup` in `src/app/state/persist.ts`). Only one copy is kept aside, so the next thing that replaces edits replaces it too. A tab only saves the edits once it has changed them, and takes on what another tab saves. Before that, an idle tab closing wrote its old copy over the other tab's.
+Since edits aren't tied to a place, there's one document for every area. A share link or an options file adds its edits to the ones saved in the browser rather than replacing them. Whatever of yours it changes is kept aside, like what `Undo all` and the crash screen's reset clear, and the editor offers it back (`Backup` in `src/app/state/persist.ts`). Only one copy is kept aside, so the next thing that replaces edits replaces it too. A tab only saves the edits, and the settings, once it has changed them, and takes on what another tab saves. Before that, an idle tab closing wrote its old copy over the other tab's.
 
 A copied link only carries what's on its area, or a link for one city took a pin marking someone's home in another. Shapes go by where they are. Edits to buildings, roads and water say nothing about where they are, so they only go when the model shown is of that area and has them (`src/app/state/linkScope.ts`). Options files still carry every edit.
 
@@ -201,6 +203,6 @@ On eight regression areas in the CLI the bar stays within 3 to 14% of a straight
 
 - Bridges are schematic: decks on evenly spaced piers, without towers, arches or trusses.
 - Building data varies by city. Buildings without a mapped height use a class default.
-- LiDAR only comes from publishers a browser can read from directly. England after 2022, the Netherlands' AHN5 and AHN6, Bavaria, Portugal and most of Italy aren't, so they use older mirrors or have none.
+- LiDAR only comes from publishers a browser can read from, directly or through the proxy. England after 2022, Portugal and most of Italy aren't, so they use older mirrors or have none.
 - Large areas need more memory and time. Around 25 km² at the default scale is comfortable on a desktop browser.
-- Areas that cross the 180th meridian or come within half a degree of the poles aren't supported.
+- Areas that cross the 180th meridian (or come within 25 m of it) or come within half a degree of the poles aren't supported.

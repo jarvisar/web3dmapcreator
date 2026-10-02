@@ -132,6 +132,25 @@ describe('picked roads', () => {
     expect(result.missingPicks).toEqual([away]);
     expect(result.pick!.owners[line]).toBe(0);
   });
+
+  it('count a short pick lying along another as on the map', () => {
+    // Picked first, so the whole road picked after wins every sample they share.
+    const piece = lonLat.slice(0, 2);
+    const result = render('laser', { routes: [route([piece, lonLat])] });
+    expect(result.pick!.owners[line]).toBe(0);
+    expect(result.missingPicks).toBeUndefined();
+  });
+
+  it('match a long pick at a large scale without filling its whole box', () => {
+    // A road picked on a regional map: one segment tens of kilometres long,
+    // here on a map 120 m across. Its box was millions of 2 mm cells.
+    const regional: LonLatLine = [
+      [centre.lon - 0.3, centre.lat - 0.2],
+      [centre.lon + 0.3, centre.lat + 0.2],
+    ];
+    const big = render('laser', { area: { lon: centre.lon, lat: centre.lat, bearing: 0, widthM: 120 }, routes: [route([regional, lonLat])] });
+    expect(big.groups.some((g) => g.id === 'route-1')).toBe(true);
+  });
 });
 
 describe('sanitizing picks', () => {
@@ -160,7 +179,16 @@ describe('sanitizing picks', () => {
   });
 
   it('drops lines that are not lon/lat', () => {
-    expect(sanitizeLines([[[1, 2], [3, 4]], [[1, 2], [200, 4]], [[1, 2], ['a', 4]], 7])).toEqual([[[1, 2], [3, 4]]]);
+    expect(sanitizeLines([[[1, 2], [3, 4]], [[1, 2], [400, 4]], [[1, 2], [3, 95]], [[1, 2], ['a', 4]], 7])).toEqual([[[1, 2], [3, 4]]]);
+  });
+
+  it('keeps picks made past the antimeridian in their own frame', () => {
+    // On a map centred at 179.999, the roads east of the line are at 180 and a bit.
+    const across: LonLatLine = [
+      [179.998, -16.79],
+      [180.002, -16.79],
+    ];
+    expect(sanitizeLines([across])).toEqual([across]);
   });
 
   it('tells the same road picked twice', () => {

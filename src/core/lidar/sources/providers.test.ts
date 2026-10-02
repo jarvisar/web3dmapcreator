@@ -6,7 +6,8 @@ import proj4 from 'proj4';
 import { describe, expect, it } from 'vitest';
 import type { GeoBounds } from '../../types';
 import { setProjector } from '../read/crs';
-import type { Fetcher } from '../read/fetcher';
+import { HttpError } from '../../data/http';
+import { CatalogError, type Fetcher } from '../read/fetcher';
 import { discover, type Provider } from './index';
 import { nrw, nrwTiles } from './nrw';
 
@@ -87,5 +88,16 @@ describe('discovery', () => {
     const { candidates, failures } = await discover(fakeFetcher(() => undefined).fetcher, cathedral, undefined, [hangs, quick]);
     expect(candidates.map((c) => c.id)).toEqual(['q']);
     expect(failures).toEqual([{ source: 'slow', reason: 'no answer within 0 s', search: true }]);
+  });
+  it('says why a catalog failed without its URL', async () => {
+    const url = 'https://maps.example.com/MapServer/1/query?f=geojson&where=1%3D1&geometry=7,50,7.1,50.1&outFields=*';
+    const throws = (id: string, error: Error): Provider => ({ id, discover: async () => Promise.reject(error) });
+    const { failures } = await discover(fakeFetcher(() => undefined).fetcher, cathedral, undefined, [
+      throws('page', new CatalogError(url, 'answered with a web page')),
+      throws('arcgis', new CatalogError(url, 'answered with an error (Error performing query operation)')),
+      throws('missing', new HttpError(404, url)),
+    ]);
+    expect(failures.map((f) => f.reason)).toEqual(['it answered with a web page', 'it answered with an error (Error performing query operation)', 'it answered HTTP 404']);
+    expect(new CatalogError(url, 'answered with a web page').message).toBe(`${url} answered with a web page.`);
   });
 });

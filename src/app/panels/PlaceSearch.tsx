@@ -3,16 +3,16 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { parseBoundsText, parseLatLon } from '../../core/geo/area';
 import type { GeoBounds, LonLat } from '../../core/types';
-import { areaForBounds } from '../lib/area';
+import { areaForBounds, LATITUDE_LIMIT } from '../lib/area';
 import { NARROW_QUERY } from '../lib/browser';
 import { formatNumber } from '../lib/format';
 import { setArea, setDrawerOpen, useApp } from '../state/store';
 
 type Suggestion =
   | { kind: 'place'; key: string; name: string; detail: string; center: LonLat }
-  | { kind: 'point'; key: string; center: LonLat }
+  | { kind: 'point'; key: string; center: LonLat; swapped?: boolean }
   | { kind: 'bounds'; key: string; bounds: GeoBounds }
-  | { kind: 'invalid'; key: string; message: string };
+  | { kind: 'invalid'; key: string; message: string; title?: string };
 
 interface PhotonFeature {
   geometry?: { coordinates?: [number, number] };
@@ -47,9 +47,15 @@ function describeFeature(feature: PhotonFeature, index: number): Suggestion | nu
   return { kind: 'place', key: `place-${index}`, name, detail: detail.slice(0, 3).join(', '), center: [coords[0], coords[1]] };
 }
 
-function localSuggestion(query: string): Suggestion | null {
+export function localSuggestion(query: string): Suggestion | null {
   const point = parseLatLon(query);
-  if (point) return { kind: 'point', key: 'point', center: point };
+  if (point && Math.abs(point[1]) <= LATITUDE_LIMIT) return { kind: 'point', key: 'point', center: point };
+  // Longitude first (GeoJSON order) reads as a latitude no model can have, or
+  // none at all, so try it the other way round.
+  const pair = query.trim().split(/\s*[,;\s]\s*/);
+  const swapped = pair.length === 2 ? parseLatLon(`${pair[1]}, ${pair[0]}`) : null;
+  if (swapped && Math.abs(swapped[1]) <= LATITUDE_LIMIT) return { kind: 'point', key: 'point', center: swapped, swapped: true };
+  if (point) return { kind: 'invalid', key: 'invalid', title: 'Too close to the poles', message: 'Areas this close to the poles are not supported.' };
   // Only all-number input counts as bounds, so an address with numbers in it is still searched.
   const body = query.includes('=') ? query.slice(query.lastIndexOf('=') + 1) : query;
   const tokens = body.replace(/[−–﹣－]/g, '-').split(/[,;\s]+/).filter(Boolean);
@@ -244,7 +250,9 @@ export function PlaceSearch({ inputId }: { inputId?: string }) {
                 {item.kind === 'point' && (
                   <>
                     <span className="search-option-name">Go to {coord(item.center[1])}, {coord(item.center[0])}</span>
-                    <span className="search-option-detail">Latitude, longitude. Keeps the area size.</span>
+                    <span className="search-option-detail">
+                      {item.swapped ? 'Read as longitude, latitude.' : 'Latitude, longitude.'} Keeps the area size.
+                    </span>
                   </>
                 )}
                 {item.kind === 'bounds' && (
@@ -257,7 +265,7 @@ export function PlaceSearch({ inputId }: { inputId?: string }) {
                 )}
                 {item.kind === 'invalid' && (
                   <>
-                    <span className="search-option-name">Not valid bounds</span>
+                    <span className="search-option-name">{item.title ?? 'Not valid bounds'}</span>
                     <span className="search-option-detail">{item.message}</span>
                   </>
                 )}

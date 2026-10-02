@@ -54,6 +54,13 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 ## Pipeline rules worth preserving
 
 - Everything samples one `HeightField`. Never sample the DEM directly in a layer.
+- Terrarium voids (-32768) and seabed garbage (specks down to -15,000 m, some
+  on land) are filled in the mosaic before anything samples it
+  (`repairElevation`). One bad pixel set the base for the whole model:
+  Waikiki came out a metre tall. Only pixels below sea level dropping far
+  more steeply than ground can are touched, so polders, mines and the Dead
+  Sea are left alone. Reclaimed land over old seabed (Singapore, Dubai)
+  isn't garbage and still adds a few mm of base.
 - Between nodes the terrain is the grid split along each cell's low-to-high
   diagonal (`geometry/lattice.ts`), `heightAt` included, and draped solids
   (terrain, land, roads, grounded buildings) are cut from those triangles
@@ -68,9 +75,13 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   inside the crop, and left out of both sections when a crown crosses a seam.
 - The mesher only accepts caps whose edges close exactly (`capIsClosed`).
   Pinched polygons (rings touching at a vertex, or a hole corner on another
-  ring's edge) are shrunk by 1e-4 mm and retried (`PINCH_MM`). Never weld by
-  coordinate. A cap cut to a print section gets the same retry, for a
-  section line through a concave corner of its outline.
+  ring's edge) are shrunk by 1e-4 mm and retried (`PINCH_MM`). Pieces still
+  pinched or failing are shrunk again by 5e-4 and 1e-3 mm (`SHRINK_STEPS`),
+  and a draped piece that still fails gets a flat cap rather than being
+  dropped: after ordinary edits, Venice's main ground piece (most of the
+  terrain) failed after one shrink and went missing from the export. Never
+  weld by coordinate. A cap cut to a print section gets the same retry, for
+  a section line through a concave corner of its outline.
 - Water: cut (>= 5,000 m2 of the whole feature), basins (ponds/fountains
   by tags, below their lowest bank), sheets (small, 0.18 mm above flattened
   ground). Cut water and basins sit 0.25 mm below the bank as a
@@ -280,7 +291,10 @@ LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
   trees are taken off (trees 'off'). Batch cells never grow for the area.
 - Records are measured in the area's own frame (rotation included) at scale 1,
   so batch cells line up with a LiDAR only model's, and published in lon/lat.
-  Generation projects them like any other feature.
+  Generation projects them like any other feature. Only buildings within 5 m
+  of the area's own outline are measured, not everything in the lon/lat box
+  around a turned or round area (Chicago turned 30° measured 77 buildings
+  for the 37 it used). Points are still read as far out as before.
 - A measured roof is a `CapSolid` (TIN top, flat underside, boundary walls).
   Section cuts clip the TIN with `clipTin` (CDT arrangement), so caps stay
   closed. `capBoundary` rejects pinched TINs rather than welding them. The
@@ -290,7 +304,11 @@ LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
   with the region moved in slightly. Without the cap, a grazing outline can
   loop forever. It returns an empty TIN when the region misses the surface
   and null only when the triangulation failed, so a section that only the
-  cap's box reaches isn't counted as a failure.
+  cap's box reaches isn't counted as a failure. When both tries fail it cuts
+  once more with vertices merged and snapped to edges within 3e-5 mm, inside
+  a frame of far points: a LiDAR only cap already cut along its water has
+  vertices millionths of a mm apart, and cutting it again for a section
+  threw. Clips that work never reach this, so their output is unchanged.
 - `thinRim` (not in the add-on) removes rim vertices on straight walls after
   the roof is clipped to the footprint.
 - `src/core` has no LAZ or proj dependency. `src/worker/lidarCodecs.ts`
@@ -309,7 +327,10 @@ LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
 - Prepared results and batch checkpoints are keyed by the source properties
   the measurement reads, listed in `measuredProps` (`source.ts`). A property
   read anywhere new goes on that list. Catalog answers are only cached when
-  they parse, so a maintenance page served with a 200 isn't kept.
+  they parse, so a maintenance page served with a 200 isn't kept, and
+  neither is an ArcGIS error (`{"error": ...}` with a 200). Whole files are
+  checked too before they're cached (`BodyCheck`): Helsinki answers a
+  missing sheet with a 200 and a line of text, and an I3S node with JSON.
 - With `preferLidar` off, mapped assemblies with more levels or a shaped roof
   the measurement lacks are kept (`preferSourceDetail`).
 
@@ -322,9 +343,11 @@ LiDAR sources (`src/core/lidar/sources/`, notes in `docs/LIDAR_SOURCES.md`):
   from a server with its User-Agent and no cookies instead. The doc lists
   what was checked and why it isn't used, so it isn't checked again.
 - Each provider has `areas` and is only asked inside them. `discover` gives
-  each one a deadline (90 s, NRCan 180) and marks its failures as searches,
-  which the worker words apart from failed reads. Catalogs are kept a day,
-  and a failed one is answered from a copy up to 30 days old.
+  each one a deadline (90 s, NRCan 180, Salzburg 240) and marks its failures
+  as searches, which the worker words apart from failed reads. One that ran
+  out its deadline is left out for 5 minutes of the session (`search.ts`),
+  or every Generate waited for it again. Catalogs are kept a day, and a
+  failed one is answered from a copy up to 30 days old.
 - `read/tiles.ts` reads what a tile's header says. Plain LAZ goes through
   laszip's chunk table (`chunks.ts`, the arithmetic coder ported and checked
   against laz-rs on a real NRW tile and a swisstopo COPC). The first read of
@@ -337,35 +360,50 @@ LiDAR sources (`src/core/lidar/sources/`, notes in `docs/LIDAR_SOURCES.md`):
   compressed: LAZ into its output (up to 768 MiB, Texas's members reach
   830), LAS cropped on the way (`readStream`), so a 2.9 GB Brussels tile is
   never held. `whole` tiles (Helsinki, Poland) ignore Range and come in one
-  download.
+  download. Whole tiles and inflated LAZ members are held once by the
+  pool's Fetcher (`held`) for every block that reads them, up to a GB (less
+  where the browser reports less memory), and let go when meshing starts.
+  Each worker inflating its own copy of a Texas member ran the tab out of
+  memory, and DC's 300 MB tiles came down once per block.
 - `wktOf` ignores a WKT record that isn't one (GUGiK's las2las sheets have
   `''`) and unquotes one LAStools wrote as a JSON string (Estonia 2024), so
   the GeoKeys decide. `wktEpsg` only takes the CRS's own code: deeper ones
   are its unit's (9003 in Anchorage's ESRI WKT) or its geographic CRS's
   (6783 for NOAA's NAD83(CORS96) / UTM zone 10N, which has no code and is
   read through its WKT).
+- `crs.ts` definitions were checked against PROJ at three points each. Don't
+  copy towgs84 strings from epsg.io's newer exports: its RD New is a
+  Molodensky-Badekas set, which proj4 reads as arcsecond rotations, and all
+  Dutch LiDAR sat 170 m off. Krovak's 3-parameter shift was 8 m off.
 - Flai's README lags its bucket: the provider also lists the bucket's
   folders for countries near the area, skips its copy of IGN (read
-  directly), finds the index-less PNOA 2022-2025 by tile name and the UTM
-  zone the names turn up in, and gives Navarra 2017 tiles their own classes.
+  directly), finds the index-less PNOA 2022-2025 by tile name, only inside
+  each block's region (`PNOA_REGIONS`), and gives Navarra 2017 tiles their
+  own classes. The same tile numbers name a square 6 degrees away in the
+  next zone, and Aragón's tiles turned up at Bragança.
 - Grids were checked against real files, not taken from the research:
   Luxembourg's 2024 blocks start at Y 55000 (member names give the top
   edge), and Japan's index polygons are cut at vector-tile edges, so a
   sheet's pieces are merged.
-- LiDAR only block checkpoints are keyed by the tiles each block reads, so a
-  block read while a catalog lacked a tile isn't kept for good. EPT surveys
-  have no tiles and keep their old keys.
+- LiDAR only block and map batch checkpoints are keyed by the tiles each one
+  reads, so one read while a catalog lacked a tile isn't kept for good. EPT
+  surveys have no tiles and keep their old keys.
 - Whole-file surveys (`staged`: format 'LAZ', which covers plain LAZ and
   LAS, ZIP members and `whole` files) are never downloaded without the
   user's approval, as in the add-on. EPT and COPC are read as before.
   A staged survey that would be read becomes an offer (`offers.ts`): for
   buildings nothing else measured (unless the rejection is one no survey
   would change), or for ones it beats by the add-on's margins, five years
-  newer or twice as dense and two returns more (`advantage`). A LiDAR only
-  block offers it where it would fill 2% of the block nothing else does.
+  newer or twice as dense and two returns more (`advantage`). A building
+  another survey read and rejected is only offered when the staged one has
+  that `advantage` over it, and each building comes from one staged survey
+  at most, the first in reading order. São Paulo was offered
+  OpenTopography's copy of the flight it had just read. A LiDAR only block
+  offers it where it would fill 2% of the block nothing else does.
   Approval is per tile (`tileKey`), kept in the LiDAR cache by the worker
-  (`approvedTiles`), so a larger area asks again for its new tiles only and
-  clearing the cache asks again for everything. The CLI's
+  (`approvedTiles`) and saved again after each read, since a big download
+  pushed it out of the LRU. A larger area asks again for its new tiles only
+  and clearing the cache asks again for everything. The CLI's
   `--download-tiles` approves everything.
 - Checkpoints with an offered survey in them are used without approval,
   since they cost nothing. A LiDAR only block read without one is saved
@@ -711,7 +749,10 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   edit) and which characters the font has no glyph for. No bundled font
   has Hebrew or Arabic. `visualOrder` lays right-to-left text out for
   fonts that do, custom SVG title fonts for now, and leaves Arabic to
-  opentype.js, which reverses and shapes it itself.
+  opentype.js, which reverses and shapes it itself. opentype.js throws on
+  some GSUB lookups (Calibri's ligatures, and Arabic in Arial or Segoe UI),
+  so an SVG title is shaped again without Latin ligatures, then a letter at
+  a time with a warning. It used to fail the whole render.
 - The view and the export are separate code, so they can disagree. The
   view hides and colours by `shown.ts`, and `ComposedMesh` only rebuilds
   its index when the styles change, with hidden marked apart from the
@@ -738,11 +779,12 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   its edits and picks to these (`bringIn`, `mergeEdits`, `mergePicks`),
   never replaces them. What it changed goes into the one backup
   (`BACKUP_KEY`), like what `Undo all`, `Undo all picks` and the crash
-  reset clear, and `BackupNote` offers it back. A tab writes edits and
-  picks only once it changed them (`written` is seeded at load) and takes
-  on another tab's saves (`storage` in `sync.ts`), dropping its undo
+  reset clear, and `BackupNote` offers it back. A tab writes edits, picks
+  and settings only once it changed them (`written` is seeded at load) and
+  takes on another tab's saves (`storage` in `sync.ts`), dropping its undo
   steps. An idle tab closing used to write its old copy over the other
-  tab's, and a broken settings key made the next save wipe them.
+  tab's, settings and area included, and a broken settings key made the
+  next save wipe them.
 
 SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.md`):
 
@@ -793,8 +835,10 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
 - Share links: `#a=...&o=svg`, and a copied link adds `s=` (settings that
   differ from the defaults, base64url JSON). An area without `o=` opens as
   a model, whatever mode the recipient was in. Old SVGmap links (`#s=` with
-  the area inside) still open. The `s=` part is dropped from the address
-  bar once read.
+  the area inside) still open, with the scale lock off so they keep their
+  width: SVGmap never put the lock in links, and locked by default here
+  they opened at 1:20,000. The `s=` part is dropped from the address bar
+  once read.
 - Routes (`routes.ts`): OpenFreeMap has no ids or names on road lines, so
   picks are kept as lon/lat lines and matched to the prepared lines before
   the line cleanup, which then never thins a route. Picks nothing matched

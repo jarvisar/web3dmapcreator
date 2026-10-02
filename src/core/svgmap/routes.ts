@@ -87,23 +87,18 @@ export function pickedLines(
   const tolerance = Math.max(TOLERANCE_MIN_MM, TOLERANCE_M / transform.metresPerMm);
   const grid = new Map<number, Segment[]>();
   const picks: LonLatLine[] = [];
+  const bounds = lineCells(lines);
   const add = (line: LonLatLine, owner: number) => {
     const path = toCanvas(line, transform);
     const pick = picks.push(line) - 1;
+    if (!bounds) return;
     for (let i = 1; i < path.length; i++) {
       const s: Segment = { owner, pick, ax: path[i - 1][0], ay: path[i - 1][1], bx: path[i][0], by: path[i][1] };
-      const x0 = Math.floor((Math.min(s.ax, s.bx) - tolerance) / CELL_MM);
-      const x1 = Math.floor((Math.max(s.ax, s.bx) + tolerance) / CELL_MM);
-      const y0 = Math.floor((Math.min(s.ay, s.by) - tolerance) / CELL_MM);
-      const y1 = Math.floor((Math.max(s.ay, s.by) + tolerance) / CELL_MM);
-      for (let x = x0; x <= x1; x++) {
-        for (let y = y0; y <= y1; y++) {
-          const key = cellKey(x, y);
-          const cell = grid.get(key);
-          if (cell) cell.push(s);
-          else grid.set(key, [s]);
-        }
-      }
+      segmentCells(s, tolerance, bounds, (key) => {
+        const cell = grid.get(key);
+        if (cell) cell.push(s);
+        else grid.set(key, [s]);
+      });
     }
   };
   routes.forEach((route, i) => route.lines.forEach((line) => add(line, i)));
@@ -125,6 +120,11 @@ export function pickedLines(
       let bestDistance = tolerance;
       for (const s of cell) {
         const d = segmentDistance(x, y, s);
+        if (d > tolerance) continue;
+        // Every pick within reach counts as found, not only the nearest. A short
+        // pick whose ends touch its neighbours lost every sample to them and was
+        // said not to be on the map.
+        nearest.push(s);
         if (d <= bestDistance) {
           bestDistance = d;
           best = s;
@@ -132,7 +132,6 @@ export function pickedLines(
       }
       if (!best) continue;
       votes.set(best.owner, (votes.get(best.owner) ?? 0) + 1);
-      nearest.push(best);
     }
     let owner = -2;
     let most = 0;
@@ -168,6 +167,58 @@ function sample(path: Path, spacing: number): Point[] {
 
 function cellKey(x: number, y: number): number {
   return (x + 2 ** 20) * 2 ** 21 + (y + 2 ** 20);
+}
+
+type CellBox = [number, number, number, number];
+
+/** The cells the pickable lines' points fall in, as a box of cell indices. Null with none. */
+function lineCells(lines: PreparedLine[]): CellBox | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const line of lines) {
+    if (!PICK_LAYERS.includes(line.layer)) continue;
+    for (const [x, y] of line.path) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (!Number.isFinite(minX)) return null;
+  return [Math.floor(minX / CELL_MM), Math.floor(minY / CELL_MM), Math.floor(maxX / CELL_MM), Math.floor(maxY / CELL_MM)];
+}
+
+/**
+ * The cells within `tolerance` of a segment, column by column, and only
+ * inside `bounds`. Every cell of its box went in before, and a rail line
+ * picked on a regional map was millions of cells at 1:500, past what a Map
+ * holds, so every render failed.
+ */
+function segmentCells(s: Segment, tolerance: number, bounds: CellBox, fn: (key: number) => void): void {
+  const reach = tolerance + 1e-9;
+  const minX = Math.min(s.ax, s.bx);
+  const maxX = Math.max(s.ax, s.bx);
+  const dx = s.bx - s.ax;
+  const x0 = Math.max(bounds[0], Math.floor((minX - reach) / CELL_MM));
+  const x1 = Math.min(bounds[2], Math.floor((maxX + reach) / CELL_MM));
+  for (let x = x0; x <= x1; x++) {
+    // The stretch of the segment within reach of this column, and its height.
+    const from = Math.max(minX, x * CELL_MM - reach);
+    const to = Math.min(maxX, (x + 1) * CELL_MM + reach);
+    let low = Math.min(s.ay, s.by);
+    let high = Math.max(s.ay, s.by);
+    if (dx !== 0) {
+      const ya = s.ay + ((from - s.ax) / dx) * (s.by - s.ay);
+      const yb = s.ay + ((to - s.ax) / dx) * (s.by - s.ay);
+      low = Math.min(ya, yb);
+      high = Math.max(ya, yb);
+    }
+    const y0 = Math.max(bounds[1], Math.floor((low - reach) / CELL_MM));
+    const y1 = Math.min(bounds[3], Math.floor((high + reach) / CELL_MM));
+    for (let y = y0; y <= y1; y++) fn(cellKey(x, y));
+  }
 }
 
 /** Lines a preview can pick, before any cleanup, and how to take them back to lon/lat. */
@@ -264,7 +315,9 @@ function lonLatLine(value: unknown): LonLatLine | null {
     if (!Array.isArray(p) || p.length !== 2) return null;
     const [lon, lat] = p;
     if (typeof lon !== 'number' || typeof lat !== 'number' || !Number.isFinite(lon) || !Number.isFinite(lat)) return null;
-    if (Math.abs(lon) > 180 || Math.abs(lat) > 90) return null;
+    // Picks stay in the frame of the map they were made on, so one past the
+    // antimeridian is a little over 180. Wrapped, it no longer matched its road.
+    if (Math.abs(lon) > 360 || Math.abs(lat) > 90) return null;
     out.push([lon, lat]);
   }
   return out;

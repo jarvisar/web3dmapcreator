@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GeoBounds } from '../../types';
 import type { Fetcher } from '../read/fetcher';
-import { discover as discoverAll, flaiInventory, PROVIDERS, sphericalArea, USGS_CATALOG } from './index';
+import { discover as discoverAll, flaiInventory, PROVIDERS, providersFor, sphericalArea, USGS_CATALOG } from './index';
 
 type Box = [number, number, number, number];
 
@@ -87,8 +87,15 @@ const listing = (keys: string[]) =>
   `<ListBucketResult><IsTruncated>false</IsTruncated>${keys.map((k) => `<Contents><Key>${k}</Key><ETag>"r"</ETag></Contents>`).join('')}</ListBucketResult>`;
 
 // Somewhere no national service covers. Only USGS and Flai are asked: the
-// other worldwide catalogs have tests of their own.
-const discover = (fetcher: Fetcher, box: GeoBounds) => discoverAll(fetcher, box, undefined, PROVIDERS.filter((p) => p.id === 'usgs' || p.id === 'flai'));
+// other worldwide catalogs have tests of their own. The made-up USGS surveys
+// sit next to Flai's, outside the US, so USGS's areas are left off.
+const discover = (fetcher: Fetcher, box: GeoBounds) =>
+  discoverAll(
+    fetcher,
+    box,
+    undefined,
+    PROVIDERS.filter((p) => p.id === 'usgs' || p.id === 'flai').map((p) => ({ ...p, areas: undefined })),
+  );
 const bbox: GeoBounds = { west: 20.001, south: 60.001, east: 20.009, north: 60.009 };
 
 describe('Flai inventory', () => {
@@ -169,5 +176,13 @@ describe('LiDAR discovery', () => {
     const { fetcher, requested } = fakeFetcher((url) => (url.endsWith('README.md') ? denmark : url === USGS_CATALOG ? { features: [] } : undefined));
     await discover(fetcher, copenhagen);
     expect(requested.some((u) => u.includes('list-type=2') && u.includes(encodeURIComponent('data/DK/SDFI/DHM/shp/')))).toBe(true);
+  });
+  it("only asks USGS's catalog about the US and its territories", () => {
+    const around = (lon: number, lat: number): GeoBounds => ({ west: lon - 0.001, south: lat - 0.001, east: lon + 0.001, north: lat + 0.001 });
+    const asked = (lon: number, lat: number) => providersFor(around(lon, lat)).some((p) => p.id === 'usgs');
+    // Chicago, Anchorage, Adak, Honolulu, San Juan, Mona Island, Hagåtña, Saipan, Pago Pago.
+    for (const [lon, lat] of [[-87.63, 41.88], [-149.89, 61.22], [-176.64, 51.88], [-157.86, 21.31], [-66.11, 18.47], [-67.9, 18.08], [144.75, 13.47], [145.75, 15.18], [-170.7, -14.28]]) expect(asked(lon, lat)).toBe(true);
+    // Paris, Tokyo, Mexico City, Reykjavik.
+    for (const [lon, lat] of [[2.35, 48.86], [139.69, 35.69], [-99.13, 19.43], [-21.94, 64.15]]) expect(asked(lon, lat)).toBe(false);
   });
 });

@@ -26,6 +26,7 @@ class FakeWorker {
 function setup() {
   const workers: FakeWorker[] = [];
   const onReplaced = vi.fn();
+  const onOutdated = vi.fn();
   const client = new EngineClient({
     createWorker: () => {
       const worker = new FakeWorker();
@@ -33,8 +34,9 @@ function setup() {
       return worker as unknown as Worker;
     },
     onReplaced,
+    onOutdated,
   });
-  return { client, workers, onReplaced };
+  return { client, workers, onReplaced, onOutdated };
 }
 
 const request = { area: {} as AreaSpec, settings: {} as ModelSettings };
@@ -176,5 +178,71 @@ describe('EngineClient', () => {
     expect(workers[1].sent).toEqual([{ type: 'generate', id: 3, request }]);
     workers[1].reply({ type: 'generated', id: 3, result: { parts: [] } as never });
     await expect(second).resolves.toEqual({ parts: [] });
+  });
+
+  it('sends a survey search again to a replacement worker', async () => {
+    vi.useFakeTimers();
+    const { client, workers } = setup();
+    const job = client.generate(request);
+    const search = client.surveys({} as SurveyQuery);
+    workers[0].reply({ type: 'progress', id: 1, progress: { stage: 'data', label: 'Finding map data', fraction: 0 } });
+    // The cancel isn't answered in time, so the worker goes.
+    client.cancel();
+    vi.advanceTimersByTime(2000);
+    await expect(job).rejects.toBeInstanceOf(CancelledError);
+    expect(workers[0].terminated).toBe(true);
+    expect(workers[1].sent).toEqual([{ type: 'surveys', id: 2, query: {} }]);
+    workers[1].reply({ type: 'surveys', id: 2, result: { surveys: [], failures: [] } });
+    await expect(search).resolves.toEqual({ surveys: [], failures: [] });
+  });
+
+  it("doesn't count an edit held behind a generation as stuck", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const { client, workers } = setup();
+    const first = client.generate(request);
+    vi.advanceTimersByTime(5000);
+    // The worker holds this until the generation ends.
+    const edit = client.edit({} as never);
+    vi.advanceTimersByTime(25000);
+    client.cancel();
+    workers[0].reply({ type: 'error', id: 1, message: 'Cancelled', cancelled: true });
+    await expect(first).rejects.toBeInstanceOf(CancelledError);
+    vi.advanceTimersByTime(100);
+    const second = client.generate(request);
+    expect(workers).toHaveLength(1);
+    workers[0].reply({ type: 'edited', id: 2, update: { warnings: [] } as never });
+    await expect(edit).resolves.toEqual({ warnings: [] });
+    workers[0].reply({ type: 'generated', id: 3, result: { parts: [] } as never });
+    await expect(second).resolves.toEqual({ parts: [] });
+
+    // Once it could start, an edit that takes too long is still stuck.
+    const late = client.edit({} as never);
+    vi.advanceTimersByTime(11000);
+    const third = client.generate(request);
+    await expect(late).rejects.toBeInstanceOf(CancelledError);
+    expect(workers).toHaveLength(2);
+    expect(workers[1].sent).toEqual([{ type: 'generate', id: 5, request }]);
+    workers[1].reply({ type: 'generated', id: 5, result: { parts: [] } as never });
+    await expect(third).resolves.toEqual({ parts: [] });
+  });
+
+  it('drops a download that finished before the worker read its cancel', async () => {
+    vi.useFakeTimers();
+    const { client, workers } = setup();
+    const job = client.export({} as never);
+    client.cancelExport();
+    // Written synchronously, the file comes back as the cancel arrives.
+    workers[0].reply({ type: 'exported', id: 1, result: { fileName: 'model.3mf', data: new Blob(['x']), plates: 1, warnings: [] } });
+    await expect(job).rejects.toBeInstanceOf(CancelledError);
+    vi.advanceTimersByTime(2000);
+    expect(workers).toHaveLength(1);
+    expect(workers[0].terminated).toBe(false);
+  });
+
+  it('passes on that a worker script was from an older version', () => {
+    const { client, workers, onOutdated } = setup();
+    void client.surveys({} as SurveyQuery);
+    workers[0].reply({ type: 'outdated' });
+    expect(onOutdated).toHaveBeenCalledTimes(1);
   });
 });

@@ -30,9 +30,11 @@ interface LayerRowProps {
   help: string;
   children: ReactNode;
   resetKey?: SettingsSection;
+  /** The field the row's checkbox sets, which a reset leaves alone. */
+  toggleField?: string;
 }
 
-function LayerRow({ layer, label, group, on, onToggle, checkLabel, summary, help, children, resetKey }: LayerRowProps) {
+function LayerRow({ layer, label, group, on, onToggle, checkLabel, summary, help, children, resetKey, toggleField = 'enabled' }: LayerRowProps) {
   const open = useApp((state) => state.ui.layers[layer] ?? false);
   const colour = useApp((state) => state.palette[group].hex);
   return (
@@ -50,7 +52,7 @@ function LayerRow({ layer, label, group, on, onToggle, checkLabel, summary, help
       {children}
       {resetKey && (
         <div className="layer-foot">
-          <button type="button" className="link-btn" onClick={() => resetSettingsSection(resetKey)}>
+          <button type="button" className="link-btn" onClick={() => resetSettingsSection(resetKey, [toggleField])}>
             Reset {/[A-Z].*[A-Z]/.test(label) ? label : label.toLowerCase()} settings
           </button>
         </div>
@@ -658,6 +660,13 @@ function SurveyPicker({ settings, area }: { settings: ModelSettings; area: AreaS
         ? `Couldn't search: ${here.error}`
         : `${here.list.length ? `${here.list.length} found here` : 'None found here'}${unanswered}`;
   const preference = settings.lidar.surveyPreference;
+  // A whole-file survey goes first in the order but isn't read until its
+  // tiles are downloaded, so say what's read meanwhile.
+  const meanwhile = first?.staged ? list.find((s) => !s.staged) : undefined;
+  const staged = first?.staged
+    ? `${first.name} only comes as whole tiles, which are read once you agree to download them. ${meanwhile ? `Until then ${meanwhile.name} is read.` : 'Until then there is nothing else to read here.'}`
+    : '';
+  const hint = [first?.note, staged].filter(Boolean).join(' ');
   return (
     <>
       <SelectField
@@ -666,9 +675,9 @@ function SurveyPicker({ settings, area }: { settings: ModelSettings; area: AreaS
         value={chosen}
         onChange={(survey) => patchSettings('lidar', { survey })}
         help="Automatic picks for you, as set under Prefer. A survey picked here is read first, and the others still fill in where it doesn't reach. The list shows each survey's year, its returns per m² around this area and how much of the area it covers. Finding them reads no points. LiDAR buildings and LiDAR only models use the same pick."
-        hint={!chosen && first?.note ? first.note : undefined}
+        hint={!chosen && hint ? hint : undefined}
       >
-        <option value="">{first ? `Automatic: ${first.name}${first.year ? ` (${first.year})` : ''}` : 'Automatic'}</option>
+        <option value="">{first ? `Automatic: ${first.name}${first.year ? ` (${first.year})` : ''}${first.staged ? ', whole tiles' : ''}` : 'Automatic'}</option>
         {!listed && <option value={chosen}>{`${surveyName(chosen)}${here?.status === 'done' ? ', not found here' : ''}`}</option>}
         {list.map((s) => (
           <option key={s.url} value={s.url}>
@@ -700,7 +709,7 @@ function SurveyPicker({ settings, area }: { settings: ModelSettings; area: AreaS
         <NumberField
           label="Older by up to"
           value={settings.lidar.olderYears}
-          onChange={(olderYears) => patchSettings('lidar', { olderYears })}
+          onChange={(olderYears) => patchSettings('lidar', { olderYears: Math.round(olderYears) })}
           {...modelFieldRange('lidar', 'olderYears')}
           step={1}
           decimals={0}
@@ -1177,6 +1186,7 @@ export function LayersPanel() {
               summary={terrain.elevation ? `Elevation ×${formatNumber(terrain.exaggeration, 2)} · ${terrain.resolution} cells` : 'Flat base'}
               help="Ground shape from public elevation data. Off builds a flat base and skips the elevation download."
               resetKey="terrain"
+              toggleField="elevation"
             >
               <TerrainOptions terrain={terrain} />
             </LayerRow>

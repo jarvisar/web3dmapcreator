@@ -62,6 +62,9 @@ export function decodeSvgSettings(encoded: string): SharedSvg | null {
     if (typeof bearing === 'number' && Number.isFinite(bearing)) out.rotationDeg = bearing;
     if (typeof widthM === 'number' && widthM > 0 && Number.isFinite(widthM)) out.widthM = widthM;
     shared.area = out;
+    // SVGmap kept its scale lock out of links, and it was off there. With the
+    // lock on by default here, the link's width gave way to the default scale.
+    if (out.widthM !== undefined && json.scaleLocked === undefined) shared.svg.scaleLocked = false;
   }
   const product = json.product;
   if (isObject(product) && typeof product.shape === 'string' && ['rect', 'rounded', 'circle', 'hexagon'].includes(product.shape)) {

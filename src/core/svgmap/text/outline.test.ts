@@ -55,4 +55,34 @@ describe('textGeometry', () => {
     expect(heights('Aאב')).toEqual([400, 200, 100]);
     expect(heights('AAא')).toEqual([400, 400, 100]);
   });
+
+  it('draws a letter at a time when the font cannot be shaped', () => {
+    // As opentype.js does with Calibri, or Arial on Arabic.
+    const arabic = new Font({
+      familyName: 'Test',
+      styleName: 'Regular',
+      unitsPerEm: 1000,
+      ascender: 800,
+      descender: -200,
+      glyphs: [new Glyph({ name: '.notdef', advanceWidth: 100, path: new Path() }), glyph('alef', 0x627, 100), glyph('beh', 0x628, 200), glyph('teh', 0x62a, 300), glyph('A', 0x41, 400)],
+    });
+    Object.assign(arabic, {
+      kerningPairs: {},
+      stringToGlyphs: () => {
+        throw new Error('lookupType: 7 - substFormat: 1 is not yet supported');
+      },
+      getKerningValue: () => {
+        throw new Error('lookupType: 9 is not yet supported');
+      },
+    });
+    const g = textGeometry({ kind: 'outline', font: arabic }, 'ابت A');
+    expect(g.unshaped).toBe(true);
+    const order = g.rings
+      .map((ring) => ({ x: Math.min(...ring.map((p) => p[0])), h: -Math.min(...ring.map((p) => p[1])) }))
+      .sort((a, b) => a.x - b.x)
+      .map((r) => Math.round(r.h * 1000));
+    // Arabic right to left, since opentype.js didn't reverse it.
+    expect(order).toEqual([400, 300, 200, 100]);
+    expect(textGeometry({ kind: 'outline', font }, 'AA').unshaped).toBeUndefined();
+  });
 });

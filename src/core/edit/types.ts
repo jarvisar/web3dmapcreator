@@ -140,7 +140,10 @@ function lonLat(value: unknown): LonLat | null {
 }
 
 function text(value: unknown, max: number): string {
-  return typeof value === 'string' ? value.slice(0, max) : '';
+  if (typeof value !== 'string') return '';
+  const cut = value.slice(0, max);
+  // Not through the middle of an emoji, which left half of one to print as a box.
+  return /[\uD800-\uDBFF]$/.test(cut) && value.length > max ? cut.slice(0, -1) : cut;
 }
 
 /**

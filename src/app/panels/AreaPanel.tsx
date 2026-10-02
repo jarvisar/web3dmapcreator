@@ -20,6 +20,12 @@ import { Section } from './Section';
 
 const SEARCH_ID = 'place-search-input';
 const LARGE_AREA_KM2 = 25;
+// LiDAR downloads per km², in GB, as the Layers help gives them. Past a
+// square kilometre that's worth saying before Generate, not after.
+const LIDAR_GB_PER_KM2 = { buildings: [0.15, 1.5], model: [0.075, 1.5] } as const;
+const LIDAR_AREA_KM2 = 1;
+
+const gigabytes = (gb: number) => (gb >= 1 ? `${formatNumber(gb, 1)} GB` : `${Math.round(gb * 1000)} MB`);
 
 function areaSummary(placeName: string, shape: AreaShape, widthM: number, heightM: number, scale: string): string {
   const size = formatSizePair(widthM, heightM) + scale;
@@ -32,6 +38,9 @@ export function AreaPanel() {
   const placeName = useApp((state) => state.placeName);
   const scale = useApp((state) => state.settings.scale);
   const svgScale = useApp((state) => state.svg.scale);
+  const lidar = useApp((state) =>
+    state.settings.modelSource === 'lidar' ? 'model' : state.settings.buildings.enabled && state.settings.lidar.enabled ? 'buildings' : null,
+  );
   const svg = output === 'svg';
   const problem = validateArea(area);
   const km2 = areaKm2(area);
@@ -186,6 +195,15 @@ export function AreaPanel() {
         <div className="notice notice-warning">
           <TriangleAlert size={16} aria-hidden="true" />
           <span>This is a large area. Downloading and generating will be slow and use a lot of memory. Try a smaller area first.</span>
+        </div>
+      )}
+      {!problem && !svg && lidar && km2 > LIDAR_AREA_KM2 && (
+        <div className="notice notice-warning">
+          <TriangleAlert size={16} aria-hidden="true" />
+          <span>
+            With LiDAR on, expect {gigabytes(km2 * LIDAR_GB_PER_KM2[lidar][0])} to {gigabytes(km2 * LIDAR_GB_PER_KM2[lidar][1])} of downloads for
+            this area, depending on the survey. Try a small area first.
+          </span>
         </div>
       )}
 

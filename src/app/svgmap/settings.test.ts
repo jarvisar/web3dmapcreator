@@ -305,6 +305,10 @@ describe('share links', () => {
     expect(shared.svg!.area).toEqual({ center: [-0.11, 51.508], rotationDeg: 15, widthM: 5000 });
     expect(shared.svg!.shape).toBe('circle');
     expect(shared.svg!.svg.mode).toBe('print');
+    // Its width sets the map, not the default scale.
+    expect(shared.svg!.svg.scaleLocked).toBe(false);
+    const area = fitAreaToPiece({ ...engineArea, ...shared.svg!.area, shape: 'circle', heightM: 5000 }, shared.svg!.svg).area;
+    expect(area.widthM).toBeCloseTo(5000, 0);
   });
 
   it('say which output the area is for', () => {

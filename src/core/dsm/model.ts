@@ -9,7 +9,7 @@
 import { areaModelRing, effectiveScale } from '../geo/area';
 import { Projection } from '../geo/projection';
 import { capBoundary } from '../geometry/cap';
-import { clipToBox, difference, intersection, offsetPolygons, openSharp, ringArea, ringBounds, simplifyPolygons, union } from '../geometry/polygon';
+import { clipToBox, difference, intersection, offsetPolygons, openSharp, PINCH_MM, ringArea, ringBounds, simplifyPolygons, union } from '../geometry/polygon';
 import { rowCrossings } from '../geometry/scanline';
 import type { CapSolid, Layer, PrismSolid } from '../geometry/solid';
 import { clipTin, type Tin } from '../geometry/tinclip';
@@ -44,6 +44,9 @@ const OUTLINE_CELLS = 1.5;
 const SEAM_MM = 0.005;
 // Steps a cut takes from the map's shoreline back to the survey's (followMap).
 const TAPER_STEPS = 4;
+// More of the area's shape than this outside every survey read gets a
+// warning. Less is usually two outlines disagreeing at an edge.
+const UNCOVERED_SHARE = 0.02;
 // The share of the surface step meshSurface takes. Straightening the walls takes the rest.
 const SURFACE_MESHED = 0.8;
 
@@ -240,8 +243,10 @@ function landRegion(crop: Ring, water: MultiPolygon, minIsland: number): MultiPo
   const land = difference(shape, water);
   const opened = openSharp(land, SLIVER_MM, false);
   const clear = difference(shape, offsetPolygons(water, 2 * SLIVER_MM, 'round'));
-  // Holes are cut water and all stay.
-  return union(opened, clear).filter((polygon) => Math.abs(ringArea(polygon[0])) >= minIsland);
+  // Holes are cut water and all stay. The opening can reach a unit past the
+  // shape, and the water cut from the shape around that came out with rings
+  // crossing themselves along a round edge, which wouldn't mesh.
+  return intersection(union(opened, clear), shape).filter((polygon) => Math.abs(ringArea(polygon[0])) >= minIsland);
 }
 
 /** What meshing needs from compose. */
@@ -302,10 +307,16 @@ function composeHeights(input: SurfaceModelInput, mmPerMetre: number, crop: Ring
   return { heights: result.heights, cut: result.cut, waterTop: result.waterTop, detail, groundMaxMm: result.groundMaxMm, counts: result.counts };
 }
 
-/** The surface cut to a region, pulled a micron apart where two outlines only meet at a point. */
-function cutSurface(tin: Tin, region: MultiPolygon): Tin {
+/**
+ * The surface cut to a region inside `shape`, pulled a micron apart where two
+ * outlines only meet at a point.
+ */
+function cutSurface(tin: Tin, region: MultiPolygon, shape: MultiPolygon): Tin {
   let clipped = clipTin(tin, region);
-  if (clipped && !capBoundary(clipped)) clipped = clipTin(tin, offsetPolygons(region, -1e-3, 'miter'));
+  // The triangulation can get stuck on an outline grazing the TIN, and
+  // pulling it in didn't help there. A micron more land did.
+  if (!clipped) clipped = clipTin(tin, intersection(offsetPolygons(region, 1e-3, 'miter'), shape));
+  if (!clipped || !capBoundary(clipped)) clipped = clipTin(tin, offsetPolygons(region, -1e-3, 'miter'));
   if (!clipped?.triangles.length || !capBoundary(clipped)) throw new Error('The LiDAR surface could not be cut to the area shape. Try the rectangle shape.');
   return clipped;
 }
@@ -357,8 +368,13 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
     // A layer keeps every island the opening leaves, since nothing falls out.
     const region = landRegion(crop, cut, result.waterTop ? 0 : ISLAND_MIN_MM2);
     if (!region.length) throw new Error('Nothing but water is left in this area. Move it onto land, or recess the water.');
-    tin = cutSurface(tin, region);
-    const wet = difference([[crop]], region);
+    tin = cutSurface(tin, region, [[crop]]);
+    // Where the land runs along a slanted edge of the shape, the difference
+    // leaves spikes no wider than a unit along it, and a water piece with one
+    // wouldn't mesh. A unit's opening takes them out. A rectangle's edges
+    // run along the units, so it leaves none there.
+    let wet = difference([[crop]], region);
+    if (!rectangle) wet = offsetPolygons(offsetPolygons(wet, -PINCH_MM, 'miter'), PINCH_MM, 'miter');
     if (result.waterTop) {
       ({ floors, water } = waterLayer(wet, result.waterTop, settings.water.thicknessMm, cells));
       surfaceWater = water.map((w) => ({ polygons: [w.polygon], floor: typeof w.bottom === 'number' && w.bottom > 0 ? w.bottom : null }));
@@ -366,7 +382,7 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
       surfaceWater = [{ polygons: wet, floor: null }];
     }
   } else if (!rectangle) {
-    tin = cutSurface(tin, [[crop]]);
+    tin = cutSurface(tin, [[crop]], [[crop]]);
   }
   const solid: CapSolid = { kind: 'cap', role: 'terrain', vertices: tin.vertices, triangles: tin.triangles, bottom: 0 };
   const layersOut: Layer[] = [{ id: 'city', name: 'City', role: 'terrain', solids: [solid, ...floors] }];
@@ -385,7 +401,9 @@ export async function surfaceModel(input: SurfaceModelInput): Promise<ModelSpec>
   stats.lidar_model_cell_m = Math.round(grid.cell * 100) / 100;
   stats.lidar_model_grid = `${nx} x ${ny}`;
   stats.lidar_model_coverage = Math.round(surface.coverage * 1000) / 1000;
-  if (surface.coverage < 0.5) warnings.push('Much of the area has no LiDAR returns. It may be water, or outside the survey.');
+  const uncovered = surface.uncovered ?? 0;
+  if (uncovered > UNCOVERED_SHARE) warnings.push(`About ${Math.round(uncovered * 100)}% of the area is outside every LiDAR survey read here, so it has no returns. It's filled in from around it and can come out flat, or as water.`);
+  else if (surface.coverage < 0.5) warnings.push('Much of the area has no LiDAR returns. It may be water, or outside the survey.');
   if (grid.cell > surface.requestedCellM + 1e-9) {
     warnings.push(
       `The survey is too sparse for ${surface.requestedCellM.toFixed(2)} m cells, so the model uses ${grid.cell.toFixed(2)} m cells. Smaller cells won't add points the survey doesn't have.`,

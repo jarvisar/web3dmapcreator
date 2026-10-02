@@ -9,9 +9,11 @@ import { Projection } from '../../geo/projection';
 import type { GeoBounds } from '../../types';
 import type { LazChunk } from './chunks';
 import { crsFromEpsg, lonLatTransforms } from './crs';
-import type { Fetcher } from './fetcher';
+import { HttpError } from '../../data/http';
+import { Fetcher } from './fetcher';
 import { setLazDecoder } from './laz';
 import { checkTile, readTiles, tileDensity } from './tiles';
+import { zipMember } from './zip';
 
 vi.mock('./chunks', async (original) => ({
   ...(await original<typeof import('./chunks')>()),
@@ -120,8 +122,8 @@ function fakeFetcher(files: Record<string, Uint8Array>) {
     if (!files[url]) throw new Error(`404 ${url}`);
     return files[url];
   };
-  const fetcher = {
-    downloaded: 0,
+  // A real Fetcher, so whole tiles and inflated members are held the way the pool holds them.
+  const fetcher = Object.assign(new Fetcher(), {
     async range(url: string, start: number, end: number) {
       requested.push(`${url}#${start}-${end}`);
       if (end > file(url).length) throw new Error(`Range ${start}-${end} past the end of ${url}`);
@@ -139,8 +141,8 @@ function fakeFetcher(files: Record<string, Uint8Array>) {
       if (value !== undefined) notes.set(key, value);
       return notes.get(key) ?? '';
     },
-  };
-  return { fetcher: fetcher as unknown as Fetcher, requested, notes };
+  });
+  return { fetcher: fetcher as Fetcher, requested, notes };
 }
 
 function bboxOf(x0: number, y0: number, x1: number, y1: number): GeoBounds {
@@ -225,6 +227,34 @@ describe('uncompressed LAS tiles', () => {
     expect(read.count).toBe(5);
     expect(requested).toEqual([url]);
   });
+
+  it('downloads a whole file once for reads side by side', async () => {
+    const { fetcher, requested } = fakeFetcher({ [url]: tile(points) });
+    const halves = [bboxOf(0, 5621000, 500, 5621100), bboxOf(500, 5621000, 1000, 5621100)];
+    const reads = await Promise.all(halves.map((box) => readTiles(fetcher, [{ ...entry(), whole: true }], box, { frame })));
+    expect(reads[0].points.count + reads[1].points.count).toBe(5);
+    expect(requested).toEqual([url]);
+  });
+});
+
+describe('tiles with no file behind them', () => {
+  const sea = 'https://example.com/tiles/sea.laz';
+  const gone = 'https://example.com/tiles/gone.laz';
+  // Helsinki's answer, with HTTP 200, for a sheet it has no file for.
+  const message = new TextEncoder().encode('Tiedostoa ei voi ladata. File not found [error: nonexistent file]');
+
+  it('are left out, and the tiles read with them still count', async () => {
+    const { fetcher } = fakeFetcher({ [url]: tile(points), [sea]: message });
+    const range = fetcher.range.bind(fetcher);
+    fetcher.range = (u, start, end) => (u === gone ? Promise.reject(new HttpError(404, u)) : range(u, start, end));
+    const { points: read } = await readTiles(fetcher, [{ ...entry(), url: sea, whole: true }, { ...entry(), url: gone }, { ...entry(), whole: true }], everything, { frame });
+    expect(read.count).toBe(5);
+  });
+
+  it('fail a read that has nothing else, saying what the server answered', async () => {
+    const { fetcher } = fakeFetcher({ [sea]: message });
+    await expect(readTiles(fetcher, [{ ...entry(), url: sea, whole: true }], everything, { frame })).rejects.toThrow(/answered "Tiedostoa ei voi ladata/);
+  });
 });
 
 describe('tiles in ZIPs', () => {
@@ -283,6 +313,16 @@ describe('tiles in ZIPs', () => {
     const { points: read } = await readTiles(fetcher, [{ url: zipUrl, bbox: entry().bbox, size: zip.length }], everything, { frame });
     expect(read.count).toBe(5);
   });
+
+  it('inflates a deflated LAZ member once for reads side by side', async () => {
+    const zip = zipSync({ 'west.laz': [tile(points, 2), { level: 6 }] });
+    const { fetcher, requested } = fakeFetcher({ [zipUrl]: zip });
+    const halves = [bboxOf(0, 5621000, 500, 5621100), bboxOf(500, 5621000, 1000, 5621100)];
+    const reads = await Promise.all(halves.map((box) => readTiles(fetcher, [{ url: zipUrl, bbox: entry().bbox, size: zip.length }], box, { frame })));
+    expect(reads[0].points.count + reads[1].points.count).toBe(5);
+    const member = (await zipMember(async (start, end) => zip.slice(start, end), zip.subarray(0, 375), zip.length))!;
+    expect(requested.filter((r) => r === `${zipUrl}#${member.offset}-${member.offset + member.compressedSize}`)).toHaveLength(1);
+  });
 });
 
 describe('checking a tile before offering it', () => {
@@ -322,5 +362,15 @@ describe('tileDensity', () => {
     // Nothing to divide by, or nothing it may read.
     expect(await tileDensity(fakeFetcher({ [url]: tile(points, 2) }).fetcher, entry())).toBe(null);
     expect(await tileDensity(fakeFetcher({ [url]: bytes }).fetcher, { ...entry(), whole: true })).toBe(null);
+  });
+
+  it('counts a grid in US feet from its GeoKeys code alone', async () => {
+    const bytes = tile(points, 2);
+    const view = new DataView(bytes.buffer);
+    // Illinois East (ftUS) in the projected CRS key, 1000 by 100 feet.
+    view.setUint16(375 + 54 + 8 + 6, 3435, true);
+    [1000, 0, 5621100, 5621000].forEach((v, k) => view.setFloat64(179 + 8 * k, v, true));
+    const foot = 1200 / 3937;
+    expect(await tileDensity(fakeFetcher({ [url]: bytes }).fetcher, entry())).toBeCloseTo(6 / (1000 * foot * 100 * foot), 9);
   });
 });

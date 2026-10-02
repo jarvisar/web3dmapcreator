@@ -115,7 +115,7 @@ Pushing to `main` deploys the site with GitHub Actions. Set `Settings > Pages > 
 - The Bambu Studio project is tested in Bambu Studio 2.8. It hasn't been tested in OrcaSlicer.
 - SVG maps are drawn from OpenFreeMap's vector tiles, not the Overture data the models use, so the two can differ a little.
 - An SVG map that needs more than 400 tiles uses less detailed ones, so small features can go missing. A city centre at 1:20,000 needs 4 to 12. The limit can be raised to 2000 under `Map data`.
-- Areas that cross the 180th meridian aren't supported.
+- Areas that cross the 180th meridian, or come within 25 m of it, aren't supported.
 
 ###### Note: The project starts from Bambu's PLA Basic and Matte presets. Check the filament types before slicing.
 

@@ -3,7 +3,9 @@
 // chunk table, and uncompressed LAS in slabs. What a tile is comes from its
 // header, not the catalog. A server ignoring Range is an error, never a whole
 // download. A tile can also be a member of a ZIP (zip.ts): read in place when
-// it's stored, fetched whole and inflated when it's deflated.
+// it's stored, fetched whole and inflated when it's deflated. Whole tiles and
+// inflated members are held by the Fetcher (the pool's, in the browser), so
+// every block reading one shares a single copy.
 //
 // Plain tiles have no spatial index, so the first read of one decodes every
 // chunk. The box each chunk covers is noted then, and later reads (the next
@@ -17,7 +19,7 @@ import { emptyPoints, type Points } from '../points';
 import { decodeChunkTable, laszipChunkSize, type LazChunk } from './chunks';
 import { crsFromEpsg, crsFromWkt, geoKeyEpsg, headerVerticalFactor, lonLatTransforms, regionalVerticalFactor, type CrsInfo } from './crs';
 import { BudgetExceeded, type ReadInfo, type ReadOptions } from './ept';
-import { ahead, type Fetcher } from './fetcher';
+import { ahead, isPointFile, type Fetcher, type HeldFile } from './fetcher';
 import { lazDecoder, type LazChunkDecoder } from './laz';
 import { classificationLookup, findVlr, geoKeys, readCopcInfo, readEvlrs, readHeader, readHierarchyPage, readVlrs, wktOf, type HierarchyEntry, type LasHeader, type Vlr } from './las';
 import { classTable, normalizeRecords, PointSink, queryBounds, surfaceClassTable, type NormalizeOptions } from './normalize';
@@ -68,19 +70,50 @@ interface Source {
   tail(start: number): Promise<ArrayBuffer>;
 }
 
-/** Bytes held in memory as a source. */
-function memorySource(key: string, bytes: Uint8Array): Source {
-  const slice = (start: number, end: number) => {
-    if (end > bytes.length) return Promise.reject(new Error(`Bytes ${start}-${end} are past the end of ${key}`));
-    return Promise.resolve(bytes.slice(start, end).buffer);
-  };
-  return { key, size: bytes.length, range: slice, tail: (start) => slice(start, bytes.length) };
+/** A tile URL with no point file behind it. It's left out like a member a ZIP lacks. */
+export class MissingTile extends Error {
+  override name = 'MissingTile';
+}
+
+// Recognised by name, since errors from the pool come back as plain Errors.
+function isMissing(error: unknown): boolean {
+  const { name, message } = (error ?? {}) as Error;
+  return name === 'MissingTile' || (name === 'HttpError' && /HTTP (404|410)\b/.test(message));
+}
+
+function answered(bytes: Uint8Array): string {
+  const raw = new TextDecoder().decode(bytes.subarray(0, 300));
+  const text = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return text && !/[\u0000-\u0008\u000e-\u001f\ufffd]/.test(raw) ? `the server answered "${text.slice(0, 120)}"` : 'the server sent something else';
+}
+
+const PROGRESS_MS = 1000;
+
+/** Waits for a held file to be read, saying how far it has got, and returns its size. */
+async function held(fetcher: Fetcher, file: HeldFile, name: string, progress?: ReadOptions['progress']): Promise<number> {
+  const size = fetcher.heldSize(file);
+  let done = false;
+  size.then(
+    () => (done = true),
+    () => (done = true),
+  );
+  while (!done) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([size.catch(() => undefined), new Promise((resolve) => (timer = setTimeout(resolve, PROGRESS_MS)))]);
+    clearTimeout(timer);
+    if (done || !progress) continue;
+    // Only members count as they come. A whole file says nothing until it's here.
+    const received = file.kind === 'member' ? `: ${Math.round((await fetcher.heldProgress(file)) / 1e6)} of ${Math.round(file.compressedSize / 1e6)} MB` : '';
+    await progress(`Downloading ${name}${received}`);
+  }
+  return size;
 }
 
 /**
  * Where to read a tile from, with its first 375 bytes when they're the
  * tile's own, or null for a ZIP that lacks the member asked for (a border
- * block holds fewer than its full set).
+ * block holds fewer than its full set). Throws MissingTile for a whole tile
+ * whose server answered with something other than a point file.
  */
 async function tileSource(fetcher: Fetcher, tile: PointTile, progress?: ReadOptions['progress'], peek = false): Promise<{ source: Source; first: Uint8Array | null } | { stream: AsyncIterable<Uint8Array>; name: string } | null> {
   const { url } = tile;
@@ -88,8 +121,12 @@ async function tileSource(fetcher: Fetcher, tile: PointTile, progress?: ReadOpti
   // Only a look at the header, so nothing that would download the file.
   if (peek && tile.whole) return null;
   if (tile.whole) {
-    // The server ignores Range, so the file comes whole (and is cached whole).
-    file = memorySource(url, new Uint8Array(await fetcher.bytes(url)));
+    // The server ignores Range, so the file comes whole, once for every block that reads it.
+    const whole: HeldFile = { kind: 'whole', url };
+    const size = await held(fetcher, whole, url.slice(url.lastIndexOf('/') + 1), progress);
+    const head = new Uint8Array(await fetcher.heldRange(whole, 0, Math.min(375, size)));
+    if (!isPointFile(head)) throw new MissingTile(`${url} isn't a LAS, LAZ or ZIP file: ${answered(head)}`);
+    file = { key: url, size, range: (start, end) => fetcher.heldRange(whole, start, end), tail: (start) => fetcher.heldRange(whole, start, size) };
   } else {
     file = { key: url, size: tile.size, range: (start, end) => fetcher.range(url, start, end), tail: (start) => fetcher.tail(url, start) };
   }
@@ -125,17 +162,9 @@ async function tileSource(fetcher: Fetcher, tile: PointTile, progress?: ReadOpti
   // inflate to 200-500 MB, Brussels' to 2.9 GB.
   if (/\.las$/i.test(name)) return { stream: pieces(), name };
   if (member.size > MAX_INFLATED) throw new Error(`${name} is too large to inflate (${Math.round(member.size / 1e6)} MB)`);
-  const out = new Uint8Array(member.size);
-  let filled = 0;
-  const inflater = new Inflate((data) => {
-    if (filled + data.length > out.length) throw new Error(`${name} inflates past its stated size`);
-    out.set(data, filled);
-    filled += data.length;
-  });
-  for await (const piece of pieces()) inflater.push(piece);
-  inflater.push(new Uint8Array(0), true);
-  if (filled !== out.length) throw new Error(`${name} inflated to ${filled} bytes, not ${out.length}`);
-  return { source: memorySource(key, out), first: null };
+  const inflated: HeldFile = { kind: 'member', url, name, offset: base, compressedSize, size: member.size, step, whole: tile.whole === true };
+  await held(fetcher, inflated, name, progress);
+  return { source: { key, size: member.size, range: (start, end) => fetcher.heldRange(inflated, start, end), tail: (start) => fetcher.heldRange(inflated, start, member.size) }, first: null };
 }
 
 /**
@@ -352,13 +381,25 @@ export async function readTiles(fetcher: Fetcher, tiles: PointTile[], bbox: GeoB
   let crsKey = '';
   let zUsed = 1;
   const intersecting = tiles.filter((t) => t.bbox[0] <= bbox.east && t.bbox[2] >= bbox.west && t.bbox[1] <= bbox.north && t.bbox[3] >= bbox.south);
+  let missing: Error | null = null;
+  let present = 0;
   for (let t = 0; t < intersecting.length; t++) {
     const tile = intersecting[t];
     const name = tile.url.slice(tile.url.lastIndexOf('/') + 1);
     const label = `tile ${t + 1} of ${intersecting.length}`;
     await options.progress?.(`Opening ${label}: ${name}`);
-    const found = await tileSource(fetcher, tile, options.progress);
+    let found: Awaited<ReturnType<typeof tileSource>>;
+    try {
+      found = await tileSource(fetcher, tile, options.progress);
+    } catch (error) {
+      // One tile without a file (a sheet out at sea, a stale index row) used
+      // to fail every tile read with it.
+      if (!isMissing(error)) throw error;
+      missing ??= error as Error;
+      continue;
+    }
     if (!found) continue;
+    present++;
     if ('stream' in found) {
       const read = await readStream(found.stream, found.name, tile, bbox, options, sink, maxPoints, label);
       if (read) [crsKey, zUsed] = [read.crs, read.zFactor];
@@ -378,6 +419,8 @@ export async function readTiles(fetcher: Fetcher, tiles: PointTile[], bbox: GeoB
     if (copc) nodesRead += await readOctree(context, copc, crs);
     else nodesRead += await readChunks(context);
   }
+  // With none there, it's still a failure, so the caller looks to other surveys.
+  if (missing && !present) throw missing;
   const points = sink instanceof PointSink ? sink.finish() : emptyPoints();
   return { points, info: { url: tiles[0]?.url ?? '', nodes: nodesRead, points: sink.count, horizontalCrs: crsKey, zToMetres: zUsed, tiles: intersecting.length } };
 }

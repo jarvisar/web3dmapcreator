@@ -36,10 +36,25 @@ describe('LiDAR CORS proxy', () => {
     expect(targetOf(`${worker}/imnube.montevideo.gub.uy/share/s/6Q_g8cksRMCTdg8l3IyNSA/content/LIDAR_MVD_2024_K-29-D-6-O-5.laz`)).toBe('https://imnube.montevideo.gub.uy/share/s/6Q_g8cksRMCTdg8l3IyNSA/content/LIDAR_MVD_2024_K-29-D-6-O-5.laz');
     expect(targetOf(`${worker}/imnube.montevideo.gub.uy/share/s/6Q_g8cksRMCTdg8l3IyNSA/content/minutes.pdf`)).toBeNull();
     // Query strings are part of the match.
-    expect(targetOf(`${worker}/geoportaal.maaruum.ee/index.php?lang_id=1&plugin_act=otsing&kaardiruut=474659&dl=1&f=474659_2024_madal.laz`)).not.toBeNull();
+    const estonia = 'geoportaal.maaruum.ee/index.php?lang_id=1&plugin_act=otsing';
+    expect(targetOf(`${worker}/${estonia}&kaardiruut=474659&andmetyyp=lidar_laz_madal&dl=1&f=474659_2024_madal.laz&page_id=614`)).not.toBeNull();
+    expect(targetOf(`${worker}/${estonia}&page_id=614&kaardiruut=474659&andmetyyp=lidar_laz_madal`)).not.toBeNull();
     expect(targetOf(`${worker}/geoportaal.maaruum.ee/index.php?lang_id=1&plugin_act=admin`)).toBeNull();
+    // PHP takes the last of a repeated parameter.
+    expect(targetOf(`${worker}/${estonia}&page_id=614&kaardiruut=474659&andmetyyp=lidar_laz_madal&plugin_act=admin`)).toBeNull();
+    expect(targetOf(`${worker}/${estonia}&kaardiruut=474659&andmetyyp=lidar_laz_madal&dl=1&f=474659_2024_madal.laz&page_id=614&f=x`)).toBeNull();
     // Dot segments are resolved before the check.
     expect(targetOf(`${worker}/rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/../../../../../secret`)).toBeNull();
+  });
+
+  it('refuses encoded slashes and dots, which a server could resolve outside the prefix', () => {
+    const projects = 'rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects';
+    for (const path of ['..%2F..%2Fsecret', '..%2f..%2fsecret', '..%5C..%5Csecret', '%2E%2E%2Fsecret', 'P/%2e%2e%2fsecret', 'P/a%2Eb.laz']) {
+      expect(targetOf(`${worker}/${projects}/${path}`), path).toBeNull();
+    }
+    // Encoded characters in the query are fine, as in an S3 listing's prefix.
+    expect(targetOf(`${worker}/nrs.objectstore.gov.bc.ca/gdwuts/?list-type=2&prefix=watershed%2F092%2F&max-keys=1000`)).not.toBeNull();
+    expect(targetOf(`${worker}/${projects}/P/WU/LAZ/tile%20one.laz`)).not.toBeNull();
   });
 
   it('streams a range read with its headers exposed to the site', async () => {
@@ -96,5 +111,20 @@ describe('LiDAR CORS proxy', () => {
     expect((await handle(request(file), env)).status).toBe(200);
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 302, headers: { Location: 'https://example.com/elsewhere' } })));
     expect((await handle(request(file), env)).status).toBe(502);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 302, headers: { Location: 'http://[bad' } })));
+    expect((await handle(request(file), env)).status).toBe(502);
+  });
+
+  it("answers with CORS headers when the host doesn't answer, so the site can tell", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Network connection lost.');
+      }),
+    );
+    const response = await handle(request(file, { headers: { Range: 'bytes=0-99' } }), env);
+    expect(response.status).toBe(502);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(site);
+    expect(await response.text()).toBe("rockyweb.usgs.gov didn't answer.");
   });
 });

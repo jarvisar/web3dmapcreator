@@ -86,26 +86,7 @@ function textFootprint(shape: AddedShape, frame: Frame, font: LoadedFont): Multi
   return bufferLines(geometry.strokes.map((line) => ({ points: line.map(toModel), width: stroke })), 'round');
 }
 
-/** Characters of a text its font has no glyph for, and what prints in their place. */
-export interface MissingGlyphs {
-  chars: string[];
-  /** An outline font's box, or nothing when that's empty. Single-line fonts draw a question mark. */
-  shownAs: 'box' | 'gap' | 'question';
-}
-
-export function missingGlyphs(text: string, font: LoadedFont): MissingGlyphs | undefined {
-  const chars = new Set<string>();
-  for (const char of text.trim()) {
-    if (/\s/u.test(char)) continue;
-    const found = font.kind === 'outline' ? font.font.charToGlyphIndex(char) > 0 : font.font.glyphs[char] !== undefined;
-    if (!found) chars.add(char);
-  }
-  if (!chars.size) return undefined;
-  let shownAs: MissingGlyphs['shownAs'];
-  if (font.kind === 'outline') shownAs = font.font.glyphs.get(0).getPath(0, 0, 1).commands.length ? 'box' : 'gap';
-  else shownAs = font.font.glyphs['?'] ? 'question' : 'gap';
-  return { chars: [...chars], shownAs };
-}
+export { missingGlyphs, type MissingGlyphs } from '../svgmap/text/outline';
 
 /**
  * A shape's footprint in model mm, cut to the model. Null when it needs a

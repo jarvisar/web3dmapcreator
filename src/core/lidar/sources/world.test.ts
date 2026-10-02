@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { zipSync } from 'fflate';
 import proj4 from 'proj4';
 import { describe, expect, it } from 'vitest';
+import { HttpError } from '../../data/http';
 import type { GeoBounds } from '../../types';
 import { crsFromEpsg, lonLatTransforms, setProjector } from '../read/crs';
 import type { Fetcher } from '../read/fetcher';
@@ -137,6 +138,20 @@ describe('OpenTopography', () => {
     const failures: { source: string; reason: string }[] = [];
     expect(await opentopography.discover(fetcher, wellington, failures)).toEqual([]);
     expect(failures.map((f) => f.source)).toEqual(['OpenTopography NZ19_Wellington']);
+  });
+  it('passes over a dataset without a tile index, which some of its catalog entries are', async () => {
+    const answer = (status: number) =>
+      ({
+        downloaded: 0,
+        json: async () => ({ Datasets: [dataset('NZ19_Wellington', 'OTLAS.092020.2193.1')] }),
+        catalog: async (url: string) => Promise.reject(new HttpError(status, url)),
+      }) as unknown as Fetcher;
+    const failures: { source: string; reason: string }[] = [];
+    expect(await opentopography.discover(answer(404), wellington, failures)).toEqual([]);
+    expect(failures).toEqual([]);
+    // Anything else is still a failure, said without the URL.
+    expect(await opentopography.discover(answer(503), wellington, failures)).toEqual([]);
+    expect(failures).toEqual([{ source: 'OpenTopography NZ19_Wellington', reason: 'it answered HTTP 503' }]);
   });
 });
 

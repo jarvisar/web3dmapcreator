@@ -191,6 +191,13 @@ describe('sanitizeEdits', () => {
     expect(edits.shapes[0].layer).toBe('buildings');
   });
 
+  it('cuts long text short without splitting an emoji', () => {
+    const long = `a${'🏁'.repeat(40)}`;
+    const { text } = sanitizeEdits({ shapes: [{ id: 'x', kind: 'text', at: at(0, 0), text: long }] }).shapes[0];
+    expect(text).toBe(`a${'🏁'.repeat(39)}`);
+    expect(sanitizeEdits({ shapes: [{ id: 'x', kind: 'text', at: at(0, 0), text: 'W'.repeat(90) }] }).shapes[0].text).toBe('W'.repeat(80));
+  });
+
   it('gives an empty set for anything else', () => {
     expect(sanitizeEdits(null)).toEqual(emptyEdits());
     expect(sanitizeEdits('edits')).toEqual(emptyEdits());

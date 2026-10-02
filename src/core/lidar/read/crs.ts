@@ -36,7 +36,9 @@ const GRS80 = '+ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs';
 const DEFINITIONS: Record<number, string> = {
   2154: `+proj=lcc +lat_0=46.5 +lon_0=3 +lat_1=49 +lat_2=44 +x_0=700000 +y_0=6600000 ${GRS80}`,
   2056: '+proj=somerc +lat_0=46.9524055555556 +lon_0=7.43958333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs',
-  28992: '+proj=sterea +lat_0=52.1561605555556 +lon_0=5.38763888888889 +k=0.9999079 +x_0=155000 +y_0=463000 +ellps=bessel +towgs84=565.4171,50.3319,465.5524,1.9342,-1.6677,9.1019,4.0725 +units=m +no_defs',
+  // Amersfoort to WGS 84 (4) as a position vector shift. epsg.io's string has
+  // the Molodensky-Badekas rotations, which proj4 can't use: 170 m off.
+  28992: '+proj=sterea +lat_0=52.1561605555556 +lon_0=5.38763888888889 +k=0.9999079 +x_0=155000 +y_0=463000 +ellps=bessel +towgs84=565.4171,50.3319,465.5524,-0.398957388243134,0.343987817378283,-1.87740163998045,4.0725 +units=m +no_defs',
   27700: '+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 +units=m +no_defs',
   2157: `+proj=tmerc +lat_0=53.5 +lon_0=-8 +k=0.99982 +x_0=600000 +y_0=750000 ${GRS80}`,
   3067: `+proj=utm +zone=35 ${GRS80}`,
@@ -75,7 +77,8 @@ const DEFINITIONS: Record<number, string> = {
   // NAD83 and NAD83(2011) / Kentucky Single Zone, metres and US feet (KyFromAbove).
   3088: `+proj=lcc +lat_0=36.3333333333333 +lon_0=-85.75 +lat_1=37.0833333333333 +lat_2=38.6666666666667 +x_0=1500000 +y_0=1000000 ${GRS80}`,
   3089: `+proj=lcc +lat_0=36.3333333333333 +lon_0=-85.75 +lat_1=37.0833333333333 +lat_2=38.6666666666667 +x_0=1500000 +y_0=999999.9998984 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=us-ft +no_defs`,
-  5514: '+proj=krovak +lat_0=49.5 +lon_0=24.8333333333333 +alpha=30.2881397527778 +k=0.9999 +x_0=0 +y_0=0 +ellps=bessel +towgs84=589,76,480,0,0,0,0 +units=m +no_defs',
+  // S-JTSK to WGS 84 (1). The three-parameter shift epsg.io gives is good to about 8 m.
+  5514: '+proj=krovak +lat_0=49.5 +lon_0=24.8333333333333 +alpha=30.2881397527778 +k=0.9999 +x_0=0 +y_0=0 +ellps=bessel +towgs84=570.8,85.7,462.8,4.998,1.587,5.261,3.56 +units=m +no_defs',
 };
 
 // NAD83(CSRS) / MTM zones 3-10 (Montreal, Quebec's MRNF).
@@ -233,7 +236,16 @@ export function crsFromWkt(wkt: string): CrsInfo {
 }
 
 export function crsFromEpsg(epsg: number): CrsInfo {
-  return { key: `EPSG:${epsg}`, epsg, wkt: null, horizontalFactor: 1, geographic: epsg === 4326 || epsg === 4258 || epsg === 4269 };
+  return { key: `EPSG:${epsg}`, epsg, wkt: null, horizontalFactor: definitionFactor(definition(epsg)), geographic: epsg === 4326 || epsg === 4258 || epsg === 4269 };
+}
+
+// Tiles with only GeoKeys or the catalog's code (Illinois' LAS 1.2 counties,
+// in US feet) read 10.76 times too sparse when this was always 1.
+function definitionFactor(def: string | null): number {
+  const units = /\+units=([\w-]+)/.exec(def ?? '')?.[1];
+  const toMeter = Number(/\+to_meter=([0-9.eE+-]+)/.exec(def ?? '')?.[1]);
+  if (toMeter > 0) return toMeter;
+  return units === 'us-ft' ? 1200 / 3937 : units === 'ft' ? 0.3048 : 1;
 }
 
 /** Transforms between a cloud's grid and lon/lat. */

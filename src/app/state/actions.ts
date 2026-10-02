@@ -251,7 +251,7 @@ export async function exportModel(): Promise<void> {
     patchExporting({
       status: 'idle',
       progress: null,
-      last: { fileName: out.fileName, format, plates: out.plates, warnings: out.warnings ?? [], bytes: out.data.size },
+      last: { fileName: out.fileName, format, plates: out.plates, warnings: out.warnings ?? [], bytes: out.data.size, version: result.version },
     });
     if (out.missing) toast(`Downloaded ${out.fileName}, but part of the model is missing from it. See Export for details.`, 'error');
     else toast(`Downloaded ${out.fileName} (${formatBytes(out.data.size)})`, 'success');

@@ -9,7 +9,7 @@ import type { GeoBounds, Polygon } from '../../types';
 import { crsFromEpsg, crsFromWkt, lonLatTransforms } from '../read/crs';
 import type { Fetcher } from '../read/fetcher';
 import { projectYear } from '../selection';
-import { dateOnly, geoPolygons, overlaps, ringBox, type Candidate, type Provider, type Tile } from './common';
+import { briefly, dateOnly, geoPolygons, overlaps, ringBox, unlessMissing, type Candidate, type Provider, type Tile } from './common';
 import { readDbf } from './shapefile';
 
 const CATALOG = 'https://portal.opentopography.org/API/otCatalog';
@@ -37,8 +37,12 @@ function plain(text: string): string {
 }
 
 async function tiles(fetcher: Fetcher, folder: string, epsg: number, bbox: GeoBounds): Promise<{ tiles: Tile[]; coverage: Polygon[] }> {
-  // Tile indexes hardly change, so a week is fine.
-  const zip = new Uint8Array(await fetcher.catalog(`${BULK}${folder}/${folder}_TileIndex.zip`, WEEK_MS, [0x50, 0x4b, 0x03, 0x04]));
+  // Tile indexes hardly change, so a week is fine. Some datasets in the
+  // catalog (45 USFS California surveys in October 2026) have no bulk files
+  // at all, so no index either.
+  const index = await unlessMissing(fetcher.catalog(`${BULK}${folder}/${folder}_TileIndex.zip`, WEEK_MS, [0x50, 0x4b, 0x03, 0x04]));
+  if (!index) return { tiles: [], coverage: [] };
+  const zip = new Uint8Array(index);
   const files = unzipSync(zip, { filter: (file) => /\.(dbf|prj)$/i.test(file.name) });
   const dbf = Object.entries(files).find(([name]) => /\.dbf$/i.test(name))?.[1];
   const prj = Object.entries(files).find(([name]) => /\.prj$/i.test(name))?.[1];
@@ -100,7 +104,7 @@ export const opentopography: Provider = {
             projectYearHint: projectYear(end ?? start ?? d.name),
           };
         } catch (error) {
-          failures.push({ source: `OpenTopography ${folder}`, reason: (error as Error).message });
+          failures.push({ source: `OpenTopography ${folder}`, reason: briefly(error) });
           return null;
         }
       }),

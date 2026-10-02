@@ -60,6 +60,9 @@ export const salzburg: Provider = {
   id: 'salzburg',
   name: 'Land Salzburg (SAGIS)',
   areas: [[12, 46.9, 13.95, 48.05]],
+  // A sheet is a HEAD and a range read, and the server takes about 5 s to
+  // start each range, so 4 km took over 90 s. This covers the 200 sheet limit.
+  timeoutMs: 240_000,
   async discover(fetcher, bbox) {
     if (!proxyAvailable()) return [];
     const { toLonLat } = lonLatTransforms(crsFromEpsg(31258));

@@ -20,12 +20,13 @@ import { groundGrid } from '../core/edit/ground';
 import { roadLines } from '../core/edit/lines';
 import { EditSession, excludedParts, type EditUpdate } from '../core/edit/session';
 import { emptyEdits, hasEdits, sanitizeEdits } from '../core/edit/types';
+import { describeError as describe } from '../core/engine/describe';
 import type { EditRequest, ExportRequest, FromWorker, GenerateRequest, GenerateResult, LidarSummary, SurfaceSummary, SurveyChoice, ToWorker } from '../core/engine/protocol';
 import { effectiveScale } from '../core/geo/area';
 import { Projection } from '../core/geo/projection';
 import { download } from '../core/svgmap/download';
 import { FontLoader } from '../core/svgmap/text/loadFont';
-import { findSurveys, lidarRequest, prepareLidar, setCheckpointStore, SURVEYS_FOUND, type PreparedLidar } from '../core/lidar/prepare';
+import { findSurveys, lidarRequest, nothingMeasured, prepareLidar, setCheckpointStore, SURVEYS_FOUND, type PreparedLidar } from '../core/lidar/prepare';
 import type { SurveyQuery } from '../core/lidar/query';
 import { OffersError, reopened } from '../core/lidar/offers';
 import type { Failure } from '../core/lidar/sources';
@@ -343,8 +344,21 @@ async function approvedTiles(request: GenerateRequest): Promise<Set<string>> {
   const approved = new Set(Array.isArray(list) ? list.filter((key): key is string => typeof key === 'string') : []);
   const before = approved.size;
   for (const key of request.approveTiles ?? []) if (typeof key === 'string' && key.length <= 2048) approved.add(key);
-  if (approved.size !== before) await lidarCache.put(APPROVED_KEY, new TextEncoder().encode(JSON.stringify([...approved])).buffer as ArrayBuffer).catch(() => undefined);
+  if (approved.size !== before) await saveApproved(approved);
   return approved;
+}
+
+async function saveApproved(approved: Set<string>): Promise<void> {
+  await lidarCache.put(APPROVED_KEY, new TextEncoder().encode(JSON.stringify([...approved])).buffer as ArrayBuffer).catch(() => undefined);
+}
+
+/**
+ * Saves the approvals again once a survey has been read. They share the
+ * cache's size limit with the tiles they let in, and a download of more than
+ * the limit pushed them out first, so the same tiles were offered again.
+ */
+async function keepApproved(approved: Set<string>): Promise<void> {
+  if (approved.size) await saveApproved(approved);
 }
 
 /**
@@ -379,6 +393,7 @@ async function loadLidar(request: GenerateRequest, data: OvertureData, job: Runn
     });
   } finally {
     pool?.close();
+    await keepApproved(approved);
   }
   // Like the saved copy, a result with a failed read is tried again next time.
   // What did get read is checkpointed, so only the failures download again.
@@ -461,7 +476,7 @@ async function loadSurface(request: GenerateRequest, job: Running, pool: Pool | 
     approved,
     survey: settings.lidar.survey || undefined,
     rules: { preference: settings.lidar.surveyPreference, years: settings.lidar.olderYears },
-  });
+  }).finally(() => keepApproved(approved));
   // A failed read leaves a hole, and a survey whose catalog failed can leave
   // half the area without one, so try again next time. Blocks that were read
   // come from their checkpoints.
@@ -643,9 +658,8 @@ async function generate(id: number, request: GenerateRequest) {
     lastMapData = true;
     if (lidar) {
       lastCredits = [...new Set(lidar.surveys.map((s) => `LiDAR: ${s.attribution}`))];
-      if (!lidar.surveys.length && lidar.candidates && !lidar.failures.length && !lidar.offers?.length && !Object.keys(lidar.records).length) {
-        warnings.push('No LiDAR survey that a browser can read covers these buildings, so they keep their mapped shapes.');
-      }
+      const none = nothingMeasured(lidar);
+      if (none) warnings.push(none);
       for (const failure of lidar.failures.slice(0, 3)) warnings.push(lidarFailure(failure));
       const missing = missingChoice(request.settings.lidar.survey, lidar.found ?? []);
       if (missing) warnings.push(missing);
@@ -790,21 +804,6 @@ function surfaceStats(stats: ModelStats, prepared: PreparedSurface, mapBytes: nu
   const downloaded = prepared.downloadedBytes + mapBytes;
   add('Data downloaded', downloaded > 0 ? `${(downloaded / 1e6).toFixed(1)} MB` : 'None, all cached');
   return out;
-}
-
-function describe(error: unknown): string {
-  if (error instanceof Error) {
-    if (error.name === 'NetworkError' || /Failed to fetch|NetworkError|network/i.test(error.message)) {
-      return 'Could not reach the map data server. Check your connection and try again.';
-    }
-    // What a typed array the browser can't find memory for throws. Running
-    // out of the JS heap closes the tab instead, with nothing to catch.
-    if (error instanceof RangeError && /allocation failed|Invalid typed array length|Invalid array buffer length/i.test(error.message)) {
-      return 'The browser ran out of memory building this model. Try a smaller area, or larger cells for a LiDAR only model.';
-    }
-    return error.message || error.name;
-  }
-  return String(error);
 }
 
 ctx.onmessage = (event) => {

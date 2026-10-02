@@ -25,6 +25,24 @@ describe('state plane zones in US feet', () => {
       'COMPD_CS["x",PROJCS["NAD83 / Kentucky Single Zone (ftUS)",GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["standard_parallel_1",37.0833333333333],PARAMETER["standard_parallel_2",38.6666666666667],PARAMETER["latitude_of_origin",36.3333333333333],PARAMETER["central_meridian",-85.75],PARAMETER["false_easting",4921250],PARAMETER["false_northing",3280833.333],UNIT["US survey foot",0.304800609601219],AXIS["X",EAST],AXIS["Y",NORTH],AUTHORITY["EPSG","99999"]],VERT_CS["NAVD88 height (ftUS)",VERT_DATUM["North American Vertical Datum 1988",2005],UNIT["US survey foot",0.304800609601219],AXIS["Up",UP]]]';
     near(lonLatTransforms(crsFromWkt(wkt)).toLonLat(5270000, 4285000), [-84.52156, 39.08463]);
   });
+
+  it('measure distances in feet from a code alone, as their WKT does', () => {
+    // Illinois East (ftUS), what Will County's 2014 tiles fall back to.
+    expect(crsFromEpsg(3435).horizontalFactor).toBeCloseTo(1200 / 3937, 12);
+    expect(crsFromEpsg(6565).horizontalFactor).toBeCloseTo(1200 / 3937, 12);
+    for (const metres of [2154, 26971, 3088, 32633, 25832, 6339, 3857, 4326, 99999]) expect(crsFromEpsg(metres).horizontalFactor).toBe(1);
+  });
+});
+
+describe('datum shifts', () => {
+  const within = ([x, y]: [number, number], [x2, y2]: [number, number], metres: number) => expect(Math.hypot(x - x2, y - y2)).toBeLessThan(metres);
+
+  it('put Dutch and Czech points where their own grids do', () => {
+    // A Rotterdam building's centroid from PDOK's BAG, in WGS 84 and in RD New.
+    within(lonLatTransforms(crsFromEpsg(28992)).fromLonLat(4.476028, 51.920987), [92318.7, 437337.7], 1);
+    // Prague, from PROJ 9.5 with S-JTSK to WGS 84 (1).
+    within(lonLatTransforms(crsFromEpsg(5514)).fromLonLat(14.42076, 50.08804), [-742835.98, -1042944.72], 1);
+  });
 });
 
 describe('codes from a WKT', () => {

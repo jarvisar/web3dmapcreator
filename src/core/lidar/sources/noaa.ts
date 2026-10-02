@@ -15,7 +15,7 @@ import type { GeoBounds, Polygon } from '../../types';
 import { crsFromEpsg, crsFromWkt, lonLatTransforms, type CrsInfo } from '../read/crs';
 import type { Fetcher } from '../read/fetcher';
 import { projectYear } from '../selection';
-import { dateOnly, geoPolygons, keyPath, overlaps, pagedFeatures, ringBox, s3Keys, sphericalArea, type Candidate, type Provider, type Tile } from './common';
+import { briefly, dateOnly, geoPolygons, keyPath, overlaps, pagedFeatures, ringBox, s3Keys, sphericalArea, type Candidate, type Provider, type Tile } from './common';
 import { dbfRowAt, shpPolygons, zippedIndex } from './shapefile';
 
 const FOOTPRINTS = 'https://coast.noaa.gov/arcgis/rest/services/DAV/DAV_footprints/FeatureServer/0/query';
@@ -134,11 +134,11 @@ export const noaa: Provider = {
         } catch (error) {
           // Most surveys have no EPT build, and their item is a 404.
           if (!/HTTP 40[34]/.test((error as Error).message)) {
-            failures.push({ source: `NOAA ${id}`, reason: (error as Error).message });
+            failures.push({ source: `NOAA ${id}`, reason: briefly(error) });
             return null;
           }
           return tiled(fetcher, id, title, bbox).catch((reason: Error) => {
-            failures.push({ source: `NOAA ${id}`, reason: reason.message });
+            failures.push({ source: `NOAA ${id}`, reason: briefly(reason) });
             return null;
           });
         }

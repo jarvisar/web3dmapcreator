@@ -113,6 +113,9 @@ export function MapView({ active }: { active: boolean }) {
   const latest = useRef({ layout, label, artwork, layoutWith });
   latest.current = { layout, label, artwork, layoutWith };
   const grab = useRef<{ drag: TitleDrag; to: LabelSettings | null } | null>(null);
+  const [mapFailed, setMapFailed] = useState(false);
+  const [basemapFailed, setBasemapFailed] = useState(false);
+  const tileErrors = useRef(0);
   useEffect(() => {
     if (!artwork) setTitleSelected(false);
   }, [artwork]);
@@ -144,21 +147,41 @@ export function MapView({ active }: { active: boolean }) {
     if (!host) return;
     const initial = useApp.getState();
     const bounds = areaGeoBounds(initial.area);
-    const map = new MlMap({
-      container: host,
-      bounds: [
-        [bounds.west, bounds.south],
-        [bounds.east, bounds.north],
-      ],
-      fitBoundsOptions: { padding: padding(host), maxZoom: 17 },
-      attributionControl: { compact: true },
-      dragRotate: false,
-      pitchWithRotate: false,
-      touchPitch: false,
-      maxPitch: 0,
-      renderWorldCopies: false,
-      // The OpenFreeMap styles trip a few harmless validation warnings.
-      validateStyle: false,
+    let map: MlMap;
+    try {
+      map = new MlMap({
+        container: host,
+        bounds: [
+          [bounds.west, bounds.south],
+          [bounds.east, bounds.north],
+        ],
+        fitBoundsOptions: { padding: padding(host), maxZoom: 17 },
+        attributionControl: { compact: true },
+        dragRotate: false,
+        pitchWithRotate: false,
+        touchPitch: false,
+        maxPitch: 0,
+        renderWorldCopies: false,
+        // The OpenFreeMap styles trip a few harmless validation warnings.
+        validateStyle: false,
+      });
+    } catch (error) {
+      // No WebGL2: graphics acceleration off, or a GPU the browser won't use.
+      // Left to the error screen, the whole app went and it offered to reset
+      // the settings, which can't help.
+      console.warn('The map could not start', error);
+      setMapFailed(true);
+      return;
+    }
+    // A tile now and then can fail. The style itself, or a run of tiles with
+    // none coming in, means the base map is down.
+    map.on('error', (event) => {
+      if (!(event as { sourceId?: string }).sourceId || ++tileErrors.current >= 3) setBasemapFailed(true);
+    });
+    map.on('sourcedata', (event) => {
+      if (!event.tile) return;
+      tileErrors.current = 0;
+      setBasemapFailed(false);
     });
     map.setStyle(BASEMAPS[initial.ui.basemap].style, { transformStyle: flattenBuildings });
     mapRef.current = map;
@@ -221,12 +244,32 @@ export function MapView({ active }: { active: boolean }) {
       firstStyle.current = false;
       return;
     }
+    tileErrors.current = 0;
+    setBasemapFailed(false);
     mapRef.current?.setStyle(BASEMAPS[basemap].style, { transformStyle: flattenBuildings });
   }, [basemap]);
 
   useEffect(() => {
     if (active) mapRef.current?.resize();
   }, [active]);
+
+  if (mapFailed) {
+    return (
+      <div className="map-view" aria-hidden={!active} inert={!active}>
+        <div className="map-host" />
+        <div className="map-failed">
+          <div className="notice notice-warning floating" role="alert">
+            <CircleAlert size={16} aria-hidden="true" />
+            <span>
+              This browser can't draw the map, because WebGL2 is off or not supported here. Turn on graphics or hardware
+              acceleration in the browser's settings and reload, or try another browser. You can still search for a place
+              and set the size in the sidebar{svg ? ', and make the SVG map' : ''}.
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="map-view" aria-hidden={!active} inert={!active}>
@@ -241,6 +284,12 @@ export function MapView({ active }: { active: boolean }) {
           options={BASEMAP_OPTIONS}
         />
       </div>
+      {basemapFailed && (
+        <div className="map-notice map-notice-top notice notice-warning floating" role="status">
+          <CircleAlert size={16} aria-hidden="true" />
+          <span>The base map didn't load. Try another one with the buttons above, or check your connection. The area and everything else still work.</span>
+        </div>
+      )}
       {!hintDismissed && (
         <div className="map-hint floating" role="note">
           <span>{areaHint(resizable)}</span>

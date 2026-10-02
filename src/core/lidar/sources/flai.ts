@@ -152,6 +152,42 @@ const PNOA_ZONES: [number, number][] = [
   [25831, 3],
 ];
 
+// Where each region code's tiles lie. The same numbers name a square exactly
+// 6 degrees away in the next zone, so a block is only looked at inside its
+// region, and every box is narrower than that: matched anywhere, Aragón's
+// tiles were read as zone 29 at Ponferrada and Bragança, Extremadura's as
+// zone 31 at Dénia. A block with a code missing here isn't read.
+const PNOA_REGIONS: Record<string, Box> = {
+  AND: [-7.56, 35.9, -1.6, 38.75],
+  ARA: [-2.2, 39.8, 0.8, 42.95],
+  AST: [-7.2, 42.85, -4.5, 43.7],
+  BAL: [1.1, 38.6, 4.4, 40.15],
+  CANAR: [-18.25, 27.6, -13.3, 29.45],
+  CANT: [-4.9, 42.7, -3.1, 43.55],
+  CAT: [0.1, 40.5, 3.35, 42.9],
+  CEU: [-5.4, 35.85, -5.25, 35.95],
+  CLM: [-5.45, 38.0, -0.9, 41.35],
+  CYL: [-7.1, 40.05, -1.75, 43.25],
+  EXT: [-7.6, 37.9, -4.6, 40.5],
+  GAL: [-9.35, 41.8, -6.7, 43.8],
+  MAD: [-4.6, 39.85, -3.05, 41.2],
+  MEL: [-3.0, 35.25, -2.9, 35.35],
+  MUR: [-2.35, 37.35, -0.65, 38.8],
+  NAV: [-2.55, 41.9, -0.7, 43.35],
+  PV: [-3.5, 42.45, -1.7, 43.5],
+  RIO: [-3.15, 41.9, -1.65, 42.65],
+  VAL: [-1.55, 37.8, 0.7, 40.8],
+};
+
+/** Where a block's tiles can lie, from its region code (ARA, MUR-VAL-CLM, CYL-NW), or null when that isn't known well enough. */
+export function pnoaRegion(block: string): Box | null {
+  const code = /PNOA_\d{4}_([^_/]+)_$/.exec(block)?.[1];
+  const boxes = (code ?? '').toUpperCase().split('-').flatMap((part) => (PNOA_REGIONS[part] ? [PNOA_REGIONS[part]] : []));
+  if (!boxes.length) return null;
+  const box: Box = [Math.min(...boxes.map((b) => b[0])), Math.min(...boxes.map((b) => b[1])), Math.max(...boxes.map((b) => b[2])), Math.max(...boxes.map((b) => b[3]))];
+  return box[2] - box[0] < 6 ? box : null;
+}
+
 async function gridTiles(fetcher: Fetcher, dataset: FlaiDataset, bbox: GeoBounds): Promise<{ tiles: Tile[]; coverage: Polygon[] }> {
   const copc = `${dataset.path}/`;
   const listed = async (prefix: string) => [...s3Listing(await fetcher.text(`${FLAI_BUCKET}?list-type=2&prefix=${encodeURIComponent(prefix)}&max-keys=1000`)).keys.keys()];
@@ -160,8 +196,11 @@ async function gridTiles(fetcher: Fetcher, dataset: FlaiDataset, bbox: GeoBounds
   const coverage: Polygon[] = [];
   const lon = (bbox.west + bbox.east) / 2;
   for (const block of blocks) {
+    const region = pnoaRegion(block);
+    if (!region || !overlaps(region, bbox)) continue;
+    // A region keeps one zone even where it runs a few degrees past it, and
+    // one along a zone boundary has tiles in both, so every zone nearby is looked at.
     for (const [epsg, meridian] of PNOA_ZONES) {
-      // A region keeps one zone even where it runs a few degrees past it.
       if (Math.abs(lon - meridian) > 7) continue;
       const squares = gridSquares(epsg, bbox, 1000);
       const columns = [...new Set(squares.map((s) => s.x / 1000))];
@@ -171,10 +210,11 @@ async function gridTiles(fetcher: Fetcher, dataset: FlaiDataset, bbox: GeoBounds
         const key = [...keys].find((k) => k.startsWith(`${block}${x / 1000}-${y / 1000 + 1}_`) && k.endsWith('.copc.laz'));
         if (!key) continue;
         const square = squarePolygon(toLonLat, x, y, 1000);
+        const [cx, cy] = toLonLat(x + 500, y + 500);
+        if (cx < region[0] || cx > region[2] || cy < region[1] || cy > region[3]) continue;
         tiles.push({ url: FLAI_BUCKET + keyPath(key), bbox: ringBox(square), horizontalCrs: `EPSG:${epsg}` });
         coverage.push(square);
       }
-      if (tiles.length) break;
     }
   }
   return { tiles, coverage };
@@ -197,6 +237,10 @@ async function flaiDataset(fetcher: Fetcher, dataset: FlaiDataset, bbox: GeoBoun
     format: 'COPC',
     coverage,
     tiles: tiles.sort((a, b) => (a.url < b.url ? -1 : 1)),
+    // Only for files without height units of their own. Dublin's and the NOAA
+    // copies have none and sit where foot heights are registered, so they
+    // couldn't be read. The NOAA copies matched NOAA's own builds as metres.
+    verticalUnits: 'm',
     acquisitionStart: dateOnly(dataset.start),
     acquisitionEnd: dateOnly(dataset.end),
     densityM2: dataset.density > 0 ? dataset.density : undefined,

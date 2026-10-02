@@ -10,7 +10,7 @@ import type { Fetcher } from '../read/fetcher';
 import { basque } from './basque';
 import { berlin } from './berlin';
 import { brandenburg } from './brandenburg';
-import { flai, unlistedDataset } from './flai';
+import { flai, pnoaRegion, unlistedDataset } from './flai';
 import { genova } from './genova';
 import { halle } from './halle';
 import { helsinki } from './helsinki';
@@ -72,9 +72,24 @@ describe('Rhineland-Palatinate', () => {
 
   it('lists the tiles under an area as one survey with two classes', async () => {
     const { fetcher } = fakeFetcher((url) => (url.endsWith('atomfeed-links.xml') ? links : undefined));
-    const [survey] = await rlp.discover(fetcher, around(8.25, 49.985), []);
+    const [lon, lat] = proj4('+proj=utm +zone=32 +ellps=GRS80 +units=m', 'EPSG:4326', [446500, 5538500]);
+    const [survey] = await rlp.discover(fetcher, around(lon, lat, 0.001), []);
     expect(survey.tiles!.map((t) => t.size)).toEqual([156000000]);
     expect(survey.classification).toEqual({ '2': 'ground', '20': 'unclassified' });
+  });
+
+  it("goes by the tiles' squares in UTM, not the feed's lon/lat boxes", async () => {
+    // The feed's boxes for two tiles one above the other, as it gives them: they overlap by about 10 m.
+    const feed = [
+      '<feed>',
+      '<link rel="section" href="https://geobasis-rlp.de/data/las/current/las/lpolpg_32_447_5537_1_rp.laz" bbox="49.98298, 8.26059, 49.99206, 8.27467" size="149776746"/>',
+      '<link rel="section" href="https://geobasis-rlp.de/data/las/current/las/lpolpg_32_447_5538_1_rp.laz" bbox="49.99197, 8.26045, 50.00105, 8.27454" size="146008947"/>',
+      '</feed>',
+    ].join('\n');
+    const { fetcher } = fakeFetcher((url) => (url.endsWith('atomfeed-links.xml') ? feed : undefined));
+    // Ends about 5 m short of northing 5538000 on the east side, but inside the upper tile's box.
+    const [survey] = await rlp.discover(fetcher, { west: 8.272, south: 49.99, east: 8.274, north: 49.992 }, []);
+    expect(survey.tiles!.map((t) => t.url.split('/').pop())).toEqual(['lpolpg_32_447_5537_1_rp.laz']);
   });
 });
 
@@ -213,6 +228,22 @@ describe('Helsinki', () => {
     expect(surveys.map((s) => s.name)).toEqual(['Helsinki laser data 2021', 'Helsinki laser data 2017']);
     expect(surveys[0].tiles![0]).toMatchObject({ url: 'https://ptp.hel.fi/DataHandlers/Lidar_kaikki/Default.ashx?q=672496a&y=2021', whole: true, horizontalCrs: 'EPSG:3879' });
   });
+
+  it('leaves out sheets a year lacks, which answer with a short message, and gives each year a density', async () => {
+    const files: Record<string, number> = { '672496a&y=2021': 90e6, '672496a&y=2017': 36e6, '666498a&y=2021': 65, '666498a&y=2017': 65, '674490a&y=2021': 65, '674490a&y=2017': 30e6 };
+    const fetcher = {
+      json: async () => ({
+        type: 'FeatureCollection',
+        features: ['672496a', '666498a', '674490a'].map((tunnus) => ({ type: 'Feature', geometry: square(24.928, 60.161, 24.937, 60.165), properties: { tunnus } })),
+      }),
+      size: async (url: string) => files[url.split('?q=')[1]],
+    } as unknown as Fetcher;
+    const surveys = await helsinki.discover(fetcher, around(24.93, 60.163), []);
+    expect(surveys.map((s) => [s.name, s.densityM2, s.tiles!.map((t) => [t.url.split('?q=')[1], t.size])])).toEqual([
+      ['Helsinki laser data 2021', 60, [['672496a&y=2021', 90e6]]],
+      ['Helsinki laser data 2017', 32, [['672496a&y=2017', 36e6], ['674490a&y=2017', 30e6]]],
+    ]);
+  });
 });
 
 describe('Berlin', () => {
@@ -262,6 +293,73 @@ describe('Flai', () => {
     expect(failures).toEqual([]);
     expect(surveys.map((s) => s.id)).toEqual(['data/ES/CNIG/Lidar_2022-2025']);
     expect(surveys[0].tiles).toEqual([expect.objectContaining({ url: bucket + tileName, horizontalCrs: 'EPSG:25830' })]);
+  });
+
+  // A bucket holding the third coverage's blocks, each with the tile names given.
+  const pnoaBucket = (blocks: Record<string, string[]>) => {
+    const bucket = 'https://open-lidar-data.s3.eu-central-1.amazonaws.com/';
+    const copc = 'data/ES/CNIG/Lidar_2022-2025/copc/';
+    const folders = (prefixes: string[]) => `<ListBucketResult><IsTruncated>false</IsTruncated>${prefixes.map((p) => `<CommonPrefixes><Prefix>${p}</Prefix></CommonPrefixes>`).join('')}</ListBucketResult>`;
+    const keys = (list: string[]) => `<ListBucketResult><IsTruncated>false</IsTruncated>${list.map((k) => `<Contents><Key>${k}</Key><Size>1</Size></Contents>`).join('')}</ListBucketResult>`;
+    return fakeFetcher((url) => {
+      if (url.endsWith('README.md')) return '| Finland | 3067 | data/FI/NLS/05p_year_2023/copc | 2023-01-01 | 2023-12-31 | 0.78 | CC-BY-4.0 |';
+      if (!url.startsWith(bucket)) return undefined;
+      const prefix = decodeURIComponent(/prefix=([^&]*)/.exec(url)?.[1] ?? '');
+      if (url.includes('delimiter=/')) {
+        if (prefix === 'data/') return folders(['data/ES/']);
+        if (prefix === 'data/ES/') return folders(['data/ES/CNIG/']);
+        if (prefix === 'data/ES/CNIG/') return folders(['data/ES/CNIG/Lidar_2022-2025/']);
+        if (prefix === 'data/ES/CNIG/Lidar_2022-2025/') return folders([copc]);
+      }
+      if (url.includes('delimiter=_')) {
+        if (prefix === `${copc}PNOA_`) return folders([`${copc}PNOA_2023_`]);
+        if (prefix === `${copc}PNOA_2023_`) return folders(Object.keys(blocks).map((b) => `${copc}PNOA_2023_${b}_`));
+      }
+      const all = Object.entries(blocks).flatMap(([b, names]) => names.map((n) => `${copc}PNOA_2023_${b}_${n}_NPC01.copc.laz`));
+      return keys(all.filter((k) => k.startsWith(prefix)));
+    });
+  };
+  const pnoaName = (zone: number, lon: number, lat: number) => {
+    const [x, y] = utm(zone, lon, lat);
+    return `${Math.floor(x / 1000)}-${Math.floor(y / 1000) + 1}`;
+  };
+
+  it("doesn't take a PNOA tile for a square with the same numbers in another zone", async () => {
+    // Ponferrada's square in zone 29 has the same name as one of Aragón's in
+    // zone 30, and Dénia's in zone 31 one of Extremadura's.
+    for (const [lon, lat, zone, block] of [
+      [-6.5983, 42.5464, 29, 'ARA'],
+      [-6.7567, 41.8061, 29, 'ARA'],
+      [0.1057, 38.8408, 31, 'EXT'],
+    ] as [number, number, number, string][]) {
+      const { fetcher } = pnoaBucket({ [block]: [pnoaName(zone, lon, lat)] });
+      expect(await flai.discover(fetcher, around(lon, lat, 0.0005), [])).toEqual([]);
+    }
+  });
+
+  it('reads every PNOA block meeting the area, in whichever zone each turns up in', async () => {
+    // Fraga, on the Aragón side of Catalonia: one block's tile named in zone 30, the other's in zone 31.
+    const [lon, lat] = [0.3496, 41.5226];
+    const { fetcher } = pnoaBucket({ ARA: [pnoaName(30, lon, lat)], CAT: [pnoaName(31, lon, lat)], XYZ: [pnoaName(30, lon, lat)] });
+    const [survey] = await flai.discover(fetcher, around(lon, lat, 0.0005), []);
+    expect(survey.tiles!.map((t) => [t.url.split('/').pop(), t.horizontalCrs])).toEqual([
+      [`PNOA_2023_ARA_${pnoaName(30, lon, lat)}_NPC01.copc.laz`, 'EPSG:25830'],
+      [`PNOA_2023_CAT_${pnoaName(31, lon, lat)}_NPC01.copc.laz`, 'EPSG:25831'],
+    ]);
+  });
+
+  it('knows where a PNOA block can be from its region code', () => {
+    expect(pnoaRegion('data/ES/CNIG/Lidar_2022-2025/copc/PNOA_2023_ARA_')).toEqual([-2.2, 39.8, 0.8, 42.95]);
+    expect(pnoaRegion('x/PNOA_2021_CyL-NW_')).toEqual([-7.1, 40.05, -1.75, 43.25]);
+    // Too wide to tell squares 6 degrees apart, or unknown.
+    expect(pnoaRegion('x/PNOA_2016_MUR-VAL-CLM_')).toBeNull();
+    expect(pnoaRegion('x/PNOA_2009_Lote3_')).toBeNull();
+  });
+
+  it('reads heights without units of their own as metres', async () => {
+    const { fetcher } = pnoaBucket({ ARA: [pnoaName(30, -0.8773, 41.6561)] });
+    const [survey] = await flai.discover(fetcher, around(-0.8773, 41.6561, 0.0005), []);
+    expect(survey.verticalUnits).toBe('m');
   });
 });
 

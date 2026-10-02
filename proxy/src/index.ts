@@ -73,11 +73,17 @@ export async function handle(request: Request, env: Env): Promise<Response> {
   }
   let upstream: Response;
   for (let hop = 0; ; hop++) {
-    upstream = await fetch(target, { method: request.method, headers, redirect: 'manual' });
+    try {
+      upstream = await fetch(target, { method: request.method, headers, redirect: 'manual' });
+    } catch {
+      // Refused or dropped. Thrown, Cloudflare answers with its own page and no
+      // CORS headers, which the site can't tell from being over the daily limit.
+      return text(502, `${new URL(target).host} didn't answer.`, cors);
+    }
     const location = upstream.headers.get('location');
     if (upstream.status < 300 || upstream.status >= 400 || !location) break;
     // Redirects are only followed to other listed files.
-    const next = allowedTarget(new URL(location, target).href);
+    const next: string | null = URL.canParse(location, target) ? allowedTarget(new URL(location, target).href) : null;
     upstream.body?.cancel().catch(() => undefined);
     if (!next || hop >= MAX_REDIRECTS) return text(502, 'The file redirected somewhere this proxy does not read.', cors);
     target = next;

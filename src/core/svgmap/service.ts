@@ -81,7 +81,9 @@ export class RenderService {
     if (label.enabled && label.text.trim()) {
       title = await this.fonts.load(label.font, request.customFont);
       const subtitleId = label.subtitleFont || label.font;
-      subtitle = subtitleId === label.font ? title : await this.fonts.load(subtitleId, request.customFont);
+      // Only a band shows a subtitle. A custom subtitle font left set with no text failed every render once the file was gone.
+      const shown = label.style === 'band' && label.subtitle.trim() !== '';
+      subtitle = !shown || subtitleId === label.font ? title : await this.fonts.load(subtitleId, request.customFont);
     }
 
     onProgress({ stage: 'compose', message: 'Cleaning up lines' });

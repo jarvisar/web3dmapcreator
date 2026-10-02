@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { emptyEdits } from '../../core/edit/types';
-import { DEFAULT_AREA, DEFAULT_EXPORT, DEFAULT_PALETTE, cloneSettings } from '../../core/settings';
+import { DEFAULT_AREA, DEFAULT_EXPORT, DEFAULT_PALETTE, MIN_SECTION_MM, cloneSettings, modelFieldRange, printerByKey, type ModelSettings } from '../../core/settings';
+import { limitFor } from '../../core/svgmap/limits';
 import { defaultSvgSettings } from '../svgmap/settings';
 import { fitAreaToPiece } from '../svgmap/piece';
 import { undoEdit } from './editActions';
 import { decodeOptions, encodeOptions, MAX_OPTIONS_BYTES, type Options } from './options';
-import { applyOptions, resetAllSettings, snapshotKey, useApp, type ResultMeta } from './store';
+import { applyOptions, patchSettings, resetAllSettings, resetSettingsSection, snapshotKey, useApp, type ResultMeta } from './store';
 
 function options(): Options {
   return {
@@ -32,6 +33,37 @@ describe('options files', () => {
     source.svg.styles.plotter.hatch.water.angle = -45;
     expect(decodeOptions(encodeOptions(source))).toEqual(source);
     expect(decodeOptions('\uFEFF' + encodeOptions(source, savedMap))).toEqual({ ...source, map: savedMap });
+  });
+
+  it.each(['min', 'max'] as const)('round-trips every option at its %s', (end) => {
+    const flip = (value: unknown, path: string[], number: (path: string[]) => number): unknown => {
+      if (Array.isArray(value) || value === null) return value;
+      if (typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, flip(v, [...path, key], number)]));
+      if (typeof value === 'number') return number(path);
+      if (typeof value === 'boolean') return !value;
+      return value;
+    };
+    const source = options();
+    source.settings = flip(source.settings, [], ([group, field]) => modelFieldRange(group as never, field as never)[end]) as ModelSettings;
+    Object.assign(source.settings, { modelSource: 'lidar' });
+    Object.assign(source.settings.scale, { mode: 'fit' });
+    Object.assign(source.settings.water, { mode: 'through' });
+    Object.assign(source.settings.lidar, { roofMode: 'heights', surveyPreference: 'detail', survey: 'https://example.com/survey/ept.json' });
+    Object.assign(source.settings.lidarModel, { cellMode: 'metres', waterMode: 'cut', trees: 'rounded' });
+    source.settings.land.priority.reverse();
+    const { routes, hiddenLines, ...rest } = source.svg;
+    source.svg = {
+      ...(flip(rest, [], (path) => {
+        const limit = limitFor(path)!;
+        return 'min' in limit ? limit[end] : limit.choices[end === 'min' ? 0 : limit.choices.length - 1];
+      }) as typeof rest),
+      routes,
+      hiddenLines,
+    };
+    const printer = printerByKey(source.exportSettings.printer);
+    source.exportSettings = { ...source.exportSettings, multiPlate: true, sectionWidthMm: end === 'min' ? MIN_SECTION_MM : printer.width, sectionHeightMm: end === 'min' ? MIN_SECTION_MM : printer.depth };
+    const map = { area: { ...DEFAULT_AREA, center: [-122.42, 37.77] as [number, number], rotationDeg: end === 'min' ? -179.9 : 180, shape: 'rounded' as const, cornerRadius: end === 'min' ? 0 : 0.5 }, placeName: 'San Francisco', fileName: null };
+    expect(decodeOptions(encodeOptions(source, map))).toEqual({ ...source, map });
   });
 
   it('only exports intended options and optionally the map', () => {
@@ -193,5 +225,17 @@ describe('resetting all settings', () => {
     expect(useApp.getState().edits).toBe(edits);
     expect(useApp.getState().svg.routes).toBe(routes);
     expect(useApp.getState().svg.hiddenLines).toBe(hiddenLines);
+  });
+
+  it("puts a layer's options back but leaves it on or off", () => {
+    patchSettings('lidar', { enabled: true, roofMode: 'heights', minFootprintMm2: 3 });
+    resetSettingsSection('lidar', ['enabled']);
+    expect(useApp.getState().settings.lidar).toEqual({ ...cloneSettings().lidar, enabled: true });
+    patchSettings('terrain', { elevation: false, exaggeration: 3 });
+    resetSettingsSection('terrain', ['elevation']);
+    expect(useApp.getState().settings.terrain).toEqual({ ...cloneSettings().terrain, elevation: false });
+    patchSettings('lidarModel', { waterMode: 'cut' });
+    resetSettingsSection('lidarModel');
+    expect(useApp.getState().settings.lidarModel).toEqual(cloneSettings().lidarModel);
   });
 });

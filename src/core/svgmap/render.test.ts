@@ -186,3 +186,24 @@ describe('rendering a real tile', () => {
     }
   });
 });
+
+describe('tiles that are not vector tiles', () => {
+  const settings = { ...defaultRenderSettings('laser'), area: { lon: centre.lon, lat: centre.lat, bearing: 0, widthM: 4000 } };
+  const layout = computeLayout(settings.product, settings.border);
+  const plan = planTiles(settings.area, layout, settings.source);
+  // A web page served with a 200 where the tile should be.
+  const picture = new TextEncoder().encode('<!DOCTYPE html><html><head><title>Not found</title></head><body>Sorry</body></html>').buffer;
+
+  it('count as missing parts of the map, with a warning', () => {
+    expect(plan.tiles.length).toBeGreaterThan(1);
+    const data = new Map(plan.tiles.map((t) => [`${t.z}/${t.x}/${t.y}`, t.x === 2589 && t.y === 5606 ? tile.buffer.slice(0) : picture.slice(0)]));
+    const prepared = prepareArea(plan, layout, data);
+    expect(prepared.lines.length).toBeGreaterThan(0);
+    expect(prepared.warnings.some((w) => w.includes("weren't vector tiles"))).toBe(true);
+  });
+
+  it('say what is wrong when none of them are', () => {
+    const data = new Map(plan.tiles.map((t) => [`${t.z}/${t.x}/${t.y}`, picture.slice(0)]));
+    expect(() => prepareArea(plan, layout, data)).toThrow(/didn't send vector tiles/);
+  });
+});

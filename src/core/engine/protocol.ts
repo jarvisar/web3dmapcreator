@@ -197,4 +197,6 @@ export type FromWorker =
   | { type: 'exported'; id: number; result: ExportResult }
   | { type: 'edited'; id: number; update: EditUpdate }
   | { type: 'surveys'; id: number; result: SurveyList }
-  | { type: 'error'; id: number; message: string; cancelled?: boolean; offers?: LidarOffer[] };
+  | { type: 'error'; id: number; message: string; cancelled?: boolean; offers?: LidarOffer[] }
+  // A worker script this tab asked for didn't load, which means a newer version replaced it.
+  | { type: 'outdated' };

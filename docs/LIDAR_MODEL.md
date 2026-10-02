@@ -127,7 +127,7 @@ Without map water no map data goes into the model, so exports credit only the su
 
 - The model shows the city the year it was surveyed.
 - Glass, dark roofs and water return few points. They're filled from around them, which can smear small details.
-- Water the survey barely files can print as ground where map water can't help, and anything outside the survey's outline with water beside it can come out as water (see Map Water).
+- Water the survey barely files can print as ground where map water can't help, and anything outside the survey's outline with water beside it can come out as water (see Map Water). The model warns when more than 2% of the area is outside every survey it read.
 - It's 2.5D. Nothing has air under it, so skybridges, canopies and the L come out solid to the ground, and bridges over a water layer or cut water solid to the base. It prints without supports.
 - Parts of Chicago's L still come out as rows of trees. The ties make the deck rough and a fifth of its returns are filed as vegetation.
 - A roof edge filed as vegetation slopes down to the street instead of standing as a wall.

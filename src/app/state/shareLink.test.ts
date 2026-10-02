@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emptyEdits, type ModelEdits } from '../../core/edit/types';
 import { DEFAULT_AREA } from '../../core/settings';
 import { defaultSvgSettings } from '../svgmap/settings';
-import { MAX_LINK_EXTRA, MAX_UNPACKED, parseHash, shareUrl } from './shareLink';
+import { MAX_LINK_EXTRA, MAX_UNPACKED, parseHash, shareUrl, unreadableText } from './shareLink';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -52,10 +52,30 @@ describe('share links', () => {
     expect(parseHash(hashOf(url)).edits).toBeNull();
   });
 
-  it('ignore edits that are not readable', () => {
+  it('ignore edits that are not readable, and say so', () => {
     const shared = parseHash('#a=-87.6,41.88,1000,1000,0,rectangle&e=not-deflate');
     expect(shared.area).not.toBeNull();
     expect(shared.edits).toBeNull();
+    expect(shared.unreadable).toEqual(['edits']);
+    expect(unreadableText(shared)).toMatch(/edits to the model in this link couldn't be read/);
+    expect(parseHash('#a=-87.6,41.88,1000,1000,0,rectangle').unreadable).toEqual([]);
+  });
+
+  it('still open when pasted with the end of a sentence', () => {
+    vi.stubGlobal('location', { href: 'https://citymodel.example/' });
+    const edits: ModelEdits = { ...emptyEdits(), objects: { 'b:tower': { heightM: 120 } } };
+    const hash = hashOf(shareUrl(DEFAULT_AREA, 'model', defaultSvgSettings(), edits).url);
+    const plain = '#a=-87.6,41.88,1000,1000,0,rectangle';
+    for (const junk of ['.', ')', ').', '%29', '!"']) {
+      expect(parseHash(hash + junk).edits).toEqual(edits);
+      expect(parseHash(plain + junk).area?.shape).toBe('rectangle');
+    }
+    const svg = defaultSvgSettings();
+    svg.label.text = 'ROME';
+    const svgHash = hashOf(shareUrl(DEFAULT_AREA, 'svg', svg).url);
+    expect(parseHash(`${svgHash}.`).svg?.svg.label.text).toBe('ROME');
+    // Cut short is another matter.
+    expect(parseHash(hash.slice(0, -12)).unreadable).toEqual(['edits']);
   });
 
   it('refuse edits that inflate past the limit, or a part too long for any link we make', () => {

@@ -9,6 +9,8 @@ import { Projection } from './projection';
 export const MAX_LATITUDE = 85.05112878;
 export const MIN_SIDE_M = 50;
 export const MAX_SIDE_M = 60000;
+/** Map data is fetched this far past the area's edge. */
+export const DATA_MARGIN_M = 25;
 const CHORD_TOLERANCE_MM = 0.1;
 
 export function circleSegments(radius: number, tolerance = CHORD_TOLERANCE_MM): number {
@@ -152,9 +154,11 @@ export function validateArea(area: AreaSpec): string | null {
   if (Math.abs(lat) > MAX_LATITUDE - 0.5) return 'Areas this close to the poles are not supported.';
   if (!(area.widthM >= MIN_SIDE_M && area.heightM >= MIN_SIDE_M)) return `Each side must be at least ${MIN_SIDE_M} m.`;
   if (area.widthM > MAX_SIDE_M || area.heightM > MAX_SIDE_M) return `Each side is limited to ${MAX_SIDE_M / 1000} km.`;
-  const bounds = areaGeoBounds(area);
+  // With the data margin, as it's downloaded. An area just short of the
+  // meridian otherwise passed and its data bounds wrapped round the world.
+  const bounds = areaGeoBounds(area, DATA_MARGIN_M);
   if (bounds.west < -180 || bounds.east > 180 || bounds.east - bounds.west > 180) {
-    return 'Areas that cross the 180th meridian are not supported.';
+    return `Areas that cross the 180th meridian, or come within ${DATA_MARGIN_M} m of it, are not supported.`;
   }
   return null;
 }

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SourceFeature } from '../pipeline/source';
 import type { Candidate, Tile } from './sources';
 
-vi.mock('./sources', () => ({ discover: vi.fn(async () => ({ candidates: [], failures: [] })) }));
+vi.mock('./sources', async (original) => ({ ...(await original<typeof import('./sources')>()), discover: vi.fn(async () => ({ candidates: [], failures: [] })) }));
 // Indexes aren't read: surveys keep their catalog densities.
 vi.mock('./read/density', () => ({ localDensity: vi.fn(async () => null) }));
 vi.mock('./read/laz', async (importOriginal) => ({ ...(await importOriginal<typeof import('./read/laz')>()), lazDecoder: async () => undefined }));
@@ -71,6 +71,19 @@ describe('whole-file survey rules', () => {
     expect(offer.bytes).toBe(450e6);
     expect(offer.unsized).toBe(0);
     expect(describeOffer(offer)).toBe('2 tiles, about 450 MB, from Geobasis NRW (2021)');
+    expect(offer.uncached).toBeUndefined();
+  });
+
+  it("counts tiles the LiDAR cache can't keep", async () => {
+    const survey = candidate('x', 'LAZ');
+    const big: Tile[] = [
+      // Read in one go, over a quarter of the cache.
+      { url: 'https://example.com/whole.las', bbox: [0, 0, 1, 1], size: 300e6, whole: true },
+      // Read in runs, but bigger than the whole cache.
+      { url: 'https://example.com/huge.las', bbox: [0, 0, 1, 1], size: 1.8e9 },
+      { url: 'https://example.com/small.laz', bbox: [0, 0, 1, 1], size: 200e6 },
+    ];
+    expect((await makeOffer(new Fetcher(), survey, big, 'gap', [], 1))!.uncached).toBe(2);
   });
 });
 
@@ -126,8 +139,8 @@ describe('prepareLidar with a whole-file survey', () => {
   });
 
   it('offers it where a streamed survey found too little, but not for a rejection no survey would change', async () => {
-    const ept = candidate('ept', 'EPT', { projectYearHint: 2015 });
-    const tiled = candidate('tiled', 'LAZ', { tiles, projectYearHint: 2012 });
+    const ept = candidate('ept', 'EPT', { projectYearHint: 2015, densityM2: 4 });
+    const tiled = candidate('tiled', 'LAZ', { tiles, projectYearHint: 2012, densityM2: 20 });
     vi.mocked(discover).mockResolvedValue({ candidates: [ept, tiled], failures: [] });
     const read: string[] = [];
     const sparse = await prepareLidar({ bounds, buildings, parts: [], settings, runner: rejecting('insufficient_roof_points', read) });
@@ -137,6 +150,20 @@ describe('prepareLidar with a whole-file survey', () => {
     stored = new Map();
     const hopeless = await prepareLidar({ bounds, buildings, parts: [], settings, runner: rejecting('elevated_or_underground', []) });
     expect(hopeless.offers).toEqual([]);
+  });
+
+  it("doesn't offer a copy of a survey that already read the buildings, nor two surveys for one building", async () => {
+    // A copy of the same flight, and one older and sparser still.
+    const ept = candidate('ept', 'EPT', { projectYearHint: 2017, densityM2: 16 });
+    const copy = candidate('copy', 'LAZ', { tiles, projectYearHint: 2017, densityM2: 16 });
+    vi.mocked(discover).mockResolvedValue({ candidates: [ept, copy, candidate('old', 'LAZ', { tiles, projectYearHint: 2010, densityM2: 6 })], failures: [] });
+    const rejected = await prepareLidar({ bounds, buildings, parts: [], settings, runner: rejecting('insufficient_roof_points', []) });
+    expect(rejected.offers).toEqual([]);
+    // Where nothing streamed covers them, only the first whole-file survey is offered.
+    stored = new Map();
+    vi.mocked(discover).mockResolvedValue({ candidates: [copy, candidate('old', 'LAZ', { tiles: tiles.map((t) => ({ ...t, url: t.url.replace('.laz', '-old.laz') })), projectYearHint: 2010 })], failures: [] });
+    const gap = await prepareLidar({ bounds, buildings, parts: [], settings, runner: rejecting('insufficient_roof_points', []) });
+    expect(gap.offers.map((o) => [o.name, o.reason, o.buildings])).toEqual([['copy', 'gap', 2]]);
   });
 
   it("doesn't offer a survey whose header shows it couldn't be read", async () => {
@@ -202,5 +229,24 @@ describe('prepareLidar with a whole-file survey', () => {
     const result = await prepareLidar({ bounds, buildings, parts: [], settings, runner: rejecting('insufficient_ground', read), approved: 'all' });
     expect([...new Set(read)]).toEqual(['tiled']);
     expect(result.offers).toEqual([]);
+  });
+
+  it('counts the buildings it would measure by why, apart from the gaps', async () => {
+    const ept = candidate('ept', 'EPT', { acquisitionStart: '2015-03-01', acquisitionEnd: '2015-04-01' });
+    const tiled = candidate('tiled', 'LAZ', { tiles, acquisitionStart: '2022-03-01', acquisitionEnd: '2022-04-01' });
+    vi.mocked(discover).mockResolvedValue({ candidates: [ept, tiled], failures: [] });
+    // The older streamed survey measures `west` only.
+    const runner = {
+      concurrency: 1,
+      async run(job: { batch: { id: string }[] }) {
+        const records = Object.fromEntries(job.batch.filter((f) => f.id === 'west').map((f) => [f.id, { method: 'height_only', heightM: 10, tiers: [], coverage: 1, explainedFraction: 1, roofSupportDensityM2: 5 }]));
+        const rejected = Object.fromEntries(job.batch.filter((f) => f.id !== 'west').map((f) => [f.id, 'insufficient_roof_points']));
+        return { outcome: { records, rejected, observations: {} }, downloaded: 0 };
+      },
+    } as never;
+    const result = await prepareLidar({ bounds, buildings, parts: [], settings, runner, approved: new Set() });
+    expect(Object.keys(result.records)).toEqual(['west']);
+    expect(result.offers).toHaveLength(1);
+    expect(result.offers[0]).toMatchObject({ name: 'tiled', reason: 'gap', buildings: 2, counts: { gap: 1, newer: 1 } });
   });
 });

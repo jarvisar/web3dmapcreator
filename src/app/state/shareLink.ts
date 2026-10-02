@@ -91,21 +91,37 @@ export interface SharedLink {
   svg: SharedSvg | null;
   edits: ModelEdits | null;
   picks: SharedPicks | null;
+  /** Parts the link has but that couldn't be read, usually because it was cut short. */
+  unreadable: ('edits' | 'picks')[];
 }
 
 export function parseHash(hash: string): SharedLink {
-  const params = new URLSearchParams(hash.replace(/^#/, ''));
+  // Every part ends in a letter, digit, - or _. Anything after came with the
+  // link from a sentence it was pasted in, like a full stop or a bracket,
+  // which some apps escape.
+  const clean = hash.replace(/(?:[^A-Za-z0-9_-]|%[0-9A-Fa-f]{2})+$/, '');
+  const params = new URLSearchParams(clean.replace(/^#/, ''));
   const svg = params.get('s') ? decodeSvgSettings(params.get('s')!) : null;
   const o = params.get('o');
+  const edits = params.get('e') ? readEdits(unpack(params.get('e')!)) : null;
+  const picks = params.get('p') ? readPicks(unpack(params.get('p')!)) : null;
   return {
-    area: parseAreaHash(hash),
+    area: parseAreaHash(clean),
     // An SVGmap link is always an SVG map. An area without o= was written in
     // model mode, and the recipient's saved mode would change its size.
     output: o === 'svg' || o === 'model' ? o : svg ? 'svg' : params.get('a') ? 'model' : null,
     svg,
-    edits: params.get('e') ? readEdits(unpack(params.get('e')!)) : null,
-    picks: params.get('p') ? readPicks(unpack(params.get('p')!)) : null,
+    edits,
+    picks,
+    unreadable: [...(params.get('e') && !edits ? ['edits' as const] : []), ...(params.get('p') && !picks ? ['picks' as const] : [])],
   };
+}
+
+/** What to tell the user about a link that came with edits or picked roads that couldn't be read. */
+export function unreadableText(link: SharedLink): string | null {
+  if (!link.unreadable.length) return null;
+  const what = link.unreadable.map((part) => (part === 'edits' ? 'edits to the model' : 'picked roads')).join(' and ');
+  return `The ${what} in this link couldn't be read, so they were left out. The link may have been cut short when it was copied.`;
 }
 
 function readEdits(value: unknown): ModelEdits | null {
@@ -119,7 +135,7 @@ function readPicks(value: unknown): SharedPicks | null {
 }
 
 export function readHash(): SharedLink {
-  if (typeof location === 'undefined') return { area: null, output: null, svg: null, edits: null, picks: null };
+  if (typeof location === 'undefined') return { area: null, output: null, svg: null, edits: null, picks: null, unreadable: [] };
   return parseHash(location.hash);
 }
 

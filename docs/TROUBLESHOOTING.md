@@ -64,7 +64,9 @@
 
 ## The map and 3D view
 
-**The map or the 3D view stays blank.** Both need WebGL. Turn on hardware acceleration in your browser's settings, update your graphics driver, or try another browser.
+**The map or the 3D view says it needs WebGL.** Both need WebGL 2. Turn on hardware acceleration in your browser's settings, update your graphics driver, or try another browser. Search, generating, downloads and SVG maps still work without it, you just can't see the map or the model.
+
+**"The base map didn't load".** OpenFreeMap, which draws `Streets` and `Light`, didn't answer. Switch to `Satellite`, or try again later. Generating still works.
 
 **"The 3D view stopped".** The browser reset the graphics, often because memory ran low. It usually comes back by itself. If it doesn't, reload the page and generate again. Your settings and area are kept.
 

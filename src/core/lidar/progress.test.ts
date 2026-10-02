@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SourceFeature } from '../pipeline/source';
 import type { Candidate, Tile } from './sources';
 
-vi.mock('./sources', () => ({ discover: vi.fn(async () => ({ candidates: [], failures: [] })) }));
+vi.mock('./sources', async (original) => ({ ...(await original<typeof import('./sources')>()), discover: vi.fn(async () => ({ candidates: [], failures: [] })) }));
 vi.mock('./read/density', () => ({ localDensity: vi.fn(async () => null) }));
 vi.mock('./read/laz', async (importOriginal) => ({ ...(await importOriginal<typeof import('./read/laz')>()), lazDecoder: async () => undefined }));
 vi.mock('./read/tiles', async (importOriginal) => ({ ...(await importOriginal<typeof import('./read/tiles')>()), checkTile: vi.fn(async () => undefined) }));

@@ -335,7 +335,12 @@ export function meshCap(solid: CapSolid, out: Sink, region?: Region): 'ok' | 'em
     if (!boxesOverlap(box, region.box)) return 'empty';
     const inside = region.rectangular && box[0] >= region.box[0] && box[1] >= region.box[1] && box[2] <= region.box[2] && box[3] <= region.box[3];
     if (!inside) {
-      const clipped = clipTin(tin, region.polygons);
+      let clipped = clipTin(tin, region.polygons);
+      // A section of a round LiDAR only model with water has its round edge
+      // a unit off the cap's own, and the triangulation got stuck there, as
+      // it can on slivers a cut left along the water. Grown a hair, the
+      // region gets clear and the sections overlap by that much.
+      for (const grow of [PINCH_MM, 10 * PINCH_MM]) clipped ??= clipTin(tin, offsetPolygons(region.polygons, grow, 'miter'));
       if (!clipped) return 'failed';
       if (!clipped.triangles.length) return 'empty';
       tin = clipped;

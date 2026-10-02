@@ -103,8 +103,18 @@ export function clipTin(tin: Tin, region: MultiPolygon, epsilon?: number): Tin |
   // triangulation stuck. Moving it in by a millionth of the extent almost
   // always gets clear, and callers compare areas with more slack than that.
   const retried = clipBand(tin, offsetPolygons(region, -eps * 1e5), eps);
-  return retried === FAILED ? null : (retried ?? emptyTin());
+  if (retried !== FAILED) return retried ?? emptyTin();
+  // A TIN cut before (a LiDAR only surface cut along its water) can have
+  // vertices a few millionths of a mm apart where that cut ran close by, and
+  // cutting it again got stuck on them or walked off the hull. Merged at
+  // SNAP_MM and triangulated inside a frame, only those slivers are lost.
+  const snapped = clipBand(tin, region, Math.max(eps, SNAP_MM), true);
+  return snapped === FAILED ? null : (snapped ?? emptyTin());
 }
+
+// Under a third of PINCH_MM, and the least that got every stuck section
+// of the fuzzed LiDAR only models through.
+const SNAP_MM = 3e-5;
 
 const emptyTin = (): Tin => ({ vertices: new Float64Array(0), triangles: new Uint32Array(0) });
 
@@ -122,12 +132,12 @@ const BAND_MIN = 4096;
  * triangles on an edge the outline touches are then near, so the two parts
  * meet at edges nothing cut, and join by vertex index.
  */
-function clipBand(tin: Tin, region: MultiPolygon, eps: number): Tin | null | typeof FAILED {
+function clipBand(tin: Tin, region: MultiPolygon, eps: number, framed = false): Tin | null | typeof FAILED {
   const f = tin.triangles;
   const v = tin.vertices;
   const faces = f.length / 3;
   const whole = () => {
-    const out = clipOnce(tin, region, eps);
+    const out = clipOnce(tin, region, eps, framed);
     return out === FAILED ? FAILED : (out?.tin ?? null);
   };
   if (faces < BAND_MIN) return whole();
@@ -262,7 +272,7 @@ function clipBand(tin: Tin, region: MultiPolygon, eps: number): Tin | null | typ
   }
   const bandVertices = new Float64Array(3 * bandSource.length);
   bandSource.forEach((p, i) => bandVertices.set(v.subarray(3 * p, 3 * p + 3), 3 * i));
-  const clipped = near ? clipOnce({ vertices: bandVertices, triangles: bandTriangles }, region, eps) : null;
+  const clipped = near ? clipOnce({ vertices: bandVertices, triangles: bandTriangles }, region, eps, framed) : null;
   if (clipped === FAILED) return FAILED;
   // Kept triangles with their own vertices, then the clipped band, sharing TIN vertices by index.
   const index = new Int32Array(v.length / 3).fill(-1);
@@ -369,7 +379,7 @@ export class Bounded extends Constrainautor {
 }
 
 /** The clipped TIN, with the input vertex behind each of its vertices (-1 for new points). */
-function clipOnce(tin: Tin, region: MultiPolygon, eps: number): { tin: Tin; source: Int32Array } | null | typeof FAILED {
+function clipOnce(tin: Tin, region: MultiPolygon, eps: number, framed = false): { tin: Tin; source: Int32Array } | null | typeof FAILED {
   const table = new PointTable(eps);
   const vertexCount = tin.vertices.length / 3;
   const tinPoint = new Int32Array(vertexCount);
@@ -497,6 +507,13 @@ function clipOnce(tin: Tin, region: MultiPolygon, eps: number): { tin: Tin; sour
         r.splits.push([t, id]);
       }
     }
+  }
+
+  // Points well clear of everything, so no constraint runs along the hull.
+  // Nothing outside the TIN is kept, so they never reach the output.
+  if (framed) {
+    const pad = 10 * span;
+    for (const [x, y] of [[minX - pad, minY - pad], [maxX + pad, minY - pad], [maxX + pad, maxY + pad], [minX - pad, maxY + pad]]) table.add(x, y);
   }
 
   // Constraint pieces.

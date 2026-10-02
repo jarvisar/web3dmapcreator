@@ -58,8 +58,9 @@ export async function checkFont(data: ArrayBuffer): Promise<string | null> {
   const signature = String.fromCharCode(...new Uint8Array(data, 0, Math.min(4, data.byteLength)));
   if (signature === 'wOF2') return "WOFF2 fonts can't be read. Use a TTF, OTF or WOFF file.";
   try {
-    const { parseOutlineFont } = await import('../../core/svgmap/text/loadFont');
-    parseOutlineFont(data);
+    const [{ parseOutlineFont }, { textGeometry }] = await Promise.all([import('../../core/svgmap/text/loadFont'), import('../../core/svgmap/text/outline')]);
+    // Laid out too, since some fonts parse and then throw on the first title.
+    textGeometry(parseOutlineFont(data), 'Map 123');
     return null;
   } catch {
     return "This file couldn't be read as a font.";

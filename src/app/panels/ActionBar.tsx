@@ -1,5 +1,6 @@
 import { CloudDownload, Download, Eye, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import type { LidarOffer } from '../../core/engine/protocol';
+import { LIDAR_CACHE_LIMIT } from '../../core/data/cache';
 import { editCount, unusedLayers } from '../../core/edit/types';
 import { TaskProgress } from '../components/TaskProgress';
 import { areaHint } from '../lib/area';
@@ -94,13 +95,24 @@ function Alert({ title, text, onDismiss }: { title: string; text: string; onDism
 
 function offerLine(offer: LidarOffer, failed: boolean): string {
   const name = `${offer.name}${offer.year ? ` (${offer.year})` : ''}`;
-  const buildings = offer.buildings === undefined ? null : `${formatCount(offer.buildings)} ${offer.buildings === 1 ? 'building' : 'buildings'}`;
+  const count = (n: number) => `${formatCount(n)} ${n === 1 ? 'building' : 'buildings'}`;
+  const buildings = offer.buildings === undefined ? null : count(offer.buildings);
   if (offer.reason === 'chosen') return buildings ? `${name}, the survey picked under Layers, would measure ${buildings}.` : `${name} is the survey picked under Layers.`;
-  // A LiDAR only model that couldn't be built had nothing else to read.
-  if (failed) return `${name} has the only LiDAR for this area.`;
-  if (offer.reason === 'gap') return buildings ? `${name} has LiDAR for ${buildings} nothing else measured.` : `${name} covers parts of the area nothing else does.`;
-  const how = offer.reason === 'newer' ? 'much newer' : 'much denser';
-  return buildings ? `${name} is ${how} than what ${buildings} were measured from.` : `${name} is ${how} than the survey read here.`;
+  // A LiDAR only model that couldn't be built had nothing else to read,
+  // unless something it could read failed, which the error says.
+  if (failed && !offer.failure) return `${name} has the only LiDAR for this area.`;
+  if (offer.buildings !== undefined) {
+    // One offer can cover gaps for some buildings and be newer than what others were measured from.
+    const counts = offer.counts ?? { [offer.reason]: offer.buildings };
+    const parts = [
+      counts.gap ? `has LiDAR for ${count(counts.gap)} nothing else measured` : '',
+      counts.newer ? `is much newer than what ${count(counts.newer)} were measured from` : '',
+      counts.denser ? `is much denser than what ${count(counts.denser)} were measured from` : '',
+    ].filter(Boolean);
+    if (parts.length) return `${name} ${parts.join(', and ')}.`;
+  }
+  if (offer.reason === 'gap') return `${name} covers parts of the area nothing else does.`;
+  return `${name} is ${offer.reason === 'newer' ? 'much newer' : 'much denser'} than the survey read here.`;
 }
 
 /**
@@ -122,6 +134,12 @@ function LidarOffers({ failed }: { failed: boolean }) {
   const unsized = offers.list.reduce((sum, o) => sum + o.unsized, 0);
   const count = `${formatCount(tiles.length)} ${tiles.length === 1 ? 'tile' : 'tiles'}`;
   const size = bytes ? `, about ${bytes >= 1e9 ? `${formatNumber(bytes / 1e9, 1)} GB` : formatBytes(bytes)}${unsized ? ` plus ${unsized} of unknown size` : ''}` : ' of unknown size';
+  const gb = (value: number) => `${formatNumber(value / 1e9, value % 1e9 ? 1 : 0)} GB`;
+  // Past what the cache keeps, reading them again (another setting, a moved area) downloads them again.
+  const kept =
+    bytes <= LIDAR_CACHE_LIMIT && !offers.list.some((o) => o.uncached)
+      ? `, and the LiDAR cache keeps up to ${gb(LIDAR_CACHE_LIMIT)} of them for next time.`
+      : `. That's more than the LiDAR cache keeps (${gb(LIDAR_CACHE_LIMIT)}), so changing a LiDAR setting or the area later can download them again.`;
   return (
     <div className="notice offer-notice" role="status">
       <CloudDownload size={14} aria-hidden="true" />
@@ -132,7 +150,7 @@ function LidarOffers({ failed }: { failed: boolean }) {
         ))}
         <span>
           {count}
-          {size}. They come as whole files, so this can take a while, and are kept in the LiDAR cache.
+          {size}. They come as whole files, so this can take a while{kept}
         </span>
         <div className="offer-actions">
           <button type="button" className="btn btn-sm btn-primary" onClick={() => void generateModel({ approveTiles: tiles })}>
@@ -163,7 +181,7 @@ function ModelActions() {
   const largeGrids = useApp((state) => state.ui.largeGrids);
   const problem = generationProblem(area, settings, largeGrids);
   const running = status === 'running';
-  // An offer says what the error would, with a way forward.
+  // An offer says what the error would, with a way forward, unless a read failed as well.
   const offers = useOffers();
 
   let summary = '';
@@ -189,7 +207,7 @@ function ModelActions() {
 
   return (
     <>
-      {status === 'error' && error && !offers && <Alert title="Could not generate the model" text={error} onDismiss={dismissGenerationError} />}
+      {status === 'error' && error && (!offers || offers.list.some((offer) => offer.failure)) && <Alert title="Could not generate the model" text={error} onDismiss={dismissGenerationError} />}
       {exportError && <Alert title="Could not export the model" text={exportError} onDismiss={dismissExportError} />}
       {!running && !exporting && <LidarOffers failed={status === 'error'} />}
 

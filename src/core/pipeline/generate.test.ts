@@ -289,6 +289,23 @@ describe('generateModel', () => {
     expect(terrain(layer)).toBeGreaterThan(terrain(through));
   });
 
+  it('keeps everything above the base with a thin base, a deep embed and thick decks', async () => {
+    const { spec, meshed } = await build((s) => {
+      s.terrain.baseThicknessMm = 0.1;
+      s.land.embedMm = 0.6;
+      s.bridges.enabled = true;
+      s.bridges.deckThicknessMm = 6;
+    });
+    expect(meshed.parts.map((p) => p.id)).toEqual(expect.arrayContaining(['bridges', 'roads', 'land-green', 'trees']));
+    for (const part of meshed.parts) {
+      let low = Infinity;
+      for (let i = 2; i < part.positions.length; i += 3) low = Math.min(low, part.positions[i]);
+      expect({ part: part.id, low: Math.max(0, -low) }).toEqual({ part: part.id, low: expect.closeTo(0, 5) });
+    }
+    // The editor's decks are clamped the same way.
+    for (const deck of spec.edit!.decks) expect(deck.bottom(0, -0.7)).toBeGreaterThanOrEqual(spec.baseZ);
+  });
+
   it('builds a flat base without elevation', async () => {
     const { meshed } = await build((s) => (s.terrain.elevation = false));
     const terrain = meshed.parts.find((p) => p.id === 'terrain')!;

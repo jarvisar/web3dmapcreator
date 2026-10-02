@@ -16,20 +16,15 @@ import { UpdateNotice } from './app/components/UpdateNotice';
 import { startEditSync } from './app/state/editActions';
 import { startSync } from './app/state/sync';
 import { loadStoredFont } from './app/svgmap/customFont';
-import { setCustomFont, setLabel, useApp } from './app/state/store';
-import { CUSTOM_FONT_ID, fontFingerprint } from './core/svgmap/text/fonts';
-import { DEFAULT_LABEL } from './core/svgmap/text/label';
+import { dropMissingFont, setCustomFont } from './app/state/store';
+import { fontFingerprint } from './core/svgmap/text/fonts';
 
 startSync();
 startEditSync();
 
 void loadStoredFont().then((font) => {
   setCustomFont(font?.name ?? null, font ? fontFingerprint(font.data) : null);
-  if (font) return;
-  // No stored font (cleared storage or someone else's share link), so fall back.
-  const label = useApp.getState().svg.label;
-  if (label.font === CUSTOM_FONT_ID) setLabel({ font: DEFAULT_LABEL.font });
-  if (label.subtitleFont === CUSTOM_FONT_ID) setLabel({ subtitleFont: '' });
+  dropMissingFont();
 });
 
 createRoot(document.getElementById('root')!).render(

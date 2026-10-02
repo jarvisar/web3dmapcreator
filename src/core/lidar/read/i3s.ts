@@ -87,7 +87,7 @@ export function obbBox(obb: Obb, geographic: boolean): [number, number, number, 
 
 /** A node resource, unzipped. ArcGIS answers some missing resources with a JSON error and HTTP 200. */
 async function resource(fetcher: Fetcher, url: string): Promise<Uint8Array> {
-  let bytes = new Uint8Array(await fetcher.bytes(url));
+  let bytes = new Uint8Array(await fetcher.bytes(url, 'scene-resource'));
   if (bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = gunzipSync(bytes);
   if (bytes[0] === 0x7b) {
     const text = new TextDecoder().decode(bytes.subarray(0, 300));

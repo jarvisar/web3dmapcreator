@@ -14,7 +14,7 @@
 
 import type { Polygon } from '../../types';
 import { sceneOutline } from '../read/i3s';
-import { overlaps, type Box, type Candidate, type Provider } from './common';
+import { briefly, overlaps, type Box, type Candidate, type Provider } from './common';
 
 interface Layer {
   id: string;
@@ -73,7 +73,7 @@ export const sceneLayers: Provider = {
       try {
         boxes = await sceneOutline(fetcher, layer.url, bbox);
       } catch (error) {
-        failures.push({ source: layer.name, reason: (error as Error).message, search: true });
+        failures.push({ source: layer.name, reason: briefly(error), search: true });
         continue;
       }
       if (!boxes.length) continue;

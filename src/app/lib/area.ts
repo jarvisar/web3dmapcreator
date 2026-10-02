@@ -85,9 +85,9 @@ export function scaleArea(area: AreaSpec, factor: number): AreaSpec {
 export function normalizeArea(area: AreaSpec): AreaSpec {
   let lon = Number.isFinite(area.center[0]) ? wrapLongitude(area.center[0]) : 0;
   let lat = Number.isFinite(area.center[1]) ? area.center[1] : 0;
-  lat = Math.max(-LATITUDE_LIMIT, Math.min(LATITUDE_LIMIT, lat));
   lon = Math.round(lon * 1e7) / 1e7;
-  lat = Math.round(lat * 1e7) / 1e7;
+  // Clamped after rounding: rounding the limit itself went past it, and validateArea refused the clamped area.
+  lat = Math.max(-LATITUDE_LIMIT, Math.min(LATITUDE_LIMIT, Math.round(lat * 1e7) / 1e7));
   const shape = SHAPES.includes(area.shape) ? area.shape : 'rectangle';
   let width = Number.isFinite(area.widthM) ? area.widthM : 2000;
   let height = Number.isFinite(area.heightM) ? area.heightM : 2000;

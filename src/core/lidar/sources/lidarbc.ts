@@ -9,17 +9,18 @@
 // NRCan republishes some NDMP surveys as COPC under the same tile names, and
 // those are far cheaper to read. A tile of those is looked for on NRCan's
 // bucket and left out when it's there, so the same flight isn't offered as a
-// download next to its own COPC. Not every tile was copied (NRCan has 1,575
+// download next to its own COPC. Not every tile was copied (NRCan has 1,712
 // of Fraser 2016's 2,008), so it's per tile.
 
 import { proxyAvailable } from '../../data/corsProxy';
 import type { Polygon } from '../../types';
 import type { Fetcher } from '../read/fetcher';
-import { geoPolygons, overlaps, pagedFeatures, ringBox, type Box, type Candidate, type Provider } from './common';
+import { geoPolygons, overlaps, pagedFeatures, ringBox, s3Keys, type Box, type Candidate, type Provider } from './common';
 
 const LAYER = 'https://services6.arcgis.com/ubm4tcTYICKBpist/arcgis/rest/services/LiDAR_BC_S3_Public/FeatureServer/4/query';
 const FILES = 'https://nrs.objectstore.gov.bc.ca/gdwuts/';
-const NRCAN = 'https://canelevation-lidar-point-clouds.s3.ca-central-1.amazonaws.com/pointclouds_nuagespoints/BC/';
+const NRCAN_BUCKET = 'https://canelevation-lidar-point-clouds.s3.ca-central-1.amazonaws.com/';
+const NRCAN = 'pointclouds_nuagespoints/BC/';
 // NAD83(CSRS) UTM zones by the index's `projection`.
 const ZONES: Record<string, string> = { utm7: 'EPSG:3154', utm8: 'EPSG:3155', utm9: 'EPSG:3156', utm10: 'EPSG:3157', utm11: 'EPSG:2955' };
 
@@ -31,15 +32,20 @@ function nrcanFolder(operation: string, projection: string): string | null {
   return null;
 }
 
-async function onNrcan(fetcher: Fetcher, url: string): Promise<boolean> {
+/** NRCan's file names under a prefix, or none when NRCan can't be asked, and then its copies can't be read either. */
+async function nrcanFiles(fetcher: Fetcher, prefix: string): Promise<Set<string>> {
   try {
-    return (await fetcher.size(url)) > 0;
+    const keys = await s3Keys(fetcher, NRCAN_BUCKET, prefix, 2);
+    return new Set([...keys.keys()].map((key) => key.slice(key.lastIndexOf('/') + 1)));
   } catch (error) {
     if ((error as Error)?.name === 'AbortError') throw error;
-    // Not there (404), or NRCan can't be asked, and then it can't be read either.
-    return false;
+    return new Set();
   }
 }
+
+const copcName = (filename: string) => filename.replace(/\.laz$/i, '.copc.laz');
+// A tile's name without its dates: bc_092g025_3_4_2_xyes_8_utm10.
+const stem = (filename: string) => filename.replace(/(_\d{4,8})*(\.copc)?\.laz$/i, '');
 
 /**
  * Flight dates from a file name. The programme's end in a start and an end
@@ -89,12 +95,29 @@ export const lidarbc: Provider = {
       const filename = url.slice(url.lastIndexOf('/') + 1);
       return [{ url, filename, year, operation: String(p.oper_name ?? '').trim(), projection: String(p.projection ?? '').trim().toLowerCase(), coverage, box: tileBox }];
     });
-    const copied = await Promise.all(
+    // One listing per 1:20,000 sheet (bc_092g025_), up to 64 tiles.
+    const listings = new Map<string, Promise<Set<string>>>();
+    const nrcan = await Promise.all(
       found.map(({ filename, operation, projection }) => {
         const folder = nrcanFolder(operation, projection);
-        return folder ? onNrcan(fetcher, `${NRCAN}${folder}/${filename.replace(/\.laz$/i, '.copc.laz')}`) : false;
+        if (!folder) return null;
+        const prefix = `${NRCAN}${folder}/${/^[^_]+_[^_]+_/.exec(filename)?.[0] ?? stem(filename)}`;
+        if (!listings.has(prefix)) listings.set(prefix, nrcanFiles(fetcher, prefix));
+        return listings.get(prefix)!;
       }),
     );
+    // NRCan renamed some copies (139 of its Fraser 2016 tiles end in _2018,
+    // not LidarBC's _20170713 or _20170714), so a copy of the same tile left
+    // over after the exact names counts too. VI 2018 and 2019 share 79 tiles
+    // in one NRCan folder, and there the left over copy is the other year's
+    // flight, which has its own tile here.
+    const exact = new Set(found.map((t) => copcName(t.filename)));
+    const copied = found.map(({ filename }, i) => {
+      const names = nrcan[i];
+      if (!names) return false;
+      if (names.has(copcName(filename))) return true;
+      return [...names].some((name) => !exact.has(name) && stem(name) === stem(filename));
+    });
 
     const groups = new Map<string, Found[]>();
     found.forEach((tile, i) => {

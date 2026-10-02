@@ -35,6 +35,17 @@ export function workUnitYear(name: string): number | null {
 export const usgs: Provider = {
   id: 'usgs',
   name: 'USGS 3DEP',
+  // NOAA's boxes, which held every outline in the catalog in October 2026
+  // apart from UT_Ogden-FEMA_2011's, filed at 0° N 85° E. Without them the
+  // 9 MB catalog was downloaded for areas anywhere.
+  areas: [
+    [-125.0, 24.4, -66.8, 49.5],
+    [-180.0, 51.0, -129.9, 71.5],
+    [-178.5, 18.5, -154.5, 28.6],
+    [-68.0, 17.5, -64.4, 18.8],
+    [144.4, 13.1, 146.2, 20.7],
+    [-171.2, -14.7, -168.0, -10.9],
+  ],
   async discover(fetcher, bbox) {
     const catalog = (await fetcher.json(USGS_CATALOG)) as { features: { properties: { name: string; url: string }; geometry: { type: string; coordinates: unknown } }[] };
     const out: Candidate[] = [];

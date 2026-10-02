@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultRenderSettings } from '../defaults';
 import { RenderService } from '../service';
@@ -41,6 +43,60 @@ describe('tile downloads', () => {
     // Two header reads, and neither is left holding a connection.
     expect(requests).toHaveLength(2);
     expect(requests.every((signal) => signal.aborted)).toBe(true);
+  });
+});
+
+describe('a tile source that is down', () => {
+  const settings = () => {
+    const s = defaultRenderSettings('laser');
+    s.label = { ...s.label, enabled: false };
+    return s;
+  };
+
+  it('asks for a failing TileJSON once per render', async () => {
+    const s = settings();
+    s.source = { ...s.source, tiles: 'https://tiles.test/tiles.json' };
+    let lookups = 0;
+    vi.stubGlobal('fetch', async () => {
+      lookups++;
+      return new Response('down', { status: 500 });
+    });
+    const service = new RenderService(async () => new ArrayBuffer(0));
+    await expect(service.render({ settings: s })).rejects.toThrow(/answered 500/);
+    expect(lookups).toBe(1);
+  });
+
+  it('stops trying a host that never answers', async () => {
+    vi.useFakeTimers();
+    const s = settings();
+    s.source = { ...s.source, tiles: TEMPLATE };
+    let requests = 0;
+    vi.stubGlobal('fetch', (_url: string, init?: RequestInit) => {
+      requests++;
+      return new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))));
+    });
+    const service = new RenderService(async () => new ArrayBuffer(0));
+    const failed = expect(service.render({ settings: s })).rejects.toThrow(/Could not download any map data/);
+    // One round of tiles giving up, not three.
+    await vi.advanceTimersByTimeAsync(31_000);
+    await failed;
+    expect(requests).toBeLessThanOrEqual(6);
+  });
+});
+
+describe('render service fonts', () => {
+  it("doesn't load a subtitle font for a title without a subtitle", async () => {
+    const s = defaultRenderSettings('laser');
+    s.source = { ...s.source, tiles: TEMPLATE };
+    // A custom font picked for the subtitle, then the file gone and the subtitle cleared.
+    s.label = { ...s.label, style: 'band', subtitle: '', subtitleFont: 'custom' };
+    vi.stubGlobal('fetch', async () => new Response(null, { status: 404 }));
+    const service = new RenderService(async (path) => {
+      const bytes = readFileSync(join('public', path));
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    });
+    const result = await service.render({ settings: s, customFont: null });
+    expect(result.groups.length).toBeGreaterThan(0);
   });
 });
 

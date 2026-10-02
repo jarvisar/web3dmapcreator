@@ -73,6 +73,31 @@ describe('LiDAR worker pool', () => {
     pool.close();
   });
 
+  it("says to reload when a worker's script never loaded, as after a deploy", async () => {
+    const onStale = vi.fn();
+    // A script that 404s fires a bare error event before the worker says anything.
+    const pool = lidarPool(1, undefined, fakes((_message, worker) => worker.onerror?.({})).create, onStale);
+    await expect(pool.run(job('a'), () => undefined)).rejects.toThrow(/site was updated\. Reload the page/);
+    expect(onStale).toHaveBeenCalledTimes(1);
+    pool.close();
+  });
+
+  it('still blames memory for a worker that dies silently part way through', async () => {
+    const onStale = vi.fn();
+    const pool = lidarPool(
+      1,
+      undefined,
+      fakes(({ id }, worker) => {
+        worker.onmessage?.({ data: { id, type: 'progress', label: 'Reading' } });
+        worker.onerror?.({});
+      }).create,
+      onStale,
+    );
+    await expect(pool.run(job('a'), () => undefined)).rejects.toThrow('The LiDAR worker stopped: out of memory?');
+    expect(onStale).not.toHaveBeenCalled();
+    pool.close();
+  });
+
   it('stops every worker when generation is cancelled', async () => {
     const controller = new AbortController();
     const f = fakes(() => undefined);

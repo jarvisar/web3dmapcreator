@@ -84,6 +84,27 @@
   }
 }
 
+/* Under the hint, so it doesn't sit on the SVG title notice at the bottom. */
+.map-notice.map-notice-top {
+  top: 52px;
+  bottom: auto;
+}
+
+/* In place of a map the browser can't draw */
+.map-failed {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.map-failed .notice {
+  max-width: 420px;
+}
+
 /* Area editor */
 
 .area-editor {

@@ -82,6 +82,40 @@ describe('title layout', () => {
     expect(artwork).toBeNull();
     expect(error).toMatch(/does not fit/);
   });
+
+  it('draws a title the font cannot shape a letter at a time, with a warning', () => {
+    const font = parseOutlineFont(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    if (font.kind !== 'outline') throw new Error('outline font expected');
+    font.font.stringToGlyphs = () => {
+      throw new Error('lookupType: 7 - substFormat: 1 is not yet supported');
+    };
+    const { artwork, error, warnings } = buildLabel(plaque, DEFAULT_LABEL, font, font);
+    expect(error).toBeNull();
+    expect(artwork!.text.rings.length).toBe(textGeometry(montserrat, DEFAULT_LABEL.text).rings.length);
+    expect(warnings.join(' ')).toMatch(/a letter at a time/);
+  });
+
+  it('loses only the title when the font throws on it', () => {
+    const font = parseOutlineFont(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    if (font.kind !== 'outline') throw new Error('outline font expected');
+    font.font.charToGlyphIndex = () => {
+      throw new Error('broken cmap');
+    };
+    font.font.stringToGlyphs = () => {
+      throw new Error('lookupType: 7 - substFormat: 1 is not yet supported');
+    };
+    const { artwork, error } = buildLabel(plaque, DEFAULT_LABEL, font, font);
+    expect(artwork).toBeNull();
+    expect(error).toMatch(/couldn't be drawn in this font/);
+  });
+
+  it('warns about letters the font has no glyph for', () => {
+    const plotted = buildLabel(plaque, { ...DEFAULT_LABEL, text: 'MÜNCHEN' }, hershey, hershey);
+    expect(plotted.warnings).toEqual(['The title font has no “Ü”, so it\'s drawn as a question mark.']);
+    const boxed = buildLabel(plaque, { ...DEFAULT_LABEL, text: '東京 TOKYO' }, montserrat, montserrat);
+    expect(boxed.warnings).toEqual(['The title font has no “東” or “京”, so they\'re drawn as boxes.']);
+    expect(buildLabel(plaque, { ...DEFAULT_LABEL, text: 'CHICAGO' }, montserrat, montserrat).warnings).toEqual([]);
+  });
 });
 
 describe('resized titles', () => {

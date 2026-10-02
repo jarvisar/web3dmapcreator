@@ -56,9 +56,11 @@ export default defineConfig({
       },
       workbox: {
         // The app, the 3D engine and the SVG title fonts, so it opens and
-        // draws titles offline. The LiDAR decoder loads when it's first used.
-        globPatterns: ['**/*.{js,css,html,svg,png,ico,ttf,json}'],
-        globIgnores: ['**/lidar*.js', '**/*.wasm'],
+        // draws titles offline. The LiDAR worker and its LAZ decoder (about
+        // 600 KB) too: left to the network, a tab still on the last version
+        // after a deploy asked for files the deploy had removed, and LiDAR
+        // failed until it reloaded.
+        globPatterns: ['**/*.{js,css,html,svg,png,ico,ttf,json,wasm}'],
         // The engine worker bundle is a few MB.
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         // Control the first visit right away so its tiles get cached too.

@@ -9,10 +9,12 @@ import {
   decodeTerrarium,
   fetchDem,
   groundResolutionM,
+  repairElevation,
   tileCount,
   tileFraction,
   tileRange,
   tileUrl,
+  VOID_M,
   type DemProgress,
 } from './dem';
 import { configureHttp, HttpError, setByteCache } from './http';
@@ -108,6 +110,53 @@ describe('decodeTerrarium', () => {
   });
 });
 
+describe('repairElevation', () => {
+  const PIXEL_M = 4;
+  function grid(columns: number, rows: number, height: (c: number, r: number) => number) {
+    const values = new Float32Array(columns * rows);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < columns; c++) values[r * columns + c] = height(c, r);
+    return { zoom: 15, tileX0: 0, tileY0: 0, columns, rows, values };
+  }
+
+  it('fills voids from the pixels around them', () => {
+    const g = grid(8, 8, (c, r) => (c >= 3 && c <= 5 && r >= 2 && r <= 4 ? VOID_M : 100));
+    expect(repairElevation(g, PIXEL_M)).toBe(9);
+    expect(Array.from(g.values).every((v) => v === 100)).toBe(true);
+  });
+
+  it('fills a lone garbage pixel, a band and a wide blob alike', () => {
+    // On ground at 10 m: one pixel at -900 m, a band six pixels tall right
+    // across the grid, and a 12 x 12 blob, wider than the reach.
+    const g = grid(40, 50, (c, r) => {
+      if (c === 5 && r === 5) return -900;
+      if (r >= 20 && r <= 25) return -5000 - 1000 * c;
+      if (c >= 14 && c <= 25 && r >= 32 && r <= 43) return -500;
+      return 10;
+    });
+    expect(repairElevation(g, PIXEL_M)).toBe(1 + 6 * 40 + 144);
+    expect(Math.min(...g.values)).toBe(10);
+  });
+
+  it('leaves real ground, polders, seabed and islands alone', () => {
+    // A gorge 300 m deep and one pixel wide above sea level.
+    const gorge = grid(20, 20, (c) => (c === 10 ? 200 : 500));
+    // Polder fields at -5 m beside a dyke at +3 m.
+    const polder = grid(20, 20, (c) => (c === 10 ? 3 : -5));
+    // Seabed falling 2 m a pixel from the shore.
+    const seabed = grid(60, 20, (c) => 5 - 2 * c);
+    for (const g of [gorge, polder, seabed]) {
+      const before = Float32Array.from(g.values);
+      expect(repairElevation(g, PIXEL_M)).toBe(0);
+      expect(g.values).toEqual(before);
+    }
+    // An island at +30 m ringed by seabed at -60 m. The steep seabed around
+    // it is evened out, which the water covers, but the island stays.
+    const island = grid(20, 20, (c, r) => (c >= 9 && c <= 11 && r >= 9 && r <= 11 ? 30 : -60));
+    repairElevation(island, PIXEL_M);
+    for (let r = 9; r <= 11; r++) for (let c = 9; c <= 11; c++) expect(island.values[r * 20 + c]).toBe(30);
+  });
+});
+
 describe('mosaic sampling', () => {
   // Two tiles side by side at zoom 10, heights rising 2 m per column and 3 m per row.
   const zoom = 10;
@@ -162,6 +211,18 @@ describe('fetchDem (offline)', () => {
     expect(dem.sample(...lonLat(262.3 * 256, 380.5 * 256, 10))).toBe(100);
     expect(dem.sample(...lonLat(263.7 * 256, 380.5 * 256, 10))).toBe(0);
     expect(progress.at(-1)).toMatchObject({ tilesDone: 2, tilesTotal: 2 });
+  });
+
+  it('fills void pixels, cached tiles included', async () => {
+    // A block of voids in the middle of each tile, as Terrarium has along some coasts.
+    const holed = tile((i) => (i % 256 > 100 && i % 256 < 120 && i >> 8 > 100 && i >> 8 < 120 ? VOID_M : 12));
+    const store = new Map<string, ArrayBuffer>([[tileUrl(10, 262, 380), holed.buffer.slice(holed.byteOffset, holed.byteOffset + holed.byteLength) as ArrayBuffer]]);
+    setByteCache({ get: async (key) => store.get(key), put: async (key, value) => void store.set(key, value) });
+    vi.stubGlobal('fetch', mockServer({ [tileUrl(10, 263, 380)]: holed }).fetch);
+    const dem = await fetchDem({ bounds, targetSpacingM: 1, zoom: 10 });
+    expect(dem.tilesUsed).toBe(2);
+    expect(dem.values.reduce((a, b) => Math.min(a, b))).toBe(12);
+    expect(dem.min).toBe(12);
   });
 
   it('fails on other errors and on an area with no tiles', async () => {

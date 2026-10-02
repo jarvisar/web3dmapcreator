@@ -7,8 +7,9 @@ import type { Tin } from '../geometry/tinclip';
 import type { MultiPolygon } from '../types';
 
 // Bump when a change to measurement would give different records, so cached
-// ones are measured again. The add-on's records were algorithm 29.
-export const ALGORITHM_VERSION = 11;
+// ones are measured again. The add-on's records were algorithm 29. 12 has
+// the corrected RD New and Krovak datum shifts (Dutch LiDAR sat ~170 m off).
+export const ALGORITHM_VERSION = 12;
 
 export type Method = 'faceted_roof' | 'roof_planes' | 'flat_regions' | 'height_only' | 'roof_p90' | 'supported_roof_height' | 'source_parts';
 

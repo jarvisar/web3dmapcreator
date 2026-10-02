@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MultiPolygon } from '../types';
-import { multiArea } from './polygon';
+import { intersection, multiArea } from './polygon';
 import grazing from './testdata/grazing-clip.json';
 import { clipTin, faceLocator, tinArea, type Tin } from './tinclip';
 
@@ -93,6 +93,31 @@ describe('clipTin', () => {
     expect(Math.abs(tinArea(out) - multiArea(region))).toBeLessThan(1e-3);
     checkConforming(out);
   }, 10000);
+
+  it('cuts a TIN again where an earlier cut left vertices a few millionths apart', () => {
+    // A LiDAR only surface cut along its water, then into print sections. The
+    // second cut got stuck on those vertices or walked off the hull.
+    let seed = 292828672;
+    const random = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    const tin = gridTin(8, 1, () => random());
+    // An outline whose corners sit a few millionths off the TIN's vertices.
+    const corners = 5 + Math.floor(random() * 6);
+    const ring: [number, number][] = [];
+    for (let i = 0; i < corners; i++) {
+      const angle = (2 * Math.PI * i) / corners;
+      const r = 2.5 + random() * 1.5;
+      let [x, y] = [4 + r * Math.cos(angle), 4 + r * Math.sin(angle)];
+      if (random() < 0.7) [x, y] = [Math.round(x) + (random() - 0.5) * 2e-5, Math.round(y) + (random() - 0.5) * 2e-5];
+      ring.push([x, y]);
+    }
+    const first = clipTin(tin, [[ring]])!;
+    const x0 = 1 + random() * 6;
+    const section: MultiPolygon = [[[[x0, -1], [x0 + 10, -1], [x0 + 10, 10], [x0, 10]]]];
+    const out = clipTin(first, section)!;
+    expect(out).not.toBeNull();
+    expect(Math.abs(tinArea(out) - multiArea(intersection([[ring]], section)))).toBeLessThan(1e-3);
+    checkConforming(out);
+  });
 
   describe('a TIN large enough to clip only near the outline', () => {
     // 70 x 70 cells, two triangles each: past the size where the rest is kept whole.

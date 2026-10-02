@@ -73,7 +73,10 @@ export class HttpError extends Error {
   readonly retryAfterMs: number | undefined;
 
   constructor(status: number, url: string, retryAfterMs?: number) {
-    super(`Download failed with HTTP ${status}: ${url}`);
+    // The LiDAR proxy answers 502 when the host refused or dropped its
+    // connection, and passes on a 502 or 504 the host's own gateway sent.
+    const unanswered = (status === 502 || status === 504) && requestUrl(url) !== url;
+    super(unanswered ? `${new URL(url).host} didn't answer the LiDAR proxy (HTTP ${status}): ${url}` : `Download failed with HTTP ${status}: ${url}`);
     this.name = 'HttpError';
     this.status = status;
     this.url = url;

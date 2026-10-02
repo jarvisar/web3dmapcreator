@@ -495,6 +495,20 @@ describe('prepareSurface', () => {
     expect(again.offers).toEqual([]);
   });
 
+  it("says a survey it could read failed, rather than that the offer is the only LiDAR", async () => {
+    vi.mocked(discover).mockResolvedValue({ candidates: [survey('streamed', 2012), tiled('tiles', 2024)], failures: [] });
+    const down: SurfaceRunner = { concurrency: 1, surface: () => Promise.reject(new Error('Network down')) };
+    const error = (await prepareSurface({ area, cellM: 1, runner: down }).catch((e: OffersError) => e)) as OffersError;
+    expect(error).toBeInstanceOf(OffersError);
+    expect(error.message).toContain('streamed: Network down');
+    expect(error.offers.length).toBeGreaterThan(0);
+    expect(error.offers.every((o) => o.failure === 'streamed: Network down')).toBe(true);
+    // Nothing failed: the offer stands on its own.
+    vi.mocked(discover).mockResolvedValue({ candidates: [tiled('tiles', 2024)], failures: [] });
+    const alone = (await prepareSurface({ area, cellM: 1, runner: down }).catch((e: OffersError) => e)) as OffersError;
+    expect(alone.offers.every((o) => o.failure === undefined)).toBe(true);
+  });
+
   it('reads a streamed survey in place of a whole-file one, and offers that only when much newer', async () => {
     vi.mocked(discover).mockResolvedValue({ candidates: [survey('streamed', 2012), tiled('tiles', 2024)], failures: [] });
     const calls: SurfaceJob[] = [];
@@ -517,6 +531,21 @@ describe('prepareSurface', () => {
     const filled = await prepareSurface({ area, cellM: 1, runner: fakeRunner([]), approved: new Set(result.offers[0].tiles) });
     expect(filled.surveys.map((s) => s.name)).toContain('tiles');
     expect(filled.coverage).toBeGreaterThan(0.99);
+  });
+
+  it('says how much of the area no survey covers', async () => {
+    const frame = new Projection(area.center, 0, 1);
+    const [middle] = frame.localToGeo(0, 0);
+    vi.mocked(discover).mockResolvedValue({ candidates: [survey('west', 2020, [-180, -80, middle, 80])], failures: [] });
+    expect((await prepareSurface({ area, cellM: 1, runner: fakeRunner([]) })).uncovered).toBeCloseTo(0.5, 1);
+    // Only the area's shape counts: an octagon around a circle misses the square's corners.
+    const square: AreaSpec = { ...area, rotationDeg: 0, widthM: 200, heightM: 200 };
+    const octagon = Array.from({ length: 9 }, (_, k) => frame.localToGeo(110 * Math.cos((k * Math.PI) / 4), 110 * Math.sin((k * Math.PI) / 4)));
+    vi.mocked(discover).mockResolvedValue({ candidates: [{ ...survey('octagon', 2020), coverage: [[octagon]] }], failures: [] });
+    expect((await prepareSurface({ area: square, cellM: 1, runner: fakeRunner([]) })).uncovered).toBeGreaterThan(0.05);
+    expect((await prepareSurface({ area: { ...square, shape: 'circle' }, cellM: 1, runner: fakeRunner([]) })).uncovered).toBe(0);
+    vi.mocked(discover).mockResolvedValue({ candidates: [survey('whole', 2020)], failures: [] });
+    expect((await prepareSurface({ area, cellM: 1, runner: fakeRunner([]) })).uncovered).toBe(0);
   });
 
   it('says when no survey covers the area', async () => {

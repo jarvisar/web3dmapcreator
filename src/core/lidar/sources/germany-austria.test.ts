@@ -110,8 +110,8 @@ describe('Bavaria', () => {
     expect(surveys[0].tiles![0].size).toBeUndefined();
     expect(surveys[0]).toMatchObject({ format: 'LAZ', classification: { '2': 'ground', '6': 'building', '20': 'unclassified' } });
     expect(surveys[0].classification!['22']).toBeUndefined();
-    // The header and the first point, per tile.
-    expect(requested.filter((u) => u.endsWith('691_5334.laz'))).toHaveLength(2);
+    // The header and the first point, per tile. This file's first point is inside the header's 375 bytes.
+    expect(requested.filter((u) => u.endsWith('691_5334.laz'))).toHaveLength(1);
   });
 
   it("skips tiles the server doesn't have, and dates a tile without GPS dates by its header", async () => {
@@ -147,6 +147,14 @@ describe('Bavaria', () => {
     const { fetcher } = fakeFetcher({ [url]: lasFile({ box: [0, 0, 1, 1], minor: 4, format: 6, flown: '2022-03-03', made: 2023 }), [`${url}.empty`]: new Uint8Array(200) });
     expect(await lasStart(fetcher, url)).toMatchObject({ points: 1000, date: '2022-03-03', year: 2022, box: [0, 0, 1, 1] });
     expect((await lasStart(fetcher, `${url}.empty`, 200)).points).toBe(0);
+  });
+
+  it('reads the header and first point in one request when the size is known', async () => {
+    const url = 'https://example.com/a.laz';
+    const file = lasFile({ box: [0, 0, 1, 1], minor: 4, format: 6, flown: '2022-03-03', made: 2023 });
+    const { fetcher, requested } = fakeFetcher({ [url]: file });
+    expect(await lasStart(fetcher, url, file.length)).toMatchObject({ date: '2022-03-03', year: 2022 });
+    expect(requested).toHaveLength(1);
   });
 });
 

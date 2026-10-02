@@ -20,7 +20,12 @@ interface Pending {
   resolve: (value: never) => void;
   reject: (error: Error) => void;
   onProgress?: (event: ProgressEvent) => void;
+  /** When the worker could start on it. */
   sentAt: number;
+  /** An edit sent during a generation, which the worker holds until the generation ends. */
+  held?: boolean;
+  /** Asked to stop. A download finished anyway is dropped, not saved. */
+  stopping?: boolean;
 }
 
 /** Offered LiDAR tiles a failed generation could go on with, once the user approves them. */
@@ -39,6 +44,8 @@ export interface EngineOptions {
   createWorker?: () => Worker;
   /** A working worker was dropped, and its model with it. Nothing can be exported until the next generate. */
   onReplaced?: () => void;
+  /** A worker script didn't load because a newer version of the site replaced it. A reload fixes it. */
+  onOutdated?: () => void;
 }
 
 // The pipeline yields often, but a single native-speed loop can still hold
@@ -96,6 +103,10 @@ export class EngineClient {
   }
 
   private receive(message: FromWorker) {
+    if (message.type === 'outdated') {
+      this.options.onOutdated?.();
+      return;
+    }
     const pending = this.pending.get(message.id);
     if (!pending) return;
     switch (message.type) {
@@ -104,9 +115,10 @@ export class EngineClient {
         return;
       case 'generated':
       case 'exported':
-        this.pending.delete(message.id);
-        if (message.id === this.activeGenerate) this.activeGenerate = null;
-        pending.resolve(message.result as never);
+        this.settled(message.id, pending);
+        // The file was written before the worker could read the cancel.
+        if (message.type === 'exported' && pending.stopping) pending.reject(new CancelledError());
+        else pending.resolve(message.result as never);
         return;
       case 'edited':
         this.pending.delete(message.id);
@@ -117,16 +129,29 @@ export class EngineClient {
         pending.resolve(message.result as never);
         return;
       case 'error':
-        this.pending.delete(message.id);
-        if (message.id === this.activeGenerate) this.activeGenerate = null;
+        this.settled(message.id, pending);
         pending.reject(message.cancelled ? new CancelledError() : Object.assign(new Error(message.message), { offers: message.offers }));
         return;
     }
   }
 
+  private settled(id: number, pending: Pending) {
+    this.pending.delete(id);
+    if (id === this.activeGenerate) this.activeGenerate = null;
+    if (pending.message.type !== 'generate' || this.activeGenerate !== null) return;
+    // Only now can a held edit start, and only from now can it take too long.
+    const now = performance.now();
+    for (const other of this.pending.values()) {
+      if (!other.held) continue;
+      other.held = false;
+      other.sentAt = now;
+    }
+  }
+
   private request<T>(message: Pending['message'], onProgress?: (event: ProgressEvent) => void): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(message.id, { message, resolve: resolve as (value: never) => void, reject, onProgress, sentAt: performance.now() });
+      const held = message.type === 'edit' && this.activeGenerate !== null;
+      this.pending.set(message.id, { message, resolve: resolve as (value: never) => void, reject, onProgress, sentAt: performance.now(), held });
       try {
         this.ensureWorker().postMessage(message);
       } catch (error) {
@@ -141,7 +166,7 @@ export class EngineClient {
   generate(request: GenerateRequest, onProgress?: (event: ProgressEvent) => void): Promise<GenerateResult> {
     const now = performance.now();
     // A survey search only waits on catalogs, which can take a while, and never holds the worker.
-    const stuck = [...this.pending].filter(([, p]) => p.message.type !== 'generate' && p.message.type !== 'surveys' && now - p.sentAt > STUCK_MS).map(([id]) => id);
+    const stuck = [...this.pending].filter(([, p]) => p.message.type !== 'generate' && p.message.type !== 'surveys' && !p.held && now - p.sentAt > STUCK_MS).map(([id]) => id);
     if (stuck.length) this.replaceWorker(this.activeGenerate !== null ? [...stuck, this.activeGenerate] : stuck);
     else if (this.activeGenerate !== null) this.cancel();
     const id = this.nextId++;
@@ -187,6 +212,8 @@ export class EngineClient {
 
   /** Asks the worker to stop a request, and replaces the worker when it's still at it after a moment. */
   private stop(id: number): void {
+    const pending = this.pending.get(id);
+    if (pending) pending.stopping = true;
     if (!this.worker) return;
     this.worker.postMessage({ type: 'cancel', id } satisfies ToWorker);
     const worker = this.worker;
@@ -199,25 +226,26 @@ export class EngineClient {
    * Replaces the worker. Downloaded data cached in it is lost, and so is its
    * model, so whatever else was waiting fails. The requests given are
    * cancelled, and so is every generate but the newest, which is sent again
-   * to the new worker unless it's one of them.
+   * to the new worker unless it's one of them. Survey searches don't need
+   * the model and are sent again too.
    */
   private replaceWorker(cancelled: number[]): void {
     const stopped = new Set(cancelled);
     const generates = [...this.pending.values()].filter((p) => p.message.type === 'generate');
     const newest = generates[generates.length - 1];
     const retry = newest && !stopped.has(newest.message.id) ? newest : null;
+    const searches = [...this.pending.values()].filter((p) => p.message.type === 'surveys' && !stopped.has(p.message.id));
+    const resend = retry ? [retry, ...searches] : searches;
     this.dropWorker();
     for (const [id, pending] of [...this.pending]) {
       if (pending === retry || (!stopped.has(id) && pending.message.type !== 'generate')) continue;
       this.pending.delete(id);
       pending.reject(new CancelledError());
     }
-    if (retry) this.pending.delete(retry.message.id);
+    for (const again of resend) this.pending.delete(again.message.id);
     this.rejectAll(() => new Error('The generator was restarted. Generate the model again.'));
-    if (retry) {
-      this.activeGenerate = retry.message.id;
-      this.request(retry.message, retry.onProgress).then(retry.resolve as (value: unknown) => void, retry.reject);
-    }
+    if (retry) this.activeGenerate = retry.message.id;
+    for (const again of resend) this.request(again.message, again.onProgress).then(again.resolve as (value: unknown) => void, again.reject);
   }
 }
 

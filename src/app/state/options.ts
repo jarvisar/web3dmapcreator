@@ -1,5 +1,6 @@
 import { sanitizeEdits, type ModelEdits } from '../../core/edit/types';
 import { sanitizeSettings, type AreaSpec, type ExportSettings, type ModelSettings, type Palette } from '../../core/settings';
+import { limitFor } from '../../core/svgmap/limits';
 import { normalizeArea } from '../lib/area';
 import { defaultSvgSettings, isObject, mergeSettings, type SvgSettings } from '../svgmap/settings';
 import { readExport, readPalette } from './persist';
@@ -47,7 +48,10 @@ function checkValues(given: unknown, clean: unknown, path: string): void {
   if (svgPath) {
     const choices = svgPath.includes('.fillModes.') ? ['fill', 'outline', 'hatch', 'hatch-outline'] : SVG_CHOICES[svgPath];
     if (choices && !choices.includes(given as string | number)) throw new Error(`Invalid option: ${path}.`);
-    if (typeof given === 'number' && given < 0 && !svgPath.endsWith('.angle')) throw new Error(`Invalid option: ${path}.`);
+    // Only a range that goes below zero allows a negative number, like a dragged title's offsets.
+    const limit = limitFor(svgPath.split('.'));
+    const negative = limit !== undefined && 'min' in limit && limit.min < 0;
+    if (typeof given === 'number' && given < 0 && !negative) throw new Error(`Invalid option: ${path}.`);
   }
   if (isObject(clean) && isObject(given)) {
     for (const [key, value] of Object.entries(clean)) {

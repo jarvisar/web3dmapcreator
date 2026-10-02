@@ -3,11 +3,13 @@
 // list (5.8 MB, each tile with its box and size). Only two classes: 2 is the
 // last-pulse ground and 20 the first-pulse objects, roofs and trees alike.
 
-import { overlaps, type Box, type Provider, type Tile } from './common';
+import { crsFromEpsg, lonLatTransforms } from '../read/crs';
+import { gridSquares, ringBox, squarePolygon, type Box, type Provider, type Tile } from './common';
 import type { Polygon } from '../../types';
 
 const BASE = 'https://geobasis-rlp.de/data/las/current/las/';
 const LINKS = `${BASE}atomfeed-links/atomfeed-links.xml`;
+const KM = 1000;
 
 interface RlpTile {
   url: string;
@@ -31,7 +33,10 @@ export function rlpTiles(xml: string): RlpTile[] {
   return out;
 }
 
-let parsed: { length: number; tiles: RlpTile[] } | null = null;
+// By south-west corner in km. The feed's boxes are lon/lat boxes around the
+// turned squares, up to about 40 m past them, and listed a 146 MB tile for an
+// area that ended 5 m short of it.
+let parsed: { length: number; tiles: Map<string, RlpTile> } | null = null;
 
 export const rlp: Provider = {
   id: 'rlp',
@@ -39,15 +44,22 @@ export const rlp: Provider = {
   areas: [[6.0, 48.9, 8.6, 51.0]],
   async discover(fetcher, bbox) {
     const xml = await fetcher.text(LINKS);
-    if (parsed?.length !== xml.length) parsed = { length: xml.length, tiles: rlpTiles(xml) };
+    if (parsed?.length !== xml.length) {
+      const named = rlpTiles(xml).flatMap((t) => {
+        const corner = /_32_(\d+)_(\d+)_1_rp\.laz$/.exec(t.url);
+        return corner ? [[`${corner[1]}_${corner[2]}`, t] as const] : [];
+      });
+      parsed = { length: xml.length, tiles: new Map(named) };
+    }
+    const { toLonLat } = lonLatTransforms(crsFromEpsg(25832));
     const tiles: Tile[] = [];
     const coverage: Polygon[] = [];
-    for (const tile of parsed.tiles) {
-      if (!overlaps(tile.box, bbox)) continue;
-      const [w, s, e, n] = tile.box;
-      tiles.push({ url: tile.url, bbox: tile.box, horizontalCrs: 'EPSG:25832', size: tile.size || undefined });
-      // The tile's square in UTM, near enough in lon/lat at 1 km.
-      coverage.push([[[w, s], [e, s], [e, n], [w, n]]]);
+    for (const { x, y } of gridSquares(25832, bbox, KM)) {
+      const tile = parsed.tiles.get(`${x / KM}_${y / KM}`);
+      if (!tile) continue;
+      const square = squarePolygon(toLonLat, x, y, KM);
+      tiles.push({ url: tile.url, bbox: ringBox(square), horizontalCrs: 'EPSG:25832', size: tile.size || undefined });
+      coverage.push(square);
     }
     if (!tiles.length) return [];
     return [

@@ -7,7 +7,7 @@
 
 import { deflateSync, inflateSync } from 'fflate';
 import { lidarCache, type ByteCache } from '../data/cache';
-import { areaGeoBounds } from '../geo/area';
+import { areaGeoBounds, areaModelRing } from '../geo/area';
 import { Projection } from '../geo/projection';
 import { intersection, multiArea } from '../geometry/polygon';
 import type { BatchProgress } from '../lidar/prepare';
@@ -21,18 +21,20 @@ import { chosenFirst, isChosen, surveyChoice, type SurveyChoice } from '../lidar
 import { advantage, approves, makeOffer, OffersError, describeOffer, staged, tilesIn, type Approval, type LidarOffer } from '../lidar/offers';
 import { projectYear } from '../lidar/selection';
 import { boxShape } from '../lidar/shapes';
-import { discover, type Candidate, type Failure, type Tile } from '../lidar/sources';
+import { searchSurveys } from '../lidar/search';
+import type { Candidate, Failure, Tile } from '../lidar/sources';
 import type { AreaSpec } from '../settings';
-import type { GeoBounds, LonLat } from '../types';
+import type { GeoBounds, LonLat, MultiPolygon } from '../types';
 import { blockExtent, blocks, cellsInside, gridProblem, gridSpec, type Block, type GridSpec } from './grid';
 import { emptyLayers, type SurfaceLayers } from './layers';
 import { BlockRaster, MARGIN, occupiedCell, ProbeSink, type BlockLayers, type GridOrigin } from './raster';
 
 // Raised when what a block stores changes, so old checkpoints aren't read.
-// 5 leaves floating returns out (BlockRaster). 4 was a draft of that.
-const VERSION = 5;
+// 5 leaves floating returns out (BlockRaster). 4 was a draft of that. 6 has
+// the corrected RD New and Krovak datum shifts.
+const VERSION = 6;
 // The same for saved density probes.
-const PROBE_VERSION = 2;
+const PROBE_VERSION = 3;
 // A block counts as covered once this share of it is inside a survey.
 const COVERED = 0.995;
 /** Progress once the surveys are found and ranked, when blocks start being read. */
@@ -105,6 +107,8 @@ export interface PreparedSurface {
   densityM2: number | null;
   /** Share of cells with a return. */
   coverage: number;
+  /** Share of the cells in the area's shape that no survey read here covers. */
+  uncovered?: number;
   points: number;
   /** Floating returns left out (BlockRaster). */
   noise: number;
@@ -459,7 +463,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
   await progress('Finding LiDAR surveys', 0.02);
   const rect = boxShape(grid.x0, grid.y0, grid.x1, grid.y1);
   const query = areaGeoBounds(area, 2 * requested);
-  const found = await discover(fetcher, query, (message) => void progress('Finding LiDAR surveys', 0.04, message));
+  const found = await searchSurveys(fetcher, query, (message) => void progress('Finding LiDAR surveys', 0.04, message));
   const failures: Failure[] = [...found.failures];
   const box: [number, number, number, number] = [query.west, query.south, query.east, query.north];
   const rectArea = multiArea(rect);
@@ -527,6 +531,9 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
   let points = 0;
   let noise = 0;
   let reusedBlocks = 0;
+  const shape: MultiPolygon = [[areaModelRing(area, 1)]];
+  let shapeCells = 0;
+  let outsideSurveys = 0;
   let done = 0;
   const resolutionM = Math.max(0.1, grid.cell / 2);
   const identity = [VERSION, area.center, area.rotationDeg, area.widthM, area.heightM, grid.cell];
@@ -541,6 +548,16 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     // tile isn't kept for good. EPT surveys have none, and keep their keys.
     const reads = surveys.map((r) => (r.candidate.tiles ? [r.candidate.url, slim(r.candidate, geo).tiles!.map((t) => (t.member ? `${t.url}#${t.member}` : t.url))] : r.candidate.url));
     const blocked = surveys.filter((r) => !readableIn(r, geo));
+    // Cells no survey read covers, inside the area's shape. Saved blocks don't
+    // keep this, so it's worked out from the outlines every time.
+    const inShape = area.shape === 'rectangle' ? null : cellsInside(shape, grid, block);
+    const covered = new Uint8Array((block.columns[1] - block.columns[0]) * (block.rows[1] - block.rows[0]));
+    for (const mask of claims(surveys.filter((r) => !blocked.includes(r)), grid, block, blockBox).values()) for (let k = 0; k < covered.length; k++) covered[k] |= mask[k];
+    for (let k = 0; k < covered.length; k++) {
+      if (inShape && !inShape[k]) continue;
+      shapeCells++;
+      if (!covered[k]) outsideSurveys++;
+    }
     let key = `surface-block:${digest([identity, block.rows, block.columns, reads])}`;
     let saved = await load(key);
     // A block read before with an offered survey stays as it was read. Otherwise
@@ -636,6 +653,12 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
   for (let k = 0; k < layers.count.length; k++) if (layers.count[k]) covered++;
   const offers = skipped.length ? await surfaceOffers(skipped, byUrl, fetcher, failures, input.survey, rules.preference === 'newest') : [];
   if (!covered && offers.length) {
+    // A survey that could be read failed: that's what to fix, and the offer
+    // is no longer the only LiDAR here.
+    if (failures.length) {
+      const failure = `${failures[0].source}: ${failures[0].reason}`;
+      throw new OffersError(`Some of the LiDAR here couldn't be read or searched (${failure}). Try again, or download whole tiles instead: ${offers.map(describeOffer).join('; ')}.`, offers.map((offer) => ({ ...offer, failure })));
+    }
     throw new OffersError(`The LiDAR here only comes as whole tiles, which aren't downloaded without asking: ${offers.map(describeOffer).join('; ')}.`, offers);
   }
   if (!covered) {
@@ -649,6 +672,7 @@ export async function prepareSurface(input: SurfaceInput): Promise<PreparedSurfa
     requestedCellM: requested,
     densityM2,
     coverage: covered / layers.count.length,
+    uncovered: shapeCells ? outsideSurveys / shapeCells : 0,
     points,
     noise,
     surveys: [...used.values()],

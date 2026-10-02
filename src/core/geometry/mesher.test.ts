@@ -3,6 +3,7 @@ import type { Polygon } from '../types';
 import { capCache, MeshBuilder, meshPrism, meshSolid, newMeshStats } from './mesher';
 import { difference, polygonArea, rectangle, union } from './polygon';
 import { edgeReport, signedVolume } from './validate';
+import pinchedTwice from './fixtures/pinched-twice.json';
 
 function mesh(polygon: Polygon, top: number | ((x: number, y: number) => number), bottom: number | ((x: number, y: number) => number), drape = 0) {
   const out = new MeshBuilder();
@@ -95,6 +96,21 @@ describe('meshPrism', () => {
     expect(report.repeated).toBe(0);
     // Shrinking by a tenth of a micron costs perimeter x 1e-4 x height.
     expect(signedVolume(positions, indices)).toBeCloseTo(2 * (100 - 8), 1);
+  });
+
+  it('shrinks again where one shrink leaves rings crossing', () => {
+    // A map pin's piece from the editor in Venice. Shrunk by a tenth of a
+    // micron, a hole still crossed its outline and the piece went missing.
+    const polygon = pinchedTwice as Polygon;
+    const out = new MeshBuilder();
+    const stats = newMeshStats();
+    meshSolid({ kind: 'prism', role: 'building', polygon, top: 2.34, bottom: 0.5, drape: 0 }, out, undefined, stats);
+    const { positions, indices } = out.finish();
+    const report = edgeReport(indices, positions.length / 3);
+    expect(stats.failed).toBe(0);
+    expect(report.open).toBe(0);
+    expect(report.repeated).toBe(0);
+    expect(signedVolume(positions, indices)).toBeCloseTo(polygonArea(polygon) * 1.84, 0);
   });
 
   it('does not count a draped triangle smaller than a cell as a fallback', () => {

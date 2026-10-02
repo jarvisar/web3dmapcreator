@@ -104,7 +104,8 @@ export class TileSource {
     });
   }
 
-  get(tile: TileId, signal?: AbortSignal): Promise<ArrayBuffer | null> {
+  /** The TileJSON looked up, or the error it gave. */
+  ready(): Promise<Fetcher> {
     if (!this.fetcher) {
       this.fetcher = this.makeFetcher();
       // Forget a failed lookup so the next render can retry.
@@ -112,7 +113,11 @@ export class TileSource {
         this.fetcher = null;
       });
     }
-    const fetcher = this.fetcher;
+    return this.fetcher;
+  }
+
+  get(tile: TileId, signal?: AbortSignal): Promise<ArrayBuffer | null> {
+    const fetcher = this.ready();
     return fetcher.then((fetchTile) => fetchTile(tile, signal)).catch((error: unknown) => {
       // The archive keeps its header read, failed or stalled, for good. A new
       // one reads the header again.
@@ -155,6 +160,13 @@ export class TileCache {
     let done = 0;
     let failures = 0;
     let next = 0;
+    // A failed TileJSON lookup fails the render once. Left to each tile, every
+    // attempt at every tile asked for it again: 643 requests for one render.
+    if (tiles.some((tile) => !this.entries.has(`${sourceKey}|${tile.z}/${tile.x}/${tile.y}`))) await source.ready();
+    // Attempts failing one after another with nothing coming through mean the
+    // host is down, and the rest aren't tried. Retrying every tile against a
+    // host that never answered took 91 s to fail a map of four tiles.
+    const health: Health = { failedInRow: 0, down: false, limit: Math.max(3, Math.min(6, tiles.length)) };
     const work = async () => {
       while (next < tiles.length && !isCancelled()) {
         const tile = tiles[next++];
@@ -165,10 +177,12 @@ export class TileCache {
           this.entries.delete(key);
           this.entries.set(key, value);
           out.set(tileId, value);
+        } else if (health.down) {
+          failures++;
         } else {
           let pending = this.inflight.get(key);
           if (!pending) {
-            pending = this.fetchWithRetry(source, tile, attempts);
+            pending = this.fetchWithRetry(source, tile, attempts, health);
             this.inflight.set(key, pending);
           }
           try {
@@ -192,16 +206,25 @@ export class TileCache {
     return out;
   }
 
-  private async fetchWithRetry(source: TileSource, tile: TileId, attempts: number): Promise<ArrayBuffer | null> {
+  private async fetchWithRetry(source: TileSource, tile: TileId, attempts: number, health: Health): Promise<ArrayBuffer | null> {
     let lastError: unknown;
-    for (let attempt = 0; attempt < attempts; attempt++) {
+    for (let attempt = 0; attempt < attempts && !(attempt > 0 && health.down); attempt++) {
       try {
-        return await source.get(tile);
+        const value = await source.get(tile);
+        health.failedInRow = 0;
+        return value;
       } catch (error) {
         lastError = error;
-        if (attempt + 1 < attempts) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+        if (++health.failedInRow >= health.limit) health.down = true;
+        if (attempt + 1 < attempts && !health.down) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
       }
     }
     throw lastError;
   }
+}
+
+interface Health {
+  failedInRow: number;
+  down: boolean;
+  limit: number;
 }

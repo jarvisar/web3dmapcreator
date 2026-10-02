@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRegisterSW } from 'virtual:pwa-register/react';
+import { onAppOutdated } from '../state/engine';
 
 // An installed app can stay open for days without a page load, which is when
 // the browser normally checks for a new service worker.
@@ -9,9 +10,10 @@ const CHECK_EVERY = 60 * 60 * 1000;
 let updating = false;
 
 async function applyUpdate(updateServiceWorker: () => Promise<void>) {
-  const registration = await navigator.serviceWorker.getRegistration();
+  const registration = await navigator.serviceWorker?.getRegistration();
   if (!registration?.waiting) {
-    // Another tab already switched to the new version.
+    // Another tab already switched to the new version, or there's no service
+    // worker (a private window) and a reload loads the new one.
     location.reload();
     return;
   }
@@ -48,9 +50,9 @@ export function UpdateNotice() {
     onNeedReload() {},
   });
 
-  // A new version taking over this tab, or a chunk that won't load after a
-  // deploy, is fixed by a reload, so ask for one. A tab's first controller
-  // (a first visit) isn't an update.
+  // A new version taking over this tab, or a chunk or LiDAR worker that won't
+  // load after a deploy, is fixed by a reload, so ask for one. A tab's first
+  // controller (a first visit) isn't an update.
   useEffect(() => {
     const failed = () => {
       setOutdated(true);
@@ -63,9 +65,11 @@ export function UpdateNotice() {
     };
     navigator.serviceWorker?.addEventListener('controllerchange', changed);
     window.addEventListener('vite:preloadError', failed);
+    const stopListening = onAppOutdated(failed);
     return () => {
       navigator.serviceWorker?.removeEventListener('controllerchange', changed);
       window.removeEventListener('vite:preloadError', failed);
+      stopListening();
     };
   }, []);
 
@@ -73,7 +77,8 @@ export function UpdateNotice() {
     return (
       <div className="notice-toast floating" role="status">
         <span>Jarvizar City Model has been updated. Reload this tab to finish updating.</span>
-        <button type="button" className="btn btn-sm btn-primary" onClick={() => location.reload()}>
+        {/* A chunk can fail while the new version still waits, and a plain reload would keep the old one. */}
+        <button type="button" className="btn btn-sm btn-primary" onClick={() => void applyUpdate(updateServiceWorker)}>
           Reload
         </button>
         <button type="button" className="btn btn-sm" onClick={() => setDismissed(true)}>

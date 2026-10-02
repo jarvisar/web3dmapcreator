@@ -109,4 +109,14 @@ describe('area helpers', () => {
     expect(validateArea({ ...DEFAULT_AREA, center: [179.99, 0], widthM: 5000 })).toMatch(/180th/);
     expect(validateArea({ ...DEFAULT_AREA, center: [0, 85] })).toMatch(/poles/);
   });
+
+  it('rejects an area whose data margin would wrap past the 180th meridian', () => {
+    // Edges 10 m and 100 m short of the meridian at the equator, either side.
+    const short = (metres: number) => 180 - (500 + metres) / 111320;
+    const near = { ...DEFAULT_AREA, widthM: 1000, heightM: 1000 };
+    expect(validateArea({ ...near, center: [short(10), 0] })).toMatch(/180th meridian, or come within 25 m/);
+    expect(validateArea({ ...near, center: [-short(10), 0] })).toMatch(/180th/);
+    expect(validateArea({ ...near, center: [short(100), 0] })).toBeNull();
+    expect(validateArea({ ...near, center: [-short(100), 0] })).toBeNull();
+  });
 });

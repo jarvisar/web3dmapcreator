@@ -44,7 +44,11 @@ export const PROXIED: Proxied[] = [
   { prefix: 'https://urbisdownload.datastore.brussels/UrbIS/Vector/M8/PointCloud2021/LAS/' },
   // Ignores Range, and at times takes 85-110 s to answer anything.
   { prefix: 'https://opendata.geoportal.gov.pl/NumDaneWys/DanePomiaroweLAZ/', firstByteMs: 180_000 },
-  { prefix: 'https://geoportaal.maaruum.ee/index.php?lang_id=1&plugin_act=otsing&' },
+  // A sheet's listing and its files, nothing else. PHP reads the last of a repeated parameter, so a prefix let a second plugin_act through.
+  {
+    pattern:
+      /^https:\/\/geoportaal\.maaruum\.ee\/index\.php\?lang_id=1&plugin_act=otsing&(?:page_id=614&kaardiruut=\d+&andmetyyp=lidar_laz_[a-z]+|kaardiruut=\d+&andmetyyp=lidar_laz_[a-z]+&dl=1&f=\d+_\d{4}_[a-z]+\.laz&page_id=614)$/,
+  },
   { prefix: 'https://data.geographic.texas.gov/' },
   { prefix: 'https://cdn.ancgis.com/datapublicstatic/Elevation2025/LiDAR_PointCloud/' },
   { prefix: 'https://nrs.objectstore.gov.bc.ca/gdwuts/' },
@@ -58,8 +62,25 @@ export const PROXIED: Proxied[] = [
 
 const matches = (rule: Proxied, url: string) => (rule.prefix !== undefined && url.startsWith(rule.prefix)) || (rule.pattern?.test(url) ?? false);
 
+// URL parsing leaves encoded slashes and dots alone, and a server that decodes
+// them before resolving the path would serve files outside the prefix
+// (Projects/..%2F..%2F). No listed file has them in its path. Queries can.
+const ENCODED_PATH = /%(2f|5c|2e)/i;
+
+function pathOf(url: string): string | null {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return null;
+  }
+}
+
 /** The rule for a URL, or undefined for one that doesn't go through the proxy. */
-export const proxyRule = (url: string): Proxied | undefined => PROXIED.find((rule) => matches(rule, url));
+export function proxyRule(url: string): Proxied | undefined {
+  const path = pathOf(url);
+  if (path === null || ENCODED_PATH.test(path)) return undefined;
+  return PROXIED.find((rule) => matches(rule, url));
+}
 
 // The proxy's address, 'direct' (Node), or null when there's none: then these
 // files can't be read and their sources are left out.

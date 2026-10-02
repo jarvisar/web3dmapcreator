@@ -3,9 +3,9 @@
 // first bytes of LAS files and ZIPs for providers without a date index.
 
 import type { GeoBounds, Polygon, Ring } from '../../types';
-import { HttpError } from '../../data/http';
+import { HttpError, NetworkError } from '../../data/http';
 import { crsFromEpsg, lonLatTransforms, type Transform } from '../read/crs';
-import type { Fetcher } from '../read/fetcher';
+import { CatalogError, type Fetcher } from '../read/fetcher';
 import { readHeader } from '../read/las';
 
 /** EPT and I3S (an Esri scene layer) are one tree for a survey. COPC and LAZ come as tiles; LAZ tiles have no index, so they're read whole. */
@@ -65,6 +65,14 @@ export interface Failure {
   reason: string;
   /** Its catalog couldn't be searched, so none of its surveys were considered. */
   search?: boolean;
+}
+
+/** Why a catalog failed, without the URL that network errors and odd answers spell out. */
+export function briefly(error: unknown): string {
+  if (error instanceof HttpError) return `it answered HTTP ${error.status}`;
+  if (error instanceof NetworkError) return "it couldn't be reached";
+  if (error instanceof CatalogError) return `it ${error.problem}`;
+  return (error as Error)?.message ?? String(error);
 }
 
 export type Discover = (fetcher: Fetcher, bbox: GeoBounds, failures: Failure[]) => Promise<Candidate[]>;
@@ -273,10 +281,13 @@ export interface LasStart {
 /**
  * What a LAS or LAZ file's header says, and the date of its first point.
  * The header's own date is when the file was written, which can be a year
- * after the flight. Two small range reads, kept by the cache.
+ * after the flight. One or two small range reads, kept by the cache.
  */
 export async function lasStart(fetcher: Fetcher, url: string, size?: number): Promise<LasStart> {
-  const bytes = new Uint8Array(await fetcher.range(url, 0, size ? Math.min(375, size) : 375));
+  // With a known size, enough for the first point too: Salzburg's server
+  // takes about 5 s to start each range. Without one, a header-only file
+  // could end before it.
+  const bytes = new Uint8Array(await fetcher.range(url, 0, size ? Math.min(1024, size) : 375));
   // Salzburg lists files of a few hundred bytes for sheets without points.
   if (bytes.length < 227) return { points: 0, box: [0, 0, 0, 0], year: null };
   const header = readHeader(bytes);
@@ -291,7 +302,7 @@ export async function lasStart(fetcher: Fetcher, url: string, size?: number): Pr
   if (!header.pointCount || at < 0 || !(header.globalEncoding & 1)) return start;
   const first = header.pointDataOffset + (header.compressed ? 8 : 0);
   if (size && first + at + 8 > size) return start;
-  const point = new DataView(await fetcher.range(url, first, first + at + 8));
+  const point = first + at + 8 <= bytes.length ? new DataView(bytes.buffer, bytes.byteOffset + first, at + 8) : new DataView(await fetcher.range(url, first, first + at + 8));
   const seconds = point.getFloat64(at, true) + 1e9;
   const date = new Date(Date.UTC(1980, 0, 6) + seconds * 1000);
   const year = date.getUTCFullYear();

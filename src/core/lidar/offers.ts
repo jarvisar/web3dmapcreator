@@ -6,6 +6,7 @@
 // Checkpoints of what was read before are used either way, since they cost
 // nothing to download.
 
+import { LIDAR_CACHE_LIMIT } from '../data/cache';
 import { HttpError, NetworkError } from '../data/http';
 import { projectYear } from './selection';
 import type { Fetcher } from './read/fetcher';
@@ -31,6 +32,12 @@ export interface LidarOffer {
   buildings?: number;
   /** Why it's offered: the user picked it, it covers what nothing else here does, or it's much newer or denser than what was read. */
   reason: 'chosen' | 'gap' | 'newer' | 'denser';
+  /** `buildings` by why each one would be measured, since one offer can be a gap for some and newer for others. */
+  counts?: Partial<Record<LidarOffer['reason'], number>>;
+  /** Why a LiDAR only model failed besides needing these tiles, such as a survey that could be read failing. */
+  failure?: string;
+  /** Tiles too large for the LiDAR cache to keep, so they're downloaded again whenever they're read. */
+  uncached?: number;
 }
 
 /** Tile keys the user approved, or 'all' (the CLI's --download-tiles). */
@@ -129,7 +136,7 @@ export async function unreadable(fetcher: Fetcher, survey: Candidate, tiles: Til
 const MAX_ASKED = 24;
 
 /** An offer of `tiles` from `survey`, with what they come to, or null when it couldn't be read anyway (which goes in `failures`). */
-export async function makeOffer(fetcher: Fetcher, survey: Candidate, tiles: Tile[], reason: LidarOffer['reason'], failures: Failure[], buildings?: number): Promise<LidarOffer | null> {
+export async function makeOffer(fetcher: Fetcher, survey: Candidate, tiles: Tile[], reason: LidarOffer['reason'], failures: Failure[], buildings?: number, counts?: LidarOffer['counts']): Promise<LidarOffer | null> {
   const unique = [...new Map(tiles.map((t) => [tileKey(t), t])).values()];
   const problem = await unreadable(fetcher, survey, unique);
   if (problem) {
@@ -139,16 +146,23 @@ export async function makeOffer(fetcher: Fetcher, survey: Candidate, tiles: Tile
   let bytes = 0;
   let unsized = 0;
   const unknown: Tile[] = [];
+  const sized = new Map<Tile, number>();
   for (const tile of unique) {
     const size = tile.bytes ?? (tile.member ? undefined : tile.size);
-    if (size) bytes += size;
-    else unknown.push(tile);
+    if (size) {
+      bytes += size;
+      sized.set(tile, size);
+    } else unknown.push(tile);
   }
   // A member's own size isn't the ZIP's, so only files on their own are asked about.
   const asked = unknown.filter((t) => !t.member).slice(0, MAX_ASKED);
   const sizes = await Promise.all(asked.map((t) => fetcher.size(t.url).catch(() => 0)));
+  asked.forEach((tile, i) => sizes[i] > 0 && sized.set(tile, sizes[i]));
   for (const size of sizes) bytes += size;
   unsized = unknown.length - sizes.filter((size) => size > 0).length;
+  // The cache skips any one entry over a quarter of its size (IdbCache.put),
+  // which a file read in one go is, and can't hold more than all of it.
+  const uncached = unique.filter((t) => (sized.get(t) ?? 0) > (t.whole ? LIDAR_CACHE_LIMIT / 4 : LIDAR_CACHE_LIMIT)).length;
   return {
     url: survey.url,
     provider: survey.provider,
@@ -162,5 +176,7 @@ export async function makeOffer(fetcher: Fetcher, survey: Candidate, tiles: Tile
     unsized,
     buildings,
     reason,
+    ...(counts ? { counts } : {}),
+    ...(uncached ? { uncached } : {}),
   };
 }

@@ -5,7 +5,7 @@
 import type { Path, Point } from '../lines/geometry';
 import { insetShape } from '../layout/shapes';
 import type { Layout } from '../layout/layout';
-import { type LoadedFont, type TextGeometry, geometryBounds, textGeometry } from './outline';
+import { type LoadedFont, type MissingGlyphs, type TextGeometry, geometryBounds, missingGlyphs, textGeometry } from './outline';
 import { boxCentres, nearestIn, regionSlice, rowsSpan } from './place';
 
 export type LabelPosition = 'lower_right' | 'lower_left' | 'upper_right' | 'upper_left' | 'lower_center' | 'upper_center';
@@ -434,22 +434,41 @@ export function layoutBandLabel(
 }
 
 // artwork is null when the title is off or doesn't fit, and error says why.
+// warnings are for letters that aren't drawn as typed.
 export function buildLabel(
   layout: Layout,
   s: LabelSettings,
   title: LoadedFont | null,
   subtitle: LoadedFont | null,
-): { artwork: LabelArtwork | null; error: string | null } {
-  if (!s.enabled || !s.text.trim() || !title) return { artwork: null, error: null };
+): { artwork: LabelArtwork | null; error: string | null; warnings: string[] } {
+  const warnings: string[] = [];
+  if (!s.enabled || !s.text.trim() || !title) return { artwork: null, error: null, warnings };
+  const lettering = (font: LoadedFont, text: string, spacing: number, what: string) => {
+    const geometry = textGeometry(font, text, spacing);
+    if (geometry.unshaped) warnings.push(`The ${what} font's ligatures and letter joining couldn't be used, so the ${what} is drawn a letter at a time.`);
+    const missing = missingGlyphs(text, font);
+    if (missing) warnings.push(glyphWarning(what, missing));
+    return geometry;
+  };
   try {
     if (s.style === 'band') {
-      const main = textGeometry(title, s.text.trim(), s.titleSpacing);
-      const sub = s.subtitle.trim() ? textGeometry(subtitle ?? title, s.subtitle.trim(), s.subtitleSpacing) : null;
-      return { artwork: layoutBandLabel(layout, s, main, sub), error: null };
+      const main = lettering(title, s.text.trim(), s.titleSpacing, 'title');
+      const sub = s.subtitle.trim() ? lettering(subtitle ?? title, s.subtitle.trim(), s.subtitleSpacing, 'subtitle') : null;
+      return { artwork: layoutBandLabel(layout, s, main, sub), error: null, warnings };
     }
-    return { artwork: layoutBoxLabel(layout, s, textGeometry(title, s.text.trim(), 1)), error: null };
+    return { artwork: layoutBoxLabel(layout, s, lettering(title, s.text.trim(), 1, 'title')), error: null, warnings };
   } catch (error) {
-    if (error instanceof LabelError) return { artwork: null, error: error.message };
-    throw error;
+    if (error instanceof LabelError) return { artwork: null, error: error.message, warnings };
+    // A font that can't lay the text out loses the title, not the whole map.
+    return { artwork: null, error: `The title couldn't be drawn in this font. ${error instanceof Error ? error.message : ''}`.trim(), warnings };
   }
+}
+
+function glyphWarning(what: string, { chars, shownAs }: MissingGlyphs): string {
+  const quoted = chars.map((c) => `“${c}”`);
+  const list = quoted.length > 5 ? `${quoted.slice(0, 5).join(', ')} and ${quoted.length - 5} more` : quoted.length > 1 ? `${quoted.slice(0, -1).join(', ')} or ${quoted.at(-1)}` : quoted[0];
+  const one = chars.length === 1;
+  const shown =
+    shownAs === 'box' ? (one ? "it's drawn as a box" : "they're drawn as boxes") : shownAs === 'question' ? (one ? "it's drawn as a question mark" : "they're drawn as question marks") : one ? "it's left out" : "they're left out";
+  return `The ${what} font has no ${list}, so ${shown}.`;
 }

@@ -4,7 +4,7 @@
 // the road and building footprints, so the terrain solid is built last.
 
 import type { GroundGrid } from '../edit/ground';
-import { areaGeoBounds, areaModelRing, effectiveScale } from '../geo/area';
+import { areaGeoBounds, areaModelRing, DATA_MARGIN_M, effectiveScale } from '../geo/area';
 import { Projection } from '../geo/projection';
 import {
   ClipSet,
@@ -19,7 +19,7 @@ import {
   union,
   type Box,
 } from '../geometry/polygon';
-import type { Layer, PrismSolid, Solid } from '../geometry/solid';
+import type { HeightFn, Layer, PrismSolid, Solid } from '../geometry/solid';
 import type { PreparedLidar } from '../lidar/prepare';
 import type { AreaSpec, ModelSettings, SurfaceCategory } from '../settings';
 import { HeightField } from '../terrain/heightfield';
@@ -149,7 +149,7 @@ export const LAND_NAMES: Record<SurfaceCategory, string> = {
 
 /** The data bounds generation needs for an area: the shape plus a small margin. */
 export function dataBoundsFor(area: AreaSpec) {
-  return areaGeoBounds(area, 25);
+  return areaGeoBounds(area, DATA_MARGIN_M);
 }
 
 export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
@@ -358,7 +358,9 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   }
   for (const entry of settled) if (entry?.bottom != null && entry.floor.length) lowest = Math.min(lowest, entry.bottom);
   if (!Number.isFinite(lowest)) lowest = 0;
-  const baseZ = lowest - settings.terrain.baseThicknessMm;
+  // Roads, land and trees reach the embed into the ground, so a thinner base
+  // left them sticking out under it and the base floated off the bed.
+  const baseZ = lowest - Math.max(settings.terrain.baseThicknessMm, settings.land.embedMm + 0.05);
 
   // On flat ground a draped solid is its outline, so it isn't cut from the lattice.
   const flat = hf.flat;
@@ -447,7 +449,11 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     }
   }
 
-  const decks = bridgeSolids.filter((s) => s.role === 'bridge');
+  // A thick deck's ends sit at road level, so its underside reached down
+  // through the base. The editor builds decks again from deckPieces.
+  const aboveBase = (bottom: HeightFn): HeightFn => (x, y) => Math.max(bottom(x, y), baseZ);
+  const decks = bridgeSolids.flatMap((s) => (s.role === 'bridge' ? [{ ...s, bottom: typeof s.bottom === 'number' ? Math.max(s.bottom, baseZ) : aboveBase(s.bottom) }] : []));
+  deckPieces = deckPieces.map((piece) => ({ ...piece, bottom: aboveBase(piece.bottom) }));
   const piers = bridgeSolids.filter((s) => s.role === 'pier').flatMap(wade);
   if (decks.length) layers.push({ id: 'bridges', name: 'Bridges', role: 'bridge', solids: decks });
   if (piers.length) layers.push({ id: 'piers', name: 'Bridge Piers', role: 'pier', solids: piers });

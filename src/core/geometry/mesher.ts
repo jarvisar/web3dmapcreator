@@ -164,16 +164,7 @@ export function meshSolid(solid: Solid, out: MeshBuilder, clip?: MultiPolygon | 
     // and the same nudge usually lets it through. Shrinking parts the rings
     // and moves every vertex a little, and nothing was written by the refused
     // attempt.
-    if (result === 'pinched' || result === 'failed' || result === 'fallback') {
-      result = 'ok';
-      const pieces = shrunk ?? shrink(polygon);
-      if (caps && !shrunk) caps.shrunk.set(polygon, pieces);
-      for (const piece of pieces) {
-        const r = meshPrism(piece, solid, out, true, false, caps);
-        if (r === 'failed') result = 'failed';
-        else if (r === 'fallback' && result === 'ok') result = 'fallback';
-      }
-    }
+    if (result === 'pinched' || result === 'failed' || result === 'fallback') result = meshShrunk(polygon, solid, out, 0, caps);
     if (stats) {
       if (result === 'failed') stats.failed++;
       else {
@@ -182,6 +173,34 @@ export function meshSolid(solid: Solid, out: MeshBuilder, clip?: MultiPolygon | 
       }
     }
   }
+}
+
+// Shrinks for a polygon that won't mesh whole, each tried on the pieces of the
+// one before that are still pinched or failed. One tenth of a micron left some
+// edited ground and road networks with thousands of holes still touching, and
+// they went missing from the export or shared a wall edge.
+const SHRINK_STEPS = [PINCH_MM, 5e-4, 1e-3];
+
+function meshShrunk(polygon: Polygon, solid: PrismSolid, out: MeshBuilder, step: number, caps?: CapCache): 'ok' | 'fallback' | 'failed' {
+  const known = caps?.shrunk.get(polygon);
+  const pieces = known ?? shrink(polygon, SHRINK_STEPS[step]);
+  if (caps && !known) caps.shrunk.set(polygon, pieces);
+  const last = step === SHRINK_STEPS.length - 1;
+  let result: 'ok' | 'fallback' | 'failed' = 'ok';
+  for (const piece of pieces) {
+    let r: 'ok' | 'fallback' | 'pinched' | 'failed';
+    if (!last) {
+      r = caps?.shrunk.has(piece) ? 'pinched' : meshPrism(piece, solid, out, false, false, caps);
+      if (r === 'pinched' || r === 'failed') r = meshShrunk(piece, solid, out, step + 1, caps);
+    } else {
+      r = meshPrism(piece, solid, out, true, false, caps);
+      // Better a draped piece that only follows the ground along its outline than none at all.
+      if (r === 'failed' && solid.drape > 0) r = meshPrism(piece, { ...solid, drape: 0, lattice: undefined }, out, true, false, caps) === 'failed' ? 'failed' : 'fallback';
+    }
+    if (r === 'failed') result = 'failed';
+    else if (r === 'fallback' && result === 'ok') result = 'fallback';
+  }
+  return result;
 }
 
 type Cap = { points: Vec2[]; boundaryCount: number; rings: number[][]; triangles: number[] };
@@ -387,8 +406,8 @@ function isPinched(polygon: Polygon): boolean {
   return false;
 }
 
-function shrink(polygon: Polygon): Polygon[] {
-  return offsetPolygons([polygon], -PINCH_MM, 'miter');
+function shrink(polygon: Polygon, by: number): Polygon[] {
+  return offsetPolygons([polygon], -by, 'miter');
 }
 
 function trianglesArea(points: Vec2[], tris: number[]): number {

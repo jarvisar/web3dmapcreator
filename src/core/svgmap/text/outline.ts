@@ -1,7 +1,7 @@
 // Text as geometry. Laser software doesn't read fonts, so letters always leave
 // here as outlines or single-line strokes, never as SVG text.
 // Coordinates are y down at a size of one em, baseline at 0.
-import type { Font, PathCommand } from 'opentype.js';
+import type { Font, Glyph, PathCommand } from 'opentype.js';
 import type { Path, Point } from '../lines/geometry';
 import type { StrokeFont } from './hershey';
 
@@ -10,6 +10,8 @@ export interface TextGeometry {
   rings: Path[];
   // Single-line fonts.
   strokes: Path[];
+  // Drawn a character at a time, without the font's ligatures or Arabic joining (see outlineGlyphs).
+  unshaped?: boolean;
 }
 
 export type LoadedFont = { kind: 'outline'; font: Font } | { kind: 'stroke'; font: StrokeFont };
@@ -106,6 +108,8 @@ function flattenCommands(commands: PathCommand[], tolerance: number): Path[] {
 // in the order they were typed. It reverses Arabic itself as it shapes it,
 // so that's left to it.
 const RTL = /[֐-׿܀-ݏހ-࡟יִ-ﭏ]/u;
+// The same with Arabic, for text opentype.js couldn't shape (outlineGlyphs).
+const RTL_WITH_ARABIC = /[֐-ݏݐ-࡟ࢠ-ࣿיִ-﷿ﹰ-﻿]/u;
 const MIRRORED: Record<string, string> = { '(': ')', ')': '(', '[': ']', ']': '[', '{': '}', '}': '{', '<': '>', '>': '<', '«': '»', '»': '«', '‹': '›', '›': '‹' };
 
 /**
@@ -116,11 +120,12 @@ const MIRRORED: Record<string, string> = { '(': ')', ')': '(', '[': ']', ']': '[
  * right-to-left text the runs go right to left too. Text without these
  * scripts comes back as it is.
  */
-export function visualOrder(text: string): string {
-  if (!RTL.test(text)) return text;
+export function visualOrder(text: string, arabic = false): string {
+  const rtl = arabic ? RTL_WITH_ARABIC : RTL;
+  if (!rtl.test(text)) return text;
   // Accents and points stay on their letters.
   const clusters = text.match(/\P{M}\p{M}*|\p{M}+/gu) ?? [];
-  const strong = (cluster: string): 'l' | 'r' | null => (RTL.test(cluster) ? 'r' : /[\p{L}\p{Nd}]/u.test(cluster) ? 'l' : null);
+  const strong = (cluster: string): 'l' | 'r' | null => (rtl.test(cluster) ? 'r' : /[\p{L}\p{Nd}]/u.test(cluster) ? 'l' : null);
   const dirs = clusters.map(strong);
   const base = dirs.find((d) => d !== null) ?? 'l';
   for (let i = 0; i < dirs.length; i++) {
@@ -147,17 +152,65 @@ export function textGeometry(loaded: LoadedFont, text: string, spacing = 1, tole
   if (loaded.kind === 'stroke') return strokeText(loaded.font, visualOrder(text), spacing);
   const font = loaded.font;
   const em = font.unitsPerEm;
-  const glyphs = font.stringToGlyphs(visualOrder(text));
+  const { glyphs, shaped } = outlineGlyphs(font, text);
   const rings: Path[] = [];
   let x = 0;
   glyphs.forEach((glyph, i) => {
     const path = glyph.getPath(x, 0, 1);
     rings.push(...flattenCommands(path.commands, tolerance));
     const advance = (glyph.advanceWidth ?? 0) / em;
-    const kern = i + 1 < glyphs.length ? font.getKerningValue(glyph, glyphs[i + 1]) / em : 0;
+    const kern = i + 1 < glyphs.length ? kerning(font, glyph, glyphs[i + 1]) / em : 0;
     x += advance * spacing + kern;
   });
-  return { rings, strokes: [] };
+  return shaped ? { rings, strokes: [] } : { rings, strokes: [], unshaped: true };
+}
+
+// opentype.js throws on substitutions it can't apply (extension lookups, in
+// Calibri for plain Latin and in most fonts with Arabic). That text gets each
+// character's own glyph instead, with Arabic put in order by visualOrder.
+function outlineGlyphs(font: Font, text: string): { glyphs: Glyph[]; shaped: boolean } {
+  try {
+    return { glyphs: font.stringToGlyphs(visualOrder(text)), shaped: true };
+  } catch {
+    // Latin ligatures are the usual culprit, and nobody misses an fi ligature on a map.
+  }
+  try {
+    // It takes options, though the types don't say so.
+    const shape = font.stringToGlyphs as (s: string, options: { features: Record<string, boolean> }) => Glyph[];
+    return { glyphs: shape.call(font, visualOrder(text), { features: { liga: false, rlig: false } }), shaped: true };
+  } catch {
+    // charToGlyph itself can throw on a character the font lacks, so missing ones go to .notdef here.
+    return { glyphs: Array.from(visualOrder(text, true), (char) => font.glyphs.get(font.charToGlyphIndex(char) || 0)), shaped: false };
+  }
+}
+
+function kerning(font: Font, left: Glyph, right: Glyph): number {
+  try {
+    return font.getKerningValue(left, right);
+  } catch {
+    return 0;
+  }
+}
+
+/** Characters of a text its font has no glyph for, and what's drawn in their place. */
+export interface MissingGlyphs {
+  chars: string[];
+  /** An outline font's box, or nothing when that's empty. Single-line fonts draw a question mark. */
+  shownAs: 'box' | 'gap' | 'question';
+}
+
+export function missingGlyphs(text: string, font: LoadedFont): MissingGlyphs | undefined {
+  const chars = new Set<string>();
+  for (const char of text.trim()) {
+    if (/\s/u.test(char)) continue;
+    const found = font.kind === 'outline' ? font.font.charToGlyphIndex(char) > 0 : font.font.glyphs[char] !== undefined;
+    if (!found) chars.add(char);
+  }
+  if (!chars.size) return undefined;
+  let shownAs: MissingGlyphs['shownAs'];
+  if (font.kind === 'outline') shownAs = font.font.glyphs.get(0).getPath(0, 0, 1).commands.length ? 'box' : 'gap';
+  else shownAs = font.font.glyphs['?'] ? 'question' : 'gap';
+  return { chars: [...chars], shownAs };
 }
 
 function strokeText(font: StrokeFont, text: string, spacing: number): TextGeometry {
