@@ -514,12 +514,16 @@ async function loadMapWater(request: GenerateRequest, job: Running): Promise<Map
   const bounds = dataBoundsFor(request.area);
   const prefix = `${boundsKey(bounds)}|`;
   const types: SourceType[] = [...(request.settings.lidarModel.mapWater ? (['water'] as const) : []), ...(needsSegments(request) ? (['segment'] as const) : [])];
-  const cached = overture?.key.startsWith(prefix) && types.every((type) => (overture!.data.features as Partial<Record<SourceType, unknown>>)[type]) ? overture.data : null;
+  // A map model's download only has the segments its road settings asked
+  // for (no paths with paths off), so segments only come from our own.
+  const own = `${prefix}routes:`;
+  const usable = overture?.key.startsWith(needsSegments(request) ? own : prefix) && types.every((type) => (overture!.data.features as Partial<Record<SourceType, unknown>>)[type]);
+  const cached = usable ? overture!.data : null;
   if (cached) return { features: cached.features.water ?? [], segments: cached.features.segment ?? [], release: cached.release, downloaded: 0 };
   // Every road and path, whatever the map model's road settings, since a route can follow any of them.
   const plan = dataPlan({ ...request.settings, roads: { ...request.settings.roads, enabled: true, includePaths: true, includeRail: false } }, bounds);
   const data = await fetchOverture({ bounds, types, keep: plan.keep, signal: job.abort.signal });
-  overture = { key: `${prefix}${types.join(',')}`, data };
+  overture = { key: `${own}${types.join(',')}`, data };
   let downloaded = 0;
   for (const stats of Object.values(data.stats)) downloaded += stats.bytes - stats.cachedBytes;
   return { features: data.features.water ?? [], segments: data.features.segment ?? [], release: data.release, downloaded };

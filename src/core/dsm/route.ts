@@ -367,7 +367,9 @@ export class ProfileIndex {
     const cy = Math.floor(y / this.cell);
     let best = Infinity;
     let z = NaN;
-    for (let reach = 1; reach <= 4 && !(best <= reach * this.cell); reach++) {
+    // Rings up to reach - 1 only settle what's within (reach - 1) cells, so
+    // stopping at reach cells took a further centreline's height.
+    for (let reach = 1; reach <= 4 && !(best <= (reach - 1) * this.cell); reach++) {
       for (let dx = -reach; dx <= reach; dx++) {
         for (let dy = -reach; dy <= reach; dy++) {
           if (Math.max(Math.abs(dx), Math.abs(dy)) < reach && reach > 1) continue;

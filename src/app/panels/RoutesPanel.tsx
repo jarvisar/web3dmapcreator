@@ -159,8 +159,9 @@ export function RoutesPanel() {
         />
       </div>
       <p className="layer-help">{FILE_HINT}</p>
-      {errors.map((error) => (
-        <div key={error} className="notice notice-warning">
+      {errors.map((error, i) => (
+        // Two files of one name can fail the same way.
+        <div key={i} className="notice notice-warning">
           <CircleAlert size={16} aria-hidden="true" />
           <span>{error}</span>
         </div>

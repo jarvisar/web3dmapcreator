@@ -123,6 +123,9 @@ describe('what a route rests on', () => {
     expect(index.at(5, 0.2)).toBeCloseTo(2, 6);
     expect(index.at(-0.5, 0.5)).toBeCloseTo(1, 6);
     expect(index.at(5, 50)).toBeNaN();
+    // A line 1.85 cells off in the next cell, and a nearer one 1.15 cells off two cells down.
+    const line = (y: number, z: number) => ({ x: Float64Array.of(0.5, 0.9), y: Float64Array.of(y, y), z: Float64Array.of(z, z) });
+    expect(new ProfileIndex([line(1.95, 1), line(-1.05, 2)], 1).at(0.5, 0.1)).toBe(2);
   });
 });
 

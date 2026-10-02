@@ -107,7 +107,11 @@ function readGpx(text: string): FileContents {
       buffer += t;
     },
   });
-  return { name: fileName || trackName, chunks, points };
+  // Planners and some apps write the route twice, as a few turn points in
+  // <rte> and the full line in <trk>. Both printed, the turn points cut
+  // straight across every bend, so a recorded or full line wins.
+  const tracked = chunks.some((c) => c.track && c.lines.some((l) => l.length >= 2));
+  return { name: fileName || trackName, chunks: tracked ? chunks.filter((c) => c.track) : chunks, points };
 }
 
 function kmlCoordinates(text: string): LonLat[] {
@@ -291,12 +295,14 @@ function readXml(source: string): FileContents {
 }
 
 // Drops points off the globe and repeats, and splits where the line jumps the
-// 180th meridian so it doesn't cross the whole world.
+// 180th meridian so it doesn't cross the whole world. 0,0 is what some
+// devices and exporters write for a point without a fix, and kept, the line
+// ran out to the Gulf of Guinea and the area moved to frame it.
 function cleanLine(raw: readonly LonLat[]): LonLat[][] {
   const out: LonLat[][] = [];
   let line: LonLat[] = [];
   for (const [lon, lat] of raw) {
-    if (!Number.isFinite(lon) || !Number.isFinite(lat) || Math.abs(lon) > 180 || Math.abs(lat) > 90) continue;
+    if (!Number.isFinite(lon) || !Number.isFinite(lat) || Math.abs(lon) > 180 || Math.abs(lat) > 90 || (lon === 0 && lat === 0)) continue;
     const prev = line[line.length - 1];
     if (prev && prev[0] === lon && prev[1] === lat) continue;
     if (prev && Math.abs(lon - prev[0]) > 180) {
@@ -334,6 +340,14 @@ function assemble(chunks: readonly Chunk[]): LonLat[][] {
   return out;
 }
 
+// Some Windows tools save GPX and KML as UTF-16.
+function decodeText(data: Uint8Array): string {
+  const [a, b] = data;
+  if ((a === 0xff && b === 0xfe) || (a === 0x3c && b === 0)) return new TextDecoder('utf-16le').decode(data);
+  if ((a === 0xfe && b === 0xff) || (a === 0 && b === 0x3c)) return new TextDecoder('utf-16be').decode(data);
+  return strFromU8(data);
+}
+
 const signature = (bytes: Uint8Array, from: number, to: number) => String.fromCharCode(...bytes.subarray(from, to));
 
 function contentsOf(data: Uint8Array): FileContents {
@@ -346,7 +360,7 @@ function contentsOf(data: Uint8Array): FileContents {
       throw error instanceof FitError ? new TrackFileError(error.message) : error;
     }
   }
-  const source = strFromU8(data).replace(/^﻿/, '');
+  const source = decodeText(data).replace(/^﻿/, '');
   const start = /\S/.exec(source.slice(0, 4096))?.[0];
   if (start === '{' || start === '[') return readGeoJson(source);
   if (start === '<') return readXml(source);

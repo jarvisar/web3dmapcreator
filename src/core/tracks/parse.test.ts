@@ -146,10 +146,10 @@ describe('reading route files', () => {
         <metadata><name>Fish &amp; Chips Loop</name></metadata>
         <wpt lat="0" lon="0"><name>Aid station</name></wpt>
         <trk><name>Morning Run</name>
-          <trkseg><trkpt lat="0" lon="0"/><trkpt lat="0" lon="${100 * M}"><ele>4</ele></trkpt></trkseg>
-          <trkseg><trkpt lat="0" lon="${200 * M}"></trkpt><trkpt lat="0" lon="${300 * M}"/></trkseg>
+          <trkseg><trkpt lat="0" lon="1"/><trkpt lat="0" lon="${1 + 100 * M}"><ele>4</ele></trkpt></trkseg>
+          <trkseg><trkpt lat="0" lon="${1 + 200 * M}"></trkpt><trkpt lat="0" lon="${1 + 300 * M}"/></trkseg>
         </trk>
-        <trk><trkseg><trkpt lat="${5000 * M}" lon="0"/><trkpt lat="${5100 * M}" lon="0"/></trkseg></trk>
+        <trk><trkseg><trkpt lat="${5000 * M}" lon="1"/><trkpt lat="${5100 * M}" lon="1"/></trkseg></trk>
       </gpx>`;
     const track = parse('run.gpx', gpx);
     expect(track.name).toBe('Fish & Chips Loop');
@@ -257,7 +257,7 @@ describe('reading route files', () => {
       type: 'FeatureCollection',
       features: [
         { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [0, 0] } },
-        { type: 'Feature', properties: { name: 'Canal path' }, geometry: { type: 'LineString', coordinates: [[0, 0], [0.01, 0, 12]] } },
+        { type: 'Feature', properties: { name: 'Canal path' }, geometry: { type: 'LineString', coordinates: [[0.5, 0], [0.51, 0, 12]] } },
         { type: 'Feature', properties: null, geometry: { type: 'MultiLineString', coordinates: [[[1, 1], [1.01, 1]], [[2, 2], [2.01, 2]]] } },
         { type: 'Feature', geometry: { type: 'Polygon', coordinates: [[[3, 3], [3.01, 3], [3, 3.01], [3, 3]]] } },
         { type: 'Feature', geometry: { type: 'LineString', coordinates: [[null, 1], ['4', 4]] } },
@@ -269,9 +269,44 @@ describe('reading route files', () => {
     const converted = {
       type: 'Feature',
       properties: { coordTimes: [] },
-      geometry: { type: 'MultiLineString', coordinates: [[[0, 0], [100 * M, 0]], [[150 * M, 0], [250 * M, 0]]] },
+      geometry: { type: 'MultiLineString', coordinates: [[[1, 0], [1 + 100 * M, 0]], [[1 + 150 * M, 0], [1 + 250 * M, 0]]] },
     };
     expect(parse('t.json', JSON.stringify(converted)).lines).toHaveLength(1);
+  });
+
+  it('leaves out turn points written beside the full line', () => {
+    const gpx = `<gpx><rte><rtept lat="1" lon="2"/><rtept lat="1.01" lon="2.01"/></rte>
+      <trk><trkseg><trkpt lat="1" lon="2"/><trkpt lat="1.005" lon="2"/><trkpt lat="1.01" lon="2.01"/></trkseg></trk></gpx>`;
+    expect(parse('planned.gpx', gpx).lines).toEqual([
+      [
+        [2, 1],
+        [2, 1.005],
+        [2.01, 1.01],
+      ],
+    ]);
+  });
+
+  it('drops points without a fix written as 0,0', () => {
+    const track = parse('run.gpx', `<gpx><trk><trkseg><trkpt lat="1" lon="2"/><trkpt lat="0" lon="0"/><trkpt lat="1.001" lon="2"/></trkseg></trk></gpx>`);
+    expect(track.lines).toEqual([
+      [
+        [2, 1],
+        [2, 1.001],
+      ],
+    ]);
+  });
+
+  it('reads UTF-16 files', () => {
+    const text = `<?xml version="1.0" encoding="UTF-16"?><gpx><trk><name>Ünder</name><trkseg><trkpt lat="1" lon="2"/><trkpt lat="1.001" lon="2"/></trkseg></trk></gpx>`;
+    for (const little of [true, false]) {
+      const data = new Uint8Array(2 + text.length * 2);
+      const view = new DataView(data.buffer);
+      view.setUint16(0, 0xfeff, little);
+      for (let i = 0; i < text.length; i++) view.setUint16(2 + 2 * i, text.charCodeAt(i), little);
+      const [track] = parseTrackFile('ride.gpx', data.buffer);
+      expect(track.name).toBe('Ünder');
+      expect(track.lines[0]).toHaveLength(2);
+    }
   });
 
   it('splits a line where it crosses the 180th meridian', () => {
