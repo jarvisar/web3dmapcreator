@@ -15,9 +15,9 @@ import type { Projection } from '../geo/projection';
 import { MIN_CELL_M } from '../dsm/grid';
 import { union } from '../geometry/polygon';
 import type { SurveyPreference } from '../settings';
-import type { MultiPolygon, Polygon, Ring } from '../types';
+import type { GeoBounds, MultiPolygon, Polygon, Ring } from '../types';
 import { staged, surveyYear } from './offers';
-import { localDensity } from './read/density';
+import { eptPresence, localDensity } from './read/density';
 import type { Fetcher } from './read/fetcher';
 import { shortHash } from './rock';
 import { projectYear } from './selection';
@@ -42,6 +42,8 @@ export interface Ranked {
   /** Where its outline reaches in the area, metres in the area's frame. */
   coverage: MultiPolygon;
   catalogCoverage: number;
+  /** Share of the area its index has points in (eptPresence), where that was measured. */
+  measuredCoverage?: number;
   /** Returns per m² near the area, from its index (localDensity). */
   localDensity?: number;
   probe?: SurveyProbe;
@@ -94,6 +96,26 @@ export function acquisitionOrdinal(c: Candidate): number {
 /** Returns per m² near the area where its index told, else the catalog's average over the whole outline. */
 export function surveyDensity(r: Ranked): number | null {
   return r.localDensity ?? r.candidate.densityM2 ?? null;
+}
+
+/** Share of the area a survey has points in, as far as its outline and index tell. Shown in the survey list. */
+export function coverageShare(r: Ranked): number {
+  return Math.min(r.catalogCoverage, r.measuredCoverage ?? 1);
+}
+
+// LiDAR only models read the surveys whose outlines cover the most of the
+// area first, so blocks don't mix years: those within COVER_SLACK of the one
+// that covers the most. Held to the whole area, downtown Miami's 2021 county
+// survey (97%, its outline stops short of a corner of the bay) went behind
+// every older one. Not by where their points are: an index can't tell water
+// from land, and San Francisco's 2023 survey has none over the far side of
+// the bay by the Ferry Building (85%), so a 2010 survey that does went first.
+const COVER_SLACK = 0.05;
+
+/** 0 for the surveys whose outlines cover about as much of the area as any does, else 1. */
+export function coverTier(list: Ranked[]): (r: Ranked) => number {
+  const best = Math.max(0, ...list.map((r) => r.catalogCoverage));
+  return (r) => (r.catalogCoverage >= best - COVER_SLACK ? 0 : 1);
 }
 
 // The add-on's metadata_order: newest acquisition first, then coverage,
@@ -263,8 +285,28 @@ const DENSITIES_AT_ONCE = 4;
 // order. Its request carries on into the cache.
 const DENSITY_DEADLINE_MS = 20_000;
 
-/** Fills in each survey's localDensity, where its index can tell. A failure leaves the catalog's. */
-export async function measureDensities(fetcher: Fetcher, ranked: Ranked[], frame: Projection, signal?: AbortSignal): Promise<void> {
+/** The lon/lat box around a rectangle of `frame`. */
+function geoBox(frame: Projection, x0: number, y0: number, x1: number, y1: number): GeoBounds {
+  const corners = [frame.localToGeo(x0, y0), frame.localToGeo(x1, y0), frame.localToGeo(x1, y1), frame.localToGeo(x0, y1)];
+  return { west: Math.min(...corners.map((c) => c[0])), south: Math.min(...corners.map((c) => c[1])), east: Math.max(...corners.map((c) => c[0])), north: Math.max(...corners.map((c) => c[1])) };
+}
+
+/** The answer, or null once DENSITY_DEADLINE_MS has gone by. */
+async function inTime<T>(work: Promise<T>): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), DENSITY_DEADLINE_MS)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Fills in each survey's localDensity, where its index can tell, and with
+ * `area` (a rectangle of `frame`) its measuredCoverage. A failure leaves the
+ * catalog's figures.
+ */
+export async function measureDensities(fetcher: Fetcher, ranked: Ranked[], frame: Projection, signal?: AbortSignal, area?: [number, number, number, number]): Promise<void> {
   const queue = [...ranked];
   const lane = async () => {
     while (queue.length) {
@@ -273,21 +315,24 @@ export async function measureDensities(fetcher: Fetcher, ranked: Ranked[], frame
       const [x0, y0, x1, y1] = bounds(r.coverage);
       const [cx, cy] = [(x0 + x1) / 2, (y0 + y1) / 2];
       const half = [Math.min(x1 - x0, DENSITY_SPAN_M) / 2, Math.min(y1 - y0, DENSITY_SPAN_M) / 2];
-      const corners = [frame.localToGeo(cx - half[0], cy - half[1]), frame.localToGeo(cx + half[0], cy - half[1]), frame.localToGeo(cx + half[0], cy + half[1]), frame.localToGeo(cx - half[0], cy + half[1])];
-      const box = { west: Math.min(...corners.map((c) => c[0])), south: Math.min(...corners.map((c) => c[1])), east: Math.max(...corners.map((c) => c[0])), north: Math.max(...corners.map((c) => c[1])) };
+      const box = geoBox(frame, cx - half[0], cy - half[1], cx + half[0], cy + half[1]);
       const inside = (lon: number, lat: number) => {
         const [x, y] = frame.toLocal(lon, lat);
         return contains(r.coverage, x, y);
       };
-      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const late = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), DENSITY_DEADLINE_MS)));
-        const density = await Promise.race([localDensity(fetcher, r.candidate, box, inside), late]);
+        const density = await inTime(localDensity(fetcher, r.candidate, box, inside));
         if (density) r.localDensity = density;
+        if (area && r.candidate.format === 'EPT') {
+          const inArea = (lon: number, lat: number) => {
+            const [x, y] = frame.toLocal(lon, lat);
+            return x >= area[0] && x <= area[2] && y >= area[1] && y <= area[3];
+          };
+          const share = await inTime(eptPresence(fetcher, r.candidate.url, geoBox(frame, ...area), inArea));
+          if (share !== null) r.measuredCoverage = share;
+        }
       } catch (error) {
         if ((error as Error)?.name === 'AbortError' || signal?.aborted) throw error;
-      } finally {
-        clearTimeout(timer);
       }
     }
   };

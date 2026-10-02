@@ -18,6 +18,7 @@ import {
 import { formatAreaHash, parseHash, unreadableText } from './shareLink';
 import { adoptEdits, broughtToast, takeInLink } from './editActions';
 import { bringIn, dropMissingFont, patchSvg, setArea, setOutput, takeLinkProblem, takeOpenedLink, toast, useApp } from './store';
+import { asChange, quietly } from './undo';
 
 let started = false;
 let written = '';
@@ -136,18 +137,20 @@ export function startSync(): void {
   // added to these.
   window.addEventListener('hashchange', () => {
     const shared = parseHash(location.hash);
-    const state = useApp.getState();
-    if (shared.svg) {
-      useApp.setState({ svg: { ...shared.svg.svg, routes: state.svg.routes, hiddenLines: state.svg.hiddenLines } });
-      dropMissingFont();
-    }
-    const brought = bringIn(state.edits, { routes: state.svg.routes, hiddenLines: state.svg.hiddenLines }, { edits: shared.edits, picks: shared.picks });
-    if (brought) takeInLink(brought);
-    if (shared.output) setOutput(shared.output);
-    const area = shared.area ?? useApp.getState().area;
-    const next = { ...area, ...shared.svg?.area, ...(shared.svg?.shape ? { shape: shared.svg.shape } : {}) };
-    // New SVG settings can mean a new piece, and so a new map window.
-    if (shared.svg || !sameArea(next, useApp.getState().area)) setArea(next, { focus: 'always', placeName: '' });
+    asChange('Open link', () => {
+      const state = useApp.getState();
+      if (shared.svg) {
+        useApp.setState({ svg: { ...shared.svg.svg, routes: state.svg.routes, hiddenLines: state.svg.hiddenLines } });
+        dropMissingFont();
+      }
+      const brought = bringIn(state.edits, { routes: state.svg.routes, hiddenLines: state.svg.hiddenLines }, { edits: shared.edits, picks: shared.picks });
+      if (brought) takeInLink(brought);
+      if (shared.output) setOutput(shared.output);
+      const area = shared.area ?? useApp.getState().area;
+      const next = { ...area, ...shared.svg?.area, ...(shared.svg?.shape ? { shape: shared.svg.shape } : {}) };
+      // New SVG settings can mean a new piece, and so a new map window.
+      if (shared.svg || !sameArea(next, useApp.getState().area)) setArea(next, { focus: 'always', placeName: '' });
+    });
     // Drop the settings from the address bar once they're in.
     if (shared.svg || shared.edits || shared.picks || shared.unreadable.length) writeHashNow();
     const problem = unreadableText(shared);
@@ -177,7 +180,12 @@ export function startSync(): void {
       const picks = readStoredPicks(event.newValue);
       if (!picks) return;
       markSaved(PICKS_KEY, [picks.routes, picks.hiddenLines]);
-      patchSvg({ routes: picks.routes, hiddenLines: picks.hiddenLines });
+      // Undoing a move here shouldn't put this tab's old picks back over the other tab's.
+      const { routes, hiddenLines } = picks;
+      quietly(
+        () => patchSvg({ routes, hiddenLines }),
+        (setup) => ({ ...setup, svg: { ...setup.svg, routes, hiddenLines } }),
+      );
     }
   });
 

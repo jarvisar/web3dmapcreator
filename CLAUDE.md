@@ -48,7 +48,7 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `proxy/` | The LiDAR CORS proxy, a Cloudflare Worker: only the URLs `PROXIED` in `src/core/data/corsProxy.ts` matches, only the site's origins, GET and HEAD, bodies streamed |
 | `src/worker/svg.worker.ts` | Renders SVG maps, separate so a preview updates while a model generates |
 | `src/core/svgmap/` | SVG maps: tile fetch/decode/stitch, piece layout (`layout/`), line cleanup (`lines/`), fills and hatching, titles (`text/`), SVG writer, `service.ts` (the render with its caches) |
-| `src/app/` | React UI: state (zustand), MapLibre area editor, panels, three.js viewer. The model editor is `viewer/editController.ts` (pointer tools), `picker.ts`, `highlight.ts`, `shown.ts` (what the view hides and colours), `viewer/edit/` (toolbar, inspector) and `state/editActions.ts` (edits, undo). `src/app/svgmap/` has the SVG sections, preview, render client, route picker, piece fitting and share encoding |
+| `src/app/` | React UI: state (zustand), MapLibre area editor, panels, three.js viewer. The model editor is `viewer/editController.ts` (pointer tools), `picker.ts`, `highlight.ts`, `shown.ts` (what the view hides and colours), `viewer/edit/` (toolbar, inspector) and `state/editActions.ts` (edits, undo). `state/undo.ts` is undo for everything else. `src/app/svgmap/` has the SVG sections, preview, render client, route picker, piece fitting and share encoding |
 | `scripts/` | `generate.ts` (CLI end to end, `--options` for an exported options file with its edits), `fetch-area.ts`, `bench-synthetic.ts`, `check-bambu.ts`, `fuzz-edits.ts` (random edits, exports checked), `shot.mjs`, `e2e.mjs`, `e2e-mobile.mjs` and `e2e-edit.mjs` (browser runs in the installed Edge) |
 
 ## Pipeline rules worth preserving
@@ -484,6 +484,18 @@ LiDAR sources (`src/core/lidar/sources/`, notes in `docs/LIDAR_SOURCES.md`):
   tiles' headers. Catalog densities are outline averages and ran 2x off
   (San Francisco's 2023 survey: 62 over its outline, 150 downtown). The
   hierarchy came within 30% of counted returns for a few KB.
+- Outlines overclaim too, so `eptPresence` walks the hierarchy over the whole
+  area to nodes about a column across and finds where it has points
+  (`measuredCoverage`). NOAA's Irma survey claims all of downtown Miami and
+  has points in 45%. Surveys with none are dropped and the picker shows the
+  share. It never orders surveys: the index can't tell water from land, and
+  ordered by it a 2010 survey went ahead of San Francisco's 2023 one by the
+  Ferry Building, which has nothing over the far bay.
+- EPT builds are LAS 1.2 (five-bit classes), so topobathy codes 40-45 arrive
+  as 8-13. For surveys with "bathy" in the name `surfaceCodes` leaves the
+  seabed (8, else read as ground for old model key points), water column
+  and submerged objects out and reads 10 as water. Their blocks (`readKey`)
+  and probes are keyed apart, so only those are read again.
 - Density misses holes: NOAA's 2025 Bay-Delta survey has 18 returns per m²
   in the Financial District and left 7% of 0.71 m cells empty between the
   towers. With 'balanced', when a survey 1.5 times denser could take the
@@ -494,7 +506,7 @@ LiDAR sources (`src/core/lidar/sources/`, notes in `docs/LIDAR_SOURCES.md`):
   size, and the survey search only uses saved ones (`savedOnly`).
 - `settings.lidar.survey` picks a survey by hand (`choice.ts`), for LiDAR
   buildings and LiDAR only models alike. It only moves that survey to the
-  front of every order (`chosenFirst`), ahead of whole-area coverage too,
+  front of every order (`chosenFirst`), ahead of the coverage tier too,
   so the others still fill in where it doesn't reach. A picked whole-file
   survey is always offered. The worker lists the surveys under an area in
   automatic order without reading points (`findSurveys`, the `surveys`
@@ -532,7 +544,10 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   2023 survey), a body whose edge is mostly unclassified water-level cells
   grows over those too (`SURFACE_M`, `UNFILED_SHARE`, for New York's
   harbour) and over dead flat ground at its level (`LEVEL_M`, a tile of
-  Lake Michigan filed as ground), without clutter small pieces standing
+  Lake Michigan filed as ground), up to the upper water surface of flight
+  lines flown at another tide (`upperSurfaces`, Miami's 2021 survey has the
+  bay at -0.5 and +0.1 m), with map water, empty ground far from any return
+  outside it is never water (`unseen`), without clutter small pieces standing
   alone in water go as boats (`clearBoats`, never mostly building or tall),
   and cut water takes its bank's height for `BANK_RINGS` rings,
   then the TIN is clipped along it (the add-on drops cut cells to the bottom
@@ -540,9 +555,14 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   mean over canopy) and keeps what's under 2 m. Slivers (wires, jibs,
   poles) go whatever the settings. `DEFAULT_COMPOSE` stays the add-on's.
 - The density probe (`occupiedCell`) counts land as 2 m squares with a
-  return that isn't water. The add-on counts any return, which grew the
-  Chicago lakefront's cells to 2.08 m. Probe results are saved under
-  `PROBE_VERSION`.
+  return that isn't water, and unclassified returns within 10 m of water
+  returns aren't land either (Miami's 2021 survey leaves the bay
+  unclassified). The add-on counts any return, which grew the Chicago
+  lakefront's cells to 2.08 m. Don't judge unclassified squares by density:
+  Bay-Delta's sparse unclassified ground by San Francisco's towers then
+  looked filled and it was read ahead of B23. It tries up to six blocks
+  nearest the middle (`PROBE_BLOCKS`) for one with land. Probe results are
+  saved under `PROBE_VERSION`.
 - Blocks are counted into cells as they're read (`BlockRaster`), never held as
   points, and checkpointed in the LiDAR cache under `VERSION`. Raise it when
   what a block stores changes. A block with a failed read isn't saved.
@@ -554,8 +574,16 @@ LiDAR only (`src/core/dsm/`, design notes in `docs/LIDAR_MODEL.md`):
   over nothing (a pond) float when everything around is 30 m lower. Check
   changes on the regression areas' raw tops, not only Houston: glass towers,
   stepped roof edges and ledges are what drafts took by mistake.
-- Surveys: whole-area coverage first, then `orderSurveys`. A cell belongs to the
-  first survey whose outline holds it, returns or not.
+- Surveys: those whose outlines cover the most of the area first (`coverTier`,
+  within 5% of the best), then `orderSurveys`. A cell belongs to the first
+  survey whose outline holds it, returns or not. The exception is ground
+  an outline claims with nothing near it (`overclaimed`, after every block
+  is read): more than 20 m from any return, past the returns along its row
+  or column, with mostly ground, buildings or trees around it. Those empty
+  cells take the next survey's returns. Miami's 2019 Keys survey stops 300 m
+  short of downtown's west side, and the strip printed as part of the river.
+  Rivers, ponds, dark roofs and lakes whose returns end in water stay put,
+  or the Schuylkill and Lake Michigan read older surveys for nothing.
 - The mesher prices collapses by memoryless quadrics against the current
   faces (the add-on's, so stair walls straighten), and also checks every
   collapse against the grid (`GridBound`): no grid point further than half a
@@ -786,6 +814,29 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   tab's, settings and area included, and a broken settings key made the
   next save wipe them.
 
+Undo outside the editor (`src/app/state/undo.ts`, buttons in `TopBar.tsx`):
+
+- The area, output, settings, colours, export options, SVG settings, picks,
+  place and file name (`Setup` in `store.ts`) have one history, apart from
+  the edits'. `Ctrl+Z` is the editor's in the 3D view while editing and the
+  settings' everywhere else, the sidebar and the top bar's undo buttons
+  included (`editorTakesUndo`, which `ModelView`'s keys check too).
+- Steps are recorded by a store subscription, not by the actions. Changes
+  join one step within one handler (same microtask), while a pointer is
+  held (a drag, a slider), while typing in one field (until focus moves),
+  or for the same keys within a second. A pointerdown or a focus change
+  starts a new one. A change that ends where its step began (a drag called
+  off with Esc) leaves no step and keeps redo.
+- Anything the app changes by itself goes through `quietly`, with a
+  `rebase` when it should be in every step (picks from another tab), or
+  the undo button lights up for something nobody did. Name an action's
+  step with `asChange`, which also returns it for a toast's Undo
+  (`undoChange(step)` only undoes it while it's the last).
+- A text field typed in since it was focused keeps `Ctrl+Z` for its own
+  typing. `NumberInput` and `HexInput` follow the value while focused
+  until typed in, or an undo with the focus there showed the old value and
+  blur wrote it back.
+
 SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.md`):
 
 - The engine is SVGmap's, moved with its tests. At the merge, live renders of
@@ -824,6 +875,16 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
   with a render that doesn't answer a newer render or a cancel within 8 s is
   stuck in a loop and is replaced (`svgmap/render.ts`). Only an ack for the
   message the watchdog waits on, or a later one, clears it.
+- `source.overtureBuildings` (off by default) adds Overture's building
+  footprints whose geometry isn't from OSM (`svgmap/overture.ts`): only the
+  `sources` dataset and `is_underground` are read (`columns` in
+  `fetchOverture`, `sources` pruned to `property` and `dataset`), and one
+  overlapping tile buildings by over a quarter is dropped. Tile buildings are
+  indexed by ring, not feature: OpenMapTiles packs whole blocks into one
+  feature and per feature took 87 s on the Loop. They're merged into their
+  own prepared entry with its own unions, so turning it off gives the tiles'
+  entry back and output stays byte-identical. Only at zoom 14, 150 MB at
+  most, a failed download is tried again after a minute.
 - Plotter files put every layer of one pen together, so `compose` sorts the
   drafts by pen before ordering paths and adding up travel.
 - Tiles and the window box are cut with `clipToRect`, not the `rectClip`
@@ -891,84 +952,42 @@ LiDAR only output can be compared against the Micropolitan reference STLs in
 Machine-local folders carried over from the add-on (`scratchpad/`, `dist/`,
 `.venv-overture/`) are ignored and unrelated to the web app.
 
+
 # Writing style
 
-This applies to code comments and anything public like READMEs, docs, and PR descriptions. Write like the developer who built the project leaving useful context for somebody else. Do not write like a technical writer, tutorial author, or AI documenting everything it found in the codebase.
+This applies to all code comments and anything public (READMEs, docs, PR descriptions). Write it like a developer leaving useful context for another developer, not like a technical writer, a tutorial, or an AI trying to make the codebase look well documented.
 
-My older READMEs are the main reference for tone: pre-2024 versions in `jarvisar/solar-system`, `sorting-algos`, `interpreter`, `exoplanet-classifier`, and `senior-design`. Don't use newer repos as a style reference since some of those were AI generated.
+My older READMEs are the reference for tone: pre-2024 versions in jarvisar/solar-system, sorting-algos, interpreter, exoplanet-classifier, and senior-design. Don't use my newer repos as a reference, some of those are AI generated.
 
 ## General
 
-- Plain, direct, and practical. Use normal words.
-- Don't try to sound polished. Slightly casual or imperfect wording is fine if it sounds natural.
-- Keep sentences fairly short, but don't force every sentence into the same length or pattern.
-- Write what is actually useful to know. Do not document something just because you found it in the code.
-- Prefer a few important details over exhaustive coverage.
-- Don't systematically explain every subsystem, edge case, fallback, constant, or implementation decision unless the document actually needs it.
-- Avoid giving every section the same amount of detail. Some things may need a paragraph, some need one sentence, and some do not need mentioning at all.
-- Don't turn code inspection into an encyclopedia of how the project works.
-- Assume the reader is a developer. Obvious implementation details usually don't need explanation.
-- Focus on things I would realistically remember being worth mentioning: weird behavior, important constraints, decisions that are easy to misunderstand, useful examples, and limitations.
-- Concrete numbers and implementation details are good when they matter, but don't dump constants into documentation just because they exist.
-- Explain why something works a certain way only when the reason is useful or non-obvious. Not every behavior needs a justification.
-- It's fine to say things like "currently", "for now", "I ended up doing this because...", "this is a little weird", "we don't want...", or "this should still..." when natural.
-- First person is fine when talking about a decision I made. Don't artificially rewrite everything into detached authoritative prose.
-- If something is uncertain, unfinished, hacky, or likely to change, say that normally instead of making it sound finalized.
-- Keep structure proportional to the amount of information. Don't invent categories, terminology, or sections just to make the documentation look complete.
-- Don't add an intro or conclusion unless there is actually something useful to say.
-- Don't repeat a point in prose after already showing it in a command, example, heading, or list.
-- No em dashes, semicolons, emojis, arrows, bold scattered through sentences, or overly decorative formatting.
-- Avoid AI writing patterns like "it's not just X, it's Y", rhetorical contrasts, fake enthusiasm, title-restating intros, "Overall..." conclusions, repeated summaries, or filler words like powerful, seamless, robust, comprehensive, sophisticated, and elegant.
-- Avoid repetitive explanatory constructions like "This ensures...", "This allows...", "This means...", or "This prevents..." paragraph after paragraph.
-- Don't make every statement sound absolute. Human-written project docs are often scoped to how the project works right now.
-- When in doubt, write less.
+- Plain, direct, and practical. Use a normal word when one works. Nothing corporate, academic, or overly polished.
+- Short sentences. Describe actual behavior with concrete details, numbers, and examples.
+- Focus on intent: what something is supposed to do, why a decision was made, and any constraints or tradeoffs.
+- Call out real limits, exceptions, and edge cases. If something is uncertain, just say so.
+- Qualifiers like "currently", "for now", "normally", "only when needed", "this should still..." or "we don't want..." are fine when they clarify scope.
+- Keep it proportional to the problem. Don't invent terminology or structure for simple behavior.
+- No em dashes, semicolons, emojis, arrows, bold scattered through sentences, or other punctuation and formatting regular people don't use.
+- No AI patterns: "it's not just X, it's Y", rhetorical flourishes, intros that restate the title, "Overall, ..." wrap-ups, repeated summaries, filler adjectives like powerful, seamless, or robust.
 
 ## READMEs
 
-- Open with one or two normal sentences saying what the project is. For example: "This is a simple proxy server that adds the necessary headers to allow Cross-Origin Resource Sharing (CORS) for a specified website." or "My first real Three.js project."
+- Open with a sentence or two on what it is. e.g. "This is a simple proxy server that adds the necessary headers to allow Cross-Origin Resource Sharing (CORS) for a specified website." or "My first real Three.js project."
 - Link the live build if there is one: "Visit the [GitHub Pages site](...) to access the latest deployment."
-- Don't explain the entire architecture unless the project actually needs an architecture section.
-- Prefer documenting what somebody needs to run, use, understand, or modify the project.
-- Controls and usage should be short and direct: "Use W/S to increase or decrease throttle. Use A/D to roll. Press the escape key at any time to exit flight mode."
+- Controls and usage as short imperatives: "Use W/S to increase or decrease throttle. Use A/D to roll. Press the escape key at any time to exit flight mode."
 - State limits plainly: "Currently the maximum amount is 512." or "Note that large searches can take up to 15 seconds to process."
 - Small side notes can go on an h6 line: "###### Note: Assembly generator currently only supports integers"
-- Common sections are Usage or How to Use, Features, Local Installation, Known Issues & Limitations, Screenshots, and Credits, but only add them when they are useful.
-- Don't force every README into the same template.
-- Title Case headings. `&` is fine in titles.
+- Usual sections, only when there's something to put in them: Usage or How to Use, Features, Local Installation (numbered steps with the command in backticks), Known Issues & Limitations, Screenshots, Credits.
+- Title Case headings. "&" is fine in titles ("Solar System & Flight Simulator").
 - Backticks for buttons, keys, files, branches, and commands.
-- Keep it short. Most of my older READMEs were around 250 to 550 words. Bigger projects can be around 1,200 to 1,500, but don't aim for a word count if there isn't that much worth saying.
-- If a technical detail is easy to find by reading one function, it probably doesn't belong in the README.
-- A README can leave implementation details out. It does not need to prove that every part of the project was considered.
-
-## Technical docs
-
-- Technical docs can be more detailed than the README, but still shouldn't read like generated reference documentation.
-- Start from the reason the document exists, not from a desire to describe the whole system.
-- Don't automatically create one section per subsystem.
-- Don't walk through the entire pipeline in order unless understanding that sequence is the point of the document.
-- Mention source files where they are genuinely useful for finding the implementation, not after every paragraph.
-- Avoid exhaustive lists of thresholds, fallback rules, caches, data sources, and special cases unless those details are the subject of the document.
-- Examples and odd cases are often more useful than a complete formal description.
-- It's fine for a technical document to say "The rest is handled in `foo.ts`" rather than explaining every step.
-- Leave out details that are likely to become stale unless they are important enough to maintain.
-- Don't make the implementation sound more deliberate or formally designed than it really was.
+- Keep it short. Most of my older READMEs were 250 to 550 words, bigger projects around 1,200 to 1,500.
 
 ## Code comments
 
-- Keep comments sparse.
-- Only comment non-obvious logic, reasons behind a decision, edge cases, limitations, unusual behavior, or something another developer might be tempted to "fix".
-- Don't narrate straightforward code or restate the function name.
-- Don't add doc blocks just because a function is public.
-- Don't explain every branch of complicated code. Comment the weird part or the reason the code has to be complicated.
-- Fragments are fine.
-- Comments can sound like quick developer notes rather than miniature documentation paragraphs.
-- Good: `# Use WSL to run the commands if on Windows`
-- Good: `# If the input contains an equal sign, skip code generation`
-- Good: `// Keep this separate from the road union or tiny paths disappear`
-- Bad: `// This ensures that the road geometry is correctly processed before proceeding to the next stage.`
+- Sparse. Only for non-obvious logic, reasons behind a decision, edge cases, limitations, unusual behavior, or something another developer might be tempted to "fix".
+- Don't narrate straightforward code or restate the function name. Don't add doc blocks just to have them.
+- Short and plain, a fragment is fine. e.g. "# Use WSL to run the commands if on Windows" or "# If the input contains an equal sign, skip code generation"
 
-# Attribution
+## Attributes
 
-Never list Claude or any other AI tool as an author or co-author. Do not add `Co-Authored-By` trailers, "Generated with" lines, session links, or AI names to commits, pull requests, author fields, maintainer fields, or copyright notices.
-
-The user (`jarvisar`) is the sole author and should appear as the sole contributor on the GitHub repository.
+Never list Claude or any AI tool as an author or co-author: no `Co-Authored-By` trailers, "Generated with" lines or session links in commits or pull requests, and no AI names in author, maintainer or copyright fields. The user (jarvisar) is the sole author and should appear as the sole Contributor on the GitHub repository.

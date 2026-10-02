@@ -2,6 +2,7 @@ import { Box, PenTool } from 'lucide-react';
 import { ConfirmButton } from '../components/ConfirmButton';
 import { Segmented } from '../components/Segmented';
 import { resetAllSettings, setHelpOpen, setOutput, toast, useApp } from '../state/store';
+import { asChange, undoChange } from '../state/undo';
 import { CleanupPanel } from '../svgmap/CleanupPanel';
 import { DataPanel } from '../svgmap/DataPanel';
 import { LayersPanel as SvgLayersPanel } from '../svgmap/LayersPanel';
@@ -61,8 +62,8 @@ function ResetAll() {
       confirmingClass="is-danger"
       confirm="Click again to reset everything but the area and your edits"
       onConfirm={() => {
-        resetAllSettings();
-        toast('Settings, colours and export options are back to their defaults', 'info');
+        const step = asChange('Reset settings', resetAllSettings);
+        toast('Settings, colours and export options are back to their defaults', 'info', step ? { label: 'Undo', run: () => undoChange(step) } : undefined);
       }}
     >
       Reset all settings

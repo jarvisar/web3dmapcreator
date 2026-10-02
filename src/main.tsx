@@ -15,16 +15,18 @@ import { InstallPrompt } from './app/components/InstallPrompt';
 import { UpdateNotice } from './app/components/UpdateNotice';
 import { startEditSync } from './app/state/editActions';
 import { startSync } from './app/state/sync';
+import { quietly, startUndo } from './app/state/undo';
 import { loadStoredFont } from './app/svgmap/customFont';
 import { dropMissingFont, setCustomFont } from './app/state/store';
 import { fontFingerprint } from './core/svgmap/text/fonts';
 
+startUndo();
 startSync();
 startEditSync();
 
 void loadStoredFont().then((font) => {
   setCustomFont(font?.name ?? null, font ? fontFingerprint(font.data) : null);
-  dropMissingFont();
+  quietly(dropMissingFont);
 });
 
 createRoot(document.getElementById('root')!).render(

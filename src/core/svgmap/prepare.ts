@@ -104,6 +104,8 @@ export interface Prepared {
   missing: number;
   bytes: number;
   warnings: string[];
+  /** Buildings added from Overture, when that's turned on. */
+  overtureBuildings?: number;
 }
 
 export type TileData = Map<string, ArrayBuffer | null>;
@@ -119,18 +121,22 @@ interface WorldLine {
   flags: number;
 }
 
-// Synchronous, so run it in the worker.
-export function prepareArea(plan: TilePlan, layout: Layout, data: TileData): Prepared {
-  const { transform } = plan;
-  const window = layout.window;
-  const windowPoly = shapePolygon(window);
-  const [wx0, wy0, wx1, wy1] = bboxOf(windowPoly);
-  const clipRect = {
+/** The window's box in Clipper units, a unit larger all round. Polygons are cut to it. */
+export function windowClipRect(layout: Layout) {
+  const [wx0, wy0, wx1, wy1] = bboxOf(shapePolygon(layout.window));
+  return {
     left: Math.floor(wx0 * SCALE) - 1,
     top: Math.floor(wy0 * SCALE) - 1,
     right: Math.ceil(wx1 * SCALE) + 1,
     bottom: Math.ceil(wy1 * SCALE) + 1,
   };
+}
+
+// Synchronous, so run it in the worker.
+export function prepareArea(plan: TilePlan, layout: Layout, data: TileData): Prepared {
+  const { transform } = plan;
+  const windowPoly = shapePolygon(layout.window);
+  const clipRect = windowClipRect(layout);
   const lines: WorldLine[] = [];
   const polygons: PreparedPolygon[] = [];
   const aerowayLines: { path: Path; widthM: number }[] = [];

@@ -9,7 +9,7 @@ import { REPO_URL } from './TopBar';
 const STEPS = [
   {
     title: 'Choose an area',
-    text: 'Search for a place, pick a preset, or drag the box on the map. Drag a corner to resize it and the round handle to rotate it. Under Size, the lock next to the scale keeps it as it is. Unlock it to keep the printed size instead, so resizing the box changes the scale and a new scale resizes the box.',
+    text: 'Search for a place, pick a preset, or drag the box on the map. Drag a corner to resize it and the round handle to rotate it. Under Size, the lock next to the scale keeps it as it is. Unlock it to keep the printed size instead, so resizing the box changes the scale and a new scale resizes the box. Ctrl+Z undoes the last change to the area or the settings, like a move, a search or a dragged title, and Ctrl+Y redoes it. The arrows next to the logo do the same.',
   },
   {
     title: 'Pick what to make',
@@ -44,7 +44,7 @@ const EDIT_TIPS = [
   'The tools on the left add text, map pins, boxes and cylinders, or draw your own roads and buildings. A drawn line starts out as a road and a drawn outline as a building. Drag a selected shape to move it and the points of a drawn one to reshape it. Tap or click a point, then Delete point, to take it out.',
   "Everything you add is built down to what it stands on, so nothing floats: the ground, a roof or bridge you raised it onto, or the bottom of the water. Letters thinner than the nozzle prints well get a warning.",
   'Edits follow the map features, not the mesh, so they stay when you change settings and generate again. A copied share link carries them too, unless there are too many.',
-  'Keys while editing: V, M, T, P, B, C, L and A pick the tools. Delete removes the selection, F looks at it, [ and ] turn shapes and the arrow keys nudge them (with Shift for bigger steps). Ctrl+D duplicates, Ctrl+Z undoes and Ctrl+Shift+Z redoes. Enter finishes a road or outline, and Esc stops drawing or calls off a drag.',
+  'Keys while editing: V, M, T, P, B, C, L and A pick the tools. Delete removes the selection, F looks at it, [ and ] turn shapes and the arrow keys nudge them (with Shift for bigger steps). Ctrl+D duplicates. Ctrl+Z undoes an edit and Ctrl+Shift+Z redoes it, unless the focus is in the sidebar, where they undo settings. Enter finishes a road or outline, and Esc stops drawing or calls off a drag.',
 ];
 
 const SVG_TIPS = [

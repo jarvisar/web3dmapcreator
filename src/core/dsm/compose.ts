@@ -58,6 +58,13 @@ const UNFILED_SHARE = 0.5;
 // beach or a bank rises more than that within a few metres.
 const LEVEL_M = 0.2;
 const FLAT_REACH_M = 8;
+// With mapped water, empty cells this far from any return and outside it
+// are ground nobody surveyed, never water (see unseen).
+const UNSEEN_M = 20;
+// The most a body's upper water surface may stand over its level, and the
+// bodies that share theirs with others at their level (upperSurfaces).
+const TIDE_M = 1;
+const SHARED_M2 = 5000;
 // Without clutter, land standing alone in water smaller than this, no longer
 // than BOAT_M, with half of it no higher than BOAT_HIGH_M over the water (a
 // mast doesn't count), ground returns in under half of it and mostly not
@@ -808,6 +815,10 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
     }
   }
   if (!anyCandidate) return none;
+  if (mapped && filesWater) {
+    const out = unseen(count, mapped, nx, ny, Math.ceil(UNSEEN_M / Math.min(dx, dy)));
+    for (let i = 0; i < n; i++) if (out[i]) candidate[i] = 0;
+  }
   const region = label(candidate, nx, ny);
   const components = compactLabels(region);
   const sizes = new Int32Array(components);
@@ -883,7 +894,7 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
     else onGround[r] = near >= SHADOW_SHARE ? 1 : 0;
   }
   let fromMap = mapped ? mappedHoles(region, levels, onGround, shoreLow, mapped, nx, ny) : 0;
-
+  const upper = upperSurfaces(region, levels, area, top, waterZ, wetCount);
   let bodies = 0;
   for (let r = 0; r < regions; r++) if (levels[r] === levels[r]) bodies++;
   let cells = 0;
@@ -915,11 +926,11 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
   }
   const localReturns = boxMean(wetReturns, nx, ny, SURFACE_REACH);
   const localWet = boxMean(wetOnes, nx, ny, SURFACE_REACH);
-  const surface = (j: number, z: number) => {
+  // Unfiled, from GROW_M under the body's level to SURFACE_M over its upper surface.
+  const surface = (j: number, r: number) => {
     const g = layers.ground[j];
-    const above = top[j] - z;
     const usual = localWet[j] > 0 ? localReturns[j] / localWet[j] : 1;
-    return layers.water[j] === 0 && g !== g && !layers.building[j] && !layers.vegetation[j] && count[j] <= 2 * Math.max(1, usual) && above <= SURFACE_M && above >= -GROW_M;
+    return layers.water[j] === 0 && g !== g && !layers.building[j] && !layers.vegetation[j] && count[j] <= 2 * Math.max(1, usual) && top[j] - upper[r] <= SURFACE_M && top[j] - levels[r] >= -GROW_M;
   };
   // How far the tops within FLAT_REACH_M spread, holes left out.
   const reach = Math.max(1, Math.round(FLAT_REACH_M / Math.min(dx, dy)));
@@ -953,7 +964,8 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
       const j = d === 0 ? (x > 0 ? i - 1 : -1) : d === 1 ? (x + 1 < nx ? i + 1 : -1) : d === 2 ? i - nx : i + nx;
       if (j < 0 || j >= n || water[j]) continue;
       const empty = mapped !== undefined && mapped[j] === 1 && count[j] === 0;
-      if (!empty && !(layers.water[j] > 0 && Math.abs(top[j] - z) <= GROW_M) && !(open[r] && surface(j, z)) && !filedAsGround(j, z)) continue;
+      const wet = layers.water[j] > 0 && top[j] - z >= -GROW_M && top[j] - upper[r] <= GROW_M;
+      if (!empty && !wet && !(open[r] && surface(j, r)) && !filedAsGround(j, z)) continue;
       if (z - ground[j] > RAISED_WATER_M) continue;
       water[j] = 1;
       region[j] = r;
@@ -976,7 +988,7 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
     for (const j of [x > 0 ? i - 1 : -1, x + 1 < nx ? i + 1 : -1, i - nx, i + nx]) {
       if (j < 0 || j >= n || water[j]) continue;
       edge[r]++;
-      if (surface(j, levels[r])) unfiled[r]++;
+      if (surface(j, r)) unfiled[r]++;
     }
   }
   head = 0;
@@ -989,6 +1001,60 @@ function findWater(layers: SurfaceLayers, ground: Float32Array, dx: number, dy: 
   const level = new Float32Array(cells + grown);
   for (let i = 0, k = 0; i < n; i++) if (water[i]) level[k++] = levels[region[i]];
   return { water, shadow, level, bodies, grown, fromMap };
+}
+
+/**
+ * Not in the add-on: the highest water surface of each body, for growing it.
+ * Flight lines can be flown at different tides. The 2021 Miami-Dade survey
+ * reads Biscayne Bay at -0.5 and +0.1 m, files one of them as water and much
+ * of the other as unclassified, and with growth held to one level per body
+ * the upper surface stayed land, in flat sheets of hundreds of m². A body's
+ * own is the high tenth of the tops of its cells with water returns. Bodies
+ * at one level are one sea or river seen at the same tides, so each also
+ * takes the upper surface of those over SHARED_M2 at its level: the small
+ * ones mostly hold one of them. At most TIDE_M over the level.
+ */
+function upperSurfaces(region: Int32Array, levels: Float64Array, area: number[], top: Float32Array, waterZ: Float32Array, wetCount: Int32Array): Float64Array {
+  const regions = levels.length;
+  const start = offsets(wetCount);
+  const tops = new Float32Array(start[regions]);
+  const at = start.slice();
+  for (let i = 0; i < region.length; i++) if (region[i] >= 0 && waterZ[i] === waterZ[i]) tops[at[region[i]]++] = top[i] === top[i] ? top[i] : waterZ[i];
+  const own = new Float64Array(regions).fill(NaN);
+  for (let r = 0; r < regions; r++) {
+    if (levels[r] !== levels[r]) continue;
+    const list = tops.subarray(start[r], start[r + 1]).sort();
+    own[r] = list.length ? Math.max(levels[r], list[Math.floor(0.9 * (list.length - 1))]) : levels[r];
+  }
+  const large: number[] = [];
+  for (let r = 0; r < regions; r++) if (own[r] === own[r] && area[r] >= SHARED_M2) large.push(r);
+  const upper = new Float64Array(regions).fill(NaN);
+  for (let r = 0; r < regions; r++) {
+    if (own[r] !== own[r]) continue;
+    let high = own[r];
+    for (const q of large) if (Math.abs(levels[q] - levels[r]) <= GROW_M) high = Math.max(high, own[q]);
+    upper[r] = Math.min(high, levels[r] + TIDE_M);
+  }
+  return upper;
+}
+
+/**
+ * Not in the add-on: empty cells outside mapped water and more than `r`
+ * cells from any return, and the empty cells within `r` of those. That's
+ * ground no survey read reached, not water that returned nothing, and as a
+ * hole it joined whatever water it touched: a strip of downtown Miami
+ * outside every survey read printed as part of the Miami River.
+ */
+function unseen(count: Uint16Array, mapped: Uint8Array, nx: number, ny: number, r: number): Uint8Array {
+  const n = nx * ny;
+  const seen = new Uint8Array(n);
+  for (let i = 0; i < n; i++) seen[i] = count[i] > 0 ? 1 : 0;
+  const near = dilate(seen, nx, ny, r);
+  const far = new Uint8Array(n);
+  for (let i = 0; i < n; i++) far[i] = near[i] || mapped[i] ? 0 : 1;
+  const out = dilate(far, nx, ny, r + 1);
+  for (let i = 0; i < n; i++) out[i] &= count[i] === 0 && !mapped[i] ? 1 : 0;
+  return out;
 }
 
 /**

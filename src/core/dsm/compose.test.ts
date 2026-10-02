@@ -686,3 +686,66 @@ describe('rules', () => {
     expect(filled[4 * 8 + 4]).toBeLessThanOrEqual(3);
   });
 });
+
+// Not in the add-on.
+describe('water at two tides', () => {
+  it('takes the upper surface of a bay read at two tides, but not a boat on it', () => {
+    // The south half filed as water at the low tide, a fifth of it read at the
+    // high tide 0.6 m up. The north of the bay has water returns at the low
+    // tide and the rest of its returns at the high one, unclassified, and a
+    // boat 1.5 m up.
+    const nx = 100;
+    const layers = blank(100, nx);
+    const level = GROUND - 2;
+    for (let r = 0; r < 60; r++) {
+      for (let c = 0; c < nx; c++) {
+        const i = r * nx + c;
+        const high = r >= 30 || c % 5 === 0;
+        layers.count[i] = r < 30 ? 2 : 3;
+        layers.water[i] = r < 30 ? 2 : 1;
+        layers.top[i] = layers.solid[i] = high ? level + 0.6 : level;
+        layers.waterZ[i] = r < 30 && high ? level + 0.6 : level;
+        layers.ground[i] = NaN;
+      }
+    }
+    fill(layers.top, nx, 40, 44, 40, 50, level + 1.5);
+    fill(layers.solid, nx, 40, 44, 40, 50, level + 1.5);
+    const result = compose(layers, CELL, CELL, 1, 1, { removeClutter: false });
+    expect(at(result.water, nx, 50, 20)).toBe(1);
+    expect(at(result.water, nx, 42, 45)).toBe(0);
+    expect(result.counts.water_grown_cells).toBe(30 * nx - 4 * 10);
+    // The bay keeps its lowest level.
+    expect(at(result.heights, nx, 50, 20)).toBeCloseTo(at(result.heights, nx, 10, 1), 6);
+  });
+});
+
+// Not in the add-on.
+describe('ground no survey reached', () => {
+  // A river filed as water along the south, and the west third of the area
+  // outside the survey: no returns at all, touching the river.
+  function edge(): SurfaceLayers {
+    const nx = 150;
+    const layers = blank(120, nx);
+    for (const layer of [layers.count, layers.water]) fill(layer, nx, 0, 20, 0, nx, 2);
+    for (const layer of [layers.top, layers.solid, layers.waterZ]) fill(layer, nx, 0, 20, 0, nx, GROUND - 2);
+    fill(layers.ground, nx, 0, 20, 0, nx, NaN);
+    fill(layers.count, nx, 0, 120, 0, 50, 0);
+    fill(layers.water, nx, 0, 120, 0, 50, 0);
+    for (const layer of [layers.top, layers.solid, layers.ground, layers.waterZ]) fill(layer, nx, 0, 120, 0, 50, NaN);
+    return layers;
+  }
+
+  it('is land beside the river where mapped water says so', () => {
+    // Without map water it joins the river as one hole, as it did.
+    const without = compose(edge(), CELL, CELL, 1, 1);
+    expect(at(without.water, 150, 80, 10)).toBe(1);
+    const mapped = shape(150, 120, (r) => r < 20);
+    const result = compose(edge(), CELL, CELL, 1, 1, {}, undefined, mapped);
+    expect(at(result.water, 150, 80, 10)).toBe(0);
+    expect(at(result.water, 150, 80, 45)).toBe(0);
+    // The river runs on out of the survey where the map has it.
+    expect(at(result.water, 150, 10, 10)).toBe(1);
+    expect(at(result.water, 150, 10, 100)).toBe(1);
+    expect(at(result.heights, 150, 80, 10)).toBeGreaterThan(at(result.heights, 150, 10, 100));
+  });
+});

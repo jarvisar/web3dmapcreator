@@ -162,6 +162,28 @@ describe('pruneStruct and planRead', () => {
     expect(water.columns).toContain('names');
   });
 
+  it('prunes a struct inside a list', () => {
+    const sources = parquetSchema(building).children.find((c) => c.element.name === 'sources')!;
+    const path = ['sources', sources.children[0].element.name, sources.children[0].children[0].element.name];
+    const pruned = pruneStruct(building, path, ['dataset']);
+    const leaves = (m: FileMetaData) => m.row_groups[0].columns.map((c) => c.meta_data?.path_in_schema.join('.'));
+    expect(leaves(pruned).filter((p) => p?.startsWith('sources'))).toEqual([`${path.join('.')}.dataset`]);
+    expect(leaves(building).filter((p) => p?.startsWith('sources'))).toHaveLength(2);
+    const element = parquetSchema(pruned).children.find((c) => c.element.name === 'sources')!.children[0].children[0];
+    expect(element.children.map((c) => c.element.name)).toEqual(['dataset']);
+    // Leaves outside the struct are untouched.
+    expect(leaves(pruned).filter((p) => !p?.startsWith('sources'))).toEqual(leaves(building).filter((p) => !p?.startsWith('sources')));
+  });
+
+  it('reads the columns asked for in place of the usual ones', () => {
+    const plan = planRead(building, 'building', AREA, ['sources', 'is_underground', 'not_a_column']);
+    expect(plan.columns).toEqual(['id', 'geometry', 'bbox', 'sources', 'is_underground']);
+    // record_id is pruned away, dataset kept.
+    const leaves = plan.metadata.row_groups[0].columns.map((c) => c.meta_data!.path_in_schema);
+    expect(leaves.filter((p) => p[0] === 'sources').map((p) => p[p.length - 1])).toEqual(['dataset']);
+    expect(plan.bytes).toBeLessThan(planRead(building, 'building', AREA).bytes);
+  });
+
   it('refuses a file without geometry', () => {
     const metadata = { ...building, schema: building.schema.map((e) => (e.name === 'geometry' ? { ...e, name: 'shape' } : e)) };
     expect(() => planRead(metadata, 'building', AREA)).toThrow(/no geometry column/);
@@ -529,6 +551,25 @@ describe('fetchOverture (offline)', () => {
     const last = pages.pages[2];
     const geometryReads = mock.requests.slice(secondPass).filter((r) => r.url === FILES.buildingA);
     expect(geometryReads.map((r) => r.range)).toEqual([[last.offset, last.offset + last.size]]);
+  });
+
+  it('reads other columns when asked, and the filter sees them', async () => {
+    vi.stubGlobal('fetch', server().fetch);
+    const seen: unknown[] = [];
+    const data = await fetchOverture({
+      bounds: AREA,
+      types: ['building'],
+      release: 'test',
+      columns: { building: ['sources'] },
+      keep: (_type, props) => {
+        seen.push(props.sources);
+        return props.sources === undefined;
+      },
+    });
+    expect(seen).toContainEqual([{ dataset: 'OpenStreetMap' }]);
+    // Only "multi" has no sources.
+    expect(data.features.building.map((f) => f.id)).toEqual(['multi']);
+    expect(data.features.building[0].props).toEqual({});
   });
 
   it('reads the same features page by page as whole chunks', async () => {

@@ -314,9 +314,9 @@ else fail(`finishing a path showed "${await title()}"`);
 await clearSelection();
 
 // Undo and redo from the toolbar.
-await page.getByRole('button', { name: /^Undo/ }).first().click();
+await page.getByRole('button', { name: /^Undo edit/ }).click();
 await wait(500);
-await page.getByRole('button', { name: /^Redo/ }).first().click();
+await page.getByRole('button', { name: /^Redo edit/ }).click();
 await wait(1500);
 
 if (!phone) {

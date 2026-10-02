@@ -46,6 +46,7 @@ import {
 import { fileBase, generationProblem, hiddenDownloadParts, modelSize } from '../state/derived';
 import { currentEditState, getEditData, getModelParts, onEditUpdate } from '../state/model';
 import { setHiddenParts, setShowBed, setShownBounds, toast, togglePartHidden, useApp, type EditTool } from '../state/store';
+import { editorTakesUndo } from '../state/undo';
 import { describeCounts, describeKey } from './edit/describe';
 import { EditToolbar, TOOLS } from './edit/EditToolbar';
 import { Inspector } from './edit/Inspector';
@@ -250,6 +251,8 @@ export default function ModelView({ active }: { active: boolean }) {
       const keys = state.ui.selection;
       const ctrl = event.ctrlKey || event.metaKey;
       const key = event.key;
+      // From the sidebar they undo the settings (undo.ts).
+      if (ctrl && /^[zy]$/i.test(key) && !editorTakesUndo()) return;
       if (ctrl && key.toLowerCase() === 'z') {
         event.preventDefault();
         if (event.shiftKey) redoEdit();

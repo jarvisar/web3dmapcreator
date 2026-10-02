@@ -39,4 +39,19 @@ describe.skipIf(!network)('live render', () => {
       expect(result.warnings.filter((w) => w.includes('could not be downloaded'))).toEqual([]);
     });
   }
+
+  // OSM has a few hundred buildings here and Overture thousands of ML ones.
+  it('adds the buildings OSM lacks from Overture', { timeout: 180_000 }, async () => {
+    const settings = defaultRenderSettings('laser');
+    settings.area = { lon: -99.063, lat: 19.357, bearing: 0, widthM: 1500 };
+    const off = await renderTo('iztapalapa-osm', settings);
+    settings.source = { ...settings.source, overtureBuildings: true };
+    const on = await renderTo('iztapalapa-overture', settings);
+    console.log('Overture buildings', on.ms, 'ms', on.result.stats.overtureBuildings, on.result.warnings);
+    const area = (r: typeof on) => r.result.groups.find((g) => g.id === 'buildings')!.areaMm2;
+    expect(on.result.warnings).toEqual([]);
+    expect(on.result.stats.overtureBuildings).toBeGreaterThan(1000);
+    expect(area(on)).toBeGreaterThan(2 * area(off));
+    expect(on.svg).toContain('Overture Maps Foundation');
+  });
 });

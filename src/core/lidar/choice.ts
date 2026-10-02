@@ -3,7 +3,7 @@
 // reach and a model never has a hole because of the choice.
 
 import { staged, surveyYear } from './offers';
-import { surveyDensity, type Ranked } from './ranking';
+import { coverageShare, surveyDensity, type Ranked } from './ranking';
 import type { Candidate, Format } from './sources';
 
 /** A survey found over an area, for picking one. */
@@ -36,7 +36,7 @@ export function surveyChoice(r: Ranked, note?: string | null): SurveyChoice {
     densityM2: surveyDensity(r) ?? undefined,
     fillsM: r.probe?.cell,
     format: c.format,
-    coverage: Math.min(1, r.catalogCoverage),
+    coverage: Math.min(1, coverageShare(r)),
     staged: staged(c),
     ...(note ? { note } : {}),
   };

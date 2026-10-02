@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { crsFromEpsg, lonLatTransforms } from './crs';
-import { eptDensity, landDensity } from './density';
+import { eptDensity, eptPresence, landDensity } from './density';
 import type { Fetcher } from './fetcher';
 
 const mercator = lonLatTransforms(crsFromEpsg(3857));
@@ -56,5 +56,40 @@ describe('landDensity', () => {
     expect(landDensity([10, 12, 0.5, 0, 11, 9])).toBeCloseTo(10.5, 6);
     expect(landDensity([0, 0, 0, 0])).toBe(null);
     expect(landDensity([5, 5])).toBe(null);
+  });
+});
+
+describe('eptPresence', () => {
+  // A 256 m cube at the equator, so 32 m columns are nodes three levels down.
+  // Points in the west half to that depth, and a leaf two levels down over
+  // the north-east quarter that says nothing about where in it they are.
+  const presence = 'https://example.com/presence/';
+  const pages: Record<string, Record<string, number>> = {
+    [`${presence}ept-hierarchy/0-0-0-0.json`]: { '0-0-0-0': 1000, '1-0-0-0': 1000, '1-0-1-0': 1000, '1-1-1-0': 1000, '2-0-0-0': -1 },
+    [`${presence}ept-hierarchy/2-0-0-0.json`]: { '2-0-0-0': 10 },
+  };
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 8; j++) {
+
+      const node = `3-${i}-${j}-0`;
+      pages[`${presence}ept-hierarchy/0-0-0-0.json`][`2-${i >> 1}-${j >> 1}-0`] ??= 100;
+      pages[`${presence}ept-hierarchy/0-0-0-0.json`][node] = 10;
+
+    }
+  }
+  const fetcher = {
+    async json(url: string) {
+      if (url === `${presence}ept.json`) return { bounds: [0, 0, 0, 256, 256, 256], span: 128, dataType: 'laszip', hierarchyType: 'json', srs: { horizontal: '3857' } };
+      if (!(url in pages)) throw new Error(`404 ${url}`);
+      return pages[url];
+    },
+  } as unknown as Fetcher;
+
+  it('counts the columns with points, and a leaf above them for all it covers', async () => {
+    // The west half (16 of 64 columns are the north-east leaf).
+    expect(await eptPresence(fetcher, `${presence}ept.json`, box(0, 0, 256, 256))).toBeCloseTo(0.75, 6);
+    expect(await eptPresence(fetcher, `${presence}ept.json`, box(0, 0, 128, 128))).toBe(1);
+    // The south-east quarter has nothing.
+    expect(await eptPresence(fetcher, `${presence}ept.json`, box(160, 0, 256, 96))).toBe(0);
   });
 });

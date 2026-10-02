@@ -44,11 +44,15 @@ export function NumberInput({
   const shown = value * scale;
   const [text, setText] = useState(() => formatNumber(shown, decimals));
   const focused = useRef(false);
+  const typed = useRef(false);
   // What the field held when it was focused, for Escape.
   const before = useRef(value);
 
+  // Focused but not typed in, it still follows the value, which an undo can change.
   useEffect(() => {
-    if (!focused.current) setText(formatNumber(value * scale, decimals));
+    if (focused.current && typed.current) return;
+    setText(formatNumber(value * scale, decimals));
+    if (focused.current) before.current = value;
   }, [value, scale, decimals]);
 
   function commit(next: number) {
@@ -76,6 +80,7 @@ export function NumberInput({
     if (event.key === 'Enter') {
       // Enter settles the value, so Escape after it has nothing to put back.
       before.current = finish();
+      typed.current = false;
       return;
     }
     if (event.key === 'Escape') {
@@ -83,6 +88,7 @@ export function NumberInput({
       event.preventDefault();
       if (before.current !== value) onChange(before.current);
       setText(formatNumber(before.current * scale, decimals));
+      typed.current = false;
       return;
     }
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
@@ -93,6 +99,7 @@ export function NumberInput({
     const stepped = Math.round((base + delta) / step) * step;
     const committed = commit(stepped);
     setText(formatNumber(committed, decimals));
+    typed.current = false;
   }
 
   return (
@@ -109,6 +116,7 @@ export function NumberInput({
         aria-describedby={[describedBy, unit ? unitId : null].filter(Boolean).join(' ') || undefined}
         onFocus={(event) => {
           focused.current = true;
+          typed.current = false;
           before.current = value;
           event.currentTarget.select();
         }}
@@ -117,6 +125,7 @@ export function NumberInput({
           finish();
         }}
         onChange={(event) => {
+          typed.current = true;
           setText(event.target.value);
           const parsed = parseDecimal(event.target.value);
           if (parsed !== null && parsed >= min && parsed <= max) onChange(parsed / scale);

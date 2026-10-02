@@ -19,6 +19,8 @@ This is the web version of my Blender add-on. It runs the same generation rules,
 
 Open the 3MF in Bambu Studio with `File > Open Project`. Every part already has its filament, so check the filaments against what's loaded in your AMS, recalculate the flushing volumes and slice. For other slicers, pick a PrusaSlicer project, a 3MF with colours or an STL zip under `Export`.
 
+`Ctrl+Z` undoes the last change to the area or the settings, like a move, a preset or a dragged SVG title, and `Ctrl+Y` redoes it. The arrows next to the logo do the same. It only remembers changes made since the page was opened.
+
 `Copy share link` copies a link that opens the same area. For an SVG map it carries the SVG settings too.
 
 `Export options` and `Import options` at the bottom of the settings save and restore a JSON file. Leave `Include map area` checked to restore the whole setup, or uncheck it to reuse the options at another location. Custom font files are separate.
@@ -34,7 +36,7 @@ Press the pencil at the top right of the 3D view to change the model before down
 - Add text, map pins, boxes and cylinders, or draw your own roads and buildings. A drawn line starts out as a road and a drawn outline as a building, and either can take any colour. Everything added is built down to what it stands on: the ground, or a roof or bridge you raised it onto. In water it goes down through the water to the bottom.
 - Drag the points of a drawn road or outline to reshape it. Tap or click a point, then `Delete point`, to take it out.
 
-Edits follow the map features, not the mesh, so they stay when you change settings and generate again. They're saved in the browser, in exported options when the map area is included, and in a copied share link unless there are too many for one. A link only carries the ones on its area. `Ctrl+Z` undoes, and Help lists the other keys.
+Edits follow the map features, not the mesh, so they stay when you change settings and generate again. They're saved in the browser, in exported options when the map area is included, and in a copied share link unless there are too many for one. A link only carries the ones on its area. `Ctrl+Z` undoes an edit while the editor is open, and Help lists the other keys.
 
 ### SVG Maps
 
@@ -113,7 +115,7 @@ Pushing to `main` deploys the site with GitHub Actions. Set `Settings > Pages > 
 - In a big city the first road edit takes about a second, since the roads are cut into tiles then. The editor shows `Updating the model` while it works.
 - The model is made of separate overlapping parts, one per colour. Slicers join them, but other tools may report them as intersecting.
 - The Bambu Studio project is tested in Bambu Studio 2.8. It hasn't been tested in OrcaSlicer.
-- SVG maps are drawn from OpenFreeMap's vector tiles, not the Overture data the models use, so the two can differ a little.
+- SVG maps are drawn from OpenFreeMap's vector tiles, not the Overture data the models use, so the two can differ a little. Where OpenStreetMap is missing buildings, like a lot of Mexico City or the outskirts of São Paulo, turn on `Add missing buildings from Overture` under `Map data`. It's off by default since it's a second download.
 - An SVG map that needs more than 400 tiles uses less detailed ones, so small features can go missing. A city centre at 1:20,000 needs 4 to 12. The limit can be raised to 2000 under `Map data`.
 - Areas that cross the 180th meridian, or come within 25 m of it, aren't supported.
 

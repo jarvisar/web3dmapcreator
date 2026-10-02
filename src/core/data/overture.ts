@@ -83,8 +83,13 @@ export const OVERTURE_COLUMNS: Record<OvertureType, readonly string[]> = {
 
 // Struct columns read only in part. names.common and names.rules hold the
 // translations and can outweigh the primary name many times. Land cover's
-// zoom range picks its detailed polygons (isDetailedCover).
-const STRUCT_CHILDREN: Record<string, readonly string[]> = { names: ['primary'], cartography: ['min_zoom', 'max_zoom'] };
+// zoom range picks its detailed polygons (isDetailedCover). Sources are a list
+// of structs, and record_id is most of their bytes.
+const STRUCT_CHILDREN: Record<string, readonly string[]> = {
+  names: ['primary'],
+  cartography: ['min_zoom', 'max_zoom'],
+  sources: ['property', 'dataset'],
+};
 
 // Footer bytes per row group in release 2026-09-23.1, rounded up. hyparquet
 // fetches the rest when a guess is short, which costs one more request.
@@ -182,6 +187,8 @@ export interface FetchOvertureOptions {
    * feature's final props.
    */
   keep?: OvertureFilter;
+  /** Columns to read for a type in place of its OVERTURE_COLUMNS. */
+  columns?: Partial<Record<OvertureType, readonly string[]>>;
   /** Default MAX_TYPE_BYTES. */
   maxTypeBytes?: number;
   /** Default MAX_TOTAL_BYTES. */
@@ -517,38 +524,44 @@ function subtreeEnd(schema: readonly SchemaElement[], index: number): number {
   return end;
 }
 
+function startsWith(path: readonly string[], prefix: readonly string[]): boolean {
+  return prefix.every((name, i) => path[i] === name);
+}
+
 /**
- * Metadata that shows only the `keep` children of a top-level struct column.
- * hyparquet selects whole top-level columns, and this is how it reads, say,
- * names.primary without names.common and names.rules.
+ * Metadata that shows only the `keep` children of a struct column. `path`
+ * is a top-level struct's name, or the path down to a struct inside a list
+ * (`['sources', 'list', 'element']`). hyparquet selects whole top-level
+ * columns, and this is how it reads, say, names.primary without
+ * names.common and names.rules.
  */
-export function pruneStruct(metadata: FileMetaData, column: string, keep: readonly string[]): FileMetaData {
+export function pruneStruct(metadata: FileMetaData, path: string | readonly string[], keep: readonly string[]): FileMetaData {
+  const target = typeof path === 'string' ? [path] : path;
   const { schema } = metadata;
   const out: SchemaElement[] = [schema[0]];
-  for (let i = 1; i < schema.length; ) {
-    const end = subtreeEnd(schema, i);
-    if (schema[i].name === column && schema[i].num_children) {
-      const kept: SchemaElement[] = [];
-      let children = 0;
-      for (let j = i + 1; j < end; ) {
-        const childEnd = subtreeEnd(schema, j);
-        if (keep.includes(schema[j].name)) {
-          kept.push(...schema.slice(j, childEnd));
-          children++;
-        }
-        j = childEnd;
-      }
-      out.push({ ...schema[i], num_children: children }, ...kept);
-    } else {
-      for (let j = i; j < end; j++) out.push(schema[j]);
+  const copy = (from: number, prefix: string[]) => {
+    const element = schema[from];
+    const at = [...prefix, element.name];
+    const end = subtreeEnd(schema, from);
+    if (!startsWith(target, at)) {
+      for (let j = from; j < end; j++) out.push(schema[j]);
+      return end;
     }
-    i = end;
-  }
+    const children: number[] = [];
+    for (let j = from + 1; j < end; j = subtreeEnd(schema, j)) {
+      if (at.length < target.length || keep.includes(schema[j].name)) children.push(j);
+    }
+    out.push(at.length === target.length ? { ...element, num_children: children.length } : element);
+    for (const child of children) copy(child, at);
+    return end;
+  };
+  for (let i = 1; i < schema.length; ) i = copy(i, []);
+  const depth = target.length;
   const row_groups = metadata.row_groups.map((group) => ({
     ...group,
     columns: group.columns.filter((chunk) => {
-      const path = chunk.meta_data?.path_in_schema;
-      return !path || path[0] !== column || keep.includes(path[1]);
+      const leaf = chunk.meta_data?.path_in_schema;
+      return !leaf || !startsWith(leaf, target) || leaf.length <= depth || keep.includes(leaf[depth]);
     }),
   }));
   return { ...metadata, schema: out, row_groups };
@@ -558,12 +571,26 @@ function isMap(element: SchemaElement): boolean {
   return element.converted_type === 'MAP' || element.logical_type?.type === 'MAP';
 }
 
+// A LIST annotated column, or the repeated group inside one.
+function isList(node: { element: SchemaElement }): boolean {
+  const { element } = node;
+  return element.converted_type === 'LIST' || element.logical_type?.type === 'LIST' || element.repetition_type === 'REPEATED';
+}
+
 function geometryChunk(group: RowGroup): ColumnMetaData | undefined {
   return group.columns.find((chunk) => chunk.meta_data?.path_in_schema[0] === 'geometry')?.meta_data;
 }
 
-/** Which columns and row groups of one file to read for `type` within `bounds`. */
-export function planRead(metadata: FileMetaData, type: OvertureType, bounds: GeoBounds): ReadPlan {
+/**
+ * Which columns and row groups of one file to read for `type` within `bounds`.
+ * `wanted` replaces the type's usual OVERTURE_COLUMNS.
+ */
+export function planRead(
+  metadata: FileMetaData,
+  type: OvertureType,
+  bounds: GeoBounds,
+  wanted: readonly string[] = OVERTURE_COLUMNS[type],
+): ReadPlan {
   const top = new Map(parquetSchema(metadata).children.map((child) => [child.element.name, child]));
   for (const name of BASE_COLUMNS) {
     if (!top.has(name)) throw new Error(`the file has no ${name} column`);
@@ -571,14 +598,21 @@ export function planRead(metadata: FileMetaData, type: OvertureType, bounds: Geo
   let pruned = metadata;
   const columns: string[] = [];
   const mapColumns = new Set<string>();
-  for (const name of [...BASE_COLUMNS, ...OVERTURE_COLUMNS[type]]) {
-    const node = top.get(name);
+  for (const name of [...BASE_COLUMNS, ...wanted]) {
+    let node = top.get(name);
     if (!node || columns.includes(name)) continue;
-    const wanted = STRUCT_CHILDREN[name];
-    if (wanted) {
-      const present = node.children.map((child) => child.element.name).filter((child) => wanted.includes(child));
+    const children = STRUCT_CHILDREN[name];
+    if (children) {
+      // Down through a list to the struct it holds.
+      const path = [name];
+      while (node.children.length === 1 && node.children[0].children.length > 0 && isList(node)) {
+        node = node.children[0];
+        path.push(node.element.name);
+      }
+      const present = node.children.map((child) => child.element.name).filter((child) => children.includes(child));
       if (!present.length) continue;
-      pruned = pruneStruct(pruned, name, present);
+      pruned = pruneStruct(pruned, path, present);
+      node = top.get(name)!;
     }
     columns.push(name);
     if (isMap(node.element)) mapColumns.add(name);
@@ -911,6 +945,7 @@ async function openFile(
   type: OvertureType,
   file: IndexedFile,
   bounds: GeoBounds,
+  columns: readonly string[] | undefined,
   signal: AbortSignal,
   tracker: Tracker,
 ): Promise<OpenFile> {
@@ -922,7 +957,7 @@ async function openFile(
       fresh: remoteFile(file.href, size, { signal, onBytes, refresh: true }),
     };
     const plan = await withFreshRetry(files, signal, async (buffer) =>
-      planRead(await parquetMetadataAsync(buffer, { initialFetchSize: footerGuess(type, file, size) }), type, bounds),
+      planRead(await parquetMetadataAsync(buffer, { initialFetchSize: footerGuess(type, file, size) }), type, bounds, columns),
     );
     return { type, file, ...files, plan, flatGeometry: isFlat(plan.metadata, 'geometry') };
   } catch (error) {
@@ -1119,7 +1154,7 @@ export async function fetchOverture(options: FetchOvertureOptions): Promise<Over
     }
     tracker.expectMore(footers);
     tracker.say('Finding the data for this area');
-    const opened = await Promise.all(selected.map(({ type, file }) => openFile(type, file, bounds, signal, tracker)));
+    const opened = await Promise.all(selected.map(({ type, file }) => openFile(type, file, bounds, options.columns?.[type], signal, tracker)));
 
     // Footers, every first-pass chunk and the geometry planned so far never
     // exceed the final plan, so an area over budget on those alone is refused

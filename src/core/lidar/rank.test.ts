@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { chosenFirst } from './choice';
-import { effectiveCell, orderSurveys, pickNote, rankSurveys, type Ranked, type SurveyProbe, type SurveyRules } from './ranking';
+import { coverageShare, coverTier, effectiveCell, orderSurveys, pickNote, rankSurveys, type Ranked, type SurveyProbe, type SurveyRules } from './ranking';
 import { workUnitYear } from './sources/usgs';
 import type { Candidate } from './sources';
 
@@ -122,6 +122,21 @@ describe('rankSurveys', () => {
     const tier = (r: Ranked) => (r.catalogCoverage >= 0.99 ? 0 : 1);
     const ranked = rankSurveys([partial, whole], balanced(0.25), (x, y) => tier(x) - tier(y), (x, y) => tier(x) === tier(y));
     expect(names(ranked)).toEqual(['whole', 'partial']);
+  });
+});
+
+describe('coverTier', () => {
+  it('puts the surveys whose outlines cover about as much of the area as any first', () => {
+    // Downtown Miami: the 2019 survey's outline holds it all and its points 87%,
+    // the 2021 county survey's outline stops short of a corner of the bay.
+    const keys = { ...survey('keys', 2019, 30), measuredCoverage: 0.87 };
+    const county = { ...survey('county', 2021, 77), catalogCoverage: 0.97, measuredCoverage: 0.966 };
+    const strip = { ...survey('strip', 2017, 27), catalogCoverage: 0.56 };
+    expect([keys, county, strip].map(coverTier([keys, county, strip]))).toEqual([0, 0, 1]);
+    // With nothing covering it all, the ones covering the most.
+    expect([county, strip].map(coverTier([county, strip]))).toEqual([0, 1]);
+    // The list shows where they have points.
+    expect([keys, county, strip].map(coverageShare)).toEqual([0.87, 0.966, 0.56]);
   });
 });
 

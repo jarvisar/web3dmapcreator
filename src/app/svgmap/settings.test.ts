@@ -137,6 +137,14 @@ describe('SVG settings', () => {
     expect(merged.cleanup).toEqual(defaultSvgSettings().cleanup);
   });
 
+  it('keeps Overture buildings off for settings saved before the option', () => {
+    const old = mergeSettings(defaultSvgSettings(), { source: { tiles: 'https://tiles.example/{z}/{x}/{y}.pbf', maxZoom: 14, maxTiles: 50 } });
+    expect(old.source).toEqual({ tiles: 'https://tiles.example/{z}/{x}/{y}.pbf', maxZoom: 14, maxTiles: 50, overtureBuildings: false });
+    expect(mergeSettings(defaultSvgSettings(), { source: { overtureBuildings: 'yes' } }).source.overtureBuildings).toBe(false);
+    expect(mergeSettings(defaultSvgSettings(), { source: { overtureBuildings: true } }).source.overtureBuildings).toBe(true);
+    expect(toRenderSettings(engineArea, mergeSettings(defaultSvgSettings(), { source: { overtureBuildings: true } })).source.overtureBuildings).toBe(true);
+  });
+
   it('drops values of the wrong type and keys it does not know', () => {
     const merged = mergeSettings(defaultSvgSettings(), {
       product: { width: 'wide', height: 200 },
@@ -284,6 +292,8 @@ describe('share links', () => {
     settings.styles.print.background = null;
     settings.scaleLocked = false;
     expect(decodeSvgSettings(encodeSvgSettings(settings))!.svg).toEqual(settings);
+    settings.source.overtureBuildings = true;
+    expect(decodeSvgSettings(encodeSvgSettings(settings))!.svg.source.overtureBuildings).toBe(true);
   });
 
   it('only hold what changed', () => {

@@ -127,6 +127,101 @@ export async function eptDensity(fetcher: Fetcher, url: string, box: GeoBounds, 
   return landDensity(densities);
 }
 
+// Presence is judged in about this many columns along the area's longer
+// side, and never finer than PRESENCE_MIN_M.
+const PRESENCE_COLUMNS = 40;
+const PRESENCE_MIN_M = 32;
+
+/**
+ * The share of `box` an EPT has points in, from its hierarchy down to nodes
+ * about a column across, or null when the hierarchy can't tell. Catalog
+ * outlines can claim far more: NOAA's 2018-19 Irma survey claims all of
+ * downtown Miami and has points in 44% of it. A node only says there are
+ * points somewhere in it, so a column counts once a node no bigger than two
+ * columns has some, and a leaf above that depth counts for everything it
+ * covers. `inside` limits it to the columns whose middle is in the area.
+ */
+export async function eptPresence(fetcher: Fetcher, url: string, box: GeoBounds, inside?: (lon: number, lat: number) => boolean): Promise<number | null> {
+  const meta = (await fetcher.json(url)) as EptMetadata;
+  if (meta.hierarchyType !== 'json' || meta.bounds?.length !== 6) return null;
+  const crs = eptCrs(meta);
+  if (!crs || crs.geographic) return null;
+  const { fromLonLat, toLonLat } = lonLatTransforms(crs);
+  const q = queryBounds(box, fromLonLat);
+  const base = url.slice(0, url.lastIndexOf('/') + 1);
+  const root = meta.bounds;
+  const rootWidth = root[3] - root[0];
+  let metres = crs.horizontalFactor;
+  if (crs.epsg === 3857) metres *= Math.cos((((box.south + box.north) / 2) * Math.PI) / 180);
+  const columnM = Math.max(PRESENCE_MIN_M, (Math.max(q[2] - q[0], q[3] - q[1]) * metres) / PRESENCE_COLUMNS);
+  const width = columnM / metres;
+  // Rounding in the projection can leave a sliver past the last column.
+  const nx = Math.max(1, Math.ceil((q[2] - q[0]) / width - 1e-6));
+  const ny = Math.max(1, Math.ceil((q[3] - q[1]) / width - 1e-6));
+  // The deepest level whose nodes are still at least a column across.
+  const maxDepth = Math.max(0, Math.floor(Math.log2(rootWidth / width) + 1e-6));
+  const nodeBox = (node: string) => {
+    const [depth, ix, iy] = node.split('-').map(Number);
+    const size = rootWidth / 2 ** depth;
+    return [root[0] + ix * size, root[1] + iy * size, size] as const;
+  };
+  const touches = (node: string) => {
+    const [x0, y0, size] = nodeBox(node);
+    return x0 < q[2] && x0 + size > q[0] && y0 < q[3] && y0 + size > q[1];
+  };
+  const nodes = new Set<string>();
+  // Every node listed, touching or not, to tell leaves.
+  const listed = new Set<string>();
+  let pending = ['0-0-0-0'];
+  const seen = new Set<string>();
+  while (pending.length) {
+    if (seen.size + pending.length > MAX_PAGES) return null;
+    const batch = pending.splice(0, PAGES_AT_ONCE);
+    for (const key of batch) seen.add(key);
+    const pages = await Promise.all(batch.map((key) => fetcher.json(`${base}ept-hierarchy/${nodePath(meta, key)}.json`) as Promise<Record<string, number>>));
+    const next: string[] = [];
+    batch.forEach((key, i) => {
+      for (const [node, count] of Object.entries(pages[i])) {
+        if (Number(node.split('-')[0]) > maxDepth || !count) continue;
+        listed.add(node);
+        if (!touches(node)) continue;
+        if (count === -1) {
+          if (node !== key && !seen.has(node)) next.push(node);
+        } else if (count > 0) nodes.add(node);
+      }
+    });
+    pending = [...pending, ...next];
+  }
+  const present = new Uint8Array(nx * ny);
+  for (const node of nodes) {
+    const [depth, ix, iy, iz] = node.split('-').map(Number);
+    if (depth < maxDepth) {
+      let split = false;
+      for (let k = 0; k < 8 && !split; k++) split = listed.has(`${depth + 1}-${2 * ix + (k & 1)}-${2 * iy + ((k >> 1) & 1)}-${2 * iz + (k >> 2)}`);
+      if (split) continue;
+    }
+    const [x0, y0, size] = nodeBox(node);
+    // The columns it overlaps, past rounding at its edges.
+    const span = (from: number, to: number, n: number) => [Math.max(0, Math.floor(from / width + 1e-6)), Math.min(n - 1, Math.ceil(to / width - 1e-6) - 1)];
+    const [r0, r1] = span(y0 - q[1], y0 + size - q[1], ny);
+    const [c0, c1] = span(x0 - q[0], x0 + size - q[0], nx);
+    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) present[r * nx + c] = 1;
+  }
+  let columns = 0;
+  let found = 0;
+  for (let r = 0; r < ny; r++) {
+    for (let c = 0; c < nx; c++) {
+      if (inside) {
+        const [lon, lat] = toLonLat(q[0] + (c + 0.5) * width, q[1] + (r + 0.5) * width);
+        if (!inside(lon, lat)) continue;
+      }
+      columns++;
+      found += present[r * nx + c];
+    }
+  }
+  return columns ? found / columns : null;
+}
+
 /** The mean over columns that aren't water or holes, or null for too few. */
 export function landDensity(densities: number[]): number | null {
   if (densities.length < 4) return null;

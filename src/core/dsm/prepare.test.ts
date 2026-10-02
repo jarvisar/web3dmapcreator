@@ -9,7 +9,7 @@ import { NumpyRandom } from '../lidar/test-helpers';
 import type { AreaSpec } from '../settings';
 import { cellSize, fixedCellLimit, gridCells, gridProblem, LARGEST_FIXED_CELLS, MAX_CELLS, MAX_FIXED_CELLS, reportedMemoryGb, requestedCell } from './grid';
 import { COUNT_LAYERS, FLOAT_LAYERS, type SurfaceLayers } from './layers';
-import { prepareSurface, setSurfaceStore, unpackLayers, type SurfaceJob, type SurfaceOutcome, type SurfaceRunner } from './prepare';
+import { prepareSurface, setSurfaceStore, surfaceCodes, unpackLayers, type SurfaceJob, type SurfaceOutcome, type SurfaceRunner } from './prepare';
 import { BlockRaster, EMPTY_SHARE, occupiedCell, ProbeSink } from './raster';
 
 vi.mock('../lidar/sources', async (original) => ({ ...(await original<typeof import('../lidar/sources')>()), discover: vi.fn() }));
@@ -161,6 +161,16 @@ describe('surfaceClassTable', () => {
     const table = surfaceClassTable(mapping, { '64': 'unclassified' });
     expect([1, 2, 6, 9, 17, 64, 65, 66, 67].map((c) => table[c])).toEqual([1, 2, 6, 9, 17, 1, 0, 0, 1]);
   });
+
+  it("leaves a topobathy survey's seabed and water column out, in five-bit classes too", () => {
+    // 40-45 arrive as 8-13 from LAS 1.2 EPT builds. 8 is ground (model key points) anywhere else.
+    const table = surfaceClassTable(undefined, surfaceCodes({ provider: 'USGS', name: 'FL_TopobathyFLKeysNOAA_Hydroflattened_2019' }));
+    expect([2, 8, 9, 10, 11, 13, 40, 41, 42, 45].map((c) => table[c])).toEqual([2, 0, 9, 9, 0, 0, 0, 9, 9, 0]);
+    expect(surfaceClassTable(undefined, surfaceCodes({ provider: 'USGS', name: 'IL_Cook_2017' }))[8]).toBe(8);
+    // Under NOAA's mapping as well.
+    const noaa = surfaceClassTable({ '2': 'ground', '41': 'water' }, surfaceCodes({ provider: 'NOAA', name: '2018 NOAA NGS Topobathy Lidar: West Biscayne Bay, FL' }));
+    expect([2, 8, 10, 41].map((c) => noaa[c])).toEqual([2, 0, 9, 9]);
+  });
 });
 
 describe('occupiedCell', () => {
@@ -199,6 +209,15 @@ describe('occupiedCell', () => {
     expect(occupiedCell(sink, 64, 64, 1.1)!.cell).toBe(1.1);
     // Unclassified, the lake reads as sparse land, as in the add-on.
     expect(occupiedCell(probe([...land, ...lake], 1), 64, 64, 1.1)!.cell).toBeGreaterThan(2);
+    // Unless it's among water returns: a bay every 1.6 m, half filed as water and half left unclassified.
+    const bay = probe(land);
+    for (let x = 32.5; x < 64; x += 1.6) {
+      for (let y = 0.5; y < 64; y += 1.6) {
+        bay.push(x, y, 0, 9);
+        bay.push(x + 0.1, y, 0, 1);
+      }
+    }
+    expect(occupiedCell(bay, 64, 64, 1.1)!.cell).toBe(1.1);
   });
 });
 
@@ -277,8 +296,8 @@ function tiled(name: string, year: number, box?: number[]): Candidate {
   return { ...survey(name, year, box), provider: 'Somewhere', url: `https://example.com/${name}/`, format: 'LAZ', tiles };
 }
 
-/** A runner that invents returns over each job's box: a 50 m tower 80 x 60 m in the middle, ground at 10 m, every 0.25 m unless `spacing` says. */
-function fakeRunner(calls: SurfaceJob[], height = 50, spacing: (job: SurfaceJob) => number = () => 0.25): SurfaceRunner {
+/** A runner that invents returns over each job's box: a 50 m tower 80 x 60 m in the middle, ground at 10 m, every 0.25 m unless `spacing` says, wherever `has` says, or water. */
+function fakeRunner(calls: SurfaceJob[], height = 50, spacing: (job: SurfaceJob) => number = () => 0.25, has: (job: SurfaceJob, x: number, y: number) => boolean | 'water' = () => true): SurfaceRunner {
   return {
     concurrency: 2,
     async surface(job): Promise<SurfaceOutcome> {
@@ -291,8 +310,11 @@ function fakeRunner(calls: SurfaceJob[], height = 50, spacing: (job: SurfaceJob)
       for (let lon = job.query.west; lon <= job.query.east; lon += step / 80000) {
         for (let lat = job.query.south; lat <= job.query.north; lat += step / 111000) {
           const [x, y] = frame.toLocal(lon, lat);
+          const kind = has(job, x, y);
+          if (!kind) continue;
           const tower = Math.abs(x) < 40 && Math.abs(y) < 30;
-          (sink as PointReceiver).push(x, y, tower ? height : 10, tower ? 6 : 2, 1, 0, 0);
+          if (kind === 'water') (sink as PointReceiver).push(x, y, 9, 9, 1, 0, 0);
+          else (sink as PointReceiver).push(x, y, tower ? height : 10, tower ? 6 : 2, 1, 0, 0);
         }
       }
       if (sink instanceof ProbeSink) return { probe: occupiedCell(sink, x1 - x0, y1 - y0, job.probe!), points: sink.count };
@@ -390,6 +412,40 @@ describe('prepareSurface', () => {
     const mixed = await prepareSurface({ area, cellM: 1, runner: fakeRunner([]) });
     expect(mixed.surveys.map((s) => s.name).sort()).toEqual(['eastern', 'newer']);
     expect(mixed.coverage).toBeGreaterThan(0.99);
+  });
+
+  it('leaves ground an outline claims without points near it to the next survey, but keeps holes', async () => {
+    // The newer survey's outline holds the whole area, its points stop 100 m
+    // short of the west side, and its tower roof returned nothing.
+    const claims = survey('claims', 2024);
+    const older = survey('older', 2015);
+    vi.mocked(discover).mockResolvedValue({ candidates: [claims, older], failures: [] });
+    const has = (job: SurfaceJob, x: number, y: number) => job.survey.name !== 'claims' || (x > -50 && !(Math.abs(x) < 8 && Math.abs(y) < 8));
+    const calls: SurfaceJob[] = [];
+    const result = await prepareSurface({ area, cellM: 1, runner: fakeRunner(calls, 50, () => 0.25, has) });
+    expect(result.surveys.map((s) => s.name)).toEqual(['claims', 'older']);
+    expect(result.coverage).toBeGreaterThan(0.99);
+    const { nx, ny } = result.layers;
+    expect(result.layers.top[(ny >> 1) * nx + 10]).toBe(10);
+    // The roof's hole stays the newer survey's: it holds the newer roof.
+    expect(result.layers.count[(ny >> 1) * nx + (nx >> 1)]).toBe(0);
+    // Blocks wholly on its points read nothing else.
+    const blocks = new Set(calls.filter((c) => c.survey.name === 'older' && c.probe === undefined).map((c) => c.block.columns[0]));
+    expect(blocks).toEqual(new Set([0]));
+    // A river 55 m wide with nothing in it, banks on both sides, stays the newer survey's.
+    setSurfaceStore(memoryStore());
+    const river = (job: SurfaceJob, _x: number, y: number) => job.survey.name !== 'claims' || !(y > 40 && y < 95);
+    const reads: SurfaceJob[] = [];
+    const kept = await prepareSurface({ area, cellM: 1, runner: fakeRunner(reads, 50, () => 0.25, river) });
+    expect(kept.surveys.map((s) => s.name)).toEqual(['claims']);
+    expect(reads.some((c) => c.survey.name === 'older')).toBe(false);
+    // Nor does a lake out to the edge whose returns stop in the water.
+    setSurfaceStore(memoryStore());
+    const lake = (job: SurfaceJob, x: number) => (job.survey.name !== 'claims' || x < 60 ? true : x < 90 ? 'water' : false);
+    const lakeReads: SurfaceJob[] = [];
+    const shore = await prepareSurface({ area, cellM: 1, runner: fakeRunner(lakeReads, 50, () => 0.25, lake) });
+    expect(shore.surveys.map((s) => s.name)).toEqual(['claims']);
+    expect(lakeReads.some((c) => c.survey.name === 'older')).toBe(false);
   });
 
   it('reads an older survey first where the newest cannot fill the cells, within the years allowed', async () => {

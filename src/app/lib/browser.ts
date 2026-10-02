@@ -96,3 +96,9 @@ export const COARSE_QUERY = '(pointer: coarse)';
 export function prefersDark(): boolean {
   return window.matchMedia(DARK_QUERY).matches;
 }
+
+const apple = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
+
+/** Undo and redo as this platform writes them, for tooltips. Both work everywhere. */
+export const UNDO_KEYS = apple ? 'Cmd+Z' : 'Ctrl+Z';
+export const REDO_KEYS = apple ? 'Cmd+Shift+Z' : 'Ctrl+Y';

@@ -178,6 +178,8 @@ export interface Toast {
   tone: 'info' | 'success' | 'error';
   /** A button on it, like Undo. */
   action?: { label: string; run: () => void };
+  /** A newer toast with the same key takes its place. */
+  key?: string;
 }
 
 export type AreaSizes = Partial<Record<Output, { widthM: number; heightM: number }>>;
@@ -409,6 +411,27 @@ function withStale(generation: GenerationState, area: AreaSpec, settings: ModelS
 /** Whether the current output has something to show in the result view. */
 export function hasResult(state: Pick<AppState, 'output' | 'generation'>): boolean {
   return state.output === 'model' ? state.generation.result !== null : useSvgRender.getState().result !== null;
+}
+
+// ----------------------------------------------------------------- setup
+
+/** What undo and redo cover outside the model editor (undo.ts): the area and every setting, not the view. */
+export type Setup = Pick<AppState, 'output' | 'area' | 'areaSizes' | 'settings' | 'palette' | 'exportSettings' | 'svg' | 'placeName' | 'fileName'>;
+
+export const SETUP_KEYS = ['output', 'area', 'areaSizes', 'settings', 'palette', 'exportSettings', 'svg', 'placeName', 'fileName'] as const satisfies readonly (keyof Setup)[];
+
+export function setupOf(state: Setup): Setup {
+  const { output, area, areaSizes, settings, palette, exportSettings, svg, placeName, fileName } = state;
+  return { output, area, areaSizes, settings, palette, exportSettings, svg, placeName, fileName };
+}
+
+/** Puts back a setup undo kept. The map follows the area if it went out of view. */
+export function restoreSetup(setup: Setup): void {
+  set((state) => {
+    const view = state.ui.view === 'result' && !hasResult({ output: setup.output, generation: state.generation }) ? 'map' : state.ui.view;
+    const mapFocus = setup.area !== state.area ? { seq: state.ui.mapFocus.seq + 1, mode: 'if-needed' as const } : state.ui.mapFocus;
+    return { ...setupOf(setup), generation: withStale(state.generation, setup.area, setup.settings), ui: { ...state.ui, view, mapFocus } };
+  });
 }
 
 // A tidy area. In SVG mode it's the piece's map window, so it's fitted again
@@ -927,9 +950,12 @@ export function dismissGenerationError(): void {
 
 let nextToast = 1;
 
-export function toast(text: string, tone: Toast['tone'] = 'info', action?: Toast['action']): void {
+export function toast(text: string, tone: Toast['tone'] = 'info', action?: Toast['action'], key?: string): void {
   const id = nextToast++;
-  set((state) => ({ toasts: [...state.toasts.slice(-2), { id, text, tone, ...(action ? { action } : {}) }] }));
+  set((state) => {
+    const kept = key ? state.toasts.filter((item) => item.key !== key) : state.toasts;
+    return { toasts: [...kept.slice(-2), { id, text, tone, ...(action ? { action } : {}), ...(key ? { key } : {}) }] };
+  });
   setTimeout(() => dismissToast(id), action ? 6000 : tone === 'error' ? 5000 : 2800);
 }
 

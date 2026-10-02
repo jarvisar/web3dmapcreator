@@ -6,6 +6,16 @@ Notes on the flat maps. They started as SVGmap, a separate app, and the engine c
 
 SVG maps are drawn from [OpenFreeMap](https://openfreemap.org) vector tiles in the OpenMapTiles schema, the same tiles as the basemap, not from Overture. The line cleanup was tuned on those tiles, and they're quick to fetch: a city centre at 1:20,000 is 4 to 12 tiles. Any TileJSON URL, `{z}/{x}/{y}` template or `.pmtiles` file in the same schema works under `Map data`.
 
+The one exception is `Add missing buildings from Overture` under `Map data`, off by default. Overture's buildings are OSM's plus machine-learning footprints from Microsoft and Google (and a few other datasets) wherever no OSM building overlaps them. Only those other footprints are read, since the OSM ones are already in the tiles (`src/core/svgmap/overture.ts`). One that overlaps a tile building by more than a quarter of its area is dropped too, for buildings mapped in OSM after Overture's release. What's left goes into the buildings layer like any tile building.
+
+How much it adds depends a lot on the place. Over a 2 km window it added 0.1% to the building area in the Chicago Loop, 0.3% in Rome, 5 to 10% in Lagos, Dhaka, Jakarta, Chandler AZ and Milton Keynes, 16% in Kibera, 25% in Katy TX, 42% on São Paulo's outskirts, and about eight times what OSM has in Iztapalapa, Mexico City (241 OSM buildings, 4,771 added). Each of those was a 3 to 9 MB download that took under 2 seconds. Some limits:
+
+- It only works on zoom 14 tiles. Lower zooms leave out small OSM buildings, so ML footprints added there would stand out. A map that drops a zoom level gets a warning instead.
+- Maps that need more than 150 MB of building data are left without them, with a warning. A failed download draws the map without them and tries again a minute later.
+- ML footprints are rougher than mapped ones: blobby corners, blocks merged into one shape, and now and then something that isn't a building, like a few in parks.
+- Maps across the 180th meridian can't have them, since the Overture reader doesn't take boxes that wrap.
+- Every settings change goes through the fills again, and those slow down with the number of buildings. In Iztapalapa at the default 1:20,000 (15,000 added) a change takes 1.6 s against 0.3 s without them, and an 8 km wide map (76,000 added) takes 7 s. Most of it is Clipper booleans in `resolveSurfaces` touching every building. Cutting those down to the buildings near each layer would help every dense map, but it could change the default output, so it's left for now.
+
 Tiles store coordinates to about half a metre, so at large scales (under about 1:5,000) curves can look slightly angular. An area that would need more than the tile limit (400 by default) drops a zoom level at a time and says so in a warning. The tiles don't mark sidewalks, so they can't be removed by tag.
 
 ## The piece and the area

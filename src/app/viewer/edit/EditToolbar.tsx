@@ -1,6 +1,7 @@
 import { Box, Cylinder, MapPin, MousePointer2, Pentagon, Redo2, Spline, SquareDashedMousePointer, Type, Undo2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { ToolButton } from '../../components/ToolButton';
+import { REDO_KEYS, UNDO_KEYS } from '../../lib/browser';
 import { redoEdit, setTool, undoEdit } from '../../state/editActions';
 import { useApp, type EditTool } from '../../state/store';
 
@@ -30,10 +31,10 @@ export function EditToolbar() {
         ))}
       </div>
       <div className="toolbar toolbar-vertical floating">
-        <ToolButton label="Undo (Ctrl+Z)" onClick={undoEdit} disabled={!canUndo} placement="right">
+        <ToolButton label={`Undo edit (${UNDO_KEYS})`} onClick={undoEdit} disabled={!canUndo} placement="right">
           <Undo2 size={15} aria-hidden="true" />
         </ToolButton>
-        <ToolButton label="Redo (Ctrl+Shift+Z)" onClick={redoEdit} disabled={!canRedo} placement="right">
+        <ToolButton label={`Redo edit (${REDO_KEYS})`} onClick={redoEdit} disabled={!canRedo} placement="right">
           <Redo2 size={15} aria-hidden="true" />
         </ToolButton>
       </div>

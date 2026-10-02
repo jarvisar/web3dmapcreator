@@ -106,7 +106,7 @@ Credit the survey's publisher, for example `LiDAR: IGN - LiDAR HD` or `LiDAR: US
 
 ## Map, SVG maps and place search
 
-The map on the site uses [OpenFreeMap](https://openfreemap.org) vector tiles (© OpenFreeMap, © OpenMapTiles, data © OpenStreetMap contributors). SVG maps are drawn from the same tiles, or from another source in the OpenMapTiles schema set under `Map data`. Models get their racetracks from these tiles too, since Overture leaves OpenStreetMap's raceways out. The satellite option uses Esri World Imagery. Place search uses [Photon](https://photon.komoot.io) by komoot, which searches OpenStreetMap data. Your search text is sent to Photon.
+The map on the site uses [OpenFreeMap](https://openfreemap.org) vector tiles (© OpenFreeMap, © OpenMapTiles, data © OpenStreetMap contributors). SVG maps are drawn from the same tiles, or from another source in the OpenMapTiles schema set under `Map data`. With `Add missing buildings from Overture` on, they also get the building footprints Overture has that OpenStreetMap doesn't (see the building sources above). Models get their racetracks from these tiles too, since Overture leaves OpenStreetMap's raceways out. The satellite option uses Esri World Imagery. Place search uses [Photon](https://photon.komoot.io) by komoot, which searches OpenStreetMap data. Your search text is sent to Photon.
 
 ## Fonts
 
@@ -120,6 +120,6 @@ Exported 3MF files carry the map-data attribution in their metadata, and STL fil
 
 A LiDAR only model uses no elevation tiles, and no map data unless `Water outlines from map data` is on (the default), so without it the 3MF metadata and STL header credit only the surveys.
 
-An SVG map carries the attribution in its description (`<desc>`), along with the centre, bearing and scale it was made at. Credit "© OpenStreetMap contributors" on anything made from one that you publish or sell.
+An SVG map carries the attribution in its description (`<desc>`), along with the centre, bearing and scale it was made at. Credit "© OpenStreetMap contributors" on anything made from one that you publish or sell, and "Overture Maps Foundation" too when the map has buildings added from Overture (the description says so).
 
 Under the ODbL a printed model made from this data is a Produced Work. If you sell or display one publicly, include the attribution with it, for example on the product listing, the packaging or a label on the base. This is not legal advice.

@@ -2,6 +2,7 @@
 // its points: the add-on's rasterize, one point at a time.
 
 import type { PointReceiver } from '../lidar/read/normalize';
+import { dilate } from './filters';
 import type { Block } from './grid';
 
 const COUNT_LIMIT = 65535;
@@ -496,13 +497,18 @@ export class BlockRaster implements PointReceiver {
 export const EMPTY_SHARE = 0.03;
 const PROBE_CELL_M = 2;
 const MAX_GROWTH = 4;
+const WATER = 1;
+const UNFILED = 2;
+// Squares of unclassified returns this many squares from a water return are water (occupiedCell).
+const WATER_NEAR = 5;
 
 /** Keeps only where returns fell, for measuring how finely a survey fills a grid. */
 export class ProbeSink implements PointReceiver {
   count = 0;
   xs = new Float32Array(1 << 16);
   ys = new Float32Array(1 << 16);
-  wet = new Uint8Array(1 << 16);
+  // WATER, UNFILED or land.
+  kind = new Uint8Array(1 << 16);
 
   constructor(
     private readonly x0: number,
@@ -518,12 +524,12 @@ export class ProbeSink implements PointReceiver {
       };
       this.xs = grow(this.xs);
       this.ys = grow(this.ys);
-      this.wet = grow(this.wet);
+      this.kind = grow(this.kind);
     }
     // Offsets from the block's corner keep float32 precise.
     this.xs[this.count] = x - this.x0;
     this.ys[this.count] = y - this.y0;
-    this.wet[this.count] = cls === 9 ? 1 : 0;
+    this.kind[this.count] = cls === 9 ? WATER : cls === 1 ? UNFILED : 0;
     this.count++;
   }
 }
@@ -531,25 +537,40 @@ export class ProbeSink implements PointReceiver {
 /**
  * The cell a survey fills, and its returns per m² on land, over one block of
  * width x height metres whose corner the probe's offsets start from. Land is
- * 2 m cells with any return that isn't water, so rivers and the sea count
+ * 2 m cells with a return that isn't water, so rivers and the sea count
  * for nothing. The add-on counts any return, and Lake Michigan's scattered
- * water returns grew the Chicago lakefront's cells from 0.71 to 2.08 m. The
- * cell grows in 5% steps from `requested` until at most EMPTY_SHARE of the
- * cells on land are empty. Null when the block is mostly not land.
+ * water returns grew the Chicago lakefront's cells from 0.71 to 2.08 m.
+ * Unclassified returns among water returns are water too: the 2021
+ * Miami-Dade survey leaves most of Biscayne Bay unclassified at about 2
+ * returns per m², and with it as land the cells off Brickell grew from 0.71
+ * to 1.16 m. So are stray ones within 10 m of water returns, scattered
+ * over a channel that returned little else. Anywhere else unclassified
+ * returns are land however few: NOAA's 2025 Bay-Delta survey leaves the
+ * ground beside San Francisco's towers sparse and unclassified, and its
+ * holes there have to be seen. The cell grows in 5% steps from `requested`
+ * until at most EMPTY_SHARE of the cells on land are empty. Null when the
+ * block is mostly not land.
  */
 export function occupiedCell(probe: ProbeSink, width: number, height: number, requested: number): { cell: number; density: number } | null {
-  const { xs, ys, wet, count } = probe;
+  const { xs, ys, kind, count } = probe;
   const cw = Math.ceil(width / PROBE_CELL_M);
   const ch = Math.ceil(height / PROBE_CELL_M);
   const coarse = new Uint32Array(cw * ch);
-  const dry = new Uint8Array(cw * ch);
+  // Bits for each kind of return a square holds.
+  const kinds = new Uint8Array(cw * ch);
   for (let k = 0; k < count; k++) {
     const i = Math.floor(xs[k] / PROBE_CELL_M);
     const j = Math.floor(ys[k] / PROBE_CELL_M);
     if (i < 0 || i >= cw || j < 0 || j >= ch) continue;
     coarse[j * cw + i]++;
-    if (!wet[k]) dry[j * cw + i] = 1;
+    kinds[j * cw + i] |= 1 << kind[k];
   }
+  // Squares with water returns, and those within WATER_NEAR of them.
+  const wet = new Uint8Array(cw * ch);
+  for (let c = 0; c < coarse.length; c++) wet[c] = kinds[c] & (1 << WATER) ? 1 : 0;
+  const nearWater = dilate(wet, cw, ch, WATER_NEAR);
+  const dry = new Uint8Array(cw * ch);
+  for (let c = 0; c < coarse.length; c++) dry[c] = kinds[c] & 1 || (kinds[c] === 1 << UNFILED && !nearWater[c]) ? 1 : 0;
   let land = 0;
   let onLand = 0;
   for (let c = 0; c < coarse.length; c++) {

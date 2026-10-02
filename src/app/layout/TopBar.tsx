@@ -1,8 +1,10 @@
-import { Box, CircleQuestionMark, Map as MapIcon, PenTool, SlidersHorizontal, X } from 'lucide-react';
+import { Box, CircleQuestionMark, Map as MapIcon, PenTool, Redo2, SlidersHorizontal, Undo2, X } from 'lucide-react';
 import { GithubMark, Logo } from '../components/Icons';
 import { Tooltip } from '../components/HelpTip';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import { REDO_KEYS, UNDO_KEYS } from '../lib/browser';
 import { setDrawerOpen, setHelpOpen, setView, useApp } from '../state/store';
+import { redoChange, undoChange, useUndoLabels } from '../state/undo';
 import { useSvgRender } from '../svgmap/render';
 
 export const REPO_URL = 'https://github.com/jarvisar/web3dmapcreator';
@@ -43,6 +45,73 @@ function ViewToggle() {
   );
 }
 
+interface HistoryButtonProps {
+  label: string;
+  keys: string;
+  shortcuts: string;
+  disabled: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}
+
+function HistoryButton({ label, keys, shortcuts, disabled, onClick, children }: HistoryButtonProps) {
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
+  const [hover, setHover] = useState(false);
+  return (
+    <>
+      <button
+        ref={setAnchor}
+        type="button"
+        className="btn btn-ghost topbar-icon"
+        aria-label={label}
+        aria-keyshortcuts={shortcuts}
+        disabled={disabled}
+        onClick={onClick}
+        onPointerEnter={(event) => event.pointerType === 'mouse' && setHover(true)}
+        onPointerLeave={() => setHover(false)}
+        onFocus={(event) => event.currentTarget.matches(':focus-visible') && setHover(true)}
+        onBlur={() => setHover(false)}
+      >
+        {children}
+      </button>
+      <Tooltip anchor={anchor} open={hover && !disabled} placement="bottom">
+        {keys ? `${label} (${keys})` : label}
+      </Tooltip>
+    </>
+  );
+}
+
+const lower = (label: string) => label.charAt(0).toLowerCase() + label.slice(1);
+
+// Undo and redo for the area and settings. The model editor has its own for edits.
+function HistoryButtons() {
+  const { undo, redo } = useUndoLabels();
+  // In the editor the keys undo edits, unless the focus is in the sidebar or here.
+  const editing = useApp((state) => state.ui.editMode && state.ui.view === 'result' && state.output === 'model');
+  return (
+    <div className="topbar-history" role="group" aria-label="Undo and redo">
+      <HistoryButton
+        label={undo ? `Undo ${lower(undo)}` : 'Undo'}
+        keys={editing ? '' : UNDO_KEYS}
+        shortcuts="Control+Z Meta+Z"
+        disabled={!undo}
+        onClick={() => undoChange()}
+      >
+        <Undo2 size={15} aria-hidden="true" />
+      </HistoryButton>
+      <HistoryButton
+        label={redo ? `Redo ${lower(redo)}` : 'Redo'}
+        keys={editing ? '' : REDO_KEYS}
+        shortcuts="Control+Y Control+Shift+Z Meta+Shift+Z"
+        disabled={!redo}
+        onClick={() => redoChange()}
+      >
+        <Redo2 size={15} aria-hidden="true" />
+      </HistoryButton>
+    </div>
+  );
+}
+
 export function TopBar({ narrow }: { narrow: boolean }) {
   const drawerOpen = useApp((state) => state.ui.drawerOpen);
   return (
@@ -70,6 +139,7 @@ export function TopBar({ narrow }: { narrow: boolean }) {
             Jarvizar <span className="brand-light">City Model</span>
           </span>
         </a>
+        <HistoryButtons />
       </div>
       <div className="topbar-center">
         <ViewToggle />

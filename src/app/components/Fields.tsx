@@ -165,13 +165,16 @@ interface HexInputProps {
 export function HexInput({ id, value, onChange }: HexInputProps) {
   const [text, setText] = useState(value);
   const focused = useRef(false);
+  const typed = useRef(false);
+  // Focused but not typed in, it still follows the value, which an undo can change.
   useEffect(() => {
-    if (!focused.current) setText(value);
+    if (!focused.current || !typed.current) setText(value);
   }, [value]);
   const settle = () => {
     const hex = normaliseHex(text);
     if (hex && hex !== value) onChange(hex);
     setText(hex ?? value);
+    typed.current = false;
   };
   // A click outside closes the colour popover before the field loses focus,
   // and a removed field never blurs, so what was typed is applied here.
@@ -194,8 +197,12 @@ export function HexInput({ id, value, onChange }: HexInputProps) {
       value={text}
       spellCheck={false}
       autoComplete="off"
-      onFocus={() => (focused.current = true)}
+      onFocus={() => {
+        focused.current = true;
+        typed.current = false;
+      }}
       onChange={(event) => {
+        typed.current = true;
         setText(event.target.value);
         if (/^#?[0-9a-f]{6}$/i.test(event.target.value.trim())) onChange(normaliseHex(event.target.value)!);
       }}

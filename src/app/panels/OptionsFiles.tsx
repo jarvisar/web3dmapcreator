@@ -6,7 +6,8 @@ import { CUSTOM_FONT_ID } from '../../core/svgmap/text/fonts';
 import { downloadBlob } from '../lib/browser';
 import { decodeOptions, encodeOptions, MAX_OPTIONS_BYTES, OPTIONS_TOO_BIG, type Options } from '../state/options';
 import { broughtText, undoBrought } from '../state/editActions';
-import { applyOptions, toast, useApp } from '../state/store';
+import { applyOptions, toast, useApp, type Brought } from '../state/store';
+import { asChange, undoChange } from '../state/undo';
 
 const usesCustomFont = ({ svg }: Options) => svg.label.font === CUSTOM_FONT_ID || svg.label.subtitleFont === CUSTOM_FONT_ID;
 
@@ -21,11 +22,19 @@ export function OptionsFiles() {
     try {
       if (file.size > MAX_OPTIONS_BYTES) throw new Error(OPTIONS_TOO_BIG);
       const options = decodeOptions(await file.text());
-      const brought = applyOptions(options, includeArea);
+      let brought = null as Brought | null;
+      const step = asChange('Import options', () => {
+        brought = applyOptions(options, includeArea);
+      });
       const message = options.map && includeArea ? 'Options and map area imported' : 'Options imported';
       const font = usesCustomFont(options) ? '. Custom font files are separate; load the matching font under Title' : '';
-      if (brought) toast(`${message}${font}. ${broughtText(brought, 'the file')}`, 'success', { label: 'Undo', run: () => undoBrought(brought) });
-      else toast(`${message}${font}`, 'success');
+      // The settings first, so the picks they bring back aren't taken for the file's.
+      const undo = () => {
+        if (step) undoChange(step);
+        if (brought) undoBrought(brought);
+      };
+      const action = step || brought ? { label: 'Undo', run: undo } : undefined;
+      toast(brought ? `${message}${font}. ${broughtText(brought, 'the file')}` : `${message}${font}`, 'success', action);
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Could not read the options file.', 'error');
     } finally {

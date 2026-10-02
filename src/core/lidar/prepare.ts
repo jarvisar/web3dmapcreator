@@ -25,7 +25,7 @@ import { cellSize, DEFAULT_DETAIL_MM, gridSpec, requestedCell } from '../dsm/gri
 import { gridProber, readSurfaceBlock, type SurfaceRunner } from '../dsm/prepare';
 import type { AreaShape, AreaSpec, ModelSettings, SurveyPreference } from '../settings';
 import { area, bounds, boxShape, buffer, centroid, intersects } from './shapes';
-import { checkNote, clipRingToBox, digest, measureDensities, orderSurveys, pickNote, rankOrder, surveyDensity, toMetric, type Ranked } from './ranking';
+import { checkNote, clipRingToBox, coverTier, digest, measureDensities, orderSurveys, pickNote, rankOrder, surveyDensity, toMetric, type Ranked } from './ranking';
 import type { SurveyQuery, SurveyRules } from './query';
 import { chosenFirst, isChosen, surveyChoice, type SurveyChoice } from './choice';
 import { advantage, approves, makeOffer, reopened, staged, tileKey, tilesIn, unreadable, type Approval, type LidarOffer } from './offers';
@@ -213,12 +213,14 @@ export async function findSurveys(query: SurveyQuery, signal?: AbortSignal): Pro
     if (!coverage.length) continue;
     ranked.push({ candidate, coverage, catalogCoverage: multiArea(coverage) / multiArea(rect) });
   }
-  await measureDensities(fetcher, ranked, frame, signal);
-  const tier = (r: Ranked) => (query.tiered && r.catalogCoverage < 0.99 ? 1 : 0);
+  await measureDensities(fetcher, ranked, frame, signal, [-spec.widthM / 2, -spec.heightM / 2, spec.widthM / 2, spec.heightM / 2]);
+  const here = ranked.filter((r) => r.measuredCoverage !== 0);
+  const tiers = coverTier(here);
+  const tier = (r: Ranked) => (query.tiered ? tiers(r) : 0);
   const compare = (a: Ranked, b: Ranked) => tier(a) - tier(b) || rankOrder(a, b);
   const probe = gridProber({ area: spec, grid: gridSpec(spec.widthM, spec.heightM, rules.cellM), runner: { surface: () => Promise.reject(new Error('Nothing is read while listing surveys')) }, savedOnly: true });
   const group = (a: Ranked, b: Ranked) => tier(a) === tier(b);
-  const order = await orderSurveys(ranked, rules, { compare, group, probe });
+  const order = await orderSurveys(here, rules, { compare, group, probe });
   const note = pickNote(order, rules, compare) ?? checkNote(order, rules, compare, group);
   return { surveys: order.map((r, i) => surveyChoice(r, i ? null : note)), failures: found.failures };
 }
@@ -403,7 +405,7 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
     ranked.push({ candidate, coverage, catalogCoverage: area(coverage) / haloArea });
   }
   await progress('Finding LiDAR surveys', 0.05, 'Working out their returns per m² here');
-  await measureDensities(fetcher, ranked, frame, input.signal);
+  await measureDensities(fetcher, ranked, frame, input.signal, [hx0, hy0, hx1, hy1]);
   // Probed on the grid roofs are cut from: the blocks a LiDAR only model of the area would probe.
   const prober: Pick<SurfaceRunner, 'surface'> = { surface: input.runner?.surface ?? ((job, report) => readSurfaceBlock(job, fetcher, report)) };
   const probe = input.area
@@ -416,7 +418,8 @@ export async function prepareLidar(input: PrepareInput): Promise<PreparedLidar> 
         progress: (name, detail) => progress('Measuring how finely the surveys fill the grid', 0.06, detail ?? name),
       })
     : undefined;
-  const automatic = await orderSurveys(ranked, rules, { probe });
+  // Outlines that hold the area where the survey has no points at all.
+  const automatic = await orderSurveys(ranked.filter((r) => r.measuredCoverage !== 0), rules, { probe });
   result.found = automatic.map((r, i) => surveyChoice(r, i ? null : pickNote(automatic, rules)));
   // Per building: the surveys whose coverage holds its whole footprint, in the area's order.
   const chosen = chosenFirst(automatic, settings.survey);

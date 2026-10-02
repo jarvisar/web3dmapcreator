@@ -513,6 +513,9 @@ export function SvgPreview() {
             ] as [string, string][])
           : []),
         ['Map data', `${result.stats.tiles} ${result.stats.tiles === 1 ? 'tile' : 'tiles'} at zoom ${result.stats.zoom}, ${formatBytes(result.stats.bytes)}`],
+        ...(result.stats.overtureBuildings !== undefined
+          ? [['Overture buildings', `${formatInteger(result.stats.overtureBuildings)} added`] as [string, string]]
+          : []),
         ...(totalMs > 0 ? [['Drawn in', formatSeconds(totalMs / 1000)] as [string, string]] : []),
       ]
     : [];

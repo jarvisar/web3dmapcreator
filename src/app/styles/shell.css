@@ -141,7 +141,7 @@
 }
 
 .view-btn:hover:not([aria-pressed='true']):not([aria-disabled='true']),
-.topbar .btn-ghost:hover,
+.topbar .btn-ghost:hover:not(:disabled),
 .topbar-github:hover {
   background: linear-gradient(#61646b, #45474d);
   color: #fff;
@@ -166,6 +166,21 @@
 }
 
 .topbar-github {
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+}
+
+/* Undo and redo, at the right of the logo over the sidebar */
+.topbar-history {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  margin-left: auto;
+  padding-right: 8px;
+}
+
+.topbar .topbar-icon {
   justify-content: center;
   width: 30px;
   padding: 0;
@@ -491,6 +506,11 @@
 
   .topbar-start {
     padding-left: 8px;
+  }
+
+  .topbar-history {
+    margin-left: 4px;
+    padding-right: 0;
   }
 
   .topbar-center {
