@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest';
 const ALLOWED: Record<string, Record<string, string>> = {
   'src/app/state/editActions.ts': {
     putObjects: 'puts keys back as an earlier edits object had them, for the Undo on a toast',
-    patchObjects: "writes keys that aren't roads. Roads go through writeRoads first",
+    patchedObjects: "writes keys that aren't roads. Roads go through writeRoads first",
     resetObjects: 'drops every edit of a whole road segment, its ranges and splits with it',
     removeObjects: "removes keys that aren't roads. Roads go through writeRoads first",
     restoreObjects: "puts back keys that aren't roads, and the bridges of roads put back",

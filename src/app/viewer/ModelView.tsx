@@ -139,6 +139,12 @@ function isTyping(target: EventTarget | null): boolean {
   return Boolean(element?.closest?.('input, textarea, select, [contenteditable="true"]'));
 }
 
+function clearHiddenSelection(engine: ViewerEngine): void {
+  const selection = useApp.getState().ui.selection;
+  const gone = new Set(engine.hiddenByParts(selection));
+  if (gone.size) setSelection(selection.filter((key) => !gone.has(key)));
+}
+
 export default function ModelView({ active }: { active: boolean }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<ViewerEngine | null>(null);
@@ -205,7 +211,10 @@ export default function ModelView({ active }: { active: boolean }) {
     // The model goes in from the effect on its version, which runs next.
     const controller = new EditController(engine, host, handlers());
     controllerRef.current = controller;
-    const unsubscribe = onEditUpdate((update) => engine.applyEditUpdate(update));
+    const unsubscribe = onEditUpdate((update) => {
+      engine.applyEditUpdate(update);
+      clearHiddenSelection(engine);
+    });
     return () => {
       unsubscribe();
       controller.dispose();
@@ -225,16 +234,14 @@ export default function ModelView({ active }: { active: boolean }) {
   }, [version]);
 
   useEffect(() => engineRef.current?.setPalette(palette), [palette]);
+  useEffect(() => engineRef.current?.setEdits(edits), [edits]);
+  useEffect(() => engineRef.current?.setHidden(hidden), [hidden]);
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
-    engine.setHidden(hidden);
     // What was hidden leaves the selection, or Delete would take away what can't be seen.
-    const selection = useApp.getState().ui.selection;
-    const gone = new Set(engine.hiddenByParts(selection));
-    if (gone.size) setSelection(selection.filter((key) => !gone.has(key)));
-  }, [hidden]);
-  useEffect(() => engineRef.current?.setEdits(edits), [edits]);
+    clearHiddenSelection(engine);
+  }, [hidden, edits, version]);
   useEffect(() => engineRef.current?.setSelection(editMode ? selection : []), [selection, editMode]);
   useEffect(() => engineRef.current?.setBed(printerByKey(printerKey), showBed), [printerKey, showBed]);
   useEffect(() => engineRef.current?.setTheme(dark), [dark]);

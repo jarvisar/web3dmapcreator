@@ -7,6 +7,7 @@ import { addSplit, parseRoadKey, removeSplit, segmentKeys, writeRoads } from '..
 import { editOf, kindOf, objectOf, shapeKey, twinOf } from '../../core/edit/keys';
 import {
   editCount,
+  EDIT_LIMITS,
   emptyEdits,
   hasEdits,
   MAX_LAYERS,
@@ -370,13 +371,12 @@ function roadGoneAt(objects: ModelEdits['objects'], bridge: string): boolean {
  * selected. Roads are written by range (blocks.ts): a block of a street
  * changes on its own, and the whole street over its blocks.
  */
-export function patchObjects(keys: string[], patch: Partial<ObjectEdit>, coalesce?: string): void {
-  const edits = get().edits;
-  const roads = keys.filter((key) => parseRoadKey(key));
-  const written = writeRoads(edits.objects, roads, patch);
+function patchedObjects(edits: ModelEdits, keys: string[], patch: Partial<ObjectEdit>) {
+  const roads = new Set(keys.filter((key) => parseRoadKey(key)));
+  const written = writeRoads(edits.objects, [...roads], patch);
   const objects = written.objects;
   for (const key of keys) {
-    if (kindOf(key) === 'shape' || roads.includes(key)) continue;
+    if (kindOf(key) === 'shape' || roads.has(key)) continue;
     const next: ObjectEdit = { ...objects[key], ...patch };
     for (const field of Object.keys(next) as (keyof ObjectEdit)[]) if (next[field] === undefined) delete next[field];
     // A bridge kept while its road is removed has to say so, or it goes with the road again.
@@ -384,7 +384,22 @@ export function patchObjects(keys: string[], patch: Partial<ObjectEdit>, coalesc
     if (Object.keys(next).length) objects[key] = next;
     else delete objects[key];
   }
-  commitEdits({ ...edits, objects }, coalesce, [...keys, ...written.touched]);
+  return { objects, touched: [...keys, ...written.touched] };
+}
+
+export function patchObjects(keys: string[], patch: Partial<ObjectEdit>, coalesce?: string): void {
+  const edits = get().edits;
+  const { objects, touched } = patchedObjects(edits, keys, patch);
+  commitEdits({ ...edits, objects }, coalesce, touched);
+}
+
+/** Generated objects and added shapes in one layer, as one undo step. Undefined gives each its own colour. */
+export function assignLayer(keys: string[], layer: string | undefined): void {
+  const edits = get().edits;
+  const { objects, touched } = patchedObjects(edits, keys, { layer });
+  const selected = new Set(keys);
+  const shapes = edits.shapes.map((shape) => selected.has(shapeKey(shape.id)) ? { ...shape, layer: layer ?? shapeGroup(shape.kind) } : shape);
+  commitEdits({ ...edits, objects, shapes }, undefined, touched);
 }
 
 /**
@@ -688,7 +703,8 @@ export function shapeDefaults(kind: AddedShape['kind']): Omit<AddedShape, 'id' |
       return { ...common, sizeMm: 7, depthMm: 7, heightMm: 2.5, followGround: false };
     case 'path': {
       const roads = get().settings.roads;
-      return { ...common, sizeMm: 0.7, depthMm: 0.7, heightMm: roads.thicknessMm, followGround: true };
+      const heightMm = Math.min(EDIT_LIMITS.shapeHeightMm[1], Math.max(EDIT_LIMITS.shapeHeightMm[0], roads.thicknessMm));
+      return { ...common, sizeMm: 0.7, depthMm: 0.7, heightMm, followGround: true };
     }
     case 'area':
       return { ...common, sizeMm: 10, depthMm: 10, heightMm: 4, followGround: false };

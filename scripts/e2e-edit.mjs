@@ -311,6 +311,56 @@ await page.getByRole('button', { name: 'Finish' }).click();
 await wait(1200);
 if ((await title()) === 'Drawn road') ok('drew a road with Finish');
 else fail(`finishing a path showed "${await title()}"`);
+
+// A layer can select generated objects and added shapes together.
+const savedEdits = () => page.evaluate(() => JSON.parse(localStorage.getItem('jarvizar-city-model:edits') ?? '{}'));
+await inspector.getByLabel('Colour', { exact: true }).selectOption({ label: 'Layer 1' });
+await wait(600);
+await clearSelection();
+await inspector.getByRole('button', { name: 'New layer', exact: true }).click();
+await inspector.getByRole('button', { name: /Select the .* things in Layer 1/ }).click();
+await wait(600);
+const mixed = await title();
+if (/road/.test(mixed) && /shape/.test(mixed)) ok(`selected a mixed layer: ${mixed}`);
+else fail(`selecting the layer showed "${mixed}", wanted roads and a shape`);
+const original = await savedEdits();
+const layer1 = original.layers.find((layer) => layer.name === 'Layer 1').id;
+const layer2 = original.layers.find((layer) => layer.name === 'Layer 2').id;
+const memberKeys = Object.keys(original.objects).filter((key) => original.objects[key].layer === layer1);
+const memberShapes = original.shapes.filter((shape) => shape.layer === layer1).map((shape) => shape.id);
+const inLayer = (edits, layer) => memberKeys.every((key) => edits.objects[key]?.layer === layer) && memberShapes.every((id) => edits.shapes.find((shape) => shape.id === id)?.layer === layer);
+await inspector.getByLabel('Colour', { exact: true }).selectOption({ label: 'Layer 2' });
+await wait(800);
+if (inLayer(await savedEdits(), layer2)) ok('a mixed selection changed colour together');
+else fail('colour skipped part of the mixed selection');
+await page.getByRole('button', { name: /^Undo edit/ }).click();
+await wait(800);
+if (inLayer(await savedEdits(), layer1)) ok('one undo put the whole mixed selection back');
+else fail('one undo did not restore the whole mixed selection');
+await inspector.getByRole('button', { name: 'Remove', exact: true }).click();
+await wait(800);
+const removed = await savedEdits();
+if (memberKeys.every((key) => removed.objects[key]?.removed) && memberShapes.every((id) => !removed.shapes.some((shape) => shape.id === id))) ok('Remove removed the objects and shapes together');
+else fail('Remove skipped part of the mixed selection');
+await page.getByRole('button', { name: /^Undo edit/ }).click();
+await wait(800);
+await clearSelection();
+
+// Moving into a hidden layer clears the selection before Delete can act on it.
+await page.getByRole('button', { name: 'Parts', exact: true }).click();
+const layerRow = page.locator('section.parts-card .parts-list li').filter({ has: page.locator('.part-name', { hasText: /^Layer 2$/ }) });
+await layerRow.locator('input[type="checkbox"]').uncheck();
+await page.getByRole('button', { name: 'Parts', exact: true }).click();
+await inspector.getByRole('button', { name: /Select the .* things in Layer 1/ }).click();
+await inspector.getByLabel('Colour', { exact: true }).selectOption({ label: 'Layer 2' });
+await wait(800);
+if (/^Edit the model/.test(await title())) ok('moving into a hidden layer cleared the selection');
+else fail(`moving into a hidden layer kept "${await title()}" selected`);
+await page.getByRole('button', { name: /^Undo edit/ }).click();
+await wait(800);
+await page.getByRole('button', { name: 'Parts', exact: true }).click();
+await page.locator('section.parts-card').getByRole('button', { name: 'Show all' }).click();
+await page.getByRole('button', { name: 'Parts', exact: true }).click();
 await clearSelection();
 
 // Undo and redo from the toolbar.
@@ -462,4 +512,17 @@ if (phone) {
   await page.getByRole('checkbox', { name: /multi-plate/i }).click();
   check('Bambu multi-plate', await download('bambu-sections'));
 }
+
+// An unfinished line belongs to the old model's coordinates.
+await clearSelection();
+await tool('Draw a road or path');
+await press(-80, 40);
+await press(0, 70);
+if (!(await page.locator('.draw-bar').count())) fail('could not start a drawing before regenerating');
+await page.getByRole('button', { name: 'Generate again', exact: true }).click();
+await page.waitForFunction(() => !document.querySelector('[role="progressbar"]'), null, { timeout: 900000, polling: 1000 });
+await wait(1200);
+if (!(await page.locator('.draw-bar').count())) ok('regenerating cancelled the unfinished drawing');
+else fail('the unfinished drawing carried into the regenerated model');
+await shot('regenerated');
 await finish();

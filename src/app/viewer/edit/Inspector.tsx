@@ -2,7 +2,7 @@ import { Copy, Crosshair, Eraser, Plus, RotateCcw, Route, Search, Spline, Trash2
 import { useEffect, useId, useMemo, useState } from 'react';
 import { parseRoadKey, roadEditOf, roadSegment } from '../../../core/edit/blocks';
 import { editOf, isPartKey, kindOf, objectOf, partKey, shapeKey, twinOf } from '../../../core/edit/keys';
-import { buildingHeightRange, EDIT_LIMITS, editCount, followsGround, MAX_TEXT_LENGTH, type AddedShape, type EditLayer, type ModelEdits } from '../../../core/edit/types';
+import { buildingHeightRange, EDIT_LIMITS, editCount, followsGround, MAX_TEXT_LENGTH, type AddedShape, type EditLayer, type ModelEdits, type ObjectEdit } from '../../../core/edit/types';
 import { Projection } from '../../../core/geo/projection';
 import { COLOUR_GROUPS } from '../../../core/settings';
 import { FONTS } from '../../../core/svgmap/text/fonts';
@@ -14,6 +14,7 @@ import { COARSE_QUERY, useMediaQuery } from '../../lib/browser';
 import { formatNumber } from '../../lib/format';
 import {
   addLayer,
+  assignLayer,
   clearEdits,
   clearEditsFor,
   deleteLayer,
@@ -98,7 +99,7 @@ function SelectionPanel({ keys, edits, data, heightOf, streetOf, makeDrawn, focu
         {shapes.length > 0 && objects.length === 0 ? (
           <ShapeControls keys={shapes} edits={edits} data={data} />
         ) : (
-          <ObjectControls keys={objects} kinds={kinds} edits={edits} data={data} heightOf={heightOf} streetOf={streetOf} makeDrawn={makeDrawn} preview={preview} />
+          <ObjectControls keys={keys} kinds={kinds} edits={edits} data={data} heightOf={heightOf} streetOf={streetOf} makeDrawn={makeDrawn} preview={preview} />
         )}
       </div>
       {!coarse && (
@@ -130,7 +131,13 @@ function ObjectControls({
   preview: InspectorProps['preview'];
 }) {
   // A road on a divided road's merged line shows the other carriageway's edits it carries too.
-  const applied = (key: string) => (kindOf(key) === 'road' ? appliedRoadEdit(edits, key, data.roads) : editOf(edits, key, data.objects[key]?.at));
+  const applied = (key: string): ObjectEdit | undefined => {
+    if (kindOf(key) === 'shape') {
+      const layer = edits.shapes.find((shape) => shapeKey(shape.id) === key)?.layer;
+      return layer && edits.layers.some((custom) => custom.id === layer) ? { layer } : undefined;
+    }
+    return kindOf(key) === 'road' ? appliedRoadEdit(edits, key, data.roads) : editOf(edits, key, data.objects[key]?.at);
+  };
   const allRemoved = keys.every((key) => applied(key)?.removed);
   const layers = new Set(keys.map((key) => applied(key)?.layer ?? ''));
   const layer = layers.size === 1 ? [...layers][0] : MIXED;
@@ -165,7 +172,7 @@ function ObjectControls({
         label="Colour"
         value={layer}
         groups={false}
-        onChange={(value) => patchObjects(keys, { layer: value || undefined })}
+        onChange={(value) => kinds.has('shape') ? assignLayer(keys, value || undefined) : patchObjects(keys, { layer: value || undefined })}
         help="Put it in a custom layer of its own colour. Everything in a layer exports as one part with its own filament."
       />
       {allRemoved && recessed.length > 0 && (
@@ -203,7 +210,7 @@ function ObjectControls({
           </button>
         )}
         {edited && (
-          <button type="button" className="btn btn-sm btn-ghost" onClick={() => resetObjects(keys)} title="Undo every change to the selection">
+          <button type="button" className="btn btn-sm btn-ghost" onClick={() => resetObjects(keys.filter((key) => kindOf(key) !== 'shape'))} title={kinds.has('shape') ? 'Undo every change to the selected generated objects' : 'Undo every change to the selection'}>
             <RotateCcw size={14} aria-hidden="true" />
             Reset
           </button>

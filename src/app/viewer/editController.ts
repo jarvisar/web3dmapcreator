@@ -158,6 +158,7 @@ export class EditController {
     host.addEventListener('dblclick', this.onDoubleClick);
     window.addEventListener('pointerup', this.onUp);
     window.addEventListener('pointercancel', this.onCancel);
+    window.addEventListener('blur', this.onBlur);
     engine.controls.addEventListener('change', this.layout);
     engine.geometryListeners.add(this.onGeometry);
     engine.overlay.add(this.gizmo, this.guide, this.marks);
@@ -169,10 +170,21 @@ export class EditController {
 
   setState(state: EditState): void {
     const toolChanged = state.tool !== this.state.tool || state.enabled !== this.state.enabled;
+    const modelChanged = state.projection !== this.state.projection;
+    if (toolChanged || modelChanged) {
+      this.cancelDrag();
+      this.down = null;
+      this.pressed.clear();
+      clearTimeout(this.hoverTimer);
+      this.hoverTimer = 0;
+      this.pending = null;
+      this.cursor = null;
+      this.splitPreview = null;
+    }
     this.state = state;
-    if (toolChanged) this.cancelDrawing();
-    if (!state.enabled) {
-      if (this.drag) this.endDrag(false);
+    if (toolChanged || modelChanged) {
+      // Drawing points and presses belong to the model and tool they started on.
+      this.cancelDrawing();
       this.engine.setHover(null);
       this.handlers.hover(null, 0, 0);
     }
@@ -230,6 +242,7 @@ export class EditController {
     this.host.removeEventListener('dblclick', this.onDoubleClick);
     window.removeEventListener('pointerup', this.onUp);
     window.removeEventListener('pointercancel', this.onCancel);
+    window.removeEventListener('blur', this.onBlur);
     this.engine.controls.removeEventListener('change', this.layout);
     this.engine.geometryListeners.delete(this.onGeometry);
     clearTimeout(this.hoverTimer);
@@ -317,6 +330,13 @@ export class EditController {
     if (drag) {
       // Only the pointer that started it moves it.
       if (event.pointerId !== drag.pointer) return;
+      // A release outside the window can go missing.
+      if (!event.buttons) {
+        this.down = null;
+        this.pressed.delete(event.pointerId);
+        this.endDrag(false);
+        return;
+      }
       drag.lastX = event.clientX;
       drag.lastY = event.clientY;
       this.dragTo(drag, event.clientX, event.clientY, false);
@@ -367,6 +387,13 @@ export class EditController {
     this.pressed.delete(event.pointerId);
     if (this.down?.id === event.pointerId) this.down = null;
     if (this.drag?.pointer === event.pointerId) this.endDrag(true);
+  };
+
+  private readonly onBlur = (): void => {
+    this.cancelDrag();
+    this.down = null;
+    this.pressed.clear();
+    this.onLeave();
   };
 
   private readonly onLeave = (): void => {
@@ -488,7 +515,7 @@ export class EditController {
     this.hoverTimer = 0;
     this.lastHover = performance.now();
     const at = this.pending;
-    if (!at || this.drag) return;
+    if (!this.state.enabled || !at || this.drag) return;
     const tool = this.state.tool;
     if (tool === 'split') {
       const { target, pick } = this.splitAt(at.x, at.y) ?? { target: null, pick: null };

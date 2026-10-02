@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildingHeightRange, EDIT_LIMITS, emptyEdits, MAX_SHAPES, MAX_TEXT_LENGTH, sanitizeEdits, type AddedShape, type ModelEdits } from '../../core/edit/types';
 import { Projection } from '../../core/geo/projection';
+import { roadEditOf } from '../../core/edit/blocks';
 import type { SvgRoute } from '../../core/svgmap/routes';
 import { clearPicks, deleteRoute } from '../svgmap/routes';
 import {
   addLayer,
   addShape,
+  assignLayer,
   adoptEdits,
   clearEdits,
   clearEditsFor,
@@ -123,6 +125,54 @@ describe('edit history', () => {
     patchObjects(['b:1'], { layer: undefined });
     expect(edits().objects['b:1']).toBeUndefined();
   });
+});
+
+describe('mixed selections', () => {
+  it('colours buildings, road blocks and shapes together, and undoes them together', () => {
+    const original = {
+      ...emptyEdits(),
+      layers: [{ id: 'L', name: 'Layer', hex: '#E4002B', line: 'PLA Basic' as const }],
+      objects: { 'r:main': { widthMm: 1.2 }, 'r:main@0-0.5': { heightMm: 2 } },
+      shapes: [shape('a'), shape('unselected')],
+    };
+    reset(original);
+    assignLayer(['b:1', 'r:main@0-0.5', 's:a'], 'L');
+    expect(edits().objects['b:1']).toEqual({ layer: 'L' });
+    expect(roadEditOf(edits().objects, 'r:main@0-0.5')).toEqual({ layer: 'L', widthMm: 1.2, heightMm: 2 });
+    expect(roadEditOf(edits().objects, 'r:main@0.5-1')).toEqual({ widthMm: 1.2 });
+    expect(edits().shapes.map((s) => s.layer)).toEqual(['L', 'buildings']);
+    expect(useApp.getState().editHistory.past).toHaveLength(1);
+    undoEdit();
+    expect(edits()).toEqual(original);
+    redoEdit();
+    expect(edits().shapes[0].layer).toBe('L');
+    expect(edits().objects['b:1'].layer).toBe('L');
+  });
+
+  it('gives each kind its own colour when a mixed selection leaves a layer', () => {
+    reset({
+      ...emptyEdits(),
+      layers: [{ id: 'L', name: 'Layer', hex: '#E4002B', line: 'PLA Basic' }],
+      objects: { 'b:1': { layer: 'L', heightM: 40 } },
+      shapes: [shape('path', { layer: 'L' }), shape('box', { kind: 'box', layer: 'L' })],
+    });
+    assignLayer(['b:1', 's:path', 's:box'], undefined);
+    expect(edits().objects['b:1']).toEqual({ heightM: 40 });
+    expect(edits().shapes.map((s) => s.layer)).toEqual(['roads', 'buildings']);
+  });
+});
+
+it('keeps a drawn road at the same height in the inspector, saved edits and exports', () => {
+  const settings = useApp.getState().settings;
+  useApp.setState({ settings: { ...settings, roads: { ...settings.roads, thicknessMm: 0.05 } } });
+  try {
+    const drawn = { ...shape('path'), ...shapeDefaults('path') };
+    const saved = sanitizeEdits({ ...emptyEdits(), shapes: [drawn] }).shapes[0];
+    expect(drawn.heightMm).toBe(EDIT_LIMITS.shapeHeightMm[0]);
+    expect(saved.heightMm).toBe(drawn.heightMm);
+  } finally {
+    useApp.setState({ settings });
+  }
 });
 
 describe('removing and clearing', () => {
