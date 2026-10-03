@@ -20,6 +20,8 @@ export interface GenerateRequest {
   /** Applied as soon as the model is built, so it never shows without them. */
   edits?: ModelEdits;
   editsVersion?: number;
+  /** Part ids hidden in the 3D view, as in EditRequest. */
+  hidden?: string[];
   /** Where the app is served from, to load fonts for text shapes. */
   baseUrl?: string;
   /** The most cells a LiDAR only grid given in metres may have on this machine (fixedCellLimit). */
@@ -36,6 +38,12 @@ export interface EditRequest {
   edits: ModelEdits;
   version: number;
   baseUrl?: string;
+  /**
+   * Part ids hidden in the 3D view. A download leaves those parts out, and
+   * with them what their shapes cut from the roads and land cover, so the
+   * view does too.
+   */
+  hidden?: string[];
 }
 
 /** The steps a job's progress is planned in (`Progress.plan`), in the order they run. */

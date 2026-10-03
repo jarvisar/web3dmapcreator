@@ -60,6 +60,12 @@
   border-top: 1px solid var(--border);
 }
 
+.help-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 @media (max-width: 560px) {
   .dialog-body {
     padding: 12px 14px 16px;

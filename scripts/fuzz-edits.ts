@@ -766,12 +766,17 @@ async function main() {
         };
         const parts = plates[0]?.parts ?? [];
         compare(viewerVolumes(), exportVolumes(parts), '');
-        // Some of what the parts list offers hidden, which the download leaves out.
+        // Some of what the parts list offers hidden, as the app has it: the
+        // view is told, so hidden shapes cut nothing there, and the download
+        // leaves those parts out and what their shapes cut with them.
         const offered = [...generated.keys(), ...edits.layers.map((l) => `layer:${l.id}`), SHAPES_PART];
         const hiddenIds = offered.filter(() => hideRand() < 0.3);
         if (hiddenIds.length) {
-          const excluded = new Set(excludedParts(edited, hiddenIds));
-          compare(viewerVolumes(new Set(hiddenIds)), exportVolumes(parts.filter((p) => !excluded.has(p.id))), ` with ${hiddenIds.join(', ')} hidden`);
+          record(await session.update(edits, step, hiddenIds));
+          const download = await session.edited(flag('selftest') ? previous : edits, DEFAULT_PALETTE, hiddenIds);
+          const { plates: shown } = await buildPlates(download, { multiPlate: false, sectionWidthMm: 80, sectionHeightMm: 80, bedWidth: 256, bedDepth: 256, exclude: excludedParts(download, hiddenIds) });
+          compare(viewerVolumes(new Set(hiddenIds)), exportVolumes(shown[0]?.parts ?? []), ` with ${hiddenIds.join(', ')} hidden`);
+          record(await session.update(edits, step));
         }
       }
     }

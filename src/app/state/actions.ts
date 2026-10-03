@@ -11,7 +11,7 @@ import { roadSegment } from '../../core/edit/blocks';
 import { kindOf, objectOf } from '../../core/edit/keys';
 import type { ModelEdits } from '../../core/edit/types';
 import { fileBase, generationProblem, lidarCellLimit } from './derived';
-import { flushEdits, nextEditVersion, setNotes } from './editActions';
+import { flushEdits, hiddenForEdits, nextEditVersion, setNotes } from './editActions';
 import { getEngine, onWorkerReplaced } from './engine';
 import { setModelParts, type EditData } from './model';
 import {
@@ -136,6 +136,7 @@ export async function generateModel(options: { approveTiles?: string[] } = {}): 
       settings,
       edits: structuredClone(state.edits),
       editsVersion: nextEditVersion(),
+      hidden: hiddenForEdits(state.ui.hiddenParts),
       baseUrl: document.baseURI,
       maxCells: lidarCellLimit(state.ui.largeGrids),
       approveTiles: options.approveTiles,

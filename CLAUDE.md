@@ -802,8 +802,10 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   (`LandSlabs`, `landParts`, whole land parts sent), exports cut whole slabs
   (`cutCover`). Land fill counts a shape's ground as a blocker, not vacated,
   or `Make it a drawn road` put grass back under the road. Shapes in hidden
-  parts are left out of an export's cuts but not the view's, which doesn't
-  know what's hidden. Before, these were overlaps an STL couldn't settle.
+  parts cut nothing, trees and LiDAR only clearing included, in a download
+  or the view: edit and generate requests carry `hidden` (`hiddenForEdits`),
+  and hiding or showing shapes sends an update. Before, these were overlaps
+  an STL couldn't settle.
 - A route picked in the 3D editor offers `Edit on the map` (`editTrack`), and
   a drawn road's hint links to drawing one (`drawTrack`). Removing a route in
   3D is an `rt:` edit that outlives a regenerate, so the route editor's card

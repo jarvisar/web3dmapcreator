@@ -163,7 +163,7 @@ async function startSession(id: number, spec: ModelSpec, request: GenerateReques
   const edits = sanitizeEdits(request.edits ?? emptyEdits());
   if (!hasEdits(edits)) return transfers;
   try {
-    result.edit = await session.update(edits, request.editsVersion ?? 0);
+    result.edit = await session.update(edits, request.editsVersion ?? 0, request.hidden);
     return [...meshTransfers(result.edit), ...transfers];
   } catch (error) {
     result.warnings.push(`The edits couldn't be applied to this model: ${describe(error)}`);
@@ -189,7 +189,7 @@ async function applyEdits(): Promise<void> {
         continue;
       }
       try {
-        const update = await session.update(sanitizeEdits(request.edits), request.version);
+        const update = await session.update(sanitizeEdits(request.edits), request.version, request.hidden);
         post({ type: 'edited', id, update }, meshTransfers(update));
       } catch (error) {
         post({ type: 'error', id, message: describe(error) });

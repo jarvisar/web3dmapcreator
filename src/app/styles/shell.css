@@ -597,6 +597,24 @@
 }
 
 @media (max-width: 640px) {
+  .app {
+    --topbar-h: 44px;
+  }
+  .topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: 1fr;
+    gap: 8px;
+  }
+  .topbar-start,
+  .topbar-center,
+  .topbar-end {
+    grid-column: auto;
+    grid-row: auto;
+  }
+  .topbar-center {
+    align-self: auto;
+    justify-content: flex-end;
+  }
   .brand-name {
     font-size: 15px;
   }
@@ -612,14 +630,14 @@
     padding-inline: 6px;
   }
   .topbar-link {
-    width: 28px;
+    display: none;
   }
   .view-btn {
     padding: 0 9px;
   }
 }
 
-@media (max-width: 520px) {
+@media (max-width: 600px) {
   .brand-light,
   .drawer-toggle-text {
     display: none;
@@ -631,10 +649,13 @@
   }
 }
 
-@media (max-width: 400px) {
+@media (max-width: 440px) {
   .brand-name {
     display: none;
   }
+}
+
+@media (max-width: 400px) {
   .view-btn svg {
     display: none;
   }

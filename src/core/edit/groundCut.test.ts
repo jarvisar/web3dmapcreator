@@ -29,6 +29,7 @@ function town(): SourceData {
     features: {
       water: [feature('river', { type: 'Polygon', coordinates: rect(-900, -60, 900, 40) }, { subtype: 'river', class: 'river' })],
       land_use: [feature('park', { type: 'Polygon', coordinates: rect(200, 200, 500, 450) }, { subtype: 'park', class: 'park' })],
+      land: [feature('forest', { type: 'Polygon', coordinates: rect(-500, 150, -200, 400) }, { subtype: 'forest', class: 'forest' })],
       segment: [
         feature('main', { type: 'LineString', coordinates: [at(-800, 120), at(800, 130)] }, { subtype: 'road', class: 'primary' }),
         feature('cross', { type: 'LineString', coordinates: [at(0, -500), at(10, 500)] }, { subtype: 'road', class: 'residential' }),
@@ -42,9 +43,10 @@ function town(): SourceData {
 const area: AreaSpec = { center: [LON, LAT], widthM: 1500, heightM: 1000, rotationDeg: 0, shape: 'rectangle', cornerRadius: 0.1 };
 const hills = { sample: (lon: number, lat: number) => 30 + 20 * Math.sin((lon - LON) / M_LON / 200) + 10 * Math.cos((lat - LAT) / M_LAT / 150) };
 
-async function setUp() {
+async function setUp(options: { trees?: boolean } = {}) {
   const settings = cloneSettings();
   settings.terrain.resolution = 96;
+  if (options.trees) settings.trees.enabled = true;
   const spec = await generateModel({ area, settings, data: town(), elevation: hills });
   const projection = new Projection(area.center, area.rotationDeg, spec.mmPerMetre);
   const session = new EditSession(spec, settings, projection);
@@ -181,6 +183,27 @@ describe('what shapes on the ground take from under them', () => {
     const edited = await session.edited(edits, DEFAULT_PALETTE);
     expect(overlap(edited, 'land-green', footprint)).toBeLessThan(1e-3);
     await session.update(edits, 1);
+  });
+
+  it('gives back what hidden shapes took in the view, as the download does', async () => {
+    const { session } = await setUp({ trees: true });
+    // A wide road through the forest and the park, over trees.
+    const edits = withShapes(shape({ sizeMm: 8, points: [at(-600, 300), at(550, 300)] }));
+    const shown = await session.update(edits, 1);
+    expect(shown.parts.some((p) => p.id === 'land-green' && p.part)).toBe(true);
+    expect(shown.hidden.length).toBeGreaterThan(0);
+    const hidden = await session.update(edits, 2, [SHAPES_PART]);
+    expect(hidden.parts.find((p) => p.id === 'land-green')).toEqual({ id: 'land-green', part: null });
+    expect(hidden.parts.find((p) => p.id === 'roads')).toEqual({ id: 'roads', part: null });
+    expect(hidden.hidden).toEqual([]);
+    // A road in a custom layer goes with the layer, not the shapes.
+    const layered: ModelEdits = { ...edits, layers: [{ id: 'red', name: 'Red', hex: '#ff0000', line: 'PLA Basic' }], shapes: [{ ...edits.shapes[0], layer: 'red' }] };
+    const inLayer = await session.update(layered, 3, [SHAPES_PART]);
+    expect(inLayer.parts.some((p) => p.id === 'land-green' && p.part)).toBe(true);
+    expect((await session.update(layered, 4, ['layer:red'])).parts.find((p) => p.id === 'land-green')).toEqual({ id: 'land-green', part: null });
+    const again = await session.update(edits, 5);
+    expect(again.parts.some((p) => p.id === 'land-green' && p.part)).toBe(true);
+    expect(again.hidden).toEqual(shown.hidden);
   });
 
   it('leaves land cover and roads alone under shapes hidden from the download', async () => {

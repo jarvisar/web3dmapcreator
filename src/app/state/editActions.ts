@@ -27,6 +27,7 @@ import { getEngine } from './engine';
 import { describeCounts } from '../viewer/edit/describe';
 import { applyStep, extendStep, stepBetween, type EditStep } from './history';
 import { applyEditUpdate, getEditData } from './model';
+import { SHAPES_PART } from '../../core/edit/session';
 import { hasPicks, writeBackup, type Backup } from './persist';
 import { mergeTracks } from '../../core/tracks/track';
 import { HISTORY_LIMIT, keepReplaced, patchSvg, setTracks, toast, useApp, type Brought, type EditTool, type Toast } from './store';
@@ -745,6 +746,14 @@ export function nextEditVersion(): number {
   return ++editVersion;
 }
 
+/**
+ * Hidden parts the worker needs for the view: shapes in them cut nothing
+ * from the roads and land cover, as in a download.
+ */
+export function hiddenForEdits(hidden: readonly string[]): string[] {
+  return hidden.filter((id) => id === SHAPES_PART || id.startsWith('layer:'));
+}
+
 function send(): void {
   timer = 0;
   const state = get();
@@ -754,7 +763,7 @@ function send(): void {
   latestSent = version;
   setPending(true);
   getEngine()
-    .edit({ edits: structuredClone(state.edits), version, baseUrl: document.baseURI })
+    .edit({ edits: structuredClone(state.edits), version, baseUrl: document.baseURI, hidden: hiddenForEdits(state.ui.hiddenParts) })
     .then((update) => {
       if (applyEditUpdate(update)) setNotes(update.notes);
       for (const warning of update.warnings) toast(warning, 'error');
@@ -774,7 +783,9 @@ export function startEditSync(): void {
   if (started) return;
   started = true;
   useApp.subscribe((state, previous) => {
-    if (state.edits === previous.edits) return;
+    const hiding =
+      state.ui.hiddenParts !== previous.ui.hiddenParts && state.edits.shapes.length > 0 && hiddenForEdits(state.ui.hiddenParts).join() !== hiddenForEdits(previous.ui.hiddenParts).join();
+    if (state.edits === previous.edits && !hiding) return;
     if (!timer) timer = window.setTimeout(send, 16);
   });
 }

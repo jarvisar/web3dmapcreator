@@ -909,13 +909,22 @@ export class EditSession {
 
   /**
    * Whether a shape is in the model. Shapes in `hidden` parts are left out
-   * of an export, so what they cut from the rest is too. The view doesn't
-   * know what's hidden, so it keeps those cuts.
+   * of an export, and hidden in the view, so what they cut from the rest
+   * (roads, land cover, trees) is left out of both.
    */
   private shownShape(edits: ModelEdits, hidden?: ReadonlySet<string>): (shape: AddedShape) => boolean {
     if (!hidden?.size) return () => true;
     const layerIds = new Set(edits.layers.map((layer) => layer.id));
     return (shape) => !hidden.has(layerIds.has(shape.layer) ? layerPartId(shape.layer) : SHAPES_PART);
+  }
+
+  /** What the shown shapes stand on the ground with, for the trees there. */
+  private shownGrounds(standing: Map<string, Standing>, edits: ModelEdits, hidden?: ReadonlySet<string>): MultiPolygon[] {
+    const shown = this.shownShape(edits, hidden);
+    return edits.shapes.flatMap((shape) => {
+      const ground = standing.get(shape.id)?.ground;
+      return ground?.length && shown(shape) ? [ground] : [];
+    });
   }
 
   /**
@@ -1423,11 +1432,12 @@ export class EditSession {
 
   // ------------------------------------------------------------- update
 
-  async update(edits: ModelEdits, version: number): Promise<EditUpdate> {
+  /** `hidden` is the parts hidden in the view: what their shapes cut is left out, as a download leaves it out. */
+  async update(edits: ModelEdits, version: number, hidden: readonly string[] = []): Promise<EditUpdate> {
     const reset = this.resend;
     this.resend = false;
     try {
-      const update = await this.apply(edits, version);
+      const update = await this.apply(edits, version, new Set(hidden));
       if (reset) update.reset = true;
       return update;
     } catch (error) {
@@ -1457,7 +1467,7 @@ export class EditSession {
     this.resend = true;
   }
 
-  private async apply(edits: ModelEdits, version: number): Promise<EditUpdate> {
+  private async apply(edits: ModelEdits, version: number, hidden: ReadonlySet<string>): Promise<EditUpdate> {
     const warnings: string[] = [];
     const objects: ObjectMesh[] = [];
     const parts: PartUpdate[] = [];
@@ -1496,7 +1506,7 @@ export class EditSession {
     // the last ones and skip rebuilding them.
     const { polygons: footprints, text } = await this.shapeFootprints(edits, warnings, true);
     const tiles = new Map(this.tiles);
-    const { state, changed } = await this.rebuildTiles(edits, this.roadState, tiles, this.roadCuts(edits, footprints));
+    const { state, changed } = await this.rebuildTiles(edits, this.roadState, tiles, this.roadCuts(edits, footprints, hidden));
     this.tiles = tiles;
     this.roadState = state;
     if (state.styles.size && this.roads) {
@@ -1545,7 +1555,7 @@ export class EditSession {
       if (note) notes[key] = note;
       await offer(key, SHAPES_PART, 'building', stood.signature, () => stood.solids);
     }
-    const cleared = this.cleared(standing, edits);
+    const cleared = this.cleared(standing, edits, hidden);
     if ((cleared?.signature ?? '') !== this.sentCut) {
       let part: MeshPart | null = null;
       try {
@@ -1559,7 +1569,7 @@ export class EditSession {
 
     // Land cover cut where shapes stand on it, and back where a removed
     // road, building or body of water was.
-    const ground = this.groundCut(standing, edits);
+    const ground = this.groundCut(standing, edits, hidden);
     parts.push(...(await this.landParts(ground)));
     for (const fill of this.fills(pass, this.tiles, ground)) {
       const key = `${FILL_PREFIX}${fill.category}`;
@@ -1575,8 +1585,8 @@ export class EditSession {
     }
 
     // Trees under what a shape stands on the ground with. A shape on a deck leaves those under the bridge.
-    const shapeFootprints = [...standing.values()].flatMap((s) => (s.ground.length ? [s.ground] : []));
-    return { model: this.id, version, objects, parts, hidden: this.hiddenTrees(shapeFootprints, this.tiles, earth), notes, warnings };
+    const treesUnder = this.shownGrounds(standing, edits, hidden);
+    return { model: this.id, version, objects, parts, hidden: this.hiddenTrees(treesUnder, this.tiles, earth), notes, warnings };
   }
 
   /** What's worth knowing about a shape as built: nothing to print, hidden, or bits too thin to print. */
@@ -1925,8 +1935,7 @@ export class EditSession {
     const roadTiles = roadsEdited ? tiles : new Map<number, RoadBucket[]>();
     const decks = this.rebuiltDecks(edits);
     const { earth, standing } = this.standAll(pass, roadTiles, decks, footprints);
-    const shapeFootprints = [...standing.values()].flatMap((s) => (s.ground.length ? [s.ground] : []));
-    const hidden = new Set(this.hiddenTrees(shapeFootprints, roadTiles, earth));
+    const hidden = new Set(this.hiddenTrees(this.shownGrounds(standing, edits, excludedSet), roadTiles, earth));
     const cleared = this.cleared(standing, edits, excludedSet);
     const ground = this.groundCut(standing, edits, excludedSet);
     let city: Layer | null = null;

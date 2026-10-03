@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { CACHE_LIMIT, cacheSize, clearCache, LIDAR_CACHE_LIMIT } from '../../core/data/cache';
 import { Dialog } from '../components/Dialog';
-import { GithubMark } from '../components/Icons';
+import { BuyMeACoffeeMark, GithubMark, MakerWorldMark, PatreonMark } from '../components/Icons';
 import { formatBytes, keepUnits } from '../lib/format';
 import { setHelpOpen, toast, useApp } from '../state/store';
 import { REPO_URL } from './TopBar';
@@ -208,6 +208,22 @@ export function HelpDialog() {
         settings, and any font you load for a title, are saved in this browser only.
       </p>
       {open && <StoredData />}
+
+      <h3 className="help-heading">Support and models</h3>
+      <div className="help-links">
+        <a href="https://buymeacoffee.com/jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
+          <BuyMeACoffeeMark size={18} />
+          Buy Me a Coffee
+        </a>
+        <a href="https://www.patreon.com/c/Jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
+          <PatreonMark size={16} />
+          Patreon
+        </a>
+        <a href="https://makerworld.com/en/@jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
+          <MakerWorldMark size={18} />
+          MakerWorld
+        </a>
+      </div>
 
       <p className="help-footer">
         <a href={REPO_URL} target="_blank" rel="noreferrer" className="btn btn-sm">
