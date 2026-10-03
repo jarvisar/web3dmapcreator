@@ -96,6 +96,22 @@ export function HelpDialog() {
   const open = useApp((state) => state.ui.helpOpen);
   return (
     <Dialog open={open} onClose={() => setHelpOpen(false)} title="How it works" className="help-dialog">
+      <h3 className="help-heading">Support and models</h3>
+      <div className="help-links">
+        <a href="https://makerworld.com/en/@jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
+          <MakerWorldMark size={18} />
+          MakerWorld
+        </a>
+        <a href="https://buymeacoffee.com/jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
+          <BuyMeACoffeeMark size={18} />
+          Buy Me a Coffee
+        </a>
+        <a href="https://www.patreon.com/c/Jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
+          <PatreonMark size={16} />
+          Patreon
+        </a>
+      </div>
+
       <p className="help-intro">
         Jarvizar City Model turns an area of the map into a multicolour 3D printable model, with terrain, water, parks, roads,
         buildings and trees as separate parts so every colour can be its own filament. It also makes flat SVG maps for
@@ -208,22 +224,6 @@ export function HelpDialog() {
         settings, and any font you load for a title, are saved in this browser only.
       </p>
       {open && <StoredData />}
-
-      <h3 className="help-heading">Support and models</h3>
-      <div className="help-links">
-        <a href="https://buymeacoffee.com/jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
-          <BuyMeACoffeeMark size={18} />
-          Buy Me a Coffee
-        </a>
-        <a href="https://www.patreon.com/c/Jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
-          <PatreonMark size={16} />
-          Patreon
-        </a>
-        <a href="https://makerworld.com/en/@jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
-          <MakerWorldMark size={18} />
-          MakerWorld
-        </a>
-      </div>
 
       <p className="help-footer">
         <a href={REPO_URL} target="_blank" rel="noreferrer" className="btn btn-sm">
