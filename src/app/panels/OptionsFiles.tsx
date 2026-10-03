@@ -63,7 +63,7 @@ export function OptionsFiles() {
         </button>
       </div>
       <CheckField label="Include map area" checked={includeArea} onChange={setIncludeArea} />
-      <p className="options-file-help">Save or load options as a JSON file. With the map area, edits made in the 3D view and the routes on it go too. Uncheck to keep the current location and shape. SVG area size follows the piece and scale.</p>
+      <p className="options-file-help">Save or load options as a JSON file. With the map area, edits made in the 3D view and the routes on it go too, whole and hidden ones included. Uncheck to keep the current location and shape. SVG area size follows the piece and scale.</p>
       <input ref={input} type="file" accept=".json,application/json" hidden aria-label="Import options file" onChange={(event) => {
         const file = event.currentTarget.files?.[0];
         event.currentTarget.value = '';

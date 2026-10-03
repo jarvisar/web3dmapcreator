@@ -35,7 +35,7 @@ export interface ParsedTrack {
 
 export interface TrackFile {
   tracks: ParsedTrack[];
-  /** What in a zip was left out, worded to follow the zip's name. */
+  /** What in a zip was left out, or a file that ends early, worded to follow the file's name. */
   skipped: string[];
 }
 
@@ -52,9 +52,15 @@ interface FileContents {
   chunks: Chunk[];
   // Waypoints and other points, only counted to explain an empty result.
   points: number;
+  /** The file stops before its end, like a download that didn't finish. What's there is still read. */
+  cut?: boolean;
 }
 
 const collapse = (text: string) => text.replace(/\s+/g, ' ').trim();
+
+// A coordinate as written, or NaN. parseFloat took 41.88 from "41.88junk",
+// and Number takes "" as 0.
+const coordinate = (text: string | undefined) => (text?.trim() ? Number(text) : NaN);
 
 function readGpx(text: string): FileContents {
   const chunks: Chunk[] = [];
@@ -65,7 +71,7 @@ function readGpx(text: string): FileContents {
   let fileName = '';
   let trackName = '';
   let points = 0;
-  walkXml(text, {
+  const closed = walkXml(text, {
     open(name, attrs) {
       stack.push(name);
       buffer = '';
@@ -84,7 +90,7 @@ function readGpx(text: string): FileContents {
         }
         chunk.lines.push(line);
       } else if (name === 'trkpt' || name === 'rtept') {
-        line?.push([parseFloat(attrs.lon), parseFloat(attrs.lat)]);
+        line?.push([coordinate(attrs.lon), coordinate(attrs.lat)]);
       } else if (name === 'wpt') {
         points++;
       }
@@ -111,14 +117,14 @@ function readGpx(text: string): FileContents {
   // <rte> and the full line in <trk>. Both printed, the turn points cut
   // straight across every bend, so a recorded or full line wins.
   const tracked = chunks.some((c) => c.track && c.lines.some((l) => cleanLine(l).length > 0));
-  return { name: fileName || trackName, chunks: tracked ? chunks.filter((c) => c.track) : chunks, points };
+  return { name: fileName || trackName, chunks: tracked ? chunks.filter((c) => c.track) : chunks, points, cut: !closed };
 }
 
 function kmlCoordinates(text: string): LonLat[] {
   const tuples = text.replace(/\s*,\s*/g, ',').trim().split(/\s+/);
   return tuples.map((tuple) => {
     const [lon, lat] = tuple.split(',');
-    return [parseFloat(lon), parseFloat(lat)];
+    return [coordinate(lon), coordinate(lat)];
   });
 }
 
@@ -132,7 +138,7 @@ function readKml(text: string): FileContents {
   // gx:MultiTrack and gx:Track, Google Earth's recorded tracks.
   let multi: Chunk | null = null;
   let track: LonLat[] | null = null;
-  walkXml(text, {
+  const closed = walkXml(text, {
     open(name) {
       stack.push(name);
       buffer = '';
@@ -152,7 +158,7 @@ function readKml(text: string): FileContents {
         else if (parent === 'Point') points++;
       } else if (name === 'coord' && track) {
         const [lon, lat] = buffer.trim().split(/\s+/);
-        track.push([parseFloat(lon), parseFloat(lat)]);
+        track.push([coordinate(lon), coordinate(lat)]);
       } else if (name === 'Track') {
         track = null;
       } else if (name === 'MultiTrack') {
@@ -167,7 +173,7 @@ function readKml(text: string): FileContents {
       buffer += t;
     },
   });
-  return { name: documentName || placemarkName, chunks, points };
+  return { name: documentName || placemarkName, chunks, points, cut: !closed };
 }
 
 function readTcx(text: string): FileContents {
@@ -180,7 +186,7 @@ function readTcx(text: string): FileContents {
   let lat = NaN;
   let lon = NaN;
   let points = 0;
-  walkXml(text, {
+  const closed = walkXml(text, {
     open(element) {
       stack.push(element);
       buffer = '';
@@ -203,8 +209,8 @@ function readTcx(text: string): FileContents {
     },
     close(element) {
       const parent = stack[stack.length - 2];
-      if (element === 'LatitudeDegrees') lat = parseFloat(buffer);
-      else if (element === 'LongitudeDegrees') lon = parseFloat(buffer);
+      if (element === 'LatitudeDegrees') lat = coordinate(buffer);
+      else if (element === 'LongitudeDegrees') lon = coordinate(buffer);
       // A trackpoint without a position, like heart rate on a treadmill, is skipped.
       else if (element === 'Trackpoint' && line && Number.isFinite(lat) && Number.isFinite(lon)) line.push([lon, lat]);
       else if (element === 'Track') line = null;
@@ -216,7 +222,7 @@ function readTcx(text: string): FileContents {
       buffer += t;
     },
   });
-  return { name, chunks, points };
+  return { name, chunks, points, cut: !closed };
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -353,8 +359,8 @@ function contentsOf(data: Uint8Array): FileContents {
   const buffer = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength ? (data.buffer as ArrayBuffer) : data.slice().buffer;
   if (isFit(buffer)) {
     try {
-      const { lines, name } = readFit(buffer);
-      return { name, chunks: [{ lines, track: true }], points: 0 };
+      const { lines, name, cut } = readFit(buffer);
+      return { name, chunks: [{ lines, track: true }], points: 0, cut };
     } catch (error) {
       throw error instanceof FitError ? new TrackFileError(error.message) : error;
     }
@@ -415,12 +421,14 @@ function fromZip(data: Uint8Array, fileName: string): TrackFile {
   const skipped: string[] = [];
   let failure: unknown = null;
   for (const name of chosen) {
+    const member = name.replace(/^.*\//, '');
     try {
       const bytes = /\.gz$/i.test(name) ? gunzip(files[name]) : files[name];
-      tracks.push(toTrack(contentsOf(bytes), chosen.length === 1 && /\.kmz$/i.test(fileName) ? fileName : name));
+      const contents = contentsOf(bytes);
+      tracks.push(toTrack(contents, chosen.length === 1 && /\.kmz$/i.test(fileName) ? fileName : name));
+      if (contents.cut) skipped.push(`${member} in it ends early, so its route may be cut short.`);
     } catch (error) {
       failure ??= error;
-      const member = name.replace(/^.*\//, '');
       skipped.push(error instanceof TrackFileError ? `${member} in it was left out. ${error.message}` : `${member} in it couldn't be read.`);
     }
   }
@@ -429,13 +437,15 @@ function fromZip(data: Uint8Array, fileName: string): TrackFile {
   return { tracks, skipped };
 }
 
-/** The routes in a file, usually one, and what in a zip of them was left out. Throws TrackFileError with a message to show. */
+/** The routes in a file, usually one, and what in a zip of them was left out or ends early. Throws TrackFileError with a message to show. */
 export function readTrackFile(fileName: string, data: ArrayBuffer): TrackFile {
   if (data.byteLength > MAX_FILE_BYTES) throw new TrackFileError(TOO_BIG);
   let bytes: Uint8Array = new Uint8Array(data);
   if (bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = gunzip(bytes);
   if (signature(bytes, 0, 4) === 'PK\x03\x04') return fromZip(bytes, fileName);
-  return { tracks: [toTrack(contentsOf(bytes), fileName)], skipped: [] };
+  const contents = contentsOf(bytes);
+  // Read all the same, since the route up to where it stops is still worth having. Only the note says so.
+  return { tracks: [toTrack(contents, fileName)], skipped: contents.cut ? ['the file ends early, so the route may be cut short.'] : [] };
 }
 
 /** Just the routes, for the scripts. */

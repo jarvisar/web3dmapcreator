@@ -35,12 +35,16 @@ export function isFit(data: ArrayBuffer): boolean {
   return (bytes[0] === 12 || bytes[0] === 14) && String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]) === '.FIT';
 }
 
-/** Every stretch of positions in the file, and a course's name if it has one. */
-export function readFit(data: ArrayBuffer): { lines: LonLat[][]; name: string } {
+/**
+ * Every stretch of positions in the file, and a course's name if it has one.
+ * `cut` when the file stops short of the data its header says it holds.
+ */
+export function readFit(data: ArrayBuffer): { lines: LonLat[][]; name: string; cut: boolean } {
   const view = new DataView(data);
   const lines: LonLat[][] = [];
   let line: LonLat[] = [];
   let name = '';
+  let cut = false;
   const breakLine = () => {
     if (line.length) lines.push(line);
     line = [];
@@ -53,7 +57,9 @@ export function readFit(data: ArrayBuffer): { lines: LonLat[][]; name: string } 
       if (at === 0) throw new FitError("This FIT file couldn't be read.");
       break;
     }
-    const end = Math.min(data.byteLength, at + headerSize + view.getUint32(at + 4, true));
+    const declared = at + headerSize + view.getUint32(at + 4, true);
+    if (declared > data.byteLength) cut = true;
+    const end = Math.min(data.byteLength, declared);
     at += headerSize;
     const definitions = new Map<number, Definition>();
     while (at < end) {
@@ -119,5 +125,5 @@ export function readFit(data: ArrayBuffer): { lines: LonLat[][]; name: string } 
     // The file's CRC.
     at = end + 2;
   }
-  return { lines, name };
+  return { lines, name, cut };
 }

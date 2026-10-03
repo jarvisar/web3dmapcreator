@@ -2,7 +2,7 @@ import { gzipSync, strToU8, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import type { LonLat } from '../types';
 import { readFit } from './fitfile';
-import { parseTrackFile, TrackFileError } from './parse';
+import { parseTrackFile, readTrackFile, TrackFileError } from './parse';
 import { decodePolyline, encodePolyline } from './polyline';
 import { decodeTrack, encodeTrack, MAX_TRACK_POINTS, mergeTracks, sanitizeTracks, simplifyLine, simplifyTrack, trackLengthM, type Track } from './track';
 
@@ -123,6 +123,25 @@ describe('simplifying tracks', () => {
     expect(line[2]).toEqual(dense[5001]);
     // The corner can move back by the thinning's 0.2 m at most.
     expect(Math.abs(line[1][0] - dense[5000][0]) / M).toBeLessThanOrEqual(0.2 + 1e-6);
+  });
+
+  it('stay quick on a sawtooth, which Douglas-Peucker would take a point at a time', () => {
+    // 100,000 points 11 m either side of the line took 17 s. One shrinking
+    // along its length has no ties to split in the middle at.
+    const saw: LonLat[] = Array.from({ length: 100_000 }, (_, i) => [i * 0.03 * M, (i % 2) * 11 * M]);
+    const shrinking: LonLat[] = saw.map(([x, y], i) => [x, y * (1 - i / 200_000)]);
+    for (const line of [saw, shrinking]) {
+      const start = performance.now();
+      const [out] = simplifyTrack([line]);
+      expect(performance.now() - start).toBeLessThan(2000);
+      expect(out.length).toBeLessThanOrEqual(MAX_TRACK_POINTS);
+      expect(out[0]).toEqual(line[0]);
+      expect(out[out.length - 1]).toEqual(line[line.length - 1]);
+      // Still the line's own points, in order.
+      const index = new Map(line.map((p, i) => [p, i]));
+      const order = out.map((p) => index.get(p)!);
+      expect(order.every((n, i) => n !== undefined && (i === 0 || n > order[i - 1]))).toBe(true);
+    }
   });
 
   it('measure and decode what they encode', () => {
@@ -337,6 +356,42 @@ describe('reading route files', () => {
     expect(track.name).toBe('Chicago Marathon');
     expect(track.lines).toHaveLength(1);
     expect(parseTrackFile('Morning Ride.fit', fitFile(points))[0].name).toBe('Morning Ride');
+  });
+
+  it('reads a file that ends early, and says so', () => {
+    const whole = `<?xml version="1.0"?><gpx><trk><name>Long run</name><trkseg>
+      <trkpt lat="41.88" lon="-87.63"/><trkpt lat="41.881" lon="-87.631"/><trkpt lat="41.882" lon="-87.632"/>
+      </trkseg></trk></gpx>`;
+    const note = ['the file ends early, so the route may be cut short.'];
+    expect(readTrackFile('run.gpx', bytes(whole)).skipped).toEqual([]);
+    // Without its closing tags, and stopped in the middle of a point.
+    for (const cut of [whole.slice(0, whole.indexOf('</trkseg>')), whole.slice(0, whole.indexOf('<trkpt lat="41.882"') + 16)]) {
+      const file = readTrackFile('run.gpx', bytes(cut));
+      expect(file.skipped).toEqual(note);
+      expect(file.tracks[0].lines[0].length).toBeGreaterThanOrEqual(2);
+    }
+    // KML descriptions often have bare HTML in them, which doesn't make the file short.
+    const kml = '<kml><Placemark><description>One<br>Two</description><LineString><coordinates>1,2 1.001,2.001</coordinates></LineString></Placemark></kml>';
+    expect(readTrackFile('lines.kml', bytes(kml)).skipped).toEqual([]);
+    expect(readTrackFile('lines.kml', bytes(kml.slice(0, -6))).skipped).toEqual(note);
+    const points: LonLat[] = Array.from({ length: 10 }, (_, i) => [-87.62 - i * 0.001, 41.88 + i * 0.001]);
+    const fit = fitFile(points);
+    expect(readTrackFile('ride.fit', fit).skipped).toEqual([]);
+    const fitCut = readTrackFile('ride.fit', fit.slice(0, fit.byteLength - 40));
+    expect(fitCut.skipped).toEqual(note);
+    expect(fitCut.tracks[0].lines[0].length).toBeLessThan(10);
+    const zipped = zipSync({ 'run.gpx': strToU8(whole.slice(0, whole.indexOf('</trkseg>'))), 'walk.gpx': strToU8(whole) });
+    expect(readTrackFile('both.zip', zipped.buffer as ArrayBuffer).skipped).toEqual(['run.gpx in it ends early, so its route may be cut short.']);
+  });
+
+  it('drops coordinates that are not numbers rather than reading what they start with', () => {
+    const gpx = '<gpx><trk><trkseg><trkpt lat="41.88junk" lon="-87.63"/><trkpt lat="41.881" lon="-87.631"/><trkpt lat=" 41.882 " lon="-87.632"/><trkpt lat="" lon="-87.633"/></trkseg></trk></gpx>';
+    expect(parse('junk.gpx', gpx).lines).toEqual([
+      [
+        [-87.631, 41.881],
+        [-87.632, 41.882],
+      ],
+    ]);
   });
 
   it('explains files it cannot use', () => {

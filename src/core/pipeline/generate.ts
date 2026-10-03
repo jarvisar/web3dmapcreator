@@ -76,6 +76,8 @@ export interface EditContext {
   junctions?: Map<string, number[]>;
   /** Imported routes on the ground, which roads and paths were cut away for. */
   tracks?: TrackGround[];
+  /** Route solids a bridge deck carries, by the deck's key. They go with the deck, or they'd be left in the air. */
+  routeDecks?: Map<Solid, string>;
   /** Water bodies with their levels, for editing water and what stands in it (edit/earth.ts). */
   bodies: EditWater[];
   /** Cut water and basins before any ground was kept in them. */
@@ -511,6 +513,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   // A slicer gives an overlap to the part listed later. After the roads, land
   // and decks, the route keeps it where it lies over them, and before the
   // buildings, a building keeps it where the route runs into one.
+  const routeDecks = new Map<Solid, string>();
   if (tracks?.pieces.length) {
     const height = settings.tracks.heightMm;
     const top = (x: number, y: number) => hf.heightAt(x, y) + height;
@@ -523,7 +526,9 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
       for (const deck of piece.decks) {
         const deckTop = deck.top;
         for (const polygon of deck.polygons) {
-          solids.push({ kind: 'prism', role: 'route', polygon, top: (x, y) => deckTop(x, y) + lift, bottom: (x, y) => deckTop(x, y) - embed, drape: deck.drape, key: piece.key });
+          const solid: Solid = { kind: 'prism', role: 'route', polygon, top: (x, y) => deckTop(x, y) + lift, bottom: (x, y) => deckTop(x, y) - embed, drape: deck.drape, key: piece.key };
+          solids.push(solid);
+          routeDecks.set(solid, deck.key);
         }
       }
     }
@@ -569,6 +574,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     roads: groundRoads,
     junctions: roadJunctions,
     tracks: tracks?.pieces.map((piece) => ({ key: piece.key, pieces: piece.ground })),
+    routeDecks,
     // Recorded with the water off too, since the recesses stay.
     bodies: water.bodies.map((body, i): EditWater => {
       const entry = settled[i];

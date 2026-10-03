@@ -208,8 +208,11 @@ Imported routes (`src/core/tracks/`, `pipeline/tracks.ts`, `dsm/route.ts`, UI in
 - Routes are user data like the edits: one list for every area, saved
   under their own key (`TRACKS_KEY`), in undo's `Setup`, added to (never
   replaced) by links and option files (`mergeTracks`), and only the ones
-  on the area go in a link (`tracksForArea`, `t=`) or an options file. A
-  link simplifies them up to 12 m to fit (`packTracks`). Lines are stored
+  on the area go in an options file (`tracksForArea`), whole. A link only
+  takes the shown ones, cut to the area plus the 200 m generation reads
+  past it (`tracksForLink`, `t=`), so the model is the same but a run from
+  home doesn't give the home away. A link simplifies them up to 12 m to
+  fit (`packTracks`). Lines are stored
   as encoded polylines, simplified to 1 m at import and to at most 10,000
   points. The visible ones go to the worker decoded, and they're part of
   `modelKey`, not `snapshotKey`, so offers don't go stale with them.
@@ -241,7 +244,10 @@ Imported routes (`src/core/tracks/`, `pipeline/tracks.ts`, `dsm/route.ts`, UI in
   `deckLines`). Unsnapped, a stretch along a deck counts only when it gets
   on and off at the deck's ends, the model's edge or the route's own ends:
   snapped to a street under Chicago's L, it was lifted onto the viaduct.
-  Over cut
+  In the editor its stretch on a deck goes when the deck does
+  (`routeDecks`, `offDecks`), like the road on it: kept, it stood in the
+  air over the river. One wholly on removed decks goes in the update's
+  `hidden`. Over cut
   water it keeps ground like a road (`kept.tracks`, which goes with the
   route if it's removed in the editor), or wades with supports off. A
   route through a tunnel still prints across the water, since tunnels
@@ -253,10 +259,17 @@ Imported routes (`src/core/tracks/`, `pipeline/tracks.ts`, `dsm/route.ts`, UI in
   leaving the area and coming back had them on the clip edge. Links and
   options files keep a route when a segment of it crosses the area, not
   only a point (`lineTest`). A route back from a link is the same route
-  when its id or name matches and it lies within 15 m of it
-  (`mergeTracks`), since the link simplified it again. Imports thin points
-  under 0.2 m apart before simplifying, and simplify once for every
-  tolerance (`significance`).
+  when its id or name matches and it lies within 15 m of ours, only that
+  way round (`mergeTracks`), since the link cut it and simplified it again.
+  Imports thin points under 0.2 m apart before simplifying, and simplify
+  once for every tolerance (`significance`). Ties go to the middle point
+  (`farthest`) and a line taking over 64 steps per point is done again in
+  runs of 256 with their ends kept: a sawtooth split one point off at a
+  time and held the page for 4.5 s at 50,000 points. Recordings take about
+  20 steps per point, so their output is unchanged. A file that stops
+  before its root element closes, or a FIT file short of the data its
+  header gives, is still read, with a note that it ends early. Coordinates
+  that aren't numbers are dropped (`coordinate`), not read up to the junk.
 - LiDAR only models: a route rests on compose's bare ground grid
   (`ground`), never the surface, which a
   drifting track climbed every roof and crown of. Trees and clutter under 2 m
@@ -296,7 +309,9 @@ Imported routes (`src/core/tracks/`, `pipeline/tracks.ts`, `dsm/route.ts`, UI in
   nudge a point. The edited route is left out of the map's routes layer and
   drawn by the editor. Handles are worked out again when the zoom crosses a
   quarter step or the route changes: keyed on the zoom alone, they pointed
-  past the end of a line an edit had shortened.
+  past the end of a line an edit had shortened. A drag is put back when the
+  window loses focus or its route's lines change under it (another tab, a
+  switch of route): carried on, its indexes read past a shorter line.
 
 Road network tidy (`pipeline/network/`, `roads.tidy`, run in `collectRoadPieces`
 before bridges are split off):
@@ -966,7 +981,11 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   down the arrow is put away: end on it covered the middle of the shape,
   and a pixel moved it by metres. OrbitControls sets an inline
   `cursor: auto` when it connects, which `ViewerEngine` clears or no edit
-  cursor shows.
+  cursor shows. The editor's keys, undo aside, are left to the sidebar, top
+  bar and action bar while one of them has the focus
+  (`focusOutsideViewer`), apart from Escape calling off a drag: with a
+  sidebar button focused, arrows moved the selected shape and Delete
+  removed it. A click on the model leaves the focus on the page.
 - The size chip, the sidebar's size and Reset view go by what the view
   shows (`ui.shownBounds`), so a raised tower counts. The bed stays under
   the generated bounds.
@@ -1007,7 +1026,10 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   (`persist.ts`), so running out of space for them doesn't stop the
   settings saving, and a failed save is shown once. Share links carry them
   deflated (`e=`, `p=`, `shareLink.ts`) up to `MAX_LINK_EXTRA`, and only
-  what's on the linked area (`linkScope.ts`). Object edits go only with a
+  what's on the linked area (`linkScope.ts`). Shapes go by their footprint
+  at the model's scale (`shapeTest`): by their points alone, a drawn road
+  across the area or a filled area around it was left out though it
+  printed. Object edits go only with a
   model of that area that has them, since their keys don't say where they
   are. Reading one back is capped (`MAX_UNPACKED`): a crafted 117 KB link
   inflated to 700 MB, and it crashed the tab again on every reload.

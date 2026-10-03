@@ -49,7 +49,7 @@ A route is 0.6 mm wide and stands 0.8 mm over the ground by default, a layer abo
 
 In a LiDAR only model a route rests on the bare ground, not on the roofs and trees beside it, and the trees and parked cars along it are flattened so it shows. It goes up onto bridges and ramps, and on top of an elevated railway or road it runs along, but stays under an overpass it only passes under. Snapping downloads Overture's roads for the area there.
 
-Routes are saved in the browser, and go in exported options and share links with the area they're on. In the editor a route can be removed or put in a custom layer, so two routes can print in different colours.
+Routes are saved in the browser, and go in exported options with the area they're on. A share link only takes the shown ones, cut off a little past the area, so a run that starts at home doesn't share where home is. In the editor a route can be removed or put in a custom layer, so two routes can print in different colours.
 
 ### Editing Routes
 

@@ -9,7 +9,7 @@ import { SHAPES, SHAPE_LABELS, areaForBounds, constrainSize } from '../lib/area'
 import { copyText, readClipboardText } from '../lib/browser';
 import { formatNumber, formatRatio, formatSizePair } from '../lib/format';
 import { areaForView } from '../map/mapHandle';
-import { editsForArea, picksForArea, tracksForArea } from '../state/linkScope';
+import { editsForArea, picksForArea, tracksForLink } from '../state/linkScope';
 import { getEditData } from '../state/model';
 import { shareUrl } from '../state/shareLink';
 import { setArea, toast, useApp } from '../state/store';
@@ -87,10 +87,9 @@ export function AreaPanel() {
     // Only what's on this area goes: edits and picks are kept for every area.
     const result = state.generation.result;
     const model = result ? { data: getEditData(), trees: result.parts.some((part) => part.id === 'trees') } : null;
-    const scoped = editsForArea(state.edits, state.area, model);
+    const scoped = editsForArea(state.edits, state.area, model, effectiveScale(state.area, state.settings.scale));
     const picked = picksForArea({ routes: state.svg.routes, hiddenLines: state.svg.hiddenLines }, state.area);
-    const routes = tracksForArea(state.tracks, state.area);
-    const { url, left } = shareUrl(state.area, state.output, { ...state.svg, ...picked.picks }, scoped.edits, routes.tracks);
+    const { url, left } = shareUrl(state.area, state.output, { ...state.svg, ...picked.picks }, scoped.edits, tracksForLink(state.tracks, state.area));
     if (!(await copyText(url))) {
       toast('Could not copy to the clipboard', 'error');
       return;

@@ -19,16 +19,13 @@ import { bufferLines, clipLines, difference, dropSmall, intersection, multiArea,
 import type { HeightFn } from '../geometry/solid';
 import { markerEnds, markerShapes } from '../tracks/markers';
 import { snapToNetwork } from '../tracks/snap';
-import { trackLengthM, type TrackLines } from '../tracks/track';
+import { SNAP_MARGIN_M, trackLengthM, type TrackLines } from '../tracks/track';
 import type { MultiPolygon, Vec2 } from '../types';
 import type { DeckPiece } from './bridges';
 import { count, describeObject, type Context } from './context';
 
 /** Markers are this many times the route's width. */
 export const MARKER_WIDTHS = 3;
-// Track lines are clipped this far past the model before snapping, in real
-// metres, so a route leaving the model and coming back is matched as one.
-const SNAP_MARGIN_M = 200;
 // A deck carries the route when this share of the route inside its ribbon
 // runs along it, within ALONG_COS of its direction.
 const ALONG_SHARE = 0.6;
@@ -43,8 +40,8 @@ export interface TrackPiece {
   key: string;
   /** On the ground. */
   ground: MultiPolygon;
-  /** On the decks that carry it, with each deck's top and how finely that's sampled. */
-  decks: { polygons: MultiPolygon; top: HeightFn; drape: number }[];
+  /** On the decks that carry it, with each deck's key and top and how finely that's sampled. */
+  decks: { key: string; polygons: MultiPolygon; top: HeightFn; drape: number }[];
 }
 
 export interface TrackLayout {
@@ -270,7 +267,7 @@ export async function layOutTracks(tracks: readonly TrackLines[], ctx: Context, 
       // A route wider than the deck takes its whole width along it, or the
       // strips either side stood on the water and had ground kept under them.
       const along = intersection(bufferLines([{ points: deck.points, width: Math.max(deck.widthMm, width) + 0.02 }], 'butt'), ctx.cropSet);
-      decks.push({ polygons: dropSmall(intersection(ribbon, along), SPECK_MM2), top: deck.top, drape: deck.drape });
+      decks.push({ key: deck.key, polygons: dropSmall(intersection(ribbon, along), SPECK_MM2), top: deck.top, drape: deck.drape });
       ribbon = dropSmall(difference(ribbon, along), SPECK_MM2);
       count(ctx, 'route_decks');
     });

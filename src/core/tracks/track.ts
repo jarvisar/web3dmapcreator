@@ -29,6 +29,10 @@ export const MAX_TRACKS = 20;
 // Per track, after simplifying. A noisy or very long track gets a coarser
 // tolerance until it fits, so saved state and links stay a sensible size.
 export const MAX_TRACK_POINTS = 10_000;
+// Track lines are clipped this far past the model before snapping, in real
+// metres, so a route leaving the model and coming back is matched as one.
+// Nothing further out changes a model.
+export const SNAP_MARGIN_M = 200;
 const TOLERANCE_M = 1;
 const MAX_NAME = 100;
 
@@ -59,21 +63,33 @@ function keptPoints(path: readonly Point[], tolerance: number): Uint8Array {
   while (stack.length > 0) {
     const b = stack.pop()!;
     const a = stack.pop()!;
-    let worst = -1;
-    let worstSq = toleranceSq;
-    for (let i = a + 1; i < b; i++) {
-      const d = segmentDistanceSq(path[i], path[a], path[b]);
-      if (d > worstSq) {
-        worstSq = d;
-        worst = i;
-      }
-    }
-    if (worst >= 0) {
+    const [worst, worstSq] = farthest(path, a, b);
+    if (worstSq > toleranceSq) {
       keep[worst] = 1;
       stack.push(a, worst, worst, b);
     }
   }
   return keep;
+}
+
+/**
+ * The point between `a` and `b` furthest from the line between them, and its
+ * squared distance, or -1 when they're all on it. Of points equally far, the
+ * one nearest the middle: every other point of a sawtooth is, and taking the
+ * first split one point off at a time, which was quadratic.
+ */
+function farthest(path: readonly Point[], a: number, b: number): [number, number] {
+  const middle = (a + b) / 2;
+  let worst = -1;
+  let worstSq = 0;
+  for (let i = a + 1; i < b; i++) {
+    const d = segmentDistanceSq(path[i], path[a], path[b]);
+    if (d > worstSq || (d === worstSq && worst >= 0 && Math.abs(i - middle) < Math.abs(worst - middle))) {
+      worstSq = d;
+      worst = i;
+    }
+  }
+  return [worst, worstSq];
 }
 
 /** A line's points within `tolerance` of it, in the line's own units. */
@@ -117,6 +133,15 @@ function radialKept(path: readonly Point[], radius: number): number[] {
   return out;
 }
 
+// Douglas-Peucker is quadratic when every split only takes a point off the
+// end. Ties going to the middle (`farthest`) covers a sawtooth, which held
+// the page for 4.5 s at 50,000 points, but a sawtooth shrinking along its
+// length still does it. A line that takes more than this much work per
+// point is done again in runs of RUN_POINTS, whose ends are always kept.
+// Recorded routes take a few steps per point and never get there.
+const WORK_PER_POINT = 64;
+const RUN_POINTS = 256;
+
 /**
  * Douglas-Peucker at every tolerance at once: the squared tolerance under
  * which each point is kept. That's its distance when it was split off,
@@ -128,28 +153,32 @@ function significance(path: readonly Point[]): Float64Array {
   const out = new Float64Array(n);
   if (!n) return out;
   out[0] = Infinity;
-  out[n - 1] = Infinity;
-  const stack: number[] = [0, n - 1, Infinity];
+  if (n === 1 || splitLevels(path, out, 0, n - 1, WORK_PER_POINT * n)) return out;
+  out.fill(0);
+  for (let from = 0; from < n - 1; from += RUN_POINTS) splitLevels(path, out, from, Math.min(n - 1, from + RUN_POINTS), Infinity);
+  return out;
+}
+
+/** `significance` between two points that are both kept. False once it's done more than `budget` steps. */
+function splitLevels(path: readonly Point[], out: Float64Array, from: number, to: number, budget: number): boolean {
+  out[from] = Infinity;
+  out[to] = Infinity;
+  let work = 0;
+  const stack: number[] = [from, to, Infinity];
   while (stack.length > 0) {
     const cap = stack.pop()!;
     const b = stack.pop()!;
     const a = stack.pop()!;
-    let worst = -1;
-    let worstSq = 0;
-    for (let i = a + 1; i < b; i++) {
-      const d = segmentDistanceSq(path[i], path[a], path[b]);
-      if (d > worstSq) {
-        worstSq = d;
-        worst = i;
-      }
-    }
+    work += b - a;
+    if (work > budget) return false;
+    const [worst, worstSq] = farthest(path, a, b);
     if (worst >= 0) {
       const level = Math.min(worstSq, cap);
       out[worst] = level;
       stack.push(a, worst, level, worst, b, level);
     }
   }
-  return out;
+  return true;
 }
 
 // Points closer than this to the last one kept go before Douglas-Peucker,
@@ -276,15 +305,20 @@ export function sanitizeTracks(value: unknown): Track[] {
 // link is within this of the route it was made from.
 const SAME_ROUTE_M = 15;
 
-/** Whether every point of each line is within `reach` metres of the other's line, both ways round. */
-function closeTo(a: readonly LonLat[][], b: readonly LonLat[][], reach: number): boolean {
-  if (a.length !== b.length) return false;
-  const metres = toMetres([...a, ...b]);
-  const within = (points: readonly Point[], line: readonly Point[]): boolean => {
-    // Every segment is listed in the cells it passes through, sampled every
-    // `reach`, so a cell and its neighbours hold everything within `reach`.
-    const cell = 2 * reach;
-    const cells = new Map<string, number[]>();
+/**
+ * Whether every point of `part` is within `reach` metres of `lines`. Only
+ * that way round: a link cuts a route to its area, so ours coming back can
+ * be a piece of it, or several.
+ */
+function liesAlong(part: readonly LonLat[][], lines: readonly LonLat[][], reach: number): boolean {
+  if (!part.length || !lines.length) return false;
+  const metres = toMetres([...part, ...lines]);
+  // Every segment is listed in the cells it passes through, sampled every
+  // `reach`, so a cell and its neighbours hold everything within `reach`.
+  const cell = 2 * reach;
+  const cells = new Map<string, [number, number][]>();
+  for (let l = part.length; l < metres.length; l++) {
+    const line = metres[l];
     for (let i = 1; i < line.length; i++) {
       const [ax, ay] = line[i - 1];
       const [bx, by] = line[i];
@@ -295,27 +329,24 @@ function closeTo(a: readonly LonLat[][], b: readonly LonLat[][], reach: number):
         if (key === lastKey) continue;
         lastKey = key;
         const list = cells.get(key);
-        if (!list) cells.set(key, [i]);
-        else if (list[list.length - 1] !== i) list.push(i);
+        const last = list?.[list.length - 1];
+        if (!list) cells.set(key, [[l, i]]);
+        else if (last![0] !== l || last![1] !== i) list.push([l, i]);
       }
     }
-    const reachSq = reach * reach;
-    return points.every((p) => {
-      const cx = Math.floor(p[0] / cell);
-      const cy = Math.floor(p[1] / cell);
-      for (let dx = -1; dx <= 1; dx++) {
-        for (let dy = -1; dy <= 1; dy++) {
-          for (const i of cells.get(`${cx + dx},${cy + dy}`) ?? []) if (segmentDistanceSq(p, line[i - 1], line[i]) <= reachSq) return true;
-        }
+  }
+  const reachSq = reach * reach;
+  const near = (p: Point) => {
+    const cx = Math.floor(p[0] / cell);
+    const cy = Math.floor(p[1] / cell);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (const [l, i] of cells.get(`${cx + dx},${cy + dy}`) ?? []) if (segmentDistanceSq(p, metres[l][i - 1], metres[l][i]) <= reachSq) return true;
       }
-      return false;
-    });
+    }
+    return false;
   };
-  return a.every((_, i) => {
-    const p = metres[i];
-    const q = metres[a.length + i];
-    return within(p, q) && within(q, p);
-  });
+  return metres.slice(0, part.length).every((line) => line.every(near));
 }
 
 /**
@@ -323,11 +354,11 @@ function closeTo(a: readonly LonLat[][], b: readonly LonLat[][], reach: number):
  * already here (the same link opened twice) isn't added again, and theirs
  * never replace ours. That includes ours coming back from a link: it has
  * the same id, or the same name if it was passed on, but the link may have
- * simplified it. `left` counts what the limit left out.
+ * simplified it and cut it to its area. `left` counts what the limit left out.
  */
 export function mergeTracks(base: Track[], extra: Track[]): { tracks: Track[]; added: number; left: number } {
   const same = (a: Track, b: Track) => a.lines.length === b.lines.length && a.lines.every((line, i) => line === b.lines[i]);
-  const close = (a: Track, b: Track) => (a.id === b.id || a.name === b.name) && closeTo(decodeTrack(a), decodeTrack(b), SAME_ROUTE_M);
+  const close = (ours: Track, theirs: Track) => (ours.id === theirs.id || ours.name === theirs.name) && liesAlong(decodeTrack(theirs), decodeTrack(ours), SAME_ROUTE_M);
   const out = [...base];
   let added = 0;
   let left = 0;

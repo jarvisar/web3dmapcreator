@@ -364,6 +364,8 @@ export class EditSession {
   private readonly wading: Wading | null;
   private readonly decks = new Map<string, DeckPiece[]>();
   private readonly deckCache = new Map<string, Deck>();
+  /** Routes some deck carries: their solids on decks, by the deck's key. */
+  private readonly routesOnDecks = new Map<string, Map<Solid, string>>();
   /** Buildings and bridges by the tiles they reach, for what a shape stands on. */
   private holderIndex: Map<number, string[]> | null = null;
   private readonly holderBoxes = new Map<string, Box>();
@@ -430,6 +432,11 @@ export class EditSession {
       if (list) list.push(deck);
       else this.decks.set(deck.key, [deck]);
     }
+    for (const [solid, deck] of this.ctx.routeDecks ?? []) {
+      let carried = this.routesOnDecks.get(solid.key!);
+      if (!carried) this.routesOnDecks.set(solid.key!, (carried = new Map()));
+      carried.set(solid, deck);
+    }
     const noGround = this.ctx.noGround;
     this.noGround = noGround.length ? new ClipSet([noGround]) : null;
     this.noGroundBox = noGround.length ? multiBounds(noGround) : null;
@@ -445,6 +452,23 @@ export class EditSession {
   /** An object's edit as it applies, a bridge's with its road's at the deck (keys.ts). */
   private editOf(edits: ModelEdits, key: string): ObjectEdit | undefined {
     return editOf(edits, key, key.startsWith('br:') ? this.decks.get(key)?.[0]?.at : undefined);
+  }
+
+  /**
+   * A route's solids on removed decks. They go with the deck, the way the
+   * road on it does: kept, the route stood in the air over the river.
+   */
+  private offDecks(edits: ModelEdits, key: string): Set<Solid> | null {
+    const carried = this.routesOnDecks.get(key);
+    if (!carried) return null;
+    const gone = new Set<Solid>();
+    const removed = new Map<string, boolean>();
+    for (const [solid, deck] of carried) {
+      let off = removed.get(deck);
+      if (off === undefined) removed.set(deck, (off = Boolean(this.editOf(edits, deck)?.removed)));
+      if (off) gone.add(solid);
+    }
+    return gone.size ? gone : null;
   }
 
   /** Object facts for the viewer: what it is, what it's called, how tall. */
@@ -1532,6 +1556,18 @@ export class EditSession {
       if (deck.piers) await offer(key, 'piers', 'pier', `${deck.width}`, () => deck.piers!);
     }
 
+    // Routes without what removed decks carried. One that was all on them is hidden.
+    const routesOff: string[] = [];
+    for (const [key, carried] of this.routesOnDecks) {
+      const gone = this.offDecks(edits, key);
+      if (!gone) continue;
+      const placed = this.objects.get(key) ?? [];
+      const solids = placed.flatMap((p) => p.solids).filter((solid) => !gone.has(solid));
+      const signature = [...carried.keys()].map((solid) => (gone.has(solid) ? 1 : 0)).join('');
+      if (!solids.length) routesOff.push(key);
+      else await offer(key, placed[0]?.layer.id ?? 'routes', 'route', signature, () => solids);
+    }
+
     // Terrain and water, once water is left out or what stands in it changes.
     const { earth, standing } = this.standAll(pass, this.tiles, decks, footprints);
     const terrain = earth?.terrain ?? null;
@@ -1586,7 +1622,7 @@ export class EditSession {
 
     // Trees under what a shape stands on the ground with. A shape on a deck leaves those under the bridge.
     const treesUnder = this.shownGrounds(standing, edits, hidden);
-    return { model: this.id, version, objects, parts, hidden: this.hiddenTrees(treesUnder, this.tiles, earth), notes, warnings };
+    return { model: this.id, version, objects, parts, hidden: [...this.hiddenTrees(treesUnder, this.tiles, earth), ...routesOff], notes, warnings };
   }
 
   /** What's worth knowing about a shape as built: nothing to print, hidden, or bits too thin to print. */
@@ -1917,9 +1953,10 @@ export class EditSession {
       else target.set(layer, [solid]);
     };
     const partEdit = (key: string, sub?: string): ObjectEdit | undefined => (sub ? edits.objects[partKey(key, sub)] : undefined);
+    const offDecks = new Map([...this.routesOnDecks.keys()].map((key) => [key, this.offDecks(edits, key)]));
     const removed = (solid: Solid) => {
       const key = solid.key!;
-      return this.editOf(edits, key)?.removed || partEdit(key, solid.sub)?.removed || hidden.has(key);
+      return this.editOf(edits, key)?.removed || partEdit(key, solid.sub)?.removed || hidden.has(key) || offDecks.get(key)?.has(solid);
     };
     const layerOf = (solid: Solid) => {
       const layer = partEdit(solid.key!, solid.sub)?.layer ?? this.editOf(edits, solid.key!)?.layer;

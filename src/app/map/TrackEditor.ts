@@ -103,6 +103,8 @@ interface Spot {
   y: number;
 }
 
+const sameLines = (a: Track, b: Track) => a.lines.length === b.lines.length && a.lines.every((line, i) => line === b.lines[i]);
+
 // Keys only count on the map or the editor's own buttons, not while typing
 // or in the sidebar, where arrows move sliders and radio buttons.
 function ownsKey(target: EventTarget | null): boolean {
@@ -231,6 +233,10 @@ export class TrackEditor {
     const space = editSpace();
     const track = app.tracks.find((item) => item.id === edit.trackId) ?? null;
     if (track !== this.track || space !== this.space) {
+      // A drag holds indexes into the line it started on. Changed under it,
+      // by another tab or a switch to another route, the drag is put back:
+      // carried on, it read past the end of a shorter route and threw.
+      if (this.grab && !(track && this.track && sameLines(track, this.track))) this.cancelDrag();
       this.track = track;
       this.lonLat = track ? decodeTrack(track) : [];
       this.local = this.lonLat.map((line) => line.map(space.toLocal));
@@ -532,9 +538,14 @@ export class TrackEditor {
     window.addEventListener('pointermove', this.onDragMove);
     window.addEventListener('pointerup', this.onDragEnd);
     window.addEventListener('pointercancel', this.onDragEnd);
+    window.addEventListener('blur', this.onBlur);
     document.documentElement.classList.add('is-area-dragging');
     return true;
   }
+
+  // Another window taking the focus mid-drag puts the drag back, as in the
+  // 3D editor. The release can come long after, somewhere else entirely.
+  private readonly onBlur = (): void => this.cancelDrag();
 
   private readonly onDragMove = (event: PointerEvent): void => {
     const held = this.grab;
@@ -553,6 +564,10 @@ export class TrackEditor {
     const at = this.localAt(x, y);
     const path = this.local[held.line];
     if (!at || !path || !this.space) return;
+    if (Math.max(held.index, held.after, held.segment + 1) >= path.length) {
+      this.cancelDrag();
+      return;
+    }
     const { to, snapped } = this.target(at, event.altKey);
     const graph = this.follow();
     // Following the roads, a point that isn't on one joins its neighbours straight.
@@ -584,6 +599,7 @@ export class TrackEditor {
     window.removeEventListener('pointermove', this.onDragMove);
     window.removeEventListener('pointerup', this.onDragEnd);
     window.removeEventListener('pointercancel', this.onDragEnd);
+    window.removeEventListener('blur', this.onBlur);
     document.documentElement.classList.remove('is-area-dragging');
     const track = this.track;
     if (!cancelled && track) {

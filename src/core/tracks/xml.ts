@@ -34,9 +34,16 @@ export function decodeEntities(text: string): string {
   });
 }
 
-export function walkXml(source: string, visitor: XmlVisitor): void {
+/**
+ * Calls the visitor for every element and run of text. Returns whether the
+ * root element was closed, which a download cut short never gets to. Tags
+ * in between aren't held to match: KML descriptions often have a bare <br>.
+ */
+export function walkXml(source: string, visitor: XmlVisitor): boolean {
   const token = new RegExp(TOKEN.source, 'g');
   let last = 0;
+  let root: string | null = null;
+  let closed = false;
   let match: RegExpExecArray | null;
   while ((match = token.exec(source)) !== null) {
     if (match.index > last) visitor.text(decodeEntities(source.slice(last, match.index)));
@@ -50,6 +57,7 @@ export function walkXml(source: string, visitor: XmlVisitor): void {
     if (name === undefined) continue;
     const local = localName(name);
     if (slash) {
+      if (local === root) closed = true;
       visitor.close(local);
       continue;
     }
@@ -59,8 +67,13 @@ export function walkXml(source: string, visitor: XmlVisitor): void {
       let a: RegExpExecArray | null;
       while ((a = attribute.exec(attributes)) !== null) attrs[localName(a[1])] = decodeEntities(a[2] ?? a[3] ?? '');
     }
+    root ??= local;
     visitor.open(local, attrs);
-    if (selfClosing) visitor.close(local);
+    if (selfClosing) {
+      if (local === root) closed = true;
+      visitor.close(local);
+    }
   }
   if (last < source.length) visitor.text(decodeEntities(source.slice(last)));
+  return closed;
 }

@@ -81,4 +81,11 @@ describe('framing the area around routes', () => {
     expect(shareOutside(wide, area)).toBeLessThan(0.8);
     expect(areaAroundTracks([], base)).toBeNull();
   });
+
+  it('frames a hull with more corners than a call takes arguments', () => {
+    const ring: LonLat[] = Array.from({ length: 150_000 }, (_, i) => geo(2000 * Math.cos((i / 150_000) * 2 * Math.PI), 1000 * Math.sin((i / 150_000) * 2 * Math.PI)));
+    const area = areaAroundTracks([ring], base)!;
+    expect(area.widthM).toBeGreaterThan(4000);
+    expect(inside(area, [ring])).toBe(true);
+  });
 });

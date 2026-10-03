@@ -33,6 +33,13 @@ function hull(points: Vec2[]): number[] {
   return [...half(order), ...half([...order].reverse())];
 }
 
+// Not Math.max(...list): a hull can have more corners than a call takes arguments.
+function largest(points: readonly Vec2[], value: (p: Vec2) => number): number {
+  let out = -Infinity;
+  for (const p of points) out = Math.max(out, value(p));
+  return out;
+}
+
 interface Framing {
   rotationDeg: number;
   center: LonLat;
@@ -43,16 +50,14 @@ interface Framing {
 function frameAt(corners: LonLat[], anchor: LonLat, base: Pick<AreaSpec, 'shape' | 'cornerRadius'>, rotationDeg: number, margin: number): Framing {
   let projection = new Projection(anchor, rotationDeg, 1);
   let local = corners.map(([lon, lat]) => projection.toModel(lon, lat));
-  const xs = local.map((p) => p[0]);
-  const ys = local.map((p) => p[1]);
-  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
-  const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const cx = (largest(local, (p) => p[0]) - largest(local, (p) => -p[0])) / 2;
+  const cy = (largest(local, (p) => p[1]) - largest(local, (p) => -p[1])) / 2;
   const center = projection.localToGeo(cx, cy);
   projection = new Projection(center, rotationDeg, 1);
   local = corners.map(([lon, lat]) => projection.toModel(lon, lat));
-  let w = Math.max(...local.map((p) => Math.abs(p[0]))) * 2;
-  let h = Math.max(...local.map((p) => Math.abs(p[1]))) * 2;
-  if (base.shape === 'circle') w = h = Math.max(...local.map((p) => Math.hypot(p[0], p[1]))) * 2;
+  let w = largest(local, (p) => Math.abs(p[0])) * 2;
+  let h = largest(local, (p) => Math.abs(p[1])) * 2;
+  if (base.shape === 'circle') w = h = largest(local, (p) => Math.hypot(p[0], p[1])) * 2;
   else if (base.shape === 'hexagon') {
     w = Math.max(w, h / HEX_RATIO, MIN_SIDE_M / HEX_RATIO);
     h = w * HEX_RATIO;

@@ -139,6 +139,13 @@ function isTyping(target: EventTarget | null): boolean {
   return Boolean(element?.closest?.('input, textarea, select, [contenteditable="true"]'));
 }
 
+// The sidebar, top bar and action bar keep their keys. With a button there
+// focused, arrows moved the selected shape instead of scrolling the sidebar,
+// and Delete took the selection away.
+function focusOutsideViewer(): boolean {
+  return Boolean(document.activeElement?.closest?.('#sidebar, .topbar, .action-bar'));
+}
+
 function clearHiddenSelection(engine: ViewerEngine): void {
   const selection = useApp.getState().ui.selection;
   const gone = new Set(engine.hiddenByParts(selection));
@@ -277,6 +284,11 @@ export default function ModelView({ active }: { active: boolean }) {
       if (ctrl && key.toLowerCase() === 'y') {
         event.preventDefault();
         redoEdit();
+        return;
+      }
+      if (focusOutsideViewer()) {
+        // Escape still calls off a drag or a drawing, wherever the focus is.
+        if (key === 'Escape' && (controller?.cancelDrag() || controller?.cancelDrawing())) event.preventDefault();
         return;
       }
       if (ctrl && key.toLowerCase() === 'd') {

@@ -314,4 +314,48 @@ describe('routes on a map model', () => {
     expect(edited.layers.some((layer) => layer.id === 'routes')).toBe(false);
     expect(waterAt(edited.layers)).toBe(true);
   });
+
+  it('goes with the bridge carrying it when the editor removes the bridge or its road', async () => {
+    // The run, and one only on the bridge, without markers that would reach off it.
+    const span: TrackLines = { id: 'span', name: 'Span', lines: [[at(0, -40), at(0, 25)]] };
+    const { spec, settings } = await build([run(), span], (s) => {
+      s.bridges.enabled = true;
+      s.tracks.markers = false;
+    });
+    const editor = () => new EditSession(spec, settings, new Projection(area.center, area.rotationDeg, spec.mmPerMetre));
+    const session = editor();
+    const river = model(0, -10);
+    const street = model(0, -300);
+    const bridge = (spec.layers.find((layer) => layer.id === 'bridges')!.solids as PrismSolid[]).find((solid) => pointInPolygon(...river, solid.polygon as Polygon))!.key!;
+    const road = bridge.replace('br:', 'r:');
+    const keyed = (solids: PrismSolid[], key: string) => solids.filter((solid) => solid.key === key);
+    expect(covers(keyed(routeSolids(spec), 'rt:run'), river)).toBe(true);
+    expect(keyed(routeSolids(spec), 'rt:span').length).toBeGreaterThan(0);
+    expect(keyed(routeSolids(spec), 'rt:span').every((solid) => spec.edit!.routeDecks!.get(solid) === bridge)).toBe(true);
+    for (const removed of [{ [bridge]: { removed: true } }, { [road]: { removed: true } }]) {
+      const edits = { ...emptyEdits(), objects: removed };
+      const edited = routeSolids(await session.edited(edits, DEFAULT_PALETTE));
+      expect(covers(keyed(edited, 'rt:run'), river)).toBe(false);
+      expect(covers(keyed(edited, 'rt:run'), street)).toBe(true);
+      expect(keyed(edited, 'rt:span')).toEqual([]);
+      // The view gets the run without that stretch, and hides the one that was all on it.
+      const view = editor();
+      const update = await view.update(edits, 1);
+      const mesh = update.objects.find((object) => object.key === 'rt:run')?.mesh;
+      expect(mesh?.indices.length).toBeGreaterThan(0);
+      expect(update.objects.some((object) => object.key === 'rt:span')).toBe(false);
+      expect(update.hidden).toContain('rt:span');
+      expect(update.hidden).not.toContain('rt:run');
+      // Put back, it goes back to the route as generated.
+      const back = await view.update(emptyEdits(), 2);
+      expect(back.objects).toContainEqual({ key: 'rt:run', part: 'routes', mesh: null });
+      expect(back.hidden).not.toContain('rt:span');
+    }
+    // A bridge kept when its road goes, or only made narrower, still carries it.
+    for (const kept of [{ [road]: { removed: true }, [bridge]: { removed: false } }, { [bridge]: { widthMm: 0.3 } }]) {
+      const edited = routeSolids(await session.edited({ ...emptyEdits(), objects: kept }, DEFAULT_PALETTE));
+      expect(covers(keyed(edited, 'rt:run'), river)).toBe(true);
+      expect(keyed(edited, 'rt:span').length).toBeGreaterThan(0);
+    }
+  });
 });
