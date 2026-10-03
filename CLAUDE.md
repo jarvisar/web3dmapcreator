@@ -221,9 +221,15 @@ Imported routes (`src/core/tracks/`, `pipeline/tracks.ts`, `dsm/route.ts`, UI in
   default) matches a recording to the roads with an HMM (`snap.ts`): a
   sample every 10 m, candidates within 40 m, and an off-road state that
   costs as much as a road 24 m away plus 4 to switch, so an unmapped trail
-  stays as recorded. Map models snap to the road lines as tidied, decks
-  included, so the route sits on the printed road. LiDAR only models
-  download every road and path segment for it (`loadMapWater`).
+  stays as recorded. Map models snap to the road lines as mapped, before
+  the tidy, decks included and rail left out (`snapTracks`, in the new
+  `match` step), and the blocks it was matched to, junction to junction,
+  are held out of the tidy (`holdUnderTracks`, `isHeld`), so the route sits
+  on the printed road. Snapped to the tidied lines, it kinked wherever the
+  tidy had merged, culled or joined the line it followed. Crossings were
+  tried in the snap network and made routes zigzag between a footway and
+  the street beside it. LiDAR only models download every road and path
+  segment for it (`loadMapWater`).
 - Map models: a ribbon of `widthMm` at `heightMm` over the ground (0.8,
   a layer over 0.6 mm roads), draped like roads, keyed `rt:<id>` and
   described for the editor. Roads, rail, paths and land cover are cut away
@@ -380,6 +386,16 @@ before bridges are split off):
 - Road polygons of one group touching at a single vertex are pulled apart
   by 0.2 µm (`separateTouching`), or their prisms share a wall edge.
 - Every step has its own switch and the tidy off gives the untidied network.
+- Held pieces (under a snapped route) go through every pass as mapped: never
+  paired, slid, culled, hidden, joined or pruned, but still lines the
+  others are judged against. Welding keeps them apart from the rest of
+  their street, so the rest is judged on its own. Nothing held, the output
+  is unchanged.
+- A road in a custom layer is drawn from the pieces as mapped in the editor
+  (`EditContext.mapped`, `MappedRoads` in `edit/roads.ts`), with the other
+  carriageway of a merged line it was part of. That's done per tile, live,
+  since generation never sees the edits. Restored stretches take the place
+  of the ones they replace in the tile's order, or the crack strips change.
 
 LiDAR (`src/core/lidar/`, generation in `pipeline/lidar.ts` and `buildings.ts`):
 

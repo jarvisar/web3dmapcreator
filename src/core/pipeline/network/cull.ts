@@ -177,6 +177,10 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
   let droppedRoutes = 0;
   for (let id = 0; id < order.length; id++) {
     const route = order[id];
+    if (route.held) {
+      keep(id, route, 0, route.length);
+      continue;
+    }
     const { step, samples, halfWidths } = sample(route);
     const flags = samples.map((p, k) => alongside(p.x, p.y, p.ux, p.uy, halfWidths[k], route.deck, route.rank));
     const shadowed = flags.filter(Boolean).length * step;
@@ -243,6 +247,7 @@ export function cull(candidates: Candidate[], routes: Route[], origins: [EndOrig
   const alive = parts.map(() => true);
   const hidden = (i: number) => {
     const c = candidates[parts[i].source];
+    if (c.held) return false;
     return densifyLine(parts[i].points, 0.1).every(([x, y]) =>
       kept.near(x, y, (s) => {
         const o = kept.owner[s];

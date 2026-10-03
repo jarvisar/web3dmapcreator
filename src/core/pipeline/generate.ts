@@ -37,9 +37,9 @@ import { buildAirports, bufferRoads, collectRoadPieces, type RoadPiece, type Roa
 import { projectPolygons, type Elevation, type SourceData, type SourceType } from './source';
 import { solveWater, waterBottom, type WaterKind } from './water';
 import { shapeBeaches } from './beaches';
-import { layOutTracks, type TrackLayout } from './tracks';
+import { holdUnderTracks, layOutTracks, snapTracks, type SnappedTrack, type TrackLayout } from './tracks';
 import { buildTrees } from './trees';
-import { measureRoads } from './measure';
+import { measureRoads, type SegmentLine } from './measure';
 
 export interface ModelSpec {
   layers: Layer[];
@@ -72,6 +72,12 @@ export interface EditContext {
   profile?: ProfileGrids;
   /** Ground road pieces as they were widened: bridges left out, demoted decks back in. */
   roads: RoadPiece[];
+  /**
+   * The road pieces as mapped, before the tidy, with every segment's line.
+   * A road in a custom layer is drawn from these (edit/roads.ts). Absent
+   * when the tidy didn't run.
+   */
+  mapped?: { pieces: RoadPiece[]; lines: ReadonlyMap<string, SegmentLine> };
   /** Where blocks of each road segment end, by its key `r:<id>` (pipeline/measure.ts). Segments with none aren't listed. */
   junctions?: Map<string, number[]>;
   /** Imported routes on the ground, which roads and paths were cut away for. */
@@ -237,11 +243,22 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
   let deckPieces: DeckPiece[] = [];
   let groundRoads: RoadPiece[] = [];
   let roadJunctions = new Map<string, number[]>();
-  // The road lines as tidied, decks included, for snapping routes to.
+  let mappedRoads: EditContext['mapped'];
+  // The road lines as mapped, decks included, that routes were snapped to,
+  // one per piece. Rail is left out, as in the route editor: a run isn't a
+  // train. Crossings aren't in it: with them, routes along a footway beside
+  // a street zigzagged between the two.
   let roadLines: Vec2[][] = [];
+  const wantsTracks = settings.tracks.enabled && !!input.tracks?.length;
+  let snappedTracks: SnappedTrack[] | null = null;
   if (settings.roads.enabled) {
-    const collected = await collectRoadPieces(features('segment'), ctx);
-    roadLines = collected.pieces.map((piece) => piece.points);
+    const collected = await collectRoadPieces(features('segment'), ctx, (pieces) => {
+      if (!wantsTracks) return null;
+      progress.begin('match', 'Matching routes to roads');
+      roadLines = pieces.map((piece) => (piece.group === 'rail' ? [] : piece.points));
+      snappedTracks = snapTracks(input.tracks!, ctx, roadLines);
+      return settings.roads.tidy && settings.tracks.snap ? holdUnderTracks(pieces, snappedTracks, mmPerMetre) : null;
+    });
     let groundPieces: RoadPiece[] = collected.pieces;
     let decks: RoadPiece[] = [];
     if (settings.bridges.enabled) ({ ground: groundPieces, decks } = splitDecks(collected.pieces, ctx, water.mappedCut));
@@ -261,6 +278,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     }
     roads = { ...ribbons, bridgeLines: collected.bridgeLines };
     roadJunctions = measureRoads(collected.lines, groundRoads, deckPieces);
+    if (collected.mapped) mappedRoads = { pieces: collected.mapped, lines: collected.lines };
   }
   let airport: MultiPolygon = [];
   if (settings.roads.enabled && settings.roads.includeAirports) {
@@ -301,9 +319,10 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
 
   // ------------------------------------------------------------------ routes
   let tracks: TrackLayout | null = null;
-  if (settings.tracks.enabled && input.tracks?.length) {
+  if (wantsTracks) {
     progress.begin('routes', 'Laying out routes');
-    tracks = await layOutTracks(input.tracks, ctx, { network: roadLines, decks: deckPieces });
+    snappedTracks ??= snapTracks(input.tracks!, ctx, roadLines);
+    tracks = await layOutTracks(snappedTracks, ctx, { network: roadLines, decks: deckPieces });
     // Nothing may stand on the water alone, since the water part can be left out.
     if (noGround.length) {
       for (const piece of tracks.pieces) {
@@ -573,6 +592,7 @@ export async function generateModel(input: GenerateInput): Promise<ModelSpec> {
     heightfield: hf,
     roads: groundRoads,
     junctions: roadJunctions,
+    mapped: mappedRoads,
     tracks: tracks?.pieces.map((piece) => ({ key: piece.key, pieces: piece.ground })),
     routeDecks,
     // Recorded with the water off too, since the recesses stay.

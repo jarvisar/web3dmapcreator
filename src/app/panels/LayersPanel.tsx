@@ -370,7 +370,7 @@ function RoadOptions({ roads, scale }: { roads: ModelSettings['roads']; scale: n
         label="Tidy road network"
         checked={roads.tidy}
         onChange={(tidy) => patchSettings('roads', { tidy })}
-        help="Clean up the lines before they're widened into roads. Off prints every mapped line as it comes."
+        help="Clean up the lines before they're widened into roads. Roads an imported route follows, and roads you put in a custom layer, are left as mapped. Off prints every mapped line as it comes."
       />
       <div className="nested">
         <CheckField

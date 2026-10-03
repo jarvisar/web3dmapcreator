@@ -11,7 +11,8 @@
 // - Whatever touches nothing and is shorter than an island in total goes.
 //
 // Removing a spur can leave the line it hung from loose, so the queue
-// revisits that junction. Ends on the model's edge are never loose.
+// revisits that junction. Ends on the model's edge are never loose, and a
+// spur or island with a held line in it stays.
 
 import { cumulative, SegmentIndex, slice } from './lines';
 import type { Candidate, EndOrigin, Part } from './routes';
@@ -46,6 +47,7 @@ export function prune(input: Part[], candidates: Candidate[], options: PruneOpti
   const lengths = cums.map((c) => c[c.length - 1]);
   const halfWidth = (part: number) => candidates[parts[part].source].halfWidth;
   const deck = (part: number) => candidates[parts[part].source].deck;
+  const held = (part: number) => candidates[parts[part].source].held;
   const maxHalfWidth = parts.reduce((m, _p, i) => Math.max(m, halfWidth(i)), 0);
   const index = new SegmentIndex(Math.max(maxHalfWidth, tolerance, 0.1));
   parts.forEach((p, i) => index.add(p.points, i));
@@ -184,7 +186,7 @@ export function prune(input: Part[], candidates: Candidate[], options: PruneOpti
       n = edges[k].a === n ? edges[k].b : edges[k].a;
       if (n === start || anchored.has(n) || degree.get(n) !== 2) break;
     }
-    if (!spur.size) continue;
+    if (!spur.size || [...spur].some((k) => held(edges[k].part))) continue;
     const junction = degree.get(n)! >= 3;
     let shown = length;
     if (junction) {
@@ -218,10 +220,11 @@ export function prune(input: Part[], candidates: Candidate[], options: PruneOpti
   }
   const total = new Map<number, number>();
   for (const e of edges) if (e.live) total.set(top(e.a), (total.get(top(e.a)) ?? 0) + e.length);
-  const held = new Set<number>();
-  for (const n of anchored) held.add(top(n));
+  const safe = new Set<number>();
+  for (const n of anchored) safe.add(top(n));
+  for (const e of edges) if (e.live && held(e.part)) safe.add(top(e.a));
   const small = new Set<number>();
-  for (const [r, length] of total) if (!held.has(r) && length < island) small.add(r);
+  for (const [r, length] of total) if (!safe.has(r) && length < island) small.add(r);
   for (const e of edges) if (e.live && small.has(top(e.a))) e.live = false;
 
   // What's left of each part, as runs of live edges.

@@ -119,7 +119,7 @@ function RouteOptions() {
             help={
               lidarOnly
                 ? "Move a recorded route onto the roads it followed, from map data downloaded for it. GPS wanders 5 to 10 m off a street, which prints as a wobbly line beside it. Stretches away from any road, like a trail, stay as recorded."
-                : "Move a recorded route onto the roads it followed, as they're printed. GPS wanders 5 to 10 m off a street, which prints as a wobbly line beside it. Stretches away from any road, like a trail, stay as recorded."
+                : "Move a recorded route onto the roads it followed. GPS wanders 5 to 10 m off a street, which prints as a wobbly line beside it. The road tidy leaves the roads it follows as mapped, so it stays on them. Stretches away from any road, like a trail, stay as recorded."
             }
           />
           {s.snap && !lidarOnly && !settings.roads.enabled && <p className="layer-help">Routes snap to the roads, so they're as recorded while Roads is off.</p>}

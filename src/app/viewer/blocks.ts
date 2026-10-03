@@ -8,15 +8,187 @@ import type { RoadLines } from '../../core/edit/lines';
 import type { ModelEdits, ObjectEdit } from '../../core/edit/types';
 import type { RoadIndex, RoadMark, RoadPick } from './roads';
 
-/** What the blocks depend on in the edits: each segment's splits and edit ranges. */
+/** What the blocks depend on in the edits: each segment's splits and edit ranges, and what's in a custom layer. */
 export function blocksSignature(edits: ModelEdits): string {
   const parts: string[] = [];
+  const layers = new Set(edits.layers.map((layer) => layer.id));
   for (const [segment, entry] of roadEdits(edits.objects)) {
     const ends = entry.ranges.filter((range) => range.from > 0 || range.to < 1).map((range) => `${range.from}-${range.to}`);
-    if (!ends.length && !entry.splits.length) continue;
-    parts.push(`${segment}|${entry.splits.join(',')}|${ends.sort().join(',')}`);
+    const layered = entry.ranges.filter((range) => range.edit.layer && layers.has(range.edit.layer)).map((range) => `${range.from}-${range.to}`);
+    if (!ends.length && !entry.splits.length && !layered.length) continue;
+    parts.push(`${segment}|${entry.splits.join(',')}|${ends.sort().join(',')}|${layered.sort().join(',')}`);
   }
   return parts.sort().join(';');
+}
+
+type Intervals = [number, number][];
+
+function joined(list: Intervals): Intervals {
+  const out: Intervals = [];
+  for (const [a, b] of [...list].sort((p, q) => p[0] - q[0])) {
+    const last = out[out.length - 1];
+    if (last && a <= last[1] + 1e-9) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  return out;
+}
+
+function subtract(list: Intervals, minus: Intervals): Intervals {
+  const out: Intervals = [];
+  for (const [a, b] of list) {
+    let from = a;
+    for (const [c, d] of minus) {
+      if (d <= from || c >= b) continue;
+      if (c > from) out.push([from, c]);
+      from = Math.max(from, d);
+    }
+    if (b - from > 1e-9) out.push([from, b]);
+  }
+  return out;
+}
+
+function across(pairs: readonly [number, number][], v: number): number {
+  if (v <= pairs[0][0]) return pairs[0][1];
+  for (let k = 1; k < pairs.length; k++) {
+    const [a, p] = pairs[k - 1];
+    const [b, q] = pairs[k];
+    if (v <= b) return b > a ? p + ((v - a) / (b - a)) * (q - p) : q;
+  }
+  return pairs[pairs.length - 1][1];
+}
+
+const within = (list: Intervals, v: number) => list.some(([a, b]) => v >= a - 1e-9 && v <= b + 1e-9);
+
+/** A run of points cut from a piece: x, y, z, measure and the other carriageway's measure for each. */
+type Run = number[][];
+
+/** A piece's points cut wherever its measures cross `cuts` (or its partner measures cross `partnerCuts`). */
+function runsOf(lines: { points: Float32Array; measures?: Float32Array; partnerMeasures?: Float32Array }, first: number, end: number, cuts: readonly number[], partnerCuts: readonly number[]): Run[] {
+  const at = (p: number) => [lines.points[p * 3], lines.points[p * 3 + 1], lines.points[p * 3 + 2], lines.measures ? lines.measures[p] : NaN, lines.partnerMeasures ? lines.partnerMeasures[p] : NaN];
+  const runs: Run[] = [[at(first)]];
+  for (let p = first + 1; p < end; p++) {
+    const a = at(p - 1);
+    const b = at(p);
+    const ts: number[] = [];
+    for (const [k, values] of [[3, cuts], [4, partnerCuts]] as const) {
+      if (Number.isNaN(a[k]) || Number.isNaN(b[k]) || a[k] === b[k]) continue;
+      for (const v of values) if (v > Math.min(a[k], b[k]) + 1e-7 && v < Math.max(a[k], b[k]) - 1e-7) ts.push((v - a[k]) / (b[k] - a[k]));
+    }
+    for (const t of ts.sort((x, y) => x - y)) {
+      const q = a.map((v, k) => v + (b[k] - v) * t);
+      runs[runs.length - 1].push(q);
+      runs.push([q]);
+    }
+    runs[runs.length - 1].push(b);
+  }
+  return runs.filter((run) => run.length >= 2);
+}
+
+/**
+ * The lines as printed: a road in a custom layer is printed as mapped
+ * (edit/roads.ts), so its stretches, and the merged line it was part of,
+ * give way to the mapped lines of both carriageways.
+ */
+export function shownLines(base: RoadLines, edits: ModelEdits): RoadLines {
+  if (!base.mapped || !base.measures) return base;
+  // The Inspector asks for every key it shows, so the last answer is kept.
+  if (lastShown?.base === base && lastShown.objects === edits.objects && lastShown.layers === edits.layers) return lastShown.lines;
+  const lines = layeredLines(base, edits);
+  lastShown = { base, objects: edits.objects, layers: edits.layers, lines };
+  return lines;
+}
+
+let lastShown: { base: RoadLines; objects: ModelEdits['objects']; layers: ModelEdits['layers']; lines: RoadLines } | null = null;
+
+function layeredLines(base: RoadLines, edits: ModelEdits): RoadLines {
+  const mapped = base.mapped!;
+  const index = roadEdits(edits.objects);
+  const ids = new Set(edits.layers.map((layer) => layer.id));
+  const has = new Set(mapped.keys);
+  const layered = new Map<string, Intervals>();
+  const layeredOf = (segment: string): Intervals => {
+    let list = layered.get(segment);
+    if (!list) {
+      const ranges = has.has(segment) ? (index.get(segment)?.ranges ?? []) : [];
+      layered.set(segment, (list = joined(ranges.filter((r) => r.edit.layer && ids.has(r.edit.layer)).map((r): [number, number] => [r.from, r.to]))));
+    }
+    return list;
+  };
+  if (![...has].some((segment) => layeredOf(segment).length)) return base;
+
+  const out = { keys: [] as string[], names: [] as string[], classes: [] as string[], groups: [] as number[], widths: [] as number[], starts: [] as number[], points: [] as number[], measures: [] as number[], partners: [] as string[], partnerMeasures: [] as number[] };
+  const emit = (run: Run, key: string, name: string, roadClass: string, group: number, width: number, partner: string) => {
+    out.starts.push(out.points.length / 3);
+    out.keys.push(key);
+    out.names.push(name);
+    out.classes.push(roadClass);
+    out.groups.push(group);
+    out.widths.push(width);
+    out.partners.push(partner);
+    for (const [x, y, z, m, q] of run) {
+      out.points.push(x, y, z);
+      out.measures.push(m);
+      out.partnerMeasures.push(q);
+    }
+  };
+  // As in edit/roads.ts: a merged line gives both carriageways back, each
+  // carrying the other's edits where it ran.
+  type Link = { partner: string; pairs: [number, number][] };
+  const restore = new Map<string, { span: [number, number]; link?: Link }[]>();
+  const restoreOn = (segment: string, span: [number, number], link?: Link) => restore.set(segment, [...(restore.get(segment) ?? []), { span, link }]);
+  const span = (run: Run, k: number): [number, number] => [Math.min(...run.map((p) => p[k])), Math.max(...run.map((p) => p[k]))];
+  const ends = (list: Intervals) => list.flat();
+  for (let piece = 0; piece < base.keys.length; piece++) {
+    const own = roadSegment(base.keys[piece]);
+    const partner = base.partners?.[piece] ?? '';
+    const mine = layeredOf(own);
+    const theirs = partner ? layeredOf(partner) : [];
+    const runs = runsOf(base, base.starts[piece], base.starts[piece + 1], ends(mine), ends(theirs));
+    for (const run of runs) {
+      const [m0, m1] = span(run, 3);
+      const [q0, q1] = span(run, 4);
+      const inLayer = has.has(own) && !Number.isNaN(m0) && (within(mine, (m0 + m1) / 2) || (theirs.length > 0 && !Number.isNaN(q0) && within(theirs, (q0 + q1) / 2)));
+      if (!inLayer) {
+        emit(run, own, base.names[piece], base.classes[piece], base.groups[piece], base.widths[piece], partner);
+        continue;
+      }
+      if (partner && has.has(partner) && !Number.isNaN(q0)) {
+        restoreOn(own, [m0, m1], { partner, pairs: run.map((p): [number, number] => [p[3], p[4]]) });
+        restoreOn(partner, [q0, q1], { partner: own, pairs: run.map((p): [number, number] => [p[4], p[3]]) });
+      } else restoreOn(own, [m0, m1]);
+    }
+  }
+  for (let piece = 0; piece < mapped.keys.length; piece++) {
+    const segment = mapped.keys[piece];
+    const wanted = [...(restore.get(segment) ?? []), ...layeredOf(segment).map((range) => ({ span: range, link: undefined }))];
+    if (!wanted.length) continue;
+    const linked = wanted.filter((entry) => entry.link);
+    const plain = subtract(joined(wanted.filter((entry) => !entry.link).map((entry) => entry.span)), joined(linked.map((entry) => entry.span)));
+    const cuts = [...ends(plain), ...linked.flatMap((entry) => entry.span)];
+    for (const run of runsOf(mapped, mapped.starts[piece], mapped.starts[piece + 1], cuts, [])) {
+      const [m0, m1] = span(run, 3);
+      const middle = (m0 + m1) / 2;
+      const link = linked.find((entry) => middle >= entry.span[0] - 1e-9 && middle <= entry.span[1] + 1e-9)?.link;
+      if (link) {
+        const pairs = [...link.pairs].sort((a, b) => a[0] - b[0]);
+        emit(run.map(([x, y, z, m]) => [x, y, z, m, across(pairs, m)]), segment, mapped.names[piece], mapped.classes[piece], mapped.groups[piece], mapped.widths[piece], link.partner);
+      } else if (within(plain, middle)) emit(run, segment, mapped.names[piece], mapped.classes[piece], mapped.groups[piece], mapped.widths[piece], '');
+    }
+  }
+  out.starts.push(out.points.length / 3);
+  return {
+    ...base,
+    keys: out.keys,
+    names: out.names,
+    classes: out.classes,
+    groups: Uint8Array.from(out.groups),
+    widths: Float32Array.from(out.widths),
+    starts: Uint32Array.from(out.starts),
+    points: Float32Array.from(out.points),
+    measures: Float32Array.from(out.measures),
+    partners: out.partners,
+    partnerMeasures: Float32Array.from(out.partnerMeasures),
+  };
 }
 
 /** A segment's block bounds as the viewer has them. */
@@ -25,7 +197,8 @@ export function segmentBounds(lines: RoadLines, edits: ModelEdits, segment: stri
 }
 
 /** The lines cut at every block bound, each piece keyed by its block. */
-export function blockLines(base: RoadLines, edits: ModelEdits): RoadLines {
+export function blockLines(generated: RoadLines, edits: ModelEdits): RoadLines {
+  const base = shownLines(generated, edits);
   const measures = base.measures;
   if (!measures) return base;
   const index = roadEdits(edits.objects);
@@ -181,7 +354,8 @@ export function carriedAt(lines: RoadLines, key: string): { segment: string; at:
 /** A road key's edit as it applies, the other carriageway's filled in on a merged divided road (carryEdit). */
 export function appliedRoadEdit(edits: ModelEdits, key: string, lines: RoadLines | null): ObjectEdit | undefined {
   const own = roadEditOf(edits.objects, key);
-  const carried = lines ? carriedAt(lines, key) : null;
+  // A stretch in a custom layer is printed as mapped, apart from the merged line, and carries nothing.
+  const carried = lines ? carriedAt(shownLines(lines, edits), key) : null;
   return carried ? carryEdit(own, editAt(roadEdits(edits.objects).get(carried.segment), carried.at)) : own;
 }
 

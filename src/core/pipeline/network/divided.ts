@@ -257,7 +257,14 @@ function mergeRound(parts: Part[], candidates: Candidate[], gap: number, toleran
   const eligible = parts.map((p) => {
     const c = candidates[p.source];
     return (
-      !p.merged && p.points.length >= 2 && !c.deck && !c.minor && c.oneway !== 0 && STREET_CLASSES.has(c.piece.roadClass) && PAIR_SUBCLASSES.has(c.piece.subclass)
+      !p.merged &&
+      p.points.length >= 2 &&
+      !c.deck &&
+      !c.held &&
+      !c.minor &&
+      c.oneway !== 0 &&
+      STREET_CLASSES.has(c.piece.roadClass) &&
+      PAIR_SUBCLASSES.has(c.piece.subclass)
     );
   });
   const next = new Set<Part>();
@@ -295,7 +302,7 @@ function mergeRound(parts: Part[], candidates: Candidate[], gap: number, toleran
   let droppedMm = 0;
   const count = parts.length;
   for (const stretch of stretches) {
-    const dropped = applyStretch(stretch, parts, chains, endsNear, touched, tolerance, corridor);
+    const dropped = applyStretch(stretch, parts, candidates, chains, endsNear, touched, tolerance, corridor);
     if (dropped === null) continue;
     if (dropped === 'conflict') {
       // Deferred to the next round.
@@ -635,6 +642,7 @@ function findStretches(
 function applyStretch(
   stretch: Stretch,
   parts: Part[],
+  candidates: Candidate[],
   chains: Chain[],
   endsNear: (box: [number, number, number, number]) => { part: number; atStart: boolean }[],
   touched: Set<number>,
@@ -644,6 +652,7 @@ function applyStretch(
   const X = chains[stretch.x];
   const Y = chains[stretch.y];
   const { a0, a1, b0, b1 } = stretch;
+  const held = (part: number) => candidates[parts[part].source].held;
   // Side by side, the two carriageways run about as far as each other.
   if (a1 - a0 < MIN_PAIR_MM / 2 || b1 - b0 < 0.5 * (a1 - a0)) return null;
   const inside = (chain: Chain, lo: number, hi: number) => chain.members.filter((m) => Math.min(hi, m.to) - Math.max(lo, m.from) > EPSILON);
@@ -755,7 +764,8 @@ function applyStretch(
     const e = group.point;
     const line = midLine(e);
     let target = line.point;
-    const externals = group.ends.filter((end) => !own.has(end.part));
+    // A held street keeps its end where it was.
+    const externals = group.ends.filter((end) => !own.has(end.part) && !held(end.part));
     let slider = -1;
     let best = sine;
     externals.forEach((end, n) => {

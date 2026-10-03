@@ -55,6 +55,7 @@ export type Stage =
   | 'grid'
   | 'water'
   | 'roads'
+  | 'match'
   | 'tidy'
   | 'ribbons'
   | 'bridges'

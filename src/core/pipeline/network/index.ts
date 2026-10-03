@@ -17,6 +17,11 @@
 // of their own road, never bent towards something else. What's left too
 // close to print apart is filled in after widening (gaps.ts). Thresholds are
 // printed millimetres.
+//
+// Held pieces, the blocks an imported route runs along, go through as
+// mapped. They count as lines for everything else, so a footway doubling
+// one is still dropped, but they're never merged, moved, cut or pruned:
+// the route was matched to them and lies on them.
 
 import type { Vec2 } from '../../types';
 import { polylineLength } from '../linework';
@@ -47,6 +52,8 @@ export interface NetworkInput {
   onEdge: (point: Vec2) => boolean;
   /** Pieces built as bridge decks. They never double ground roads and their ends never move. */
   isDeck: (piece: RoadPiece) => boolean;
+  /** Pieces kept exactly as mapped. */
+  isHeld?: (piece: RoadPiece) => boolean;
   /** Narrowest strip of ground left between two ribbons running alongside each other. */
   gapMm: number;
   removeDoubled: boolean;
@@ -76,7 +83,7 @@ const TIDY_SHARES = { merge: 0.08, cull: 0.45, join: 0.65, prune: 0.75 };
 export function tidyNetwork(input: NetworkInput): { pieces: RoadPiece[]; stats: NetworkStats } {
   const gap = Math.max(0, input.gapMm);
   const report = input.progress ?? (() => {});
-  const candidates = input.pieces.map((p) => candidate(p, input.isDeck(p))).filter((c) => c.points.length >= 2);
+  const candidates = input.pieces.map((p) => candidate(p, input.isDeck(p), input.isHeld?.(p) ?? false)).filter((c) => c.points.length >= 2);
   const origins = endOrigins(candidates, input.leftOut, input.hidden, input.onEdge, NODE_MM);
   const length = (parts: { points: Vec2[] }[]) => parts.reduce((sum, p) => sum + polylineLength(p.points), 0);
 

@@ -1093,7 +1093,8 @@ export class EditSession {
       if (!ROAD_PART_IDS.has(layer.id)) continue;
       base.set(layer.id, layer.solids.flatMap((s) => (s.kind === 'prism' ? [s.polygon] : [])));
     }
-    this.roads = new RoadTiles(this.ctx.roads, base, this.crop, ringBounds(this.spec.crop[0]), this.settings, this.ctx.tracks);
+    const mapped = this.ctx.mapped ? { ...this.ctx.mapped, decks: this.ctx.decks } : undefined;
+    this.roads = new RoadTiles(this.ctx.roads, base, this.crop, ringBounds(this.spec.crop[0]), this.settings, this.ctx.tracks, mapped);
     return this.roads;
   }
 

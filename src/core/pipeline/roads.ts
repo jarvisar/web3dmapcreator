@@ -61,11 +61,16 @@ export function groupOf(piece: SubSegment): RoadGroup {
   return 'road';
 }
 
-/** Split, filter and size every road and rail centerline near the model. */
+/**
+ * Split, filter and size every road and rail centerline near the model.
+ * `hold` sees the pieces as mapped before the tidy, and can hand back some
+ * of them (cut from those) for the tidy to leave alone.
+ */
 export async function collectRoadPieces(
   features: SourceFeature[],
   ctx: Context,
-): Promise<{ pieces: RoadPiece[]; bridgeLines: Vec2[][]; lines: Map<string, SegmentLine> }> {
+  hold?: (pieces: RoadPiece[]) => { pieces: RoadPiece[]; held: ReadonlySet<RoadPiece> } | null,
+): Promise<{ pieces: RoadPiece[]; bridgeLines: Vec2[][]; lines: Map<string, SegmentLine>; mapped?: RoadPiece[] }> {
   const { settings } = ctx;
   const roads = settings.roads;
   const mm = ctx.projection.mmPerMetre;
@@ -130,6 +135,9 @@ export async function collectRoadPieces(
     }
     if (index % 64 === 0) await ctx.progress.checkpoint(index / features.length);
   }
+  const holding = hold?.(pieces);
+  if (holding) pieces = holding.pieces;
+  let mapped: RoadPiece[] | undefined;
   if (roads.tidy && (roads.removeDoubled || roads.mergeDivided || roads.joinEnds || roads.removeFragments)) {
     ctx.progress.begin('tidy', 'Tidying the road network');
     const edges = new EdgeIndex(window, 2);
@@ -140,6 +148,7 @@ export async function collectRoadPieces(
       hidden,
       onEdge: ([x, y]) => edges.distance(x, y, WINDOW_EDGE_MM) < WINDOW_EDGE_MM,
       isDeck: (piece) => settings.bridges.enabled && piece.flags.has('is_bridge') && polylineLength(piece.points) >= minDeck,
+      isHeld: holding?.held.size ? (piece) => holding.held.has(piece) : undefined,
       gapMm: roads.gapMm,
       removeDoubled: roads.removeDoubled,
       mergeDivided: roads.mergeDivided,
@@ -147,13 +156,14 @@ export async function collectRoadPieces(
       removeFragments: roads.removeFragments,
       progress: (fraction) => ctx.progress.report(fraction),
     });
+    mapped = pieces;
     pieces = tidied.pieces;
     Object.assign(ctx.stats, tidied.stats);
   }
   const bridgeLines = pieces.filter((p) => p.flags.has('is_bridge')).map((p) => p.points);
   ctx.stats.road_pieces = pieces.length;
   ctx.stats.bridge_pieces = bridgeLines.length;
-  return { pieces, bridgeLines, lines };
+  return { pieces, bridgeLines, lines, mapped };
 }
 
 /**

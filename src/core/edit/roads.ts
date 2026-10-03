@@ -15,6 +15,14 @@
 // or height of its own ends flat where it was cut, not in a round cap
 // pushing into the next block.
 //
+// A road in a custom layer is printed as mapped, not as tidied: someone
+// picked it out, so it shouldn't come out merged onto the middle of its
+// divided road, cut where it doubled another, or pulled onto a neighbour.
+// Its stretches are drawn from the pieces as they were before the tidy
+// (`MappedRoads`), and a merged line it was part of gives the other
+// carriageway back too, in that one's own style. The roads around it keep
+// their tidy. With no road in a layer nothing here changes.
+//
 // Every road gives way to an imported route, as in the pipeline, unless the
 // route is removed, and to a road drawn in the editor on the ground (`cuts`
 // in RoadStyles). Over water a road gets ground kept under it like any
@@ -23,7 +31,9 @@
 
 import type { Rect64 } from 'clipper2-ts';
 import { boxesOverlap, bufferLines, ClipSet, clipToUnits, difference, differenceSet, dropSmall, intersection, multiBounds, pointInMulti, SCALE, separateTouching, splitToTiles, union, type Box } from '../geometry/polygon';
+import type { DeckPiece } from '../pipeline/bridges';
 import { Progress } from '../pipeline/context';
+import { measurePoints, type SegmentLine } from '../pipeline/measure';
 import { bufferRoads, type RoadGroup, type RoadPiece } from '../pipeline/roads';
 import type { ModelSettings } from '../settings';
 import type { TrackGround } from '../pipeline/generate';
@@ -65,7 +75,11 @@ export class RoadStyles {
       list.push({ from: range.from, to: range.to, style });
     }
     for (const list of this.segments.values()) list.sort((a, b) => b.to - b.from - (a.to - a.from) || a.from - b.from);
+    this.hasLayers = [...byKey].some(([key, style]) => key.startsWith('r:') && !!style.layer);
   }
+
+  /** Whether any road is in a custom layer. */
+  readonly hasLayers: boolean;
 
   get(key: string): RoadStyle | undefined {
     return this.byKey.get(key);
@@ -339,6 +353,143 @@ export class TileGrid {
   }
 }
 
+/** The roads as mapped, before the tidy, and what's needed to place them along their segments. */
+export interface MappedRoads {
+  pieces: readonly RoadPiece[];
+  lines: ReadonlyMap<string, SegmentLine>;
+  /** Bridge decks, whose stretches of a segment aren't ground. */
+  decks: readonly DeckPiece[];
+}
+
+type Intervals = [number, number][];
+
+function joinIntervals(list: Intervals): Intervals {
+  const out: Intervals = [];
+  for (const [a, b] of [...list].sort((p, q) => p[0] - q[0])) {
+    const last = out[out.length - 1];
+    if (last && a <= last[1] + 1e-9) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  return out;
+}
+
+/** `list` less `minus`, both joined. */
+function subtractIntervals(list: Intervals, minus: Intervals): Intervals {
+  const out: Intervals = [];
+  for (const [a, b] of list) {
+    let from = a;
+    for (const [c, d] of minus) {
+      if (d <= from || c >= b) continue;
+      if (c > from) out.push([from, c]);
+      from = Math.max(from, d);
+    }
+    if (b - from > 1e-9) out.push([from, b]);
+  }
+  return out;
+}
+
+/** The other carriageway's measure at `v` on this one, from pairs sorted by this one's. */
+function across(pairs: readonly [number, number][], v: number): number {
+  if (v <= pairs[0][0]) return pairs[0][1];
+  for (let k = 1; k < pairs.length; k++) {
+    const [a, p] = pairs[k - 1];
+    const [b, q] = pairs[k];
+    if (v <= b) return b > a ? p + ((v - a) / (b - a)) * (q - p) : q;
+  }
+  return pairs[pairs.length - 1][1];
+}
+
+const within = (list: Intervals, v: number) => list.some(([a, b]) => v >= a - 1e-9 && v <= b + 1e-9);
+
+function extent(values: readonly number[]): [number, number] {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const v of values) {
+    lo = Math.min(lo, v);
+    hi = Math.max(hi, v);
+  }
+  return [lo, hi];
+}
+
+function pointsBox(points: readonly Vec2[]): Box {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of points) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return [minX, minY, maxX, maxY];
+}
+
+/** Where along a piece lying on its segment the segment's measure `v` falls, clamped to the piece. */
+function alongAtMeasure(along: readonly number[], measure: readonly number[], v: number): number {
+  const n = measure.length;
+  const rising = measure[n - 1] >= measure[0];
+  if (v <= Math.min(measure[0], measure[n - 1])) return rising ? 0 : along[n - 1];
+  if (v >= Math.max(measure[0], measure[n - 1])) return rising ? along[n - 1] : 0;
+  for (let i = 1; i < n; i++) {
+    const a = measure[i - 1];
+    const b = measure[i];
+    if (v < Math.min(a, b) || v > Math.max(a, b)) continue;
+    return along[i - 1] + (b !== a ? (v - a) / (b - a) : 0) * (along[i] - along[i - 1]);
+  }
+  return 0;
+}
+
+/** The stretches of a piece lying on its segment within measure intervals, with which of their ends were cut. */
+function slicesWithin(piece: RoadPiece, intervals: Intervals): { piece: RoadPiece; cut: [boolean, boolean] }[] {
+  const measure = piece.measure;
+  const n = piece.points.length;
+  if (!measure || measure.length !== n || n < 2) return [];
+  const along = [0];
+  for (let i = 1; i < n; i++) along.push(along[i - 1] + Math.hypot(piece.points[i][0] - piece.points[i - 1][0], piece.points[i][1] - piece.points[i - 1][1]));
+  const length = along[n - 1];
+  const spans = intervals.map(([a, b]): [number, number] => {
+    const p = alongAtMeasure(along, measure, a);
+    const q = alongAtMeasure(along, measure, b);
+    return [Math.min(p, q), Math.max(p, q)];
+  });
+  const out: { piece: RoadPiece; cut: [boolean, boolean] }[] = [];
+  for (const [s0, s1] of joinIntervals(spans)) {
+    if (s1 - s0 <= 1e-6) continue;
+    const cut: [boolean, boolean] = [s0 > 1e-6, s1 < length - 1e-6];
+    out.push({ piece: cut[0] || cut[1] ? slicePiece(piece, along, s0, s1) : piece, cut });
+  }
+  return out;
+}
+
+/** A piece as mapped, measured along its segment, with its segment's decks taken out: they stay as built. */
+export function mappedGround(original: RoadPiece, line: SegmentLine, decks: readonly DeckPiece[] | undefined): RoadPiece[] {
+  const piece: RoadPiece = { ...original, measure: measurePoints(original.points, line) };
+  if (!decks?.length) return [piece];
+  const ground: Intervals = [];
+  let from = 0;
+  for (const [a, b] of joinIntervals(decks.map((deck) => extent(measurePoints(deck.points, line))))) {
+    if (a > from) ground.push([from, a]);
+    from = Math.max(from, b);
+  }
+  if (from < 1) ground.push([from, 1]);
+  return slicesWithin(piece, ground).map((slice) => slice.piece);
+}
+
+interface MappedIndex {
+  /** Pieces as mapped, on segments with a line to measure them along. */
+  pieces: RoadPiece[];
+  boxes: Box[];
+  bySegment: Map<string, number[]>;
+  near: Map<number, number[]>;
+  /** The two carriageways of every merged line, each by the other. */
+  links: Map<string, Set<string>>;
+  /** Decks by segment id. */
+  decks: Map<string, DeckPiece[]>;
+  /** Each piece measured along its segment, decks taken out, worked out when first drawn. */
+  ground: (RoadPiece[] | undefined)[];
+}
+
 export class RoadTiles extends TileGrid {
   private readonly boxes: Float64Array;
   private readonly bySegment = new Map<string, number[]>();
@@ -359,6 +510,8 @@ export class RoadTiles extends TileGrid {
     private readonly settings: ModelSettings,
     /** Routes the roads give way to. */
     private readonly cuts: TrackGround[] = [],
+    /** The roads before the tidy, when it ran, for roads in custom layers. */
+    private readonly mapped?: MappedRoads,
   ) {
     super(cropBox);
     this.crop = new ClipSet([crop]);
@@ -394,6 +547,59 @@ export class RoadTiles extends TileGrid {
     });
   }
 
+  private mappedIndex: MappedIndex | null = null;
+
+  /** Built the first time a road is in a custom layer. */
+  private mappedRoads(): MappedIndex | null {
+    if (this.mappedIndex || !this.mapped) return this.mappedIndex;
+    const { lines } = this.mapped;
+    const pieces = this.mapped.pieces.filter((piece) => piece.points.length >= 2 && lines.has(piece.sourceId));
+    const reach = MAX_WIDTH_MM / 2 + this.settings.roads.gapMm + REACH_MM;
+    const index: MappedIndex = { pieces, boxes: [], bySegment: new Map(), near: new Map(), links: new Map(), decks: new Map(), ground: [] };
+    pieces.forEach((piece, i) => {
+      const box = pointsBox(piece.points);
+      index.boxes.push(box);
+      const key = `r:${piece.sourceId}`;
+      const list = index.bySegment.get(key);
+      if (list) list.push(i);
+      else index.bySegment.set(key, [i]);
+      for (const tile of this.tilesTouching([box[0] - reach, box[1] - reach, box[2] + reach, box[3] + reach])) {
+        const cell = index.near.get(tile);
+        if (cell) cell.push(i);
+        else index.near.set(tile, [i]);
+      }
+    });
+    const link = (a: string, b: string) => {
+      const set = index.links.get(a);
+      if (set) set.add(b);
+      else index.links.set(a, new Set([b]));
+    };
+    for (const piece of this.pieces) {
+      if (!piece.partner) continue;
+      link(`r:${piece.sourceId}`, `r:${piece.partner}`);
+      link(`r:${piece.partner}`, `r:${piece.sourceId}`);
+    }
+    for (const deck of this.mapped.decks) {
+      if (!deck.key.startsWith('br:') || deck.points.length < 2) continue;
+      const id = deck.key.slice(3);
+      const list = index.decks.get(id);
+      if (list) list.push(deck);
+      else index.decks.set(id, [deck]);
+    }
+    this.mappedIndex = index;
+    return index;
+  }
+
+  /** A mapped piece's ground stretches, measured along its segment. Decks stay as built. */
+  private mappedGround(index: MappedIndex, i: number): RoadPiece[] {
+    const known = index.ground[i];
+    if (known) return known;
+    const piece = index.pieces[i];
+    const out = mappedGround(piece, this.mapped!.lines.get(piece.sourceId)!, index.decks.get(piece.sourceId));
+    index.ground[i] = out;
+    return out;
+  }
+
   /** Tiles that a road's ribbon reaches, as it was and as `style` has it, or a route's. A range reaches the pieces lying along it. */
   tilesOf(key: string, style: RoadStyle | undefined): number[] {
     const cut = this.cuts.find((c) => c.key === key);
@@ -411,6 +617,18 @@ export class RoadTiles extends TileGrid {
       const b = i * 4;
       const box: Box = [this.boxes[b] - reach, this.boxes[b + 1] - reach, this.boxes[b + 2] + reach, this.boxes[b + 3] + reach];
       for (const tile of this.tilesTouching(box)) out.add(tile);
+    }
+    // Drawn as mapped while in a layer, with the other carriageway of a
+    // merged line, and those can reach tiles the tidied line doesn't.
+    const mapped = style?.layer ? this.mappedRoads() : this.mappedIndex;
+    if (mapped) {
+      for (const linked of [segment, ...(mapped.links.get(segment) ?? [])]) {
+        for (const i of mapped.bySegment.get(linked) ?? []) {
+          const reach = Math.max(mapped.pieces[i].widthMm, style?.widthMm ?? 0) / 2 + gap + REACH_MM;
+          const [x0, y0, x1, y1] = mapped.boxes[i];
+          for (const tile of this.tilesTouching([x0 - reach, y0 - reach, x1 + reach, y1 + reach])) out.add(tile);
+        }
+      }
     }
     return [...out];
   }
@@ -458,27 +676,112 @@ export class RoadTiles extends TileGrid {
     // Everything there in the pipeline's order, which the crack strips depend on.
     const all: RoadPiece[] = [];
     const special = new Map<string, { part: string; thickness: number; pieces: RoadPiece[]; styled: StyledPiece[]; cut: boolean }>();
+    const place = (styled: StyledPiece) => {
+      const { piece, style } = styled;
+      if (style?.removed) return;
+      const sized = style?.widthMm !== undefined ? { ...piece, widthMm: style.widthMm } : piece;
+      all.push(sized);
+      const height = style?.heightMm ?? thickness;
+      if (!style?.layer && Math.abs(height - thickness) < 1e-9) {
+        plain.push(sized);
+        return;
+      }
+      const part = style?.layer ? `layer:${style.layer}` : ROAD_PARTS[piece.group];
+      const id = `${part}|${height}`;
+      let bucket = special.get(id);
+      if (!bucket) special.set(id, (bucket = { part, thickness: height, pieces: [], styled: [], cut: false }));
+      bucket.pieces.push(sized);
+      bucket.styled.push({ ...styled, piece: sized });
+      if (styled.cut[0] || styled.cut[1]) bucket.cut = true;
+    };
+    // Stretches of each segment in a custom layer, and what's drawn as mapped.
+    const mapped = styles.hasLayers ? this.mappedRoads() : null;
+    const layered = new Map<string, Intervals>();
+    const layeredOf = (segment: string) => {
+      let list = layered.get(segment);
+      if (!list) layered.set(segment, (list = joinIntervals(styles.ranges(segment).flatMap((r): Intervals => (r.style.layer ? [[r.from, r.to]] : [])))));
+      return list;
+    };
+    // What's drawn as mapped, by segment. A merged line gives both its
+    // carriageways back still tied to each other where it ran (`link`): each
+    // carries the other's edits there, as the merged line did, so colouring
+    // the road colours both.
+    const restore = new Map<string, { span: [number, number]; link?: { partner: string; pairs: [number, number][] } }[]>();
+    // In the pipeline's order, with each segment drawn as mapped where its
+    // first replaced stretch was: the crack strips depend on the order.
+    const order: (StyledPiece | string)[] = [];
+    const restoreOn = (segment: string, span: [number, number], link?: { partner: string; pairs: [number, number][] }) => {
+      const list = restore.get(segment);
+      if (list) list.push({ span, link });
+      else {
+        restore.set(segment, [{ span, link }]);
+        order.push(segment);
+      }
+    };
     for (const i of this.near.get(tile) ?? []) {
       const original = this.pieces[i];
-      const carried = original.partner ? styles.ranges(`r:${original.partner}`) : [];
-      for (const styled of styledPieces(original, styles.ranges(`r:${original.sourceId}`), carried)) {
-        const { piece, style } = styled;
-        if (style?.removed) continue;
-        const sized = style?.widthMm !== undefined ? { ...piece, widthMm: style.widthMm } : piece;
-        all.push(sized);
-        const height = style?.heightMm ?? thickness;
-        if (!style?.layer && Math.abs(height - thickness) < 1e-9) {
-          plain.push(sized);
-          continue;
+      const own = `r:${original.sourceId}`;
+      const partner = original.partner ? `r:${original.partner}` : null;
+      const carried = partner ? styles.ranges(partner) : [];
+      for (const styled of styledPieces(original, styles.ranges(own), carried)) {
+        // Stretches are cut at every range's ends, so one is wholly in a layer or wholly out.
+        const measure = styled.piece.measure;
+        const partnerMeasure = partner ? styled.piece.partnerMeasure : undefined;
+        if (mapped && measure?.length && mapped.bySegment.has(own)) {
+          const ownSpan = extent(measure);
+          const partnerSpan = partnerMeasure?.length === measure.length && mapped.bySegment.has(partner!) ? extent(partnerMeasure) : null;
+          const inLayer = within(layeredOf(own), (ownSpan[0] + ownSpan[1]) / 2) || (partnerSpan && within(layeredOf(partner!), (partnerSpan[0] + partnerSpan[1]) / 2));
+          if (inLayer) {
+            if (partnerSpan) {
+              restoreOn(own, ownSpan, { partner: partner!, pairs: measure.map((m, k): [number, number] => [m, partnerMeasure![k]]) });
+              restoreOn(partner!, partnerSpan, { partner: own, pairs: partnerMeasure!.map((q, k): [number, number] => [q, measure[k]]) });
+            } else restoreOn(own, ownSpan);
+            continue;
+          }
         }
-        const part = style?.layer ? `layer:${style.layer}` : ROAD_PARTS[piece.group];
-        const id = `${part}|${height}`;
-        let bucket = special.get(id);
-        if (!bucket) special.set(id, (bucket = { part, thickness: height, pieces: [], styled: [], cut: false }));
-        bucket.pieces.push(sized);
-        bucket.styled.push({ ...styled, piece: sized });
-        if (styled.cut[0] || styled.cut[1]) bucket.cut = true;
+        order.push(styled);
       }
+    }
+    const restored = new Map<string, StyledPiece[]>();
+    if (mapped) {
+      const near = mapped.near.get(tile) ?? [];
+      // Whole layered ranges, so stretches the tidy dropped come back too.
+      for (const i of near) {
+        const segment = `r:${mapped.pieces[i].sourceId}`;
+        for (const range of layeredOf(segment)) restoreOn(segment, range);
+      }
+      for (const i of near) {
+        const segment = `r:${mapped.pieces[i].sourceId}`;
+        const wanted = restore.get(segment);
+        if (!wanted) continue;
+        let list = restored.get(segment);
+        if (!list) restored.set(segment, (list = []));
+        const push = (slice: { piece: RoadPiece; cut: [boolean, boolean] }, carried: readonly StyledRange[]) => {
+          const stretches = styledPieces(slice.piece, styles.ranges(segment), carried);
+          stretches.forEach((stretch, k) => {
+            list.push({ ...stretch, cut: [stretch.cut[0] || (k === 0 && slice.cut[0]), stretch.cut[1] || (k === stretches.length - 1 && slice.cut[1])] });
+          });
+        };
+        const linked = wanted.filter((entry) => entry.link);
+        const plain = subtractIntervals(
+          joinIntervals(wanted.filter((entry) => !entry.link).map((entry) => entry.span)),
+          joinIntervals(linked.map((entry) => entry.span)),
+        );
+        for (const ground of this.mappedGround(mapped, i)) {
+          for (const { span, link } of linked) {
+            const pairs = [...link!.pairs].sort((a, b) => a[0] - b[0]);
+            for (const slice of slicesWithin(ground, [span])) {
+              const piece = { ...slice.piece, partner: link!.partner.slice(2), partnerMeasure: slice.piece.measure!.map((v) => across(pairs, v)) };
+              push({ piece, cut: slice.cut }, styles.ranges(link!.partner));
+            }
+          }
+          for (const slice of slicesWithin(ground, plain)) push(slice, []);
+        }
+      }
+    }
+    for (const entry of order) {
+      if (typeof entry !== 'string') place(entry);
+      else for (const styled of restored.get(entry) ?? []) place(styled);
     }
 
     const out: RoadBucket[] = [];

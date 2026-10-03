@@ -2,9 +2,14 @@
 // in the route colour, a little taller than the roads so a route along a
 // road stands proud of it. Routes never go through the road tidy. A
 // recorded track can be moved onto the roads it followed first
-// (tracks/snap.ts), using the road lines as tidied, so it sits on the roads
-// that are printed. Roads, paths and land cover are cut away under its
-// ground (generate.ts), so it never needs the slicer's order to win them.
+// (tracks/snap.ts), using the roads as mapped, before the tidy, and the
+// blocks it was matched to are then held out of the tidy (`holdUnderTracks`),
+// so it still sits on the roads that are printed. Matched to the tidied
+// lines, it took every merged divided road, joined end and dropped footway
+// with it, and kinked where the tidy had moved or cut the line it followed.
+// The roads around it are tidied as before. Roads, paths and land cover are
+// cut away under its ground (generate.ts), so it never needs the slicer's
+// order to win them.
 //
 // Buildings aren't cut out of a route. It's listed before them, so where GPS
 // drifts into a building the building keeps the overlap and its walls stay
@@ -22,6 +27,7 @@ import { snapToNetwork } from '../tracks/snap';
 import { SNAP_MARGIN_M, trackLengthM, type TrackLines } from '../tracks/track';
 import type { MultiPolygon, Vec2 } from '../types';
 import type { DeckPiece } from './bridges';
+import type { RoadPiece } from './roads';
 import { count, describeObject, type Context } from './context';
 
 /** Markers are this many times the route's width. */
@@ -66,6 +72,150 @@ export function trackModelLines(
   const lines = clipLines(projected, near).filter((line) => line.length >= 2);
   if (!snap || !network.length || !lines.length) return { lines, via: lines.map((line) => new Int32Array(line.length - 1).fill(-1)), snapped: 0 };
   return snapToNetwork(lines, network, { unitsPerMetre: mm });
+}
+
+export interface SnappedTrack {
+  track: TrackLines;
+  lines: Vec2[][];
+  /** The network line each segment of `lines` was matched along, or -1. */
+  via: Int32Array[];
+  /** Share of the samples matched to a road, or null when it wasn't snapped. */
+  snapped: number | null;
+}
+
+/** Every track's model lines, snapped to `network` when the settings ask. */
+export function snapTracks(tracks: readonly TrackLines[], ctx: Pick<Context, 'projection' | 'cropSet' | 'settings'>, network: Vec2[][]): SnappedTrack[] {
+  const snap = ctx.settings.tracks.snap && network.length > 0;
+  return tracks.map((track) => {
+    const { lines, via, snapped } = trackModelLines(track, ctx, network, snap);
+    return { track, lines, via, snapped: snap ? snapped : null };
+  });
+}
+
+// A route this far past a junction, in real metres, hasn't really gone into
+// the next block: the matcher's rounding where it turns.
+const PAST_JUNCTION_M = 2;
+
+/**
+ * The road pieces snapped routes run along, cut out as whole blocks (from
+ * junction to junction, or a piece's own end) for the tidy to keep as
+ * mapped. A route starting halfway along a block holds the whole block, so
+ * the road never steps where the route begins. Bridges are held whole, since
+ * a deck shorter than `MINIMUM_BRIDGE_M` would be ground. Cuts fall on the
+ * pieces' own vertices, so held blocks keep their exact points. Pieces under
+ * no route come back as they were.
+ */
+export function holdUnderTracks(pieces: RoadPiece[], tracks: readonly SnappedTrack[], mmPerMetre: number): { pieces: RoadPiece[]; held: Set<RoadPiece> } {
+  const held = new Set<RoadPiece>();
+  const under = new Map<number, [number, number][]>();
+  for (const { lines, via } of tracks) {
+    lines.forEach((line, l) => {
+      for (let j = 0; j + 1 < line.length; j++) {
+        const v = via[l]?.[j] ?? -1;
+        if (v < 0 || v >= pieces.length) continue;
+        const a = arcOn(pieces[v].points, line[j]);
+        const b = arcOn(pieces[v].points, line[j + 1]);
+        let list = under.get(v);
+        if (!list) under.set(v, (list = []));
+        list.push([Math.min(a, b), Math.max(a, b)]);
+      }
+    });
+  }
+  if (!under.size) return { pieces, held };
+
+  // Vertices more than one piece has: Overture repeats a connector's
+  // coordinates exactly on every segment through it.
+  const key = ([x, y]: Vec2) => `${Math.round(x * 1e5)},${Math.round(y * 1e5)}`;
+  const owners = new Map<string, number>();
+  pieces.forEach((piece) => {
+    for (const k of new Set(piece.points.map(key))) owners.set(k, (owners.get(k) ?? 0) + 1);
+  });
+  const tolerance = PAST_JUNCTION_M * mmPerMetre;
+  const out: RoadPiece[] = [];
+  pieces.forEach((piece, i) => {
+    const stretches = under.get(i);
+    if (!stretches) {
+      out.push(piece);
+      return;
+    }
+    const n = piece.points.length;
+    const cum = [0];
+    for (let k = 1; k < n; k++) cum.push(cum[k - 1] + Math.hypot(piece.points[k][0] - piece.points[k - 1][0], piece.points[k][1] - piece.points[k - 1][1]));
+    const bridge = piece.flags.has('is_bridge');
+    const junctions = [0];
+    for (let k = 1; k < n - 1; k++) if (!bridge && (owners.get(key(piece.points[k])) ?? 0) > 1) junctions.push(k);
+    junctions.push(n - 1);
+    // What the route covers, joined up, less touches shorter than the rounding.
+    stretches.sort((a, b) => a[0] - b[0]);
+    const covered: [number, number][] = [];
+    for (const [s0, s1] of stretches) {
+      const last = covered[covered.length - 1];
+      if (last && s0 <= last[1] + 1e-6) last[1] = Math.max(last[1], s1);
+      else covered.push([s0, s1]);
+    }
+    // Held vertex ranges, widened to the junctions either side.
+    const ranges: [number, number][] = [];
+    for (const [s0, s1] of covered) {
+      if (s1 - s0 < tolerance) continue;
+      let lo = 0;
+      for (const k of junctions) if (cum[k] <= s0 + tolerance) lo = k;
+      let hi = n - 1;
+      for (let m = junctions.length - 1; m >= 0; m--) if (cum[junctions[m]] >= s1 - tolerance) hi = junctions[m];
+      if (hi > lo) ranges.push([lo, hi]);
+    }
+    if (!ranges.length) {
+      out.push(piece);
+      return;
+    }
+    ranges.sort((a, b) => a[0] - b[0]);
+    const merged: [number, number][] = [];
+    for (const r of ranges) {
+      const last = merged[merged.length - 1];
+      if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+      else merged.push([...r]);
+    }
+    if (merged.length === 1 && merged[0][0] === 0 && merged[0][1] === n - 1) {
+      out.push(piece);
+      held.add(piece);
+      return;
+    }
+    let from = 0;
+    const push = (k0: number, k1: number, hold: boolean) => {
+      if (k1 <= k0) return;
+      const part = { ...piece, points: piece.points.slice(k0, k1 + 1) };
+      out.push(part);
+      if (hold) held.add(part);
+    };
+    for (const [k0, k1] of merged) {
+      push(from, k0, false);
+      push(k0, k1, true);
+      from = k1;
+    }
+    push(from, n - 1, false);
+  });
+  return { pieces: out, held };
+}
+
+/** Distance along a line to the point on it closest to `p`. */
+function arcOn(points: readonly Vec2[], p: Vec2): number {
+  let best = Infinity;
+  let arc = 0;
+  let along = 0;
+  for (let i = 1; i < points.length; i++) {
+    const [ax, ay] = points[i - 1];
+    const dx = points[i][0] - ax;
+    const dy = points[i][1] - ay;
+    const length2 = dx * dx + dy * dy;
+    const length = Math.sqrt(length2);
+    const t = length2 > 0 ? Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / length2)) : 0;
+    const d = Math.hypot(ax + dx * t - p[0], ay + dy * t - p[1]);
+    if (d < best) {
+      best = d;
+      arc = along + t * length;
+    }
+    along += length;
+  }
+  return arc;
 }
 
 /** Start and finish markers for a track laid out as `lines`, `size` across. */
@@ -216,9 +366,9 @@ function deckDirection(points: readonly Vec2[], x: number, y: number): Vec2 | nu
 /**
  * Where each route goes: its ribbon and markers on the ground, cut around
  * the decks it passes under, and on the decks it runs along. `network` is
- * the road lines it can be snapped to, decks included.
+ * the road lines the tracks were snapped to, as mapped, decks included.
  */
-export async function layOutTracks(tracks: readonly TrackLines[], ctx: Context, input: { network: Vec2[][]; decks: DeckPiece[] }): Promise<TrackLayout> {
+export async function layOutTracks(tracks: readonly SnappedTrack[], ctx: Context, input: { network: Vec2[][]; decks: DeckPiece[] }): Promise<TrackLayout> {
   const s = ctx.settings.tracks;
   const width = s.widthMm;
   const deckRibbons = input.decks.map((deck) => dropSmall(intersection(bufferLines([{ points: deck.points, width: deck.widthMm }], 'round'), ctx.cropSet), 0.01));
@@ -243,11 +393,10 @@ export async function layOutTracks(tracks: readonly TrackLines[], ctx: Context, 
   let snappedShare = 0;
   let snappedCount = 0;
   for (let i = 0; i < tracks.length; i++) {
-    const track = tracks[i];
+    const { track, lines, via, snapped } = tracks[i];
     await ctx.progress.checkpoint(i / tracks.length);
-    const { lines, via, snapped } = trackModelLines(track, ctx, input.network, s.snap);
     if (!lines.length) continue;
-    if (s.snap && input.network.length) {
+    if (snapped !== null) {
       snappedShare += snapped;
       snappedCount++;
     }

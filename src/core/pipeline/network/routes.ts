@@ -39,13 +39,15 @@ export interface Candidate {
   /** Class and subclass: a ramp isn't the motorway's other carriageway, nor a parking aisle a street's. */
   kind: string;
   oneway: -1 | 0 | 1;
+  /** Under an imported route: kept as mapped, never moved, cut or dropped. */
+  held: boolean;
 }
 
 // Vertices this close are one. A micrometre segment at the end of a line
 // takes its end with it, and a road looked like it carried on past its end.
 const VERTEX_MM = 0.003;
 
-export function candidate(piece: RoadPiece, deck: boolean): Candidate {
+export function candidate(piece: RoadPiece, deck: boolean, held = false): Candidate {
   return {
     piece,
     points: dedupe(piece.points, VERTEX_MM),
@@ -55,6 +57,7 @@ export function candidate(piece: RoadPiece, deck: boolean): Candidate {
     minor: MINOR_ROAD_CLASSES.has(piece.roadClass),
     kind: `${piece.roadClass}/${piece.subclass}`,
     oneway: piece.oneway ?? 0,
+    held,
   };
 }
 
@@ -115,6 +118,7 @@ export interface Route {
   rank: number;
   deck: boolean;
   minor: boolean;
+  held: boolean;
   order: number;
 }
 
@@ -173,7 +177,8 @@ export function weld(candidates: Candidate[], tolerance: number): Route[] {
 
   const groups = new Map<string, number[]>();
   candidates.forEach((c, i) => {
-    const key = `${c.piece.roadClass}|${c.deck}`;
+    // Held pieces are welded apart, so the rest of a street is judged on its own.
+    const key = `${c.piece.roadClass}|${c.deck}|${c.held}`;
     const list = groups.get(key);
     if (list) list.push(i);
     else groups.set(key, [i]);
@@ -274,6 +279,7 @@ export function weld(candidates: Candidate[], tolerance: number): Route[] {
         rank: first.rank,
         deck: first.deck,
         minor: first.minor,
+        held: first.held,
         order: Math.min(...chain.map((m) => m.source)),
       });
     }

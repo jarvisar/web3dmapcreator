@@ -10,7 +10,7 @@
 // and otherwise takes the shortest way across, but only heading on the way
 // the line was going and never across another line. Nothing bends: a taper
 // sideways into a road drew long diagonals where nothing was mapped. Ends on
-// the model's edge and bridge decks never move.
+// the model's edge, bridge decks and held lines never move.
 
 import type { Vec2 } from '../../types';
 import { polylineLength } from '../linework';
@@ -52,7 +52,7 @@ export function joinEnds(parts: Part[], candidates: Candidate[], gap: number, to
 
   parts.forEach((part, i) => {
     const c = candidates[part.source];
-    if (c.deck) return;
+    if (c.deck || c.held) return;
     // No longer than the gap it would cross: joining would fold it up.
     if (polylineLength(part.points) <= 2 * gap + 2 * c.halfWidth) return;
     for (const end of [0, 1] as const) {

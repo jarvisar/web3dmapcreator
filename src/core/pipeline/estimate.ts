@@ -24,6 +24,8 @@ const WRITE_SECONDS_PER_TRIANGLE = 1.25e-6;
 
 // Laying out routes, per point of the tracks: snapping is most of it.
 const ROUTE_SECONDS_PER_POINT = 2e-4;
+// Of that, the snapping, which map models do before the road tidy.
+const SNAP_SHARE = 0.8;
 
 /** Laying out imported routes with this many points between them. */
 export function routeSeconds(points: number): number {
@@ -44,8 +46,12 @@ export function generationSteps(counts: FeatureCounts, settings: ModelSettings, 
     { stage: 'grid', seconds: 0.01 + 6e-7 * cells },
     { stage: 'water', seconds: 0.05 + 2e-4 * water },
   ];
+  const routes = routePoints > 0 && settings.tracks.enabled;
+  // Routes are matched to the roads as mapped, so the tidy can keep what they run along.
+  const matched = routes && segments > 0;
   if (segments) {
     steps.push({ stage: 'roads', seconds: 0.01 + 8e-6 * segments });
+    if (matched) steps.push({ stage: 'match', seconds: 0.01 + SNAP_SHARE * ROUTE_SECONDS_PER_POINT * routePoints });
     if (tidy) steps.push({ stage: 'tidy', seconds: 0.02 + 7e-5 * segments });
     steps.push({ stage: 'ribbons', seconds: 0.02 + 1.4e-4 * segments });
     if (settings.bridges.enabled) steps.push({ stage: 'bridges', seconds: 0.05 + 3e-5 * segments });
@@ -55,7 +61,7 @@ export function generationSteps(counts: FeatureCounts, settings: ModelSettings, 
     // The union of every footprint grows faster than their number.
     steps.push({ stage: 'footprints', seconds: 0.01 + 4.5e-7 * buildings ** 1.5 });
   }
-  if (routePoints && settings.tracks.enabled) steps.push({ stage: 'routes', seconds: routeSeconds(routePoints) });
+  if (routes) steps.push({ stage: 'routes', seconds: matched ? 0.01 + (1 - SNAP_SHARE) * ROUTE_SECONDS_PER_POINT * routePoints : routeSeconds(routePoints) });
   if (land) steps.push({ stage: 'land', seconds: 0.02 + 4.5e-4 * land });
   steps.push({ stage: 'close', seconds: 0.01 + 1e-4 * water });
   if (settings.trees.enabled) steps.push({ stage: 'trees', seconds: 0.2 + 2e-4 * land });

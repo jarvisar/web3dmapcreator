@@ -4,8 +4,10 @@
 // a terrain cell so an outline drawn along them stays on the ground.
 
 import { densifyLine } from '../geometry/polygon';
+import type { DeckPiece } from '../pipeline/bridges';
 import type { EditContext } from '../pipeline/generate';
-import type { RoadGroup } from '../pipeline/roads';
+import type { RoadGroup, RoadPiece } from '../pipeline/roads';
+import { mappedGround } from './roads';
 import type { Vec2 } from '../types';
 
 export interface RoadLines {
@@ -33,12 +35,42 @@ export interface RoadLines {
   thicknessMm: number;
   /** Bridge decks, so a street can be followed across them: both ends (x, y, x, y) of each. */
   decks?: { keys: string[]; names: string[]; classes: string[]; ends: Float32Array };
+  /**
+   * The segments the tidy changed, as mapped. A road in a custom layer is
+   * printed from these (edit/roads.ts), so it's picked by them too
+   * (viewer/blocks.ts).
+   */
+  mapped?: MappedLines;
 }
+
+export type MappedLines = Pick<RoadLines, 'keys' | 'names' | 'classes' | 'groups' | 'widths' | 'starts' | 'points'> & { measures: Float32Array };
 
 export const ROAD_GROUP_INDEX: Record<RoadGroup, number> = { road: 0, rail: 1, path: 2 };
 
 export function roadLines(ctx: EditContext, zShift: number, thicknessMm: number): RoadLines {
   const pieces = ctx.roads;
+  const { starts, points, measures, partnerMeasures } = pieceLines(pieces, ctx, zShift);
+  const junctions: Record<string, number[]> = {};
+  for (const [key, list] of ctx.junctions ?? []) junctions[key] = list;
+  return {
+    keys: pieces.map((p) => `r:${p.sourceId}`),
+    names: pieces.map((p) => p.name ?? ''),
+    classes: pieces.map((p) => p.roadClass),
+    groups: Uint8Array.from(pieces, (p) => ROAD_GROUP_INDEX[p.group]),
+    widths: Float32Array.from(pieces, (p) => p.widthMm),
+    starts,
+    points,
+    measures,
+    junctions,
+    partners: pieces.map((p) => (p.partner && p.partnerMeasure ? `r:${p.partner}` : '')),
+    partnerMeasures,
+    thicknessMm,
+    decks: deckEnds(ctx),
+    mapped: mappedLines(ctx, zShift),
+  };
+}
+
+function pieceLines(pieces: readonly RoadPiece[], ctx: EditContext, zShift: number) {
   const spacing = ctx.heightfield && !ctx.heightfield.flat ? ctx.heightfield.step / 2 : Infinity;
   const coords: number[] = [];
   const along: number[] = [];
@@ -57,8 +89,52 @@ export function roadLines(ctx: EditContext, zShift: number, thicknessMm: number)
     });
   });
   starts[pieces.length] = coords.length / 3;
-  const junctions: Record<string, number[]> = {};
-  for (const [key, list] of ctx.junctions ?? []) junctions[key] = list;
+  return { starts, points: Float32Array.from(coords), measures: Float32Array.from(along), partnerMeasures: Float32Array.from(carried) };
+}
+
+/** Ground pieces as mapped of every segment the tidy changed, and of the other carriageway of every merged line. */
+function mappedLines(ctx: EditContext, zShift: number): MappedLines | undefined {
+  const mapped = ctx.mapped;
+  if (!mapped) return undefined;
+  const shape = (list: readonly RoadPiece[]) =>
+    list
+      .map((p) => p.points.map(([x, y]) => `${x},${y}`).join(' '))
+      .sort()
+      .join('|');
+  const bySegment = (list: readonly RoadPiece[]) => {
+    const out = new Map<string, RoadPiece[]>();
+    for (const piece of list) {
+      const group = out.get(piece.sourceId);
+      if (group) group.push(piece);
+      else out.set(piece.sourceId, [piece]);
+    }
+    return out;
+  };
+  const tidied = bySegment(ctx.roads);
+  const before = bySegment(mapped.pieces);
+  const changed = new Set<string>();
+  for (const [id, list] of tidied) {
+    const merged = list.filter((p) => p.partner);
+    if (merged.length) {
+      changed.add(id);
+      for (const p of merged) changed.add(p.partner!);
+    } else if (shape(list) !== shape(before.get(id) ?? [])) changed.add(id);
+  }
+  const decks = new Map<string, DeckPiece[]>();
+  for (const deck of ctx.decks) {
+    if (!deck.key.startsWith('br:') || deck.points.length < 2) continue;
+    const list = decks.get(deck.key.slice(3));
+    if (list) list.push(deck);
+    else decks.set(deck.key.slice(3), [deck]);
+  }
+  const pieces: RoadPiece[] = [];
+  for (const id of changed) {
+    const line = mapped.lines.get(id);
+    if (!line) continue;
+    for (const piece of before.get(id) ?? []) if (piece.points.length >= 2) pieces.push(...mappedGround(piece, line, decks.get(id)));
+  }
+  if (!pieces.length) return undefined;
+  const { starts, points, measures } = pieceLines(pieces, ctx, zShift);
   return {
     keys: pieces.map((p) => `r:${p.sourceId}`),
     names: pieces.map((p) => p.name ?? ''),
@@ -66,13 +142,8 @@ export function roadLines(ctx: EditContext, zShift: number, thicknessMm: number)
     groups: Uint8Array.from(pieces, (p) => ROAD_GROUP_INDEX[p.group]),
     widths: Float32Array.from(pieces, (p) => p.widthMm),
     starts,
-    points: Float32Array.from(coords),
-    measures: Float32Array.from(along),
-    junctions,
-    partners: pieces.map((p) => (p.partner && p.partnerMeasure ? `r:${p.partner}` : '')),
-    partnerMeasures: Float32Array.from(carried),
-    thicknessMm,
-    decks: deckEnds(ctx),
+    points,
+    measures,
   };
 }
 
