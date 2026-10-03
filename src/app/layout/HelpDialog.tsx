@@ -102,13 +102,13 @@ export function HelpDialog() {
           <MakerWorldMark size={18} />
           MakerWorld
         </a>
+        <a href="https://www.patreon.com/c/Jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
+          <PatreonMark size={16} />
+          Patreon / Commercial
+        </a>
         <a href="https://buymeacoffee.com/jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
           <BuyMeACoffeeMark size={18} />
           Buy Me a Coffee
-        </a>
-        <a href="https://www.patreon.com/c/Jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
-          <PatreonMark size={16} />
-          Patreon
         </a>
       </div>
 
