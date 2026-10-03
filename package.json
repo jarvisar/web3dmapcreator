@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Turn any area of a map into a multicolour 3D printable city model, or an SVG map for laser engraving, pen plotters and print, in the browser.",
   "license": "GPL-3.0-or-later",
-  "author": "Jarvizar",
+  "author": "jarvisar",
   "type": "module",
   "scripts": {
     "dev": "vite",
