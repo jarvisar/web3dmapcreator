@@ -3,7 +3,7 @@
   "private": true,
   "description": "CORS proxy for the City Model site's LiDAR downloads, as a Cloudflare Worker.",
   "license": "GPL-3.0-or-later",
-  "author": "Jarvizar",
+  "author": "jarvisar",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
