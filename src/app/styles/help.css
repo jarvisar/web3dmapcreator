@@ -42,6 +42,10 @@
   font-weight: bold;
 }
 
+.help-heading:first-child {
+  margin-top: 0;
+}
+
 .help-list {
   display: flex;
   flex-direction: column;
@@ -63,6 +67,13 @@
 .help-links {
   display: flex;
   flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 18px;
+}
+
+.help-links .btn {
+  height: 30px;
+  padding: 0 10px;
   gap: 6px;
 }
 
