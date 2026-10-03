@@ -126,19 +126,46 @@ export function areaAroundTracks(lines: readonly LonLat[][], base: AreaSpec, tur
   };
 }
 
-/** Share of the routes' points outside an area, 0 to 1. Long routes are sampled. */
+// Points tested along the routes, spaced evenly by length.
+const SAMPLES = 2000;
+
+/**
+ * Share of the routes' length outside an area, 0 to 1. Counting their
+ * points instead weighed bends over straights, since simplifying leaves a
+ * straight with few points: a long straight run off the area read as
+ * mostly on it.
+ */
 export function shareOutside(lines: readonly LonLat[][], area: AreaSpec): number {
   const projection = new Projection(area.center, area.rotationDeg, 1);
   const ring = shapeRing(area.shape, area.widthM, area.heightM, area.cornerRadius * Math.min(area.widthM, area.heightM), Math.max(area.widthM, area.heightM) / 2000);
+  const outside = ([lon, lat]: LonLat) => !pointInPolygon(...projection.toModel(lon, lat), [ring]);
+  // Lengths in degrees, longitude shrunk for the latitude, only to space the samples.
+  const kx = Math.cos(((lines[0]?.[0]?.[1] ?? 0) * Math.PI) / 180);
+  const length = (a: LonLat, b: LonLat) => Math.hypot((b[0] - a[0]) * kx, b[1] - a[1]);
   let total = 0;
+  for (const line of lines) for (let i = 1; i < line.length; i++) total += length(line[i - 1], line[i]);
+  if (!(total > 0)) {
+    // Every point in one place.
+    const points = lines.flat();
+    return points.length ? points.filter(outside).length / points.length : 0;
+  }
+  const step = total / SAMPLES;
+  let next = step / 2;
+  let walked = 0;
+  let count = 0;
   let out = 0;
   for (const line of lines) {
-    const step = Math.max(1, Math.floor(line.length / 500));
-    for (let i = 0; i < line.length; i += step) {
-      total++;
-      const [x, y] = projection.toModel(line[i][0], line[i][1]);
-      if (!pointInPolygon(x, y, [ring])) out++;
+    for (let i = 1; i < line.length; i++) {
+      const a = line[i - 1];
+      const b = line[i];
+      const d = length(a, b);
+      for (; next <= walked + d; next += step) {
+        const t = (next - walked) / d;
+        count++;
+        if (outside([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])) out++;
+      }
+      walked += d;
     }
   }
-  return total ? out / total : 0;
+  return count ? out / count : 0;
 }

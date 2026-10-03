@@ -153,7 +153,7 @@ export async function generateModel(options: { approveTiles?: string[] } = {}): 
       roads: result.roads ?? null,
       objects: result.objects ?? {},
       ground: result.ground ?? null,
-      frame: { center: area.center, rotationDeg: area.rotationDeg, mmPerMetre: result.mmPerMetre, buildingMmPerMetre: result.buildingMmPerMetre ?? result.mmPerMetre },
+      frame: { center: area.center, rotationDeg: area.rotationDeg, mmPerMetre: result.mmPerMetre, buildingMmPerMetre: result.buildingMmPerMetre ?? result.mmPerMetre, area },
     };
     setModelParts(result.parts, data, result.edit, result.modelId);
     setNotes(result.edit?.notes ?? {});

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildingHeightRange, EDIT_LIMITS, emptyEdits, MAX_SHAPES, MAX_TEXT_LENGTH, sanitizeEdits, type AddedShape, type ModelEdits } from '../../core/edit/types';
 import { Projection } from '../../core/geo/projection';
 import { roadEditOf } from '../../core/edit/blocks';
+import { DEFAULT_AREA } from '../../core/settings';
 import type { SvgRoute } from '../../core/svgmap/routes';
 import { clearPicks, deleteRoute } from '../svgmap/routes';
 import {
@@ -462,7 +463,7 @@ describe('limits', () => {
   });
 
   it('puts a copy beside its original, and inside the model near its edge', () => {
-    const frame = { center: [-87.63, 41.88] as [number, number], rotationDeg: 0, mmPerMetre: 0.07, buildingMmPerMetre: 0.07 };
+    const frame = { center: [-87.63, 41.88] as [number, number], rotationDeg: 0, mmPerMetre: 0.07, buildingMmPerMetre: 0.07, area: { ...DEFAULT_AREA, center: [-87.63, 41.88] as [number, number] } };
     setModelParts([], { editable: true, roads: null, objects: {}, ground: null, frame });
     useApp.setState((state) => ({ generation: { ...state.generation, result: { bounds: [-100, -100, 0, 100, 100, 20] } as ResultMeta } }));
     const projection = new Projection(frame.center, 0, 0.07);

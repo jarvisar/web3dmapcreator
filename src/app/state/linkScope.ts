@@ -64,12 +64,6 @@ function lineInBox(box: Box, line: readonly Vec2[]): boolean {
   return false;
 }
 
-/** Whether a lon/lat is on the area, or near enough its edge. */
-function areaTest(area: AreaSpec): (lonLat: [number, number]) => boolean {
-  const box = areaBox(area);
-  return ([lon, lat]) => inBox(box, box.projection.toModel(lon, lat));
-}
-
 /**
  * Whether any part of a lon/lat line is on the area, segments included: a
  * simplified route can cross it with no point on it.
@@ -135,16 +129,31 @@ export interface ScopedEdits {
   unplaced: number;
 }
 
+/** Whether two areas are the same one, give or take rounding. */
+function sameArea(a: AreaSpec, b: AreaSpec): boolean {
+  return (
+    a.shape === b.shape &&
+    Math.abs(a.center[0] - b.center[0]) < 1e-9 &&
+    Math.abs(a.center[1] - b.center[1]) < 1e-9 &&
+    Math.abs(a.widthM - b.widthM) < 1e-3 &&
+    Math.abs(a.heightM - b.heightM) < 1e-3 &&
+    Math.abs(a.rotationDeg - b.rotationDeg) < 1e-6 &&
+    Math.abs(a.cornerRadius - b.cornerRadius) < 1e-9
+  );
+}
+
 /**
  * The edits on this area. Object edits are keyed by map feature with no
- * place of their own, so they go when the model shown is of this area and
- * has them, and are left out without one. Layers go when something that
- * goes is in them. `mmPerMetre` sizes shapes when there's no model of this
- * area to take the scale from.
+ * place of their own, so they go when the model shown was made for this
+ * area and has them, and are left out without one. A model of another area
+ * can't tell: one made before the area was made smaller had edits from
+ * outside it, and one made before it grew lacked what's new, which counted
+ * as made elsewhere. Layers go when something that goes is in them.
+ * `mmPerMetre` sizes shapes when there's no model of this area to take the
+ * scale from.
  */
 export function editsForArea(edits: ModelEdits, area: AreaSpec, model: { data: EditData; trees: boolean } | null, mmPerMetre: number): ScopedEdits {
-  const inArea = areaTest(area);
-  const here = model?.data.frame && model.data.editable ? inArea(model.data.frame.center) : false;
+  const here = model?.data.frame && model.data.editable ? sameArea(model.data.frame.area, area) : false;
   const onArea = shapeTest(area, here ? model!.data.frame!.mmPerMetre : mmPerMetre);
   const roads = new Set(model?.data.roads?.keys ?? []);
   const has = (key: string) => {

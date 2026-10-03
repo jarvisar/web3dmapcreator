@@ -38,9 +38,10 @@ export interface SavedMap {
   tracks?: Track[];
 }
 
-export function encodeOptions({ output, settings, palette, exportSettings, svg }: Options, map?: SavedMap): string {
+/** `picks` keeps the SVG map's picked roads, which only go with the map too. */
+export function encodeOptions({ output, settings, palette, exportSettings, svg }: Options, map?: SavedMap, picks = true): string {
   // Picked roads belong to the area, like the model's edits.
-  const kept = map ? svg : { ...svg, routes: svg.routes.map((route) => ({ ...route, lines: [] })), hiddenLines: [] };
+  const kept = map && picks ? svg : { ...svg, routes: svg.routes.map((route) => ({ ...route, lines: [] })), hiddenLines: [] };
   return JSON.stringify({ format: FORMAT, version: 1, output, settings, palette, exportSettings, svg: kept, map }, null, 2) + '\n';
 }
 

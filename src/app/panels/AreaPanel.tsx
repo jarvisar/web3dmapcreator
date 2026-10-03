@@ -96,7 +96,7 @@ export function AreaPanel() {
     }
     if (left) {
       const what = left === 'edits' ? 'your edits' : left === 'tracks' ? 'your routes' : 'your picked roads';
-      toast(`Share link copied, without ${what}: there are too many for a link. Export options to share them.`, 'info');
+      toast(`Share link copied, without ${what}: there are too many for a link. Export options${left === 'tracks' ? '' : ' with Include edits'} to share them.`, 'info');
     } else if (state.output === 'model' && scoped.unplaced) {
       toast('Share link copied. Changes to buildings, roads and water go in once the model of this area is generated.', 'info');
     } else if (state.output === 'model' && scoped.left) {

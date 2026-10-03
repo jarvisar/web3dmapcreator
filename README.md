@@ -23,7 +23,7 @@ Open the 3MF in Bambu Studio with `File > Open Project`. Every part already has 
 
 `Copy share link` copies a link that opens the same area. For an SVG map it carries the SVG settings too.
 
-`Export options` and `Import options` at the bottom of the settings save and restore a JSON file. Leave `Include map area` checked to restore the whole setup, or uncheck it to reuse the options at another location. Custom font files are separate.
+`Export options` and `Import options` at the bottom of the settings save and restore a JSON file. Leave `Include map area` checked to restore the whole setup, or uncheck it to reuse the options at another location. Edits only go in or come out with `Include edits` checked, and then it's all of them, for every area. Custom font files are separate.
 
 ### Editing a Model
 
@@ -37,7 +37,7 @@ Press the pencil at the top right of the 3D view to change the model before down
 - Add text, map pins, boxes and cylinders, or draw your own roads and buildings. A drawn line starts out as a road and a drawn outline as a building, and either can take any colour. Everything added is built down to what it stands on: the ground, or a roof or bridge you raised it onto. In water it goes down through the water to the bottom. On a LiDAR only model a drawn road rests on the bare ground like a route does, with the trees over it cleared, rather than climbing every roof and crown it crosses.
 - Drag the points of a drawn road or outline to reshape it. Tap or click a point, then `Delete point`, to take it out. `Make it a drawn road` swaps a block of a generated road for a drawn one along the same line, in the same width and colour, to reshape it the same way.
 
-Edits follow the map features, not the mesh, so they stay when you change settings and generate again. They're saved in the browser, in exported options when the map area is included, and in a copied share link unless there are too many for one. A link only carries the ones on its area. `Ctrl+Z` undoes an edit while the editor is open, and Help lists the other keys.
+Edits follow the map features, not the mesh, so they stay when you change settings and generate again. They're saved in the browser, in exported options when you turn on `Include edits`, and in a copied share link unless there are too many for one. A link only carries the ones on its area. `Ctrl+Z` undoes an edit while the editor is open, and Help lists the other keys.
 
 ### Routes
 

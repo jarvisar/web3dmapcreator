@@ -206,6 +206,26 @@ describe('applying options', () => {
     expect(useApp.getState().edits).toEqual(mine);
   });
 
+  it('leaves edits and picked roads out both ways unless asked for', () => {
+    const mine = { ...emptyEdits(), objects: { 'b:mine': { removed: true } } };
+    useApp.setState({ edits: mine, svg: { ...initial.svg, routes: [myRoute], hiddenLines: [road(0.02)] } });
+    // Saved without them, the file has the area and no edits or picks.
+    const saved = JSON.parse(encodeOptions(useApp.getState(), savedMap, false));
+    expect(saved.map.area).toEqual(savedMap.area);
+    expect(saved.map.edits).toBeUndefined();
+    expect(saved.svg.hiddenLines).toEqual([]);
+    expect(saved.svg.routes.every((route: { lines: unknown[] }) => route.lines.length === 0)).toBe(true);
+    // Read without them, the file's area comes in and ours stay as they were.
+    const source = options();
+    source.svg.hiddenLines = [road(0.01)];
+    const file = decodeOptions(encodeOptions(source, { ...savedMap, edits: { ...emptyEdits(), objects: { 'b:theirs': { heightM: 40 } } } }));
+    expect(applyOptions(file, true, false)).toBeNull();
+    expect(useApp.getState().area.center).toEqual(savedMap.area.center);
+    expect(useApp.getState().edits).toBe(mine);
+    expect(useApp.getState().svg.routes).toEqual([myRoute]);
+    expect(useApp.getState().svg.hiddenLines).toEqual([road(0.02)]);
+  });
+
   it('keeps the picked roads here for a file saved without an area', () => {
     useApp.setState({ svg: { ...initial.svg, routes: [myRoute], hiddenLines: [road(0.02)] } });
     const withRoutes = options();

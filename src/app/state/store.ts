@@ -707,10 +707,11 @@ export function resetAllSettings(): void {
  * added to the ones here, as a link's are. Without it they're left out, since
  * they belong to that area. Returns what came in, for a toast.
  */
-export function applyOptions(options: Options, includeArea = true): Brought | null {
+/** `includeEdits` false leaves out the file's edits and picked roads, and keeps ours. */
+export function applyOptions(options: Options, includeArea = true, includeEdits = true): Brought | null {
   const state = get();
   const { map, ...imported } = structuredClone(options);
-  const savedMap = includeArea ? map : undefined;
+  const savedMap = includeArea ? (includeEdits ? map : map && { ...map, edits: undefined }) : undefined;
   const requestedArea = savedMap?.area ?? state.area;
   // A piece preset also names a shape, which an options-only import keeps.
   const preset = PRODUCT_PRESETS.find((item) => item.id === imported.svg.productPreset);
@@ -718,7 +719,7 @@ export function applyOptions(options: Options, includeArea = true): Brought | nu
   const { error } = pieceLayout(imported.svg.product, requestedArea.shape, imported.svg.border);
   if (error) throw new Error(`Invalid SVG options: ${error}`);
   const current: Picks = { routes: state.svg.routes, hiddenLines: state.svg.hiddenLines };
-  const filePicks: Picks | undefined = savedMap ? { routes: imported.svg.routes, hiddenLines: imported.svg.hiddenLines } : undefined;
+  const filePicks: Picks | undefined = savedMap && includeEdits ? { routes: imported.svg.routes, hiddenLines: imported.svg.hiddenLines } : undefined;
   const brought = bringIn(state.edits, current, { edits: savedMap?.edits, picks: filePicks, tracks: savedMap?.tracks }, state.tracks);
   const picks = brought?.after.picks ?? current;
   const tracks = brought?.after.tracks ?? state.tracks;

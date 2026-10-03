@@ -7,14 +7,15 @@
 import type { EditUpdate, GroundGrid, ObjectFacts, RoadLines } from '../../core/engine/protocol';
 import type { LonLat, MeshPart } from '../../core/types';
 import type { ObjectMesh } from '../../core/edit/session';
+import type { AreaSpec } from '../../core/settings';
 
 export interface EditData {
   editable: boolean;
   roads: RoadLines | null;
   objects: Record<string, ObjectFacts>;
   ground: GroundGrid | null;
-  /** How the model was projected, to put shapes where a click lands. */
-  frame: { center: LonLat; rotationDeg: number; mmPerMetre: number; buildingMmPerMetre: number } | null;
+  /** How the model was projected, to put shapes where a click lands, and the area it was made for. */
+  frame: { center: LonLat; rotationDeg: number; mmPerMetre: number; buildingMmPerMetre: number; area: AreaSpec } | null;
 }
 
 const EMPTY: EditData = { editable: false, roads: null, objects: {}, ground: null, frame: null };

@@ -23,7 +23,7 @@ const data: EditData = {
   roads: { keys: ['r:wacker'] } as EditData['roads'],
   objects: { 'b:willis': { kind: 'building' } },
   ground: null,
-  frame: { center: loop.center, rotationDeg: 0, mmPerMetre: 0.07, buildingMmPerMetre: 0.07 },
+  frame: { center: loop.center, rotationDeg: 0, mmPerMetre: 0.07, buildingMmPerMetre: 0.07, area: loop },
 };
 
 const edits: ModelEdits = {
@@ -52,12 +52,18 @@ describe('what a share link carries', () => {
   });
 
   it("leaves object edits out without a model of this area, and still carries its shapes", () => {
-    for (const model of [null, { data: { ...data, frame: { ...data.frame!, center: sf } }, trees: true }]) {
-      const { edits: scoped, unplaced } = editsForArea(edits, loop, model, 0.07);
+    const of = (area: AreaSpec) => ({ data: { ...data, frame: { ...data.frame!, center: area.center, area } }, trees: true });
+    // Far away, or of this place before it was made smaller, larger or turned.
+    const others = [{ ...loop, center: sf }, { ...loop, widthM: 4000, heightM: 4000 }, { ...loop, widthM: 1000 }, { ...loop, rotationDeg: 30 }];
+    for (const model of [null, ...others.map(of)]) {
+      const { edits: scoped, left, unplaced } = editsForArea(edits, loop, model, 0.07);
       expect(scoped.objects).toEqual({});
       expect(scoped.shapes.map((s) => s.id)).toEqual(['here']);
-      expect(unplaced).toBe(5);
+      expect([left, unplaced]).toEqual([1, 5]);
     }
+    // The same area read back with a little rounding is still this one.
+    const rounded = of({ ...loop, center: [loop.center[0] + 1e-12, loop.center[1]], widthM: loop.widthM + 1e-6 });
+    expect(editsForArea(edits, loop, rounded, 0.07).unplaced).toBe(0);
   });
 
   it('carries only the picked roads on the map, and routes that have some', () => {

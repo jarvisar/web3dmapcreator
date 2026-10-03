@@ -139,7 +139,7 @@ export function RoutesPanel() {
   const [errors, setErrors] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const shown = useMemo(() => tracks.filter((track) => track.visible).flatMap((track) => decodeTrack(track)), [tracks]);
-  const outside = shown.length ? shareOutside(shown, area) : 0;
+  const outside = useMemo(() => (shown.length ? shareOutside(shown, area) : 0), [shown, area]);
 
   const run = async (task: () => Promise<ImportResult>) => {
     setBusy(true);

@@ -82,6 +82,15 @@ describe('framing the area around routes', () => {
     expect(areaAroundTracks([], base)).toBeNull();
   });
 
+  it('measures it by length, not by the points simplifying left', () => {
+    const area = { ...base, center: geo(0, 0), widthM: 1000, heightM: 1000 };
+    // 300 points along 800 m on the area, then on 4 km in one step, 3.9 km of it off the area.
+    const dense = Array.from({ length: 300 }, (_, i) => geo(-400 + i * (800 / 299), 0));
+    const share = shareOutside([[...dense, geo(4400, 0)]], area);
+    expect(share).toBeCloseTo(3900 / 4800, 2);
+    expect(shareOutside([[geo(0, 0), geo(0, 0)]], area)).toBe(0);
+  });
+
   it('frames a hull with more corners than a call takes arguments', () => {
     const ring: LonLat[] = Array.from({ length: 150_000 }, (_, i) => geo(2000 * Math.cos((i / 150_000) * 2 * Math.PI), 1000 * Math.sin((i / 150_000) * 2 * Math.PI)));
     const area = areaAroundTracks([ring], base)!;

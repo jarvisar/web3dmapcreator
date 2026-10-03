@@ -11,11 +11,16 @@ import { applyOptions, toast, useApp, type Brought } from '../state/store';
 import { asChange, undoChange } from '../state/undo';
 
 const usesCustomFont = ({ svg }: Options) => svg.label.font === CUSTOM_FONT_ID || svg.label.subtitleFont === CUSTOM_FONT_ID;
+const fileHasEdits = ({ map, svg }: Options) => Boolean(map && ((map.edits && hasEdits(map.edits)) || svg.hiddenLines.length || svg.routes.some((route) => route.lines.length)));
 
 export function OptionsFiles() {
   const input = useRef<HTMLInputElement>(null);
   const [reading, setReading] = useState(false);
   const [includeArea, setIncludeArea] = useState(true);
+  // Off unless asked for: edits are kept for every area, so a file for one
+  // place carried a pin from another.
+  const [includeEdits, setIncludeEdits] = useState(false);
+  const withEdits = includeArea && includeEdits;
 
   const onImport = async (file: File | undefined) => {
     if (!file) return;
@@ -25,9 +30,10 @@ export function OptionsFiles() {
       const options = decodeOptions(await file.text());
       let brought = null as Brought | null;
       const step = asChange('Import options', () => {
-        brought = applyOptions(options, includeArea);
+        brought = applyOptions(options, includeArea, withEdits);
       });
-      const message = options.map && includeArea ? 'Options and map area imported' : 'Options imported';
+      const skipped = includeArea && !withEdits && fileHasEdits(options) ? ', without the edits in it. Turn on Include edits to bring them in too' : '';
+      const message = (options.map && includeArea ? 'Options and map area imported' : 'Options imported') + skipped;
       const font = usesCustomFont(options) ? '. Custom font files are separate; load the matching font under Title' : '';
       // The settings first, so the picks they bring back aren't taken for the file's.
       const undo = () => {
@@ -48,12 +54,12 @@ export function OptionsFiles() {
       <div className="options-file-buttons">
         <button type="button" className="btn" onClick={() => {
           const state = useApp.getState();
-          const edits = hasEdits(state.edits) ? { edits: state.edits } : {};
+          const edits = withEdits && hasEdits(state.edits) ? { edits: state.edits } : {};
           // Routes elsewhere stay here, like a share link's.
           const routes = tracksForArea(state.tracks, state.area).tracks;
           const tracks = routes.length ? { tracks: routes } : {};
           const map = includeArea ? { area: state.area, placeName: state.placeName, fileName: state.fileName, ...edits, ...tracks } : undefined;
-          downloadBlob(new Blob([encodeOptions(state, map)], { type: 'application/json' }), 'city-model-options.json');
+          downloadBlob(new Blob([encodeOptions(state, map, withEdits)], { type: 'application/json' }), 'city-model-options.json');
           if (usesCustomFont(state)) toast('Options exported. Custom font files need to be copied separately.', 'info');
         }}>
           <Download size={14} aria-hidden="true" /> Export options
@@ -63,7 +69,14 @@ export function OptionsFiles() {
         </button>
       </div>
       <CheckField label="Include map area" checked={includeArea} onChange={setIncludeArea} />
-      <p className="options-file-help">Save or load options as a JSON file. With the map area, edits made in the 3D view and the routes on it go too, whole and hidden ones included. Uncheck to keep the current location and shape. SVG area size follows the piece and scale.</p>
+      <CheckField
+        label="Include edits"
+        checked={withEdits}
+        onChange={setIncludeEdits}
+        disabled={!includeArea}
+        help="Changes made in the 3D view and roads picked for the SVG map. They're kept for every area, so all of them go, not only this area's."
+      />
+      <p className="options-file-help">Save or load options as a JSON file. With the map area, the routes on it go too, whole and hidden ones included. Uncheck to keep the current location and shape. SVG area size follows the piece and scale.</p>
       <input ref={input} type="file" accept=".json,application/json" hidden aria-label="Import options file" onChange={(event) => {
         const file = event.currentTarget.files?.[0];
         event.currentTarget.value = '';

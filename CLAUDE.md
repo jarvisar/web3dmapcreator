@@ -1029,13 +1029,18 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   what's on the linked area (`linkScope.ts`). Shapes go by their footprint
   at the model's scale (`shapeTest`): by their points alone, a drawn road
   across the area or a filled area around it was left out though it
-  printed. Object edits go only with a
-  model of that area that has them, since their keys don't say where they
-  are. Reading one back is capped (`MAX_UNPACKED`): a crafted 117 KB link
+  printed. Object edits go only with a model made for exactly this area
+  that has them (`frame.area`), since their keys don't say where they are.
+  A model of the area before it was resized took edits from outside it,
+  and counted what it didn't reach yet as made elsewhere. Reading one back
+  is capped (`MAX_UNPACKED`): a crafted 117 KB link
   inflated to 700 MB, and it crashed the tab again on every reload.
 - Edits are one document for every area. A share link or options file adds
   its edits and picks to these (`bringIn`, `mergeEdits`, `mergePicks`),
-  never replaces them. What it changed goes into the one backup
+  never replaces them. Options files only carry them, out or in, with
+  `Include edits` (off by default, `includeEdits` in `applyOptions` and
+  `picks` in `encodeOptions`), since all of them go, every area's: a file
+  for one place carried a pin from another. What it changed goes into the one backup
   (`BACKUP_KEY`), like what `Undo all`, `Undo all picks` and the crash
   reset clear, and `BackupNote` offers it back. A tab writes edits, picks
   and settings only once it changed them (`written` is seeded at load) and
@@ -1141,7 +1146,7 @@ SVG maps (`src/core/svgmap/`, UI in `src/app/svgmap/`, notes in `docs/SVG_MAPS.m
   the line cleanup, which then never thins a route. Picks nothing matched
   come back as `missingPicks`. The `s=` part of a share link leaves
   `routes` and `hiddenLines` out, and `p=` carries them. Options files
-  keep them only with the map area, sanitized rather than checked, and all
+  keep them only with the map area and `Include edits`, sanitized rather than checked, and all
   picks together are held to `MAX_PICKED_POINTS`. Assigning lines takes
   them out of wherever they were with `withoutLines`, which only compares
   lines whose boxes touch: comparing every pair froze the page for 13 s

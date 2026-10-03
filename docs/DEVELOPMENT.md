@@ -59,7 +59,7 @@ npx tsx scripts/bench-synthetic.ts 3
 # Round-trip sample projects through the installed Bambu Studio
 npx tsx scripts/check-bambu.ts
 
-# An options file exported from the app, edits and all, as the app would export it
+# An options file exported from the app (with Include edits for the edits), as the app would export it
 npx tsx scripts/generate.ts --options city-model-options.json --out out/options.3mf
 
 # Random edits on a real area, checking exports are closed and match the 3D view
@@ -83,7 +83,7 @@ With `--lidar`, point data and batch results are kept in `out/lidar-cache` (or `
 
 `check-bambu.ts` gives Bambu Studio its own data folder, so your own settings, presets and recent files are never touched.
 
-`--options` takes an options file exported with its map area: the area, settings, colours, export options, the 3D editor's edits and the routes on it. Other flags override it, and `--no-edits` leaves the edits out. It's the quickest way to rebuild what someone downloaded.
+`--options` takes an options file exported with its map area: the area, settings, colours, export options and the routes on it, and the 3D editor's edits when it was exported with `Include edits`. Other flags override it, and `--no-edits` leaves the edits out. It's the quickest way to rebuild what someone downloaded.
 
 `--route file` adds an imported route, any file the app reads, and can be given more than once. Routes are stored and read back the way the app does, so they're simplified the same. `--fit-route` frames the area around them in `--shape` and prints the area for `--area`, and `--turn` turns it too when that frames them smaller. `--no-snap` leaves them as recorded, and `--no-markers`, `--route-width` and `--route-height` set the rest.
 
