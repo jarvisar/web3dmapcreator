@@ -20,6 +20,9 @@ import { AreaEditor, type TitleDragPhase } from './AreaEditor';
 import { BASEMAPS, flattenBuildings } from './basemaps';
 import { registerMap } from './mapHandle';
 import { tracksGeoJson } from '../state/tracks';
+import { useTrackEdit } from '../state/trackEdit';
+import { TrackEditCard, TrackEditHint, TrackEditTools } from './TrackEditPanel';
+import { registerTrackEditor, TrackEditor } from './TrackEditor';
 
 const ROUTES = 'routes';
 const NO_ROUTES: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
@@ -147,7 +150,10 @@ export function MapView({ active }: { active: boolean }) {
   // Routes are only built into 3D models for now, so an SVG map doesn't show them.
   const tracks = useApp((state) => state.tracks);
   const routeColour = useApp((state) => state.palette.route.hex);
-  const routeData = useMemo(() => (svg ? NO_ROUTES : tracksGeoJson(tracks)), [svg, tracks]);
+  // The route being edited is drawn by the route editor instead.
+  const editingRoutes = useTrackEdit((state) => state.editing) && !svg;
+  const editedTrack = useTrackEdit((state) => (state.editing ? state.trackId : null));
+  const routeData = useMemo(() => (svg ? NO_ROUTES : tracksGeoJson(tracks, editedTrack)), [svg, tracks, editedTrack]);
   const routes = useRef({ data: routeData, colour: routeColour, shown: null as { data: unknown; colour: string } | null });
   routes.current.data = routeData;
   routes.current.colour = routeColour;
@@ -255,6 +261,8 @@ export function MapView({ active }: { active: boolean }) {
     editorRef.current = editor;
     editor.setLabel(areaLabel(initial));
     editor.setInvalid(validateArea(initial.area) !== null);
+    const trackEditor = new TrackEditor(map);
+    registerTrackEditor(trackEditor);
 
     const unsubscribe = useApp.subscribe((state, previous) => {
       if (state.area !== previous.area) {
@@ -271,6 +279,8 @@ export function MapView({ active }: { active: boolean }) {
 
     return () => {
       unsubscribe();
+      registerTrackEditor(null);
+      trackEditor.destroy();
       editorRef.current = null;
       editor.destroy();
       map.remove();
@@ -288,6 +298,11 @@ export function MapView({ active }: { active: boolean }) {
     const handles = titleSelected && artwork ? titleHandles(shownLabel, artwork) : [];
     editor.setPiece(layout ? pieceOverlay(layout, artwork, handles, titleSelected) : null);
   }, [svg, layout, artwork, resizable, titleSelected, shownLabel]);
+
+  // The area stays put while routes are edited, so a press on the map is the route's or the pan's.
+  useEffect(() => {
+    editorRef.current?.setLocked(editingRoutes);
+  }, [editingRoutes]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -332,7 +347,12 @@ export function MapView({ active }: { active: boolean }) {
 
   return (
     <div className="map-view" aria-hidden={!active} inert={!active}>
-      <div ref={hostRef} className="map-host" role="region" aria-label="Map. Drag the highlighted area to move it." />
+      <div
+        ref={hostRef}
+        className="map-host"
+        role="region"
+        aria-label={editingRoutes ? 'Map, editing routes. Drag a point or the line to change the route, or press D and click to draw.' : 'Map. Drag the highlighted area to move it.'}
+      />
       <div className="map-overlay map-overlay-top-left">
         <Segmented
           label="Base map"
@@ -342,14 +362,23 @@ export function MapView({ active }: { active: boolean }) {
           className="floating basemap-switch"
           options={BASEMAP_OPTIONS}
         />
+        {editingRoutes && <TrackEditTools />}
       </div>
+      {editingRoutes && (
+        <>
+          <div className="map-overlay map-overlay-top-right">
+            <TrackEditCard />
+          </div>
+          <TrackEditHint />
+        </>
+      )}
       {basemapFailed && (
         <div className="map-notice map-notice-top notice notice-warning floating" role="status">
           <CircleAlert size={16} aria-hidden="true" />
           <span>The base map didn't load. Try another one with the buttons above, or check your connection. The area and everything else still work.</span>
         </div>
       )}
-      {!hintDismissed && (
+      {!hintDismissed && !editingRoutes && (
         <div className="map-hint floating" role="note">
           <span>{areaHint(resizable)}</span>
           <button type="button" className="icon-btn icon-btn-sm" aria-label="Dismiss tip" onClick={dismissMapHint}>

@@ -33,6 +33,7 @@ import {
 } from '../../state/editActions';
 import { getEditData, type EditData } from '../../state/model';
 import { useApp } from '../../state/store';
+import { drawTrack, editTrack } from '../../state/trackEdit';
 import { FilamentPopover } from '../../panels/ColourPopover';
 import { describeCounts, describeKey, roadClassName } from './describe';
 import { appliedRoadEdit } from '../blocks';
@@ -148,6 +149,9 @@ function ObjectControls({
   // it carries from the other carriageway isn't, since Reset can't clear that.
   const edited = keys.some((key) => editedKeys.has(key) || (kindOf(key) === 'road' && Object.keys(roadEditOf(edits.objects, key) ?? {}).length > 0));
   const only = (kind: string) => kinds.size === 1 && kinds.has(kind);
+  // A route's points are edited on the map. One deleted from the Routes list since is only in this model.
+  const tracks = useApp((state) => state.tracks);
+  const route = only('route') && keys.length === 1 ? (tracks.find((track) => `rt:${track.id}` === keys[0]) ?? null) : null;
   const streets = [...kinds].every((kind) => kind === 'road' || kind === 'bridge');
   const tag = keys.join(',');
   const water = kinds.has('water');
@@ -209,6 +213,12 @@ function ObjectControls({
             Make it a drawn road
           </button>
         )}
+        {route && !allRemoved && (
+          <button type="button" className="btn btn-sm" onClick={() => editTrack(route.id)} title="Move its points, cut bits out or trim the ends on the map">
+            <Spline size={14} aria-hidden="true" />
+            Edit on the map
+          </button>
+        )}
         {edited && (
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => resetObjects(keys.filter((key) => kindOf(key) !== 'shape'))} title={kinds.has('shape') ? 'Undo every change to the selected generated objects' : 'Undo every change to the selection'}>
             <RotateCcw size={14} aria-hidden="true" />
@@ -217,6 +227,13 @@ function ObjectControls({
         )}
       </div>
       {bridges.length > 0 && <p className="inspector-hint">{keys.length === 1 ? 'Its bridge changes with it.' : 'Bridges on these roads change with them.'}</p>}
+      {only('route') && (
+        <p className="inspector-hint">
+          {route
+            ? 'Changes on the map show here once the model is generated again. Removing it here keeps it in your Routes list.'
+            : "It's no longer in your Routes list, so it goes when the model is generated again."}
+        </p>
+      )}
       {roads && blocks && (
         <p className="inspector-hint">
           A click picks one block, between junctions. Whole street takes all of it, and Split a road (X) ends a block somewhere else.
@@ -377,6 +394,7 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
   const notes = useApp((state) => state.ui.editNotes);
   const activePoint = useApp((state) => state.ui.activePoint);
   const supports = useApp((state) => state.settings.supports);
+  const lidarOnly = useApp((state) => state.settings.modelSource === 'lidar');
   const shapes = keys.map((key) => edits.shapes.find((s) => shapeKey(s.id) === key)).filter((s): s is AddedShape => Boolean(s));
   if (!shapes.length) return null;
   const ids = shapes.map((s) => s.id);
@@ -489,14 +507,28 @@ function ShapeControls({ keys, edits, data }: { keys: string[]; edits: ModelEdit
       {shape?.kind === 'area' && (
         <p className="inspector-hint">
           A building in the Buildings colour, or keep it low in a colour like Parks or Paved for a park or a square.
+          {!lidarOnly && !(shape.liftMm > 0) && ' The land cover under it makes way for it.'}
           {supports ? " In water it stands on a strip of ground, like the model's own buildings." : " In water it's built down through it, like the model's own buildings."}
         </p>
       )}
       {shape?.kind === 'path' && (
-        <p className="inspector-hint">
-          A road in the Roads colour, or put it in a custom layer for a route of its own.
-          {supports ? " In water it stands on a strip of ground, like the model's own roads." : " In water it's built down through it, like the model's own roads."}
-        </p>
+        <>
+          <p className="inspector-hint">
+            A road in the Roads colour, or a colour of its own in a custom layer.
+            {!(shape.liftMm > 0) &&
+              (lidarOnly
+                ? followsGround(shape) && ' It rests on the bare ground, and the trees over it are cleared.'
+                : ' The roads, paths and land cover under it make way for it.')}
+            {supports ? " In water it stands on a strip of ground, like the model's own roads." : " In water it's built down through it, like the model's own roads."}
+          </p>
+          <p className="inspector-hint">
+            For a run or a ride,{' '}
+            <button type="button" className="link-btn" onClick={drawTrack}>
+              draw a route on the map
+            </button>{' '}
+            instead. It follows the streets for you.
+          </p>
+        </>
       )}
       {shape && drawn && (
         <p className="inspector-hint">

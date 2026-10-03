@@ -9,12 +9,18 @@
 // edges, and the part gets a second shell there, which prints like one.
 // Laying the vacated footprint and opening it on its own left holes where
 // its edges and the slab's didn't meet.
+//
+// It goes the other way too. Land cover gives way to a shape standing on the
+// ground, the way the land stage cuts it around buildings and roads
+// (LandSlabs). Left in, a slab under a drawn road only printed right where
+// the slicer gave the overlap to the road, and an STL has no order.
 
 import type { Rect64 } from 'clipper2-ts';
-import { boxesOverlap, ClipSet, clipToUnits, difference, intersection, multiBounds, offsetPolygons, openSharp, SCALE, type Box } from '../geometry/polygon';
+import { boxesOverlap, ClipSet, clipToUnits, difference, differenceSet, dropSmall, intersection, multiBounds, offsetPolygons, openSharp, SCALE, splitToTiles, type Box } from '../geometry/polygon';
 import { SLIVER_MM } from '../pipeline/land';
 import type { SurfaceCategory } from '../settings';
 import type { MultiPolygon } from '../types';
+import type { TileGrid } from './roads';
 
 export interface LandFill {
   category: SurfaceCategory;
@@ -32,6 +38,8 @@ export const FILL_REACH_MM = 4 * SLIVER_MM + 0.05;
 const MARGIN_MM = 1;
 // Two runs of the same booleans can differ by rounding, up to about 0.15 µm.
 const DRIFT_MM = 0.0005;
+// Rounding dust, as in the land stage.
+const SPECK_MM2 = 1e-6;
 
 /** Pieces wider than rounding. */
 function real(polygons: MultiPolygon): MultiPolygon {
@@ -96,5 +104,51 @@ export class LandCover {
       const near = reach.polygonsWithin(multiBounds([p]));
       return near.length > 0 && intersection([p], near).length > 0;
     });
+  }
+}
+
+/** Land cover with `cut` taken out, opened like the land stage opens it. */
+export function cutCover(polygons: MultiPolygon, cut: ClipSet): MultiPolygon {
+  const kept = differenceSet(polygons, cut);
+  return kept.length ? dropSmall(openSharp(kept, SLIVER_MM), SPECK_MM2) : [];
+}
+
+/**
+ * The generated land cover split into the editor's tiles, for the view, which
+ * meshes it a tile at a time so a shape moved only meshes the tiles it was
+ * and is in. Exports cut the whole slabs instead (cutCover).
+ */
+export class LandSlabs {
+  private readonly sets = new Map<SurfaceCategory, ClipSet>();
+  private readonly split = new Map<SurfaceCategory, Map<number, MultiPolygon>>();
+
+  constructor(
+    private readonly grid: TileGrid,
+    private readonly slabs: Regions,
+  ) {}
+
+  /** The category's tiles with anything in them. */
+  tiles(category: SurfaceCategory): Map<number, MultiPolygon> {
+    let tiles = this.split.get(category);
+    if (!tiles) {
+      const g = this.grid;
+      this.split.set(category, (tiles = splitToTiles(this.slabs[category] ?? [], g.left, g.top, g.step, g.cols, g.rows)));
+    }
+    return tiles;
+  }
+
+  /**
+   * One tile with `cut` taken out. Cut a millimetre past the tile and cut to
+   * it after, as the land stage's tiles are, so the opening doesn't eat into
+   * the tile's edges.
+   */
+  cut(category: SurfaceCategory, tile: number, cut: ClipSet): MultiPolygon {
+    if (!this.tiles(category).has(tile)) return [];
+    let set = this.sets.get(category);
+    if (!set) this.sets.set(category, (set = new ClipSet([this.slabs[category] ?? []])));
+    const rect = this.grid.units(tile);
+    const margin = Math.round(MARGIN_MM * SCALE);
+    const local = set.polygonsWithinRect({ left: rect.left - margin, top: rect.top - margin, right: rect.right + margin, bottom: rect.bottom + margin });
+    return dropSmall(clipToUnits(cutCover(local, cut), rect), SPECK_MM2);
   }
 }

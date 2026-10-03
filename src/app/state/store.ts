@@ -157,6 +157,10 @@ export interface UiState {
   previewLook: PreviewLook;
   /** LiDAR only grids given in metres may go past what this machine's reported memory allows (core/dsm/grid.ts). Kept on this machine only. */
   largeGrids: boolean;
+  /** The route editor moves points onto the roads and goes along them. */
+  routeFollow: boolean;
+  /** How far from a road a point the route editor moves can be and still go onto it, in metres. */
+  routeSnapM: number;
   /** The 3D viewer is editing the model. */
   editMode: boolean;
   tool: EditTool;
@@ -219,6 +223,9 @@ export interface AppState {
 
 /** Undo steps kept for the edits. */
 export const HISTORY_LIMIT = 100;
+
+/** The route editor's snap distance, in metres. */
+export const ROUTE_SNAP_M = { min: 5, max: 100, default: 30 };
 
 export const DEFAULT_SECTIONS: Record<SectionKey, boolean> = {
   area: true,
@@ -368,6 +375,8 @@ function initialState(): AppState {
       mapHintDismissed: saved.mapHintDismissed ?? false,
       previewLook: saved.previewLook ?? 'material',
       largeGrids: saved.largeGrids ?? false,
+      routeFollow: saved.routeFollow ?? true,
+      routeSnapM: saved.routeSnapM ?? ROUTE_SNAP_M.default,
       editMode: false,
       tool: 'select',
       selection: [],
@@ -960,6 +969,14 @@ export function setPreviewLook(previewLook: PreviewLook): void {
 
 export function setLargeGrids(largeGrids: boolean): void {
   patchUi({ largeGrids });
+}
+
+export function setRouteFollow(routeFollow: boolean): void {
+  patchUi({ routeFollow });
+}
+
+export function setRouteSnap(metres: number): void {
+  patchUi({ routeSnapM: Math.min(ROUTE_SNAP_M.max, Math.max(ROUTE_SNAP_M.min, Math.round(metres))) });
 }
 
 export function dismissMapHint(): void {

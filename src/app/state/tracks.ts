@@ -109,6 +109,28 @@ export async function importTrackFiles(files: Iterable<File>): Promise<ImportRes
   return { added: added.map((track) => track.name), errors };
 }
 
+// Real routes snapped to OpenStreetMap, each about 5 to 7 km, which frame a
+// model of 110 to 180 mm at the default scale. In public/routes.
+export const SAMPLE_TRACKS = [
+  { file: 'chicago-riverwalk.gpx', name: 'Chicago Riverwalk (6.9 km)' },
+  { file: 'brooklyn-bridge-loop.gpx', name: 'Brooklyn Bridge Loop (5.4 km)' },
+  { file: 'lombard-coit-tower.gpx', name: 'Lombard & Coit Tower (6.7 km)' },
+];
+
+/** Adds one of the sample routes, as if its file had been imported. */
+export async function importSampleTrack(file: string): Promise<ImportResult> {
+  let data: ArrayBuffer;
+  try {
+    const response = await fetch(new URL(`routes/${file}`, new URL(import.meta.env.BASE_URL, document.baseURI)));
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    data = await response.arrayBuffer();
+  } catch (error) {
+    console.error(error);
+    return { added: [], errors: ["The sample route couldn't be loaded. Check the connection and try again."] };
+  }
+  return importTrackFiles([new File([data], file)]);
+}
+
 export function removeTrack(id: string): void {
   const track = useApp.getState().tracks.find((item) => item.id === id);
   if (!track) return;
@@ -138,11 +160,11 @@ export function fitAreaToTracks(turn: boolean): boolean {
   return true;
 }
 
-/** The shown routes for the map: lines, and start and finish points for the dots. */
-export function tracksGeoJson(tracks: readonly Track[]): GeoJSON.FeatureCollection {
+/** The shown routes for the map: lines, and start and finish points for the dots. `except` is left out, for the route editor to draw. */
+export function tracksGeoJson(tracks: readonly Track[], except: string | null = null): GeoJSON.FeatureCollection {
   const features: GeoJSON.Feature[] = [];
   for (const track of tracks) {
-    if (!track.visible) continue;
+    if (!track.visible || track.id === except) continue;
     const decoded = decodeTrack(track);
     const ends = trackEnds(decoded);
     if (!ends) continue;

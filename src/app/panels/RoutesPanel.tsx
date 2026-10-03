@@ -1,4 +1,4 @@
-import { CircleAlert, Maximize, RotateCw, Upload, X } from 'lucide-react';
+import { CircleAlert, Maximize, Pencil, RotateCw, Spline, Upload, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { modelFieldRange } from '../../core/settings';
 import { effectiveScale } from '../../core/geo/area';
@@ -11,7 +11,8 @@ import { CheckField } from '../components/Fields';
 import { NumberField } from '../components/NumberField';
 import { formatNumber } from '../lib/format';
 import { patchSettings, resetSettingsSection, useApp } from '../state/store';
-import { fitAreaToTracks, importTrackFiles, removeTrack, renameTrack, setTrackVisible } from '../state/tracks';
+import { drawTrack, editTrack, stopEditing, useTrackEdit } from '../state/trackEdit';
+import { fitAreaToTracks, importSampleTrack, importTrackFiles, removeTrack, renameTrack, SAMPLE_TRACKS, setTrackVisible, type ImportResult } from '../state/tracks';
 import { Section } from './Section';
 
 const FILE_HINT = 'GPX, KML, KMZ, TCX, FIT or GeoJSON, like an activity or route from Strava, Garmin, Komoot or Google My Maps. You can also drop files on the page.';
@@ -24,8 +25,10 @@ function TrackRow({ track }: { track: Track }) {
   const [name, setName] = useState(track.name);
   useEffect(() => setName(track.name), [track.name]);
   const length = useMemo(() => trackLengthM(decodeTrack(track)), [track]);
+  const editing = useTrackEdit((state) => state.editing && state.trackId === track.id);
+  const removed = useApp((state) => Boolean(state.edits.objects[`rt:${track.id}`]?.removed));
   return (
-    <li className="route-row">
+    <li className={`route-row${editing ? ' is-editing' : ''}${removed ? ' is-removed' : ''}`} title={removed ? 'Removed from the model in the 3D editor' : undefined}>
       <Checkbox checked={track.visible} onChange={(visible) => setTrackVisible(track.id, visible)} label={`Show ${track.name}`} />
       <input
         className="route-name"
@@ -44,6 +47,16 @@ function TrackRow({ track }: { track: Track }) {
         }}
       />
       <span className="route-length">{formatKm(length)}</span>
+      <button
+        type="button"
+        className="icon-btn icon-btn-sm"
+        aria-label={`Edit ${track.name} on the map`}
+        aria-pressed={editing}
+        title={editing ? 'Stop editing' : 'Edit on the map'}
+        onClick={() => (editing ? stopEditing() : editTrack(track.id))}
+      >
+        <Pencil size={13} aria-hidden="true" />
+      </button>
       <button type="button" className="icon-btn icon-btn-sm" aria-label={`Remove ${track.name}`} title="Remove" onClick={() => removeTrack(track.id)}>
         <X size={14} aria-hidden="true" />
       </button>
@@ -128,24 +141,28 @@ export function RoutesPanel() {
   const shown = useMemo(() => tracks.filter((track) => track.visible).flatMap((track) => decodeTrack(track)), [tracks]);
   const outside = shown.length ? shareOutside(shown, area) : 0;
 
-  const onFiles = async (files: File[]) => {
-    if (!files.length) return;
+  const run = async (task: () => Promise<ImportResult>) => {
     setBusy(true);
     try {
-      setErrors((await importTrackFiles(files)).errors);
+      setErrors((await task()).errors);
     } finally {
       setBusy(false);
     }
   };
+  const onFiles = (files: File[]) => (files.length ? run(() => importTrackFiles(files)) : undefined);
 
   const count = tracks.length;
   const summary = count === 0 ? 'None' : count === 1 ? tracks[0].name : `${count} routes`;
   return (
     <Section id="routes" title="Routes" summary={summary}>
-      <div className="routes-import">
+      <div className="action-grid routes-import">
         <button type="button" className="btn btn-sm" disabled={busy || count >= MAX_TRACKS} onClick={() => input.current?.click()}>
           <Upload size={15} aria-hidden="true" />
           {busy ? 'Reading…' : 'Import route'}
+        </button>
+        <button type="button" className="btn btn-sm" disabled={count >= MAX_TRACKS} title="Click along the route on the map. It can follow the roads between clicks." onClick={drawTrack}>
+          <Spline size={15} aria-hidden="true" />
+          Draw a route
         </button>
         <input
           ref={input}
@@ -163,6 +180,23 @@ export function RoutesPanel() {
         />
       </div>
       <p className="layer-help">{FILE_HINT}</p>
+      <select
+        className="select routes-sample"
+        aria-label="Add a sample route"
+        value=""
+        disabled={busy || count >= MAX_TRACKS}
+        onChange={(event) => {
+          const file = event.target.value;
+          if (file) void run(() => importSampleTrack(file));
+        }}
+      >
+        <option value="">Try a sample route…</option>
+        {SAMPLE_TRACKS.map((sample) => (
+          <option key={sample.file} value={sample.file}>
+            {sample.name}
+          </option>
+        ))}
+      </select>
       {errors.map((error, i) => (
         // Two files of one name can fail the same way.
         <div key={i} className="notice notice-warning">

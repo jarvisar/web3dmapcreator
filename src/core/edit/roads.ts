@@ -16,12 +16,13 @@
 // pushing into the next block.
 //
 // Every road gives way to an imported route, as in the pipeline, unless the
-// route is removed. Over water a road gets ground kept under it like any
+// route is removed, and to a road drawn in the editor on the ground (`cuts`
+// in RoadStyles). Over water a road gets ground kept under it like any
 // other (earth.ts), or with supports off it's built down through the water
 // (pipeline/wading.ts).
 
 import type { Rect64 } from 'clipper2-ts';
-import { boxesOverlap, bufferLines, ClipSet, clipToUnits, difference, differenceSet, dropSmall, intersection, multiBounds, SCALE, separateTouching, splitToTiles, union, type Box } from '../geometry/polygon';
+import { boxesOverlap, bufferLines, ClipSet, clipToUnits, difference, differenceSet, dropSmall, intersection, multiBounds, pointInMulti, SCALE, separateTouching, splitToTiles, union, type Box } from '../geometry/polygon';
 import { Progress } from '../pipeline/context';
 import { bufferRoads, type RoadGroup, type RoadPiece } from '../pipeline/roads';
 import type { ModelSettings } from '../settings';
@@ -45,11 +46,17 @@ interface StyledRange {
   style: RoadStyle;
 }
 
-/** Road styles by edit key, with each segment's ranges widest first. */
+/** Road styles by edit key, with each segment's ranges widest first, and what drawn roads take from them. */
 export class RoadStyles {
   private readonly segments = new Map<string, StyledRange[]>();
+  readonly cuts: { polygons: MultiPolygon; box: Box }[];
 
-  constructor(readonly byKey: ReadonlyMap<string, RoadStyle>) {
+  constructor(
+    readonly byKey: ReadonlyMap<string, RoadStyle>,
+    /** Footprints of drawn roads on the ground, by shape key. */
+    cuts: ReadonlyMap<string, MultiPolygon> = new Map(),
+  ) {
+    this.cuts = [...cuts.values()].filter((polygons) => polygons.length).map((polygons) => ({ polygons, box: multiBounds(polygons) }));
     for (const [key, style] of byKey) {
       const range = parseRoadKey(key);
       if (!range) continue;
@@ -305,6 +312,31 @@ export class TileGrid {
     for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) out.push(r * this.cols + c);
     return out;
   }
+
+  /**
+   * Tiles polygons reach, within `margin`: the ones their edges pass through,
+   * and the ones wholly inside them. A long diagonal road has a box over
+   * nearly every tile, and a 20 mm drawn road can cover a 12 mm tile.
+   */
+  tilesReached(polygons: MultiPolygon, margin = 0): number[] {
+    if (!polygons.length) return [];
+    const out = new Set<number>();
+    for (const polygon of polygons) {
+      for (const ring of polygon) {
+        for (let i = 0; i < ring.length; i++) {
+          const [ax, ay] = ring[i];
+          const [bx, by] = ring[(i + 1) % ring.length];
+          for (const tile of this.tilesTouching([Math.min(ax, bx) - margin, Math.min(ay, by) - margin, Math.max(ax, bx) + margin, Math.max(ay, by) + margin])) out.add(tile);
+        }
+      }
+    }
+    for (const tile of this.tilesTouching(multiBounds(polygons))) {
+      if (out.has(tile)) continue;
+      const [x0, y0, x1, y1] = this.rect(tile);
+      if (pointInMulti((x0 + x1) / 2, (y0 + y1) / 2, polygons)) out.add(tile);
+    }
+    return [...out].sort((a, b) => a - b);
+  }
 }
 
 export class RoadTiles extends TileGrid {
@@ -364,8 +396,8 @@ export class RoadTiles extends TileGrid {
 
   /** Tiles that a road's ribbon reaches, as it was and as `style` has it, or a route's. A range reaches the pieces lying along it. */
   tilesOf(key: string, style: RoadStyle | undefined): number[] {
-    const cut = this.cuts.findIndex((c) => c.key === key);
-    if (cut >= 0) return this.routeTiles(cut);
+    const cut = this.cuts.find((c) => c.key === key);
+    if (cut) return this.tilesReached(cut.pieces);
     const out = new Set<number>();
     const gap = this.settings.roads.gapMm;
     const range = parseRoadKey(key);
@@ -379,26 +411,6 @@ export class RoadTiles extends TileGrid {
       const b = i * 4;
       const box: Box = [this.boxes[b] - reach, this.boxes[b + 1] - reach, this.boxes[b + 2] + reach, this.boxes[b + 3] + reach];
       for (const tile of this.tilesTouching(box)) out.add(tile);
-    }
-    return [...out];
-  }
-
-  /**
-   * Tiles a route's ground passes through, by its outline's edges. A route
-   * across the model has a box over nearly every tile. A tile wholly inside
-   * the ground would be missed, but a ribbon at most 5 mm wide only covers a
-   * 12 mm tile where a recording scribbles over the same spot.
-   */
-  private routeTiles(cut: number): number[] {
-    const out = new Set<number>();
-    for (const polygon of this.cuts[cut].pieces) {
-      for (const ring of polygon) {
-        for (let i = 0; i < ring.length; i++) {
-          const [ax, ay] = ring[i];
-          const [bx, by] = ring[(i + 1) % ring.length];
-          for (const tile of this.tilesTouching([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)])) out.add(tile);
-        }
-      }
     }
     return [...out];
   }
@@ -471,10 +483,11 @@ export class RoadTiles extends TileGrid {
 
     const out: RoadBucket[] = [];
     const ctx = { settings: this.settings, cropSet: wide, progress: new Progress(), stats: {} };
-    // Routes still in the model near the tile, which every road gives way to.
+    // Routes still in the model near the tile, and drawn roads, which every road gives way to.
     const near: Box = [(rect.left - margin) / SCALE, (rect.top - margin) / SCALE, (rect.right + margin) / SCALE, (rect.bottom + margin) / SCALE];
     const routes = this.cuts.filter((cut, i) => !styles.get(cut.key)?.removed && boxesOverlap(this.cutBoxes[i], near)).flatMap((cut) => cut.pieces);
-    const cut = routes.length ? new ClipSet([routes]) : null;
+    const drawn = styles.cuts.filter((cut) => boxesOverlap(cut.box, near)).flatMap((cut) => cut.polygons);
+    const cut = routes.length || drawn.length ? new ClipSet([routes, drawn]) : null;
     const add = (part: string, thickness: number, polygons: MultiPolygon) => {
       if (cut) polygons = separateTouching(dropSmall(differenceSet(polygons, cut), 0.02));
       const kept = clipToUnits(polygons, rect);

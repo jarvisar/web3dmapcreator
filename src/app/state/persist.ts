@@ -55,6 +55,8 @@ export interface SavedState {
   mapHintDismissed?: boolean;
   previewLook?: 'material' | 'colors';
   largeGrids?: boolean;
+  routeFollow?: boolean;
+  routeSnapM?: number;
   /** The URL hash the app last wrote, to tell its own hash from a share link. */
   hash?: string;
 }
@@ -206,6 +208,8 @@ export function loadSaved(): SavedState {
     mapHintDismissed: typeof ui.mapHintDismissed === 'boolean' ? ui.mapHintDismissed : undefined,
     previewLook: ui.previewLook === 'material' || ui.previewLook === 'colors' ? ui.previewLook : undefined,
     largeGrids: typeof ui.largeGrids === 'boolean' ? ui.largeGrids : undefined,
+    routeFollow: typeof ui.routeFollow === 'boolean' ? ui.routeFollow : undefined,
+    routeSnapM: typeof ui.routeSnapM === 'number' && ui.routeSnapM >= 5 && ui.routeSnapM <= 100 ? Math.round(ui.routeSnapM) : undefined,
     hash: typeof raw.hash === 'string' ? raw.hash : undefined,
   };
 }
@@ -358,14 +362,14 @@ export function saveState(
     svg: SvgSettings;
     placeName: string;
     fileName: string | null;
-    ui: { sections: object; basemap: string; showBed: boolean; sizeUnit: string; mapHintDismissed: boolean; previewLook: string; largeGrids?: boolean };
+    ui: { sections: object; basemap: string; showBed: boolean; sizeUnit: string; mapHintDismissed: boolean; previewLook: string; largeGrids?: boolean; routeFollow?: boolean; routeSnapM?: number };
   },
   hash: string,
   /** False leaves the settings key alone, for a tab that hasn't changed them. */
   settings = true,
 ): boolean {
   if (!saving) return true;
-  const { sections, basemap, showBed, sizeUnit, mapHintDismissed, previewLook, largeGrids } = state.ui;
+  const { sections, basemap, showBed, sizeUnit, mapHintDismissed, previewLook, largeGrids, routeFollow, routeSnapM } = state.ui;
   const { routes, hiddenLines, ...svg } = state.svg;
   const data = {
     hash,
@@ -379,7 +383,7 @@ export function saveState(
     svg,
     placeName: state.placeName,
     fileName: state.fileName,
-    ui: { sections, basemap, showBed, sizeUnit, mapHintDismissed, previewLook, largeGrids },
+    ui: { sections, basemap, showBed, sizeUnit, mapHintDismissed, previewLook, largeGrids, routeFollow, routeSnapM },
   };
   // Private browsing or storage full: what doesn't fit just isn't remembered.
   let ok = settings ? write(KEY, null, () => JSON.stringify(data)) : true;

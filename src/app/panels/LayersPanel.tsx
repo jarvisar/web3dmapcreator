@@ -14,6 +14,7 @@ import { Segmented } from '../components/Segmented';
 import { formatInteger, formatNumber, keepUnits, listJoin } from '../lib/format';
 import { deviceMemoryGb, lidarCellLimit } from '../state/derived';
 import { findLidarSurveys } from '../state/actions';
+import { useLidarShown } from '../state/lidarUnlock';
 import { patchSettings, resetSettingsSection, setLargeGrids, setModelSource, setSupports, surveySearchKey, toggleLayer, useApp } from '../state/store';
 import type { LayerKey, SettingsSection } from '../state/store';
 import { Section } from './Section';
@@ -1128,6 +1129,7 @@ export function LayersPanel() {
   const { terrain, water, land, roads, bridges, buildings, lidar, trees, rim } = settings;
   const scale = settings.scale.mode === 'fixed' ? settings.scale.mmPerMetre : 0;
   const lidarOnly = settings.modelSource === 'lidar';
+  const lidarShown = useLidarShown();
 
   const roadExtras = [
     roads.includePaths && 'paths',
@@ -1158,16 +1160,18 @@ export function LayersPanel() {
 
   return (
     <Section id="layers" title="Layers" summary={summary}>
-      <Segmented
-        label="Build the model from"
-        value={settings.modelSource}
-        stretch
-        onChange={setModelSource}
-        options={[
-          { value: 'map', label: 'Map data', title: 'Terrain, water, parks, roads and buildings from map data, each in its own colour' },
-          { value: 'lidar', label: 'LiDAR only', title: 'Everything a LiDAR survey saw, as one piece in one colour' },
-        ]}
-      />
+      {lidarShown && (
+        <Segmented
+          label="Build the model from"
+          value={settings.modelSource}
+          stretch
+          onChange={setModelSource}
+          options={[
+            { value: 'map', label: 'Map data', title: 'Terrain, water, parks, roads and buildings from map data, each in its own colour' },
+            { value: 'lidar', label: 'LiDAR only', title: 'Everything a LiDAR survey saw, as one piece in one colour' },
+          ]}
+        />
+      )}
       {lidarOnly ? (
         <>
           <LidarModelOptions settings={settings} area={area} />
@@ -1256,19 +1260,21 @@ export function LayersPanel() {
               <BuildingOptions buildings={buildings} />
             </LayerRow>
 
-            <LayerRow
-              layer="lidar"
-              label="LiDAR"
-              checkLabel="LiDAR buildings"
-              group="buildings"
-              on={buildings.enabled && lidar.enabled}
-              onToggle={(enabled) => patchSettings('lidar', { enabled })}
-              summary={!lidar.enabled ? 'Off' : !buildings.enabled ? 'Needs buildings' : lidar.roofMode === 'envelope' ? 'Whole roofs' : 'Heights only'}
-              help="Measures buildings from public LiDAR surveys and rebuilds each one from its scanned roof: setbacks, towers, domes and spires included. Covers the United States, Canada, France, the Netherlands, Belgium, Switzerland, Austria, Luxembourg, Slovenia, Poland, Estonia, Scotland, much of Germany and Spain, Trentino, Genoa, Helsinki, Turku, Tokyo, Yokohama, Nagasaki, Montevideo, New Zealand, the Northern Ireland coast, and more of Europe through Open LiDAR Data. Expect 150 MB to 1.5 GB of downloads per km² depending on the survey, kept in the browser for next time, so start with a small area. Surveys that only come as whole tiles are only downloaded once you agree to. Buildings nothing covers keep their mapped shape."
-              resetKey="lidar"
-            >
-              <LidarOptions settings={settings} area={area} scale={scale} />
-            </LayerRow>
+            {lidarShown && (
+              <LayerRow
+                layer="lidar"
+                label="LiDAR"
+                checkLabel="LiDAR buildings"
+                group="buildings"
+                on={buildings.enabled && lidar.enabled}
+                onToggle={(enabled) => patchSettings('lidar', { enabled })}
+                summary={!lidar.enabled ? 'Off' : !buildings.enabled ? 'Needs buildings' : lidar.roofMode === 'envelope' ? 'Whole roofs' : 'Heights only'}
+                help="Measures buildings from public LiDAR surveys and rebuilds each one from its scanned roof: setbacks, towers, domes and spires included. Covers the United States, Canada, France, the Netherlands, Belgium, Switzerland, Austria, Luxembourg, Slovenia, Poland, Estonia, Scotland, much of Germany and Spain, Trentino, Genoa, Helsinki, Turku, Tokyo, Yokohama, Nagasaki, Montevideo, New Zealand, the Northern Ireland coast, and more of Europe through Open LiDAR Data. Expect 150 MB to 1.5 GB of downloads per km² depending on the survey, kept in the browser for next time, so start with a small area. Surveys that only come as whole tiles are only downloaded once you agree to. Buildings nothing covers keep their mapped shape."
+                resetKey="lidar"
+              >
+                <LidarOptions settings={settings} area={area} scale={scale} />
+              </LayerRow>
+            )}
 
             <LayerRow
               layer="trees"

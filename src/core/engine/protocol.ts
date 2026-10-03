@@ -7,9 +7,10 @@ import type { SurveyChoice } from '../lidar/choice';
 import type { SurveyQuery } from '../lidar/query';
 import type { LidarOffer } from '../lidar/offers';
 import type { ModelEdits } from '../edit/types';
+import type { GraphParts } from '../tracks/network';
 import type { TrackLines } from '../tracks/track';
 import type { AreaSpec, ExportFormat, ModelSettings, Palette } from '../settings';
-import type { MeshPart, ModelStats } from '../types';
+import type { GeoBounds, LonLat, MeshPart, ModelStats } from '../types';
 
 export type { EditUpdate, GroundGrid, LidarOffer, ObjectFacts, RoadLines, SurveyChoice };
 
@@ -189,11 +190,24 @@ export interface ExportResult {
   missing?: number;
 }
 
+/** The roads and paths around an area, for the route editor to follow. */
+export interface RoadsQuery {
+  bounds: GeoBounds;
+  /** The graph comes back in metres east and north of here (flatFrame). */
+  center: LonLat;
+}
+
+export interface RouteRoads {
+  graph: GraphParts;
+  release: string;
+}
+
 export type ToWorker =
   | { type: 'generate'; id: number; request: GenerateRequest }
   | { type: 'export'; id: number; request: ExportRequest }
   | { type: 'edit'; id: number; request: EditRequest }
   | { type: 'surveys'; id: number; query: SurveyQuery }
+  | { type: 'roads'; id: number; query: RoadsQuery }
   | { type: 'cancel'; id: number };
 
 export type FromWorker =
@@ -202,6 +216,7 @@ export type FromWorker =
   | { type: 'exported'; id: number; result: ExportResult }
   | { type: 'edited'; id: number; update: EditUpdate }
   | { type: 'surveys'; id: number; result: SurveyList }
+  | { type: 'roads'; id: number; result: RouteRoads }
   | { type: 'error'; id: number; message: string; cancelled?: boolean; offers?: LidarOffer[] }
   // A worker script this tab asked for didn't load, which means a newer version replaced it.
   | { type: 'outdated' };

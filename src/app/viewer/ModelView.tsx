@@ -104,7 +104,7 @@ function Banner() {
   }
   return (
     <div className="banner floating">
-      <span>{exportable ? 'Settings changed since this model was made.' : 'The generator was restarted. Generate the model again to download it or see new edits.'}</span>
+      <span>{exportable ? 'The area, settings or routes changed since this model was made.' : 'The generator was restarted. Generate the model again to download it or see new edits.'}</span>
       <button
         type="button"
         className="btn btn-primary btn-sm"

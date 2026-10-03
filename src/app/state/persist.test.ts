@@ -102,6 +102,18 @@ describe('saved edits and picked roads', () => {
   });
 });
 
+describe('route editor preferences', () => {
+  it('come back after a reload, and a snap distance out of range is dropped', () => {
+    const stored = storage();
+    const state = sample();
+    saveState({ ...state, ui: { ...state.ui, routeFollow: false, routeSnapM: 55 } }, '#a=1');
+    expect(loadSaved()).toMatchObject({ routeFollow: false, routeSnapM: 55 });
+    const main = JSON.parse(stored.get(STORAGE_KEY)!);
+    stored.set(STORAGE_KEY, JSON.stringify({ ...main, ui: { ...main.ui, routeSnapM: 5000 } }));
+    expect(loadSaved().routeSnapM).toBeUndefined();
+  });
+});
+
 describe('saved settings', () => {
   it('stay cleared after the crash screen resets them', () => {
     const stored = new Map<string, string>();
@@ -131,3 +143,4 @@ describe('saved settings', () => {
     expect(stored.has(STORAGE_KEY)).toBe(false);
   });
 });
+

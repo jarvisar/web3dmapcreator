@@ -93,6 +93,7 @@ export class AreaEditor {
   /** Height over width that resizing keeps, for an SVG map's window. */
   private aspect: number | null = null;
   private resizable = true;
+  private locked = false;
   private piece: PieceOverlay | null = null;
   // Piece millimetres to map pixels, as an SVG matrix.
   private pieceMatrix = [1, 0, 0, 1, 0, 0];
@@ -181,6 +182,18 @@ export class AreaEditor {
   setResizable(resizable: boolean): void {
     this.resizable = resizable;
     this.element.classList.toggle('is-fixed-size', !resizable);
+  }
+
+  /** Locked, the area stays drawn but can't be moved or resized, for the route editor to have the map. */
+  setLocked(locked: boolean): void {
+    if (locked === this.locked) return;
+    this.locked = locked;
+    if (locked) this.endDrag();
+    if (locked && this.hovering) {
+      this.hovering = false;
+      this.map.getCanvas().style.cursor = '';
+    }
+    this.element.classList.toggle('is-locked', locked);
   }
 
   /** The piece around an SVG map's window, drawn over the map. null removes it. */
@@ -410,7 +423,7 @@ export class AreaEditor {
   };
 
   private readonly onMapHover = (event: MapMouseEvent): void => {
-    if (this.drag) return;
+    if (this.drag || this.locked) return;
     const title = this.overTitle(event.point.x, event.point.y);
     this.element.classList.toggle('is-over-title', title);
     const inside = title || this.contains(event.point.x, event.point.y);
@@ -421,7 +434,7 @@ export class AreaEditor {
 
   // The title sits over the area, so a press on it moves the title instead.
   private readonly onMapMouseDown = (event: MapMouseEvent): void => {
-    if (this.drag || event.originalEvent.button !== 0) return;
+    if (this.drag || this.locked || event.originalEvent.button !== 0) return;
     const title = this.overTitle(event.point.x, event.point.y);
     if (!title) this.options.onTitleBlur?.();
     if (!title && !this.contains(event.point.x, event.point.y)) return;
@@ -437,7 +450,7 @@ export class AreaEditor {
       if (this.drag?.kind === 'title') this.endDrag(true);
       return;
     }
-    if (this.drag) return;
+    if (this.drag || this.locked) return;
     const title = this.overTitle(event.point.x, event.point.y);
     if (!title) this.options.onTitleBlur?.();
     if (!title && !this.contains(event.point.x, event.point.y)) return;
@@ -449,7 +462,7 @@ export class AreaEditor {
 
   private onHandleDown(event: PointerEvent, kind: 'resize' | 'rotate', corner?: Corner): void {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
-    if (kind === 'resize' && !this.resizable) return;
+    if ((kind === 'resize' && !this.resizable) || this.locked) return;
     event.preventDefault();
     event.stopPropagation();
     const handle = event.currentTarget as HTMLElement;

@@ -11,6 +11,7 @@ import { cancelExport, cancelGeneration, exportModel, generateModel } from '../s
 import { FORMAT_EXTENSIONS, filamentCount, generationProblem, hiddenDownloadParts, modelSize, resultGroups } from '../state/derived';
 import { getEditData } from '../state/model';
 import { areaResizable, dismissExportError, dismissGenerationError, dismissMapHint, dismissOffers, setView, snapshotKey, useApp } from '../state/store';
+import { useTrackEdit } from '../state/trackEdit';
 import { downloadSvg, generateSvg, svgProblem, useSvgKey } from '../svgmap/actions';
 import { cancelRender, renderFraction, useSvgRender } from '../svgmap/render';
 
@@ -357,7 +358,9 @@ export function ActionBar() {
   const idle = useApp((state) => state.generation.result === null && state.generation.status !== 'running');
   const svgIdle = useSvgRender((state) => state.result === null && state.status !== 'working');
   const phone = useMediaQuery(PHONE_QUERY);
-  const showHint = phone && !hintDismissed && !drawerOpen && view === 'map' && (output === 'model' ? idle : svgIdle);
+  // The area can't move while routes are edited, and the route editor's card says what to do.
+  const editingRoutes = useTrackEdit((state) => state.editing);
+  const showHint = phone && !hintDismissed && !drawerOpen && !editingRoutes && view === 'map' && (output === 'model' ? idle : svgIdle);
   return (
     <div className="action-bar">
       {showHint && (

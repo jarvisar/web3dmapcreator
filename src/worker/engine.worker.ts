@@ -21,7 +21,7 @@ import { roadLines } from '../core/edit/lines';
 import { EditSession, excludedParts, type EditUpdate } from '../core/edit/session';
 import { emptyEdits, hasEdits, sanitizeEdits } from '../core/edit/types';
 import { describeError as describe } from '../core/engine/describe';
-import type { EditRequest, ExportRequest, FromWorker, GenerateRequest, GenerateResult, LidarSummary, SurfaceSummary, SurveyChoice, ToWorker } from '../core/engine/protocol';
+import type { EditRequest, ExportRequest, FromWorker, GenerateRequest, GenerateResult, LidarSummary, RoadsQuery, SurfaceSummary, SurveyChoice, ToWorker } from '../core/engine/protocol';
 import { effectiveScale } from '../core/geo/area';
 import { Projection } from '../core/geo/projection';
 import { download } from '../core/svgmap/download';
@@ -51,8 +51,11 @@ import { dataPlan } from '../core/pipeline/dataPlan';
 import { dataBoundsFor, generateModel, type ModelSpec } from '../core/pipeline/generate';
 import { meshLayers, partsBounds } from '../core/pipeline/mesh';
 import { buildPlates } from '../core/pipeline/plates';
-import type { SourceFeature, SourceType } from '../core/pipeline/source';
+import { str, type SourceFeature, type SourceType } from '../core/pipeline/source';
 import { printerByKey, sanitizeSettings } from '../core/settings';
+import type { RoadGraph } from '../core/tracks/network';
+import { flatFrame } from '../core/tracks/edit';
+import { followLines, roadGraph } from '../core/tracks/roads';
 import type { GeoBounds, ModelStats } from '../core/types';
 import { installLidarCodecs } from './lidarCodecs';
 import { lidarPool, lidarPoolSize, surfacePoolSize } from './lidarPool';
@@ -412,6 +415,35 @@ async function listSurveys(id: number, query: SurveyQuery) {
   try {
     const { surveys, failures } = await findSurveys(query);
     post({ type: 'surveys', id, result: { surveys, failures: failures.map(lidarFailure) } });
+  } catch (error) {
+    post({ type: 'error', id, message: describe(error) });
+  }
+}
+
+// The route editor's roads, for the last area asked about. Kept apart from
+// the model's download, so opening the editor never costs a generate its data.
+let routeRoads: { key: string; graph: RoadGraph; release: string } | null = null;
+// Every road and path in a large city area is well under this. Past it the
+// editor goes without, like outside the area.
+const ROAD_BYTES = 120e6;
+
+/** Roads and paths around an area, in metres from its centre, for the route editor to follow. */
+async function loadRoads(id: number, query: RoadsQuery) {
+  try {
+    const key = JSON.stringify(query);
+    if (routeRoads?.key !== key) {
+      const data = await fetchOverture({
+        bounds: query.bounds,
+        types: ['segment'],
+        keep: (type, props) => type === 'segment' && str(props.subtype) === 'road',
+        maxTypeBytes: ROAD_BYTES,
+        maxTotalBytes: ROAD_BYTES,
+      });
+      routeRoads = { key, graph: roadGraph(followLines(data.features.segment ?? [], flatFrame(query.center))), release: data.release };
+    }
+    const graph = routeRoads.graph.parts();
+    const transfer = Object.values(graph).flatMap((value) => (ArrayBuffer.isView(value) ? [value.buffer] : []));
+    post({ type: 'roads', id, result: { graph, release: routeRoads.release } }, transfer);
   } catch (error) {
     post({ type: 'error', id, message: describe(error) });
   }
@@ -855,6 +887,7 @@ ctx.onmessage = (event) => {
   if (message.type === 'generate') void generate(message.id, message.request);
   else if (message.type === 'export') void exportModel(message.id, message.request);
   else if (message.type === 'surveys') void listSurveys(message.id, message.query);
+  else if (message.type === 'roads') void loadRoads(message.id, message.query);
   else if (message.type === 'edit') {
     // Only the newest edits matter: an older request still waiting is dropped.
     if (pendingEdit) post({ type: 'error', id: pendingEdit.id, message: 'Superseded', cancelled: true });

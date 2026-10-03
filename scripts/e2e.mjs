@@ -34,6 +34,8 @@ const browser = await chromium.launch({
 });
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
 const page = await context.newPage();
+// The LiDAR options are hidden until unlocked (src/app/state/lidarUnlock.ts).
+if (lidar || lidarOnly) await context.addInitScript(() => localStorage.setItem('jarvizar-city-model:lidar-unlocked', '1'));
 const errors = [];
 page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 page.on('pageerror', (e) => errors.push(String(e)));

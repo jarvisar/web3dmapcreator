@@ -11,12 +11,14 @@ import type {
   GenerateResult,
   LidarOffer,
   ProgressEvent,
+  RoadsQuery,
+  RouteRoads,
   SurveyList,
   ToWorker,
 } from './protocol';
 
 interface Pending {
-  message: Extract<ToWorker, { type: 'generate' | 'export' | 'edit' | 'surveys' }>;
+  message: Extract<ToWorker, { type: 'generate' | 'export' | 'edit' | 'surveys' | 'roads' }>;
   resolve: (value: never) => void;
   reject: (error: Error) => void;
   onProgress?: (event: ProgressEvent) => void;
@@ -125,6 +127,7 @@ export class EngineClient {
         pending.resolve(message.update as never);
         return;
       case 'surveys':
+      case 'roads':
         this.pending.delete(message.id);
         pending.resolve(message.result as never);
         return;
@@ -165,8 +168,10 @@ export class EngineClient {
 
   generate(request: GenerateRequest, onProgress?: (event: ProgressEvent) => void): Promise<GenerateResult> {
     const now = performance.now();
-    // A survey search only waits on catalogs, which can take a while, and never holds the worker.
-    const stuck = [...this.pending].filter(([, p]) => p.message.type !== 'generate' && p.message.type !== 'surveys' && !p.held && now - p.sentAt > STUCK_MS).map(([id]) => id);
+    // Survey searches and road downloads only wait on the network, which can take a while, and never hold the worker.
+    const stuck = [...this.pending]
+      .filter(([, p]) => p.message.type !== 'generate' && p.message.type !== 'surveys' && p.message.type !== 'roads' && !p.held && now - p.sentAt > STUCK_MS)
+      .map(([id]) => id);
     if (stuck.length) this.replaceWorker(this.activeGenerate !== null ? [...stuck, this.activeGenerate] : stuck);
     else if (this.activeGenerate !== null) this.cancel();
     const id = this.nextId++;
@@ -189,6 +194,11 @@ export class EngineClient {
   /** The LiDAR surveys found under an area, in the order they'd be read, without reading any points. */
   surveys(query: SurveyQuery): Promise<SurveyList> {
     return this.request<SurveyList>({ type: 'surveys', id: this.nextId++, query });
+  }
+
+  /** The roads and paths around an area, for the route editor. */
+  roads(query: RoadsQuery): Promise<RouteRoads> {
+    return this.request<RouteRoads>({ type: 'roads', id: this.nextId++, query });
   }
 
   /** Cancel the running generation. The promise rejects with CancelledError. */
@@ -226,15 +236,15 @@ export class EngineClient {
    * Replaces the worker. Downloaded data cached in it is lost, and so is its
    * model, so whatever else was waiting fails. The requests given are
    * cancelled, and so is every generate but the newest, which is sent again
-   * to the new worker unless it's one of them. Survey searches don't need
-   * the model and are sent again too.
+   * to the new worker unless it's one of them. Survey searches and road
+   * downloads don't need the model and are sent again too.
    */
   private replaceWorker(cancelled: number[]): void {
     const stopped = new Set(cancelled);
     const generates = [...this.pending.values()].filter((p) => p.message.type === 'generate');
     const newest = generates[generates.length - 1];
     const retry = newest && !stopped.has(newest.message.id) ? newest : null;
-    const searches = [...this.pending.values()].filter((p) => p.message.type === 'surveys' && !stopped.has(p.message.id));
+    const searches = [...this.pending.values()].filter((p) => (p.message.type === 'surveys' || p.message.type === 'roads') && !stopped.has(p.message.id));
     const resend = retry ? [retry, ...searches] : searches;
     this.dropWorker();
     for (const [id, pending] of [...this.pending]) {

@@ -448,8 +448,16 @@
 
 /* Imported routes */
 
-.routes-import {
-  display: flex;
+.routes-sample {
+  width: 100%;
+}
+
+.route-row.is-editing {
+  background: var(--accent-soft);
+}
+
+.route-row.is-removed .route-name {
+  color: var(--text-3);
 }
 
 .route-row {

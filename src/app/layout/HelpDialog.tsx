@@ -35,6 +35,7 @@ const MODEL_TIPS = [
   'The water and the terrain are separate parts, so water can be a different colour or left out.',
   'A LiDAR only model shows the city the year it was surveyed. Glass, dark roofs and water return few points, so those spots are filled in from around them.',
   'Import a run or ride under Routes, or drop the GPX, FIT or other file on the page. It prints in its own colour, and Snap to roads moves a recording onto the streets it took.',
+  'The pencil next to a route edits it on the map, and Draw a route starts a new one. Drag a point to move it or the line to add one, and with Follow roads on it goes along the streets. Click a point and Shift-click another to snap, straighten or cut out the section between them. Keys: , and . step through the points, S snaps one to a road, Delete removes it, D draws and Esc backs out.',
 ];
 
 const EDIT_TIPS = [
@@ -42,7 +43,7 @@ const EDIT_TIPS = [
   "Drag the arrow on a selected building or shape to change its height. Looking straight down it's hidden, so a drag there moves a shape instead. Roads and paths can be made wider or taller, and Whole street picks up every connected piece with the same name. A building mapped in parts lists them, to pick one.",
   'A click on a road picks one block of it, between the junctions where other roads meet it, so a colour or width goes on that stretch only. Split a road (X) ends a block anywhere else: click the road where it should end, and click the orange split again to join it. Make it a drawn road puts a drawn road in its place along the same line, to drag point by point.',
   'A new layer gives whatever you put in it a colour of its own. Each layer is exported as its own part with its own filament, so a racetrack or a favourite route can print in a different colour.',
-  "Removing a road or building gives the ground back to the park or plaza it was cut out of. Water you leave out is filled with ground up to its banks, unless you keep its hollow.",
+  "Removing a road or building gives the ground back to the park or plaza it was cut out of. Whatever you add on the ground takes it again, and a drawn road also takes the place of the roads and paths under it. Water you leave out is filled with ground up to its banks, unless you keep its hollow.",
   'The tools on the left add text, map pins, boxes and cylinders, or draw your own roads and buildings. A drawn line starts out as a road and a drawn outline as a building. Drag a selected shape to move it and the points of a drawn one to reshape it. Tap or click a point, then Delete point, to take it out.',
   "Everything you add is built down to what it stands on, so nothing floats: the ground, a roof or bridge you raised it onto, or the bottom of the water. Letters thinner than the nozzle prints well get a warning.",
   'Edits follow the map features, not the mesh, so they stay when you change settings and generate again. A copied share link carries them too, unless there are too many.',

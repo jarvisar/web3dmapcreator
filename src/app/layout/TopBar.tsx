@@ -1,8 +1,9 @@
 import { Box, CircleQuestionMark, Map as MapIcon, PenTool, Redo2, SlidersHorizontal, Undo2, X } from 'lucide-react';
-import { GithubMark, Logo } from '../components/Icons';
+import { BuyMeACoffeeMark, Logo, MakerWorldMark, PatreonMark } from '../components/Icons';
 import { Tooltip } from '../components/HelpTip';
 import { useState, type ReactNode } from 'react';
 import { REDO_KEYS, UNDO_KEYS } from '../lib/browser';
+import { countUnlockClick } from '../state/lidarUnlock';
 import { setDrawerOpen, setHelpOpen, setView, useApp } from '../state/store';
 import { redoChange, undoChange, useUndoLabels } from '../state/undo';
 import { useSvgRender } from '../svgmap/render';
@@ -133,7 +134,7 @@ export function TopBar({ narrow }: { narrow: boolean }) {
             </span>
           </button>
         )}
-        <a className="brand" href="./" aria-label="Jarvizar City Model home">
+        <a className="brand" href="./" aria-label="Jarvizar City Model home" onClick={countUnlockClick}>
           <Logo size={24} />
           <span className="brand-name">
             Jarvizar <span className="brand-light">City Model</span>
@@ -151,8 +152,14 @@ export function TopBar({ narrow }: { narrow: boolean }) {
             Help
           </span>
         </button>
-        <a className="topbar-github" href={REPO_URL} target="_blank" rel="noreferrer" aria-label="Source code on GitHub" title="Source code on GitHub">
-          <GithubMark size={16} />
+        <a className="topbar-link" href="https://buymeacoffee.com/jarvizar" target="_blank" rel="noreferrer" aria-label="Buy me a coffee" title="Buy me a coffee">
+          <BuyMeACoffeeMark size={18} />
+        </a>
+        <a className="topbar-link" href="https://www.patreon.com/c/Jarvizar" target="_blank" rel="noreferrer" aria-label="Jarvizar on Patreon" title="Jarvizar on Patreon">
+          <PatreonMark size={16} />
+        </a>
+        <a className="topbar-link" href="https://makerworld.com/en/@jarvizar" target="_blank" rel="noreferrer" aria-label="Jarvizar on MakerWorld" title="Jarvizar on MakerWorld">
+          <MakerWorldMark size={18} />
         </a>
       </div>
     </header>

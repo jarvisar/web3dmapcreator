@@ -43,14 +43,14 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
 | `src/core/pipeline/` | Generation stages: water, roads (+linework, airports, bridges, `network/` tidy), land, buildings (+`buildings/` selection, heights, roofs, printability), trees, orchestration (`generate.ts`), meshing, plates, row filter |
 | `src/core/export/` | Bambu Studio project, PrusaSlicer project, generic 3MF, STL, zip streaming, section grid |
 | `src/core/edit/` | Model editor: the edits document (`types.ts`, `keys.ts`), `EditSession` applying it to a generated model in the worker, road tiles, land fill, terrain and water after edits (`earth.ts`), added shapes and what they stand on (`stand.ts`), drawn roads on LiDAR only models (`drawn.ts`, `surfaceCut.ts`), road edits by block (`blocks.ts`), road lines for picking |
-| `src/core/tracks/` | Imported routes ("tracks" in the code, so they don't clash with the SVG maps' picked-road routes): reading GPX, KML, KMZ, TCX, GeoJSON and FIT (`parse.ts`, `fitfile.ts`), encoded polylines, snapping to roads (`snap.ts`), framing the area (`frame.ts`), start and finish markers. Map models lay them out in `pipeline/tracks.ts`, LiDAR only models rest them on the survey in `dsm/route.ts` |
+| `src/core/tracks/` | Imported routes ("tracks" in the code, so they don't clash with the SVG maps' picked-road routes): reading GPX, KML, KMZ, TCX, GeoJSON and FIT (`parse.ts`, `fitfile.ts`), encoded polylines, snapping to roads (`snap.ts`) on the road graph it shares with the route editor (`network.ts`), framing the area (`frame.ts`), start and finish markers, the editor's line edits (`edit.ts`) and roads to follow (`roads.ts`). Map models lay them out in `pipeline/tracks.ts`, LiDAR only models rest them on the survey in `dsm/route.ts` |
 | `src/core/engine/` | Worker protocol and main-thread client |
 | `src/worker/engine.worker.ts` | Downloads, generates, meshes and exports off the main thread |
 | `proxy/` | The LiDAR CORS proxy, a Cloudflare Worker: only the URLs `PROXIED` in `src/core/data/corsProxy.ts` matches, only the site's origins, GET and HEAD, bodies streamed |
 | `src/worker/svg.worker.ts` | Renders SVG maps, separate so a preview updates while a model generates |
 | `src/core/svgmap/` | SVG maps: tile fetch/decode/stitch, piece layout (`layout/`), line cleanup (`lines/`), fills and hatching, titles (`text/`), SVG writer, `service.ts` (the render with its caches) |
-| `src/app/` | React UI: state (zustand), MapLibre area editor, panels, three.js viewer. The model editor is `viewer/editController.ts` (pointer tools), `picker.ts`, `highlight.ts`, `shown.ts` (what the view hides and colours), `viewer/edit/` (toolbar, inspector) and `state/editActions.ts` (edits, undo). `state/undo.ts` is undo for everything else. `src/app/svgmap/` has the SVG sections, preview, render client, route picker, piece fitting and share encoding |
-| `scripts/` | `generate.ts` (CLI end to end, `--options` for an exported options file with its edits), `fetch-area.ts`, `bench-synthetic.ts`, `check-bambu.ts`, `fuzz-edits.ts` (random edits, exports checked), `shot.mjs`, `e2e.mjs`, `e2e-mobile.mjs` and `e2e-edit.mjs` (browser runs in the installed Edge) |
+| `src/app/` | React UI: state (zustand), MapLibre area editor, panels, three.js viewer. The model editor is `viewer/editController.ts` (pointer tools), `picker.ts`, `highlight.ts`, `shown.ts` (what the view hides and colours), `viewer/edit/` (toolbar, inspector) and `state/editActions.ts` (edits, undo). The route editor is on the map: `map/TrackEditor.ts` (overlay, pointer and keys), `map/TrackEditPanel.tsx` and `state/trackEdit.ts`. `state/undo.ts` is undo for everything else. `src/app/svgmap/` has the SVG sections, preview, render client, route picker, piece fitting and share encoding |
+| `scripts/` | `generate.ts` (CLI end to end, `--options` for an exported options file with its edits), `fetch-area.ts`, `bench-synthetic.ts`, `check-bambu.ts`, `fuzz-edits.ts` (random edits, exports checked), `shot.mjs`, `e2e.mjs`, `e2e-mobile.mjs`, `e2e-edit.mjs`, `e2e-tracks.mjs` and `e2e-route-edit.mjs` (browser runs in the installed Edge) |
 
 ## Pipeline rules worth preserving
 
@@ -203,7 +203,7 @@ One model unit is one printed millimetre. Default scale 0.07 mm per metre
   mid-call. Fixed shares had meshing at 10% of the bar for 40% of the time.
 
 Imported routes (`src/core/tracks/`, `pipeline/tracks.ts`, `dsm/route.ts`, UI in
-`panels/RoutesPanel.tsx` and `state/tracks.ts`):
+`panels/RoutesPanel.tsx`, `state/tracks.ts` and the route editor):
 
 - Routes are user data like the edits: one list for every area, saved
   under their own key (`TRACKS_KEY`), in undo's `Setup`, added to (never
@@ -271,6 +271,32 @@ Imported routes (`src/core/tracks/`, `pipeline/tracks.ts`, `dsm/route.ts`, UI in
   are left out. Steps become 45 degree ramps. The route is listed before the
   city, so under a roof the city keeps the overlap, as the view shows it.
   Its underside goes 1.5 cells under the surface to reach the meshed TIN.
+- The route editor (`state/trackEdit.ts`, `map/TrackEditor.ts`,
+  `map/TrackEditPanel.tsx`) edits routes on the map, for map models and
+  LiDAR only models alike, not in the 3D view. Edits are worked out in
+  metres around the area and stored as lon/lat, each one step of the
+  settings undo. Only the points an edit replaced are new, the rest keep
+  their encoded values (`storedLines`), so editing one corner never
+  re-simplifies the whole route. Over the point limit the whole route is
+  simplified as an import is. Sample routes are in `public/routes`
+  (`SAMPLE_TRACKS`).
+- Its roads are Overture's, every road and path for the area plus 300 m,
+  less tunnels and indoor corridors (`tracks/roads.ts`), downloaded by the
+  worker (`roads` message) apart from the model's download, so opening the
+  editor never costs a generate its data. The worker builds the graph
+  (`RoadGraph`, shared with `snap.ts`) and posts its arrays: built on the
+  main thread, a 20 km area held the page for 0.8 s when its roads came in.
+  Snap to roads runs the model's own matcher on it (`snapOnGraph`), about
+  40 ms for 7 km. Areas over 20 km across load no roads (about 100 MB).
+  Generation still snaps routes when `tracks.snap` is on, edited or not.
+- The area is locked while editing (`AreaEditor.setLocked`), and the editor
+  takes presses from MapLibre's mousedown and touchstart like the area
+  editor, so a press that misses the route pans the map. Its keys are caught
+  in the capture phase, or MapLibre panned the map on the arrows meant to
+  nudge a point. The edited route is left out of the map's routes layer and
+  drawn by the editor. Handles are worked out again when the zoom crosses a
+  quarter step or the route changes: keyed on the zoom alone, they pointed
+  past the end of a line an edit had shortened.
 
 Road network tidy (`pipeline/network/`, `roads.tidy`, run in `collectRoadPieces`
 before bridges are split off):
@@ -768,6 +794,20 @@ Model editor (`src/core/edit/`, UI in `src/app/viewer/`, notes in `docs/HOW_IT_W
   vacated footprint opened on its own left bare notches at the slab's
   corners and at a pond's corners. It's laid per tile in a band 1 mm past what was vacated,
   cached on what the tile and its neighbours had.
+- Shapes take the ground they stand on. Land cover gives way to every
+  shape's `ground` (`groundCut`: not what a roof or deck holds), and roads,
+  rail and paths to drawn roads without a lift (`roadCuts`, `RoadStyles.cuts`),
+  like they do to routes. Outlines and other shapes leave roads alone, so a
+  low park drawn over streets keeps them. The view cuts land a tile at a time
+  (`LandSlabs`, `landParts`, whole land parts sent), exports cut whole slabs
+  (`cutCover`). Land fill counts a shape's ground as a blocker, not vacated,
+  or `Make it a drawn road` put grass back under the road. Shapes in hidden
+  parts are left out of an export's cuts but not the view's, which doesn't
+  know what's hidden. Before, these were overlaps an STL couldn't settle.
+- A route picked in the 3D editor offers `Edit on the map` (`editTrack`), and
+  a drawn road's hint links to drawing one (`drawTrack`). Removing a route in
+  3D is an `rt:` edit that outlives a regenerate, so the route editor's card
+  and the Routes row say so, and the card puts it back (`restoreObjects`).
 - Terrain and water after edits (`earth.ts`): water left out is filled with
   ground on the grid (flattened to its bank for cut water), or with
   `hollow` keeps its recess, a new floor where it ran to the base. What
@@ -1113,6 +1153,7 @@ $env:NETWORK=1; npx vitest run src/core/svgmap/e2e.test.ts   # SVG maps from liv
 node scripts/e2e.mjs http://localhost:4173/ out/e2e-svg --svg --all-formats   # SVG map in Edge
 node scripts/e2e-edit.mjs http://localhost:4173/ out/e2e-edit   # the editor in Edge, --phone and --svg too
 node scripts/e2e-tracks.mjs http://localhost:4173/ out/e2e-tracks   # imported routes, sharing, edits and every export, --phone too
+node scripts/e2e-route-edit.mjs http://localhost:4173/ out/e2e-route-edit   # the route editor on the map, --phone too
 npm run build                # site into build/ (not dist/, which holds old add-on archives)
 ```
 

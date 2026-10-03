@@ -337,3 +337,257 @@
     color: var(--text-2);
   }
 }
+
+/* Route editor: the route with handles over the map, its tools on the left
+   and its card on the right, as the model editor lays them out. */
+
+.area-editor.is-locked .area-handle,
+.area-editor.is-locked .area-stem {
+  visibility: hidden;
+}
+
+.area-editor.is-locked .area-fill {
+  fill-opacity: 0.06;
+}
+
+.track-editor {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: none;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.track-editor.is-active {
+  display: block;
+}
+
+.track-edit-halo,
+.track-edit-casing,
+.track-edit-line,
+.track-edit-section,
+.track-edit-draw {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.track-edit-halo {
+  stroke: var(--route);
+  stroke-opacity: 0.18;
+  stroke-width: 14;
+}
+
+.track-edit-casing {
+  stroke: #fff;
+  stroke-opacity: 0.95;
+  stroke-width: 7;
+}
+
+.track-edit-line {
+  stroke: var(--route);
+  stroke-width: 3.5;
+}
+
+.track-edit-section {
+  stroke: var(--map-accent);
+  stroke-opacity: 0.45;
+  stroke-width: 11;
+}
+
+.track-edit-draw {
+  stroke: var(--route);
+  stroke-width: 3;
+  stroke-opacity: 0.75;
+  stroke-dasharray: 7 6;
+}
+
+.track-handle {
+  fill: #fff;
+  stroke: var(--route);
+  stroke-width: 2;
+  filter: drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.35));
+}
+
+.track-handle.is-start {
+  fill: var(--route);
+  stroke: #fff;
+}
+
+.track-handle.is-selected {
+  fill: var(--map-accent);
+  stroke: #fff;
+  stroke-width: 2.5;
+}
+
+.track-handle.is-dragged {
+  fill: #fff;
+  stroke: var(--route);
+  stroke-width: 2.5;
+}
+
+.track-handle.is-dragged.is-snapped {
+  fill: var(--map-accent);
+  stroke: #fff;
+}
+
+.track-ghost circle {
+  fill: #fff;
+  stroke: var(--route);
+  stroke-width: 1.5;
+  opacity: 0.9;
+}
+
+.track-ghost path {
+  stroke: var(--route);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.map-overlay-top-left {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.track-edit-tools {
+  margin-top: 0;
+}
+
+/* Left of MapLibre's zoom buttons. */
+.map-overlay-top-right {
+  top: 10px;
+  right: 48px;
+}
+
+.track-edit-card {
+  max-height: calc(100vh - 160px);
+}
+
+.track-edit-card:focus {
+  outline: none;
+}
+
+/* Centred in the gap between the base map switch and the card. */
+.map-edit-hint {
+  position: absolute;
+  z-index: 5;
+  top: 10px;
+  left: 176px;
+  right: 360px;
+  width: fit-content;
+  margin: 0 auto;
+  padding: 5px 10px;
+  color: var(--text-2);
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.track-edit-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.track-edit-picker .select {
+  flex: 1;
+  min-width: 0;
+}
+
+.track-edit-length {
+  flex: none;
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.track-edit-hidden .link-btn svg {
+  vertical-align: -2px;
+}
+
+.track-edit-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: -4px;
+}
+
+.track-edit-status .spinner {
+  flex: none;
+  margin-top: 1px;
+}
+
+.track-edit-status.is-warning {
+  color: var(--warning);
+}
+
+.track-edit-status svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.track-edit-part {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.track-edit-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.track-edit-wait {
+  align-items: center;
+  color: var(--text-2);
+}
+
+.track-edit-trim {
+  align-items: center;
+}
+
+@media (max-width: 900px) {
+  /* The card sits along the bottom on phones and small tablets, clear of the zoom buttons. */
+  .map-overlay .track-edit-tools {
+    order: 0;
+  }
+  .map-overlay-top-right {
+    top: auto;
+    right: 10px;
+    bottom: 34px;
+    left: 10px;
+  }
+  .map-overlay-top-right .track-edit-card {
+    width: 100%;
+    max-width: none;
+    max-height: 42vh;
+  }
+  .map-edit-hint {
+    left: 176px;
+    right: 56px;
+  }
+  .track-edit-tools {
+    flex-direction: row;
+  }
+  .track-edit-now {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
+/* No room for it on a phone, where the card says the same. */
+@media (max-width: 700px) {
+  .map-edit-hint {
+    display: none;
+  }
+}

@@ -53,7 +53,9 @@ function settingsChanged(state: State, previous: State): boolean {
     state.ui.sizeUnit !== previous.ui.sizeUnit ||
     state.ui.mapHintDismissed !== previous.ui.mapHintDismissed ||
     state.ui.previewLook !== previous.ui.previewLook ||
-    state.ui.largeGrids !== previous.ui.largeGrids
+    state.ui.largeGrids !== previous.ui.largeGrids ||
+    state.ui.routeFollow !== previous.ui.routeFollow ||
+    state.ui.routeSnapM !== previous.ui.routeSnapM
   );
 }
 

@@ -43,11 +43,31 @@ Edits follow the map features, not the mesh, so they stay when you change settin
 
 Import a run, ride or hike under `Routes` to print it on the model in a colour of its own. GPX, KML, KMZ, TCX, FIT and GeoJSON files work, gzipped or in a zip, so an activity or route exported from Strava, Garmin Connect, Komoot or Google My Maps can go straight in. You can also drop the files anywhere on the page. If most of a new route is off the area, the area moves to fit it. `Fit area to routes` does that again, and `Fit and turn` also turns the area when that frames the routes at least 10% smaller.
 
+To try it without a file of your own, pick one of the samples under `Routes`: a 6.9 km loop along the Chicago Riverwalk, a 5.4 km loop over the Brooklyn and Manhattan Bridges, or a 6.7 km loop in San Francisco down the crooked part of Lombard Street and up to Coit Tower. Each one frames a model 110 to 180 mm across at the default scale. The files are in `public/routes` and were made by snapping waypoints to OpenStreetMap roads and paths.
+
 A route is 0.6 mm wide and stands 0.8 mm over the ground by default, a layer above the roads, as its own part in the `Routes` colour. A dot marks the start and a bar the finish. The road tidy never touches routes. GPS wanders 5 to 10 m off a street, which is half a road's width at the default scale, so `Snap to roads` moves a recorded route onto the roads it followed. Stretches away from any road, like a trail through a park, stay as recorded. Roads, paths and parks are cut away under a route, so it prints in its own colour whatever order the slicer reads the parts in. A route that runs into a building disappears inside it if the building is taller, a bridge deck carries one that runs along it, and where a route crosses water it gets a strip of ground under it like a road.
 
 In a LiDAR only model a route rests on the bare ground, not on the roofs and trees beside it, and the trees and parked cars along it are flattened so it shows. It goes up onto bridges and ramps, and on top of an elevated railway or road it runs along, but stays under an overpass it only passes under. Snapping downloads Overture's roads for the area there.
 
 Routes are saved in the browser, and go in exported options and share links with the area they're on. In the editor a route can be removed or put in a custom layer, so two routes can print in different colours.
+
+### Editing Routes
+
+Click the pencil next to a route under `Routes` to edit it on the map, or `Draw a route` to draw a new one. The route is drawn over the map with handles on the points that hold its shape. A recording has a point every few metres, so the handles are spaced out for the zoom. Zoom in to get more of them. The area stays put while you edit routes. Press `Esc` or close the panel to move it again.
+
+- Drag a handle to move it. Drag the line to add a handle there.
+- With `Follow roads` on, a dragged handle goes onto the nearest road or path and the route goes along the roads to the handles either side. Away from the roads, or holding `Alt`, it joins them with straight lines. With it off, the points out to the next handles bend along with it, which keeps the shape of a recording.
+- `Snap distance` sets how far from a road a point can be and still go onto it, 5 to 100 m (30 m to start with). Raise it for a wobbly recording. Lower it where a path runs right beside a road, so points don't jump to the wrong one.
+- Double-click a handle, or select it and press `Delete`, to take it out.
+- Click a handle to select it. `Pick a section` and then a second handle, or `Shift`-click it, selects the stretch between them. A section can be snapped to the roads, straightened or cut out. Cutting out the middle leaves a gap, and at an end it trims the route.
+- `Snap to roads` under `Whole route` moves the whole route onto the roads it runs along, the same way the model does it.
+- `Trim start` and `Trim finish` take a distance off either end, to hide where a run starts from home. `Reverse` swaps the start and the finish, and `Back to start` joins the finish back to the start.
+
+The draw tool (`D`) adds to the route by clicking. Each click carries it on from the finish, along the roads with `Follow roads` on. Select the first point to add to the start instead. Double-click, press `Enter` or click `Finish` to stop drawing.
+
+From the keyboard, `,` and `.` step through the handles and `Home` and `End` go to the ends. Hold `Shift` to pick a section. The arrow keys nudge the selected point (`Shift` for further), `S` snaps it to the nearest road and `Delete` removes it. `F` turns Follow roads on and off and `Esc` backs out one step at a time. Every edit is one step for `Ctrl+Z`, and `Undo all changes` puts the route back the way it was when you first edited it since opening the page.
+
+###### Note: The model still snaps routes to the printed roads when it's generated, if `Snap to roads` is on under `Routes`. Turn that off to print a route exactly as you drew it.
 
 ### SVG Maps
 
@@ -78,6 +98,7 @@ The water comes from the survey, with Overture's water outlines used for smooth 
 - Optional bridges on piers, trees and a border rim
 - An editor in the 3D view: remove, raise or recolour buildings, widen roads, leave water out, add text and pins, and draw your own roads and buildings. Custom layers export as parts of their own
 - Routes from GPX, KML, TCX, FIT and GeoJSON files, snapped to the roads and printed in their own colour, on map models and LiDAR only models
+- A route editor on the map: drag points onto the roads, trim the ends, cut bits out, or draw a new route along the streets
 - Crop to a rectangle, rounded rectangle, circle or hexagon, rotated to follow the street grid
 - Fixed print scale, or fit the model to a size
 - Large models split into sections, one per plate
@@ -134,6 +155,7 @@ Pushing to `main` deploys the site with GitHub Actions. Set `Settings > Pages > 
 - A route across open water with no bridge under it, like a ferry crossing, gets a strip of ground across the water.
 - `Snap to roads` uses the roads that are printed. With `Roads` off routes stay as recorded, and with paths off a route along a footpath snaps to the street beside it.
 - Share links simplify long routes to fit, at most 12 m off. A route that still doesn't fit is left out of the link, so export options to share it.
+- Following roads in the route editor uses Overture's roads and paths for the area and 300 m around it, so further out points go where you put them. Areas over 20 km across don't load roads at all. The first load takes a few seconds for a city centre. It doesn't know about one-way streets or turn restrictions, which is fine for a run or a ride but not for a drive.
 - In a LiDAR only model a route or drawn road under a building or an overpass is hidden by it, as it would be from above. Raise a drawn road to put it on top. A survey that doesn't file buildings can't tell an elevated railway from a building, so routes stay under both there.
 - Removing an imported route in the LiDAR only editor keeps the surface it cleared. Hide or remove it under `Routes` and regenerate to put back the trees and clutter.
 

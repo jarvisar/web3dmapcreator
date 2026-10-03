@@ -13,6 +13,7 @@ import {
   clipToBox,
   clipToUnits,
   difference,
+  differenceSet,
   dropSmall,
   intersection,
   multiArea,
@@ -36,7 +37,7 @@ import type { ModelSettings, Palette, SurfaceCategory } from '../settings';
 import { Wading } from '../pipeline/wading';
 import { bareGround, drawnRoad, type DrawnRoad } from './drawn';
 import { EarthModel, isRecessed, type Earth } from './earth';
-import { FILL_REACH_MM, LandCover, type LandFill } from './land';
+import { cutCover, FILL_REACH_MM, LandCover, LandSlabs, type LandFill } from './land';
 import type { LoadedFont } from '../svgmap/text/outline';
 import type { ColourGroup, MaterialRole, MeshPart, MultiPolygon, PartColour, PartObjects, Polygon } from '../types';
 import { heightFactor, lowestBottom, lowestTop, scaleSolid, solidPeak } from './heights';
@@ -150,6 +151,9 @@ const PROBES_INSIDE = 0.75;
 const SUPPORT_TOLERANCE_MM = 0.5;
 const SUPPORT_MIN_MM2 = 1e-3;
 const SLIVER_MM = 0.001;
+// A shape's ground this close to a tile counts as in it, since land cover cut
+// beside the tile's edge is opened across it.
+const GROUND_REACH_MM = 0.01;
 
 /** Where added shapes show in the viewer. They export in their layer's part. */
 export const SHAPES_PART = 'shapes';
@@ -228,6 +232,27 @@ interface Pass {
   water: WaterState;
 }
 
+/** A drawn road's footprint, which the roads, railways and paths under it give way to. */
+interface RoadCut {
+  signature: string;
+  polygons: MultiPolygon;
+  /** The road tiles it reaches, worked out once. */
+  tiles?: number[];
+}
+
+/** What the road tiles were rebuilt for: styles by key as JSON, and drawn roads by shape key. */
+interface RoadState {
+  styles: Map<string, string>;
+  cuts: Map<string, RoadCut>;
+}
+
+/** Where shapes stand on the ground, which land cover gives way to. */
+interface GroundCut {
+  set: ClipSet;
+  /** What's in each tile it reaches, to tell which tiles changed. */
+  tiles: Map<number, string>;
+}
+
 /** A bridge's deck and piers at an edited width. */
 interface Deck {
   width: number;
@@ -291,7 +316,7 @@ export class EditSession {
   private readonly tileMeshes = new Map<number, Map<string, MeshData>>();
   private readonly tileSignatures = new Map<number, Map<string, string>>();
   private tiled = false;
-  private roadStyles = new Map<string, string>();
+  private roadState: RoadState = { styles: new Map(), cuts: new Map() };
   /** The last update failed part way, so the next sends everything again. */
   private resend = false;
   /** What the viewer has from this session, by part and key. */
@@ -318,6 +343,13 @@ export class EditSession {
   private fillCache: { signature: string; fills: LandFill[] } | null = null;
   /** Water that still keeps land cover off, once some is left out. */
   private landWater: { signature: string; set: ClipSet } | null = null;
+  private landSlabs: LandSlabs | null = null;
+  /** The view's land cover meshed a tile at a time, by category and tile, with what was cut from each. */
+  private readonly landTiles = new Map<SurfaceCategory, Map<number, { signature: string; mesh: MeshData | null }>>();
+  /** Land parts the view has from this session, by what they were made of. */
+  private readonly sentLand = new Map<SurfaceCategory, string>();
+  /** A shape's ground and the tiles it reaches, by the ground pieces, which stay the same object while the shape does. */
+  private readonly groundInfo = new WeakMap<MultiPolygon, { signature: string; tiles: number[] }>();
   private readonly earthModel: EarthModel | null;
   /** Water bodies by key. A feature the model edge cuts in two is two bodies. */
   private readonly bodiesByKey = new Map<string, number[]>();
@@ -856,9 +888,8 @@ export class EditSession {
    * with nothing cleared. Shapes in `hidden` parts are left out of an
    * export (excludedParts), so what they clear is too.
    */
-  private cleared(standing: Map<string, Standing>, edits: ModelEdits, hidden: ReadonlySet<string> = new Set()): { cut: SurfaceCut; hole: MultiPolygon; signature: string } | null {
-    const layerIds = new Set(edits.layers.map((layer) => layer.id));
-    const shown = (shape: AddedShape) => !hidden.has(layerIds.has(shape.layer) ? layerPartId(shape.layer) : SHAPES_PART);
+  private cleared(standing: Map<string, Standing>, edits: ModelEdits, hidden?: ReadonlySet<string>): { cut: SurfaceCut; hole: MultiPolygon; signature: string } | null {
+    const shown = this.shownShape(edits, hidden);
     const pieces = edits.shapes.flatMap((shape) => (shown(shape) ? (standing.get(shape.id)?.cleared ?? []) : []));
     if (!pieces.length) return null;
     if (this.cutter === undefined) {
@@ -874,6 +905,66 @@ export class EditSession {
     const signature = polygonSignature(pieces);
     const hole = this.cutter.hole(pieces, signature);
     return hole.length ? { cut: this.cutter, hole, signature } : null;
+  }
+
+  /**
+   * Whether a shape is in the model. Shapes in `hidden` parts are left out
+   * of an export, so what they cut from the rest is too. The view doesn't
+   * know what's hidden, so it keeps those cuts.
+   */
+  private shownShape(edits: ModelEdits, hidden?: ReadonlySet<string>): (shape: AddedShape) => boolean {
+    if (!hidden?.size) return () => true;
+    const layerIds = new Set(edits.layers.map((layer) => layer.id));
+    return (shape) => !hidden.has(layerIds.has(shape.layer) ? layerPartId(shape.layer) : SHAPES_PART);
+  }
+
+  /**
+   * Drawn roads on the ground, which the roads, railways and paths under
+   * them give way to, as they do to a route. Without that a drawn road in a
+   * colour of its own only won where a slicer gave it the overlap. A raised
+   * one stands on a roof or a deck and leaves what's under it alone.
+   */
+  private roadCuts(edits: ModelEdits, footprints: Map<string, MultiPolygon>, hidden?: ReadonlySet<string>): Map<string, RoadCut> {
+    const out = new Map<string, RoadCut>();
+    if (!this.ctx.heightfield || !this.ctx.roads.length) return out;
+    const shown = this.shownShape(edits, hidden);
+    for (const shape of edits.shapes) {
+      if (shape.kind !== 'path' || shape.liftMm > 0 || !shown(shape)) continue;
+      const polygons = footprints.get(shape.id);
+      if (!polygons?.length) continue;
+      const key = shapeKey(shape.id);
+      const signature = polygonSignature(polygons);
+      const known = this.roadState.cuts.get(key);
+      out.set(key, known?.signature === signature ? known : { signature, polygons });
+    }
+    return out;
+  }
+
+  /**
+   * Where shapes stand on the ground, which land cover gives way to the way
+   * it does to buildings and roads. Not what a roof or deck holds up. Null on
+   * a model without land cover or with nothing on the ground.
+   */
+  private groundCut(standing: Map<string, Standing>, edits: ModelEdits, hidden?: ReadonlySet<string>): GroundCut | null {
+    if (!this.ctx.land) return null;
+    const shown = this.shownShape(edits, hidden);
+    const pieces: MultiPolygon[] = [];
+    const byTile = new Map<number, string[]>();
+    for (const shape of edits.shapes) {
+      const ground = standing.get(shape.id)?.ground;
+      if (!ground?.length || !shown(shape)) continue;
+      let info = this.groundInfo.get(ground);
+      if (!info) this.groundInfo.set(ground, (info = { signature: polygonSignature(ground), tiles: this.grid.tilesReached(ground, GROUND_REACH_MM) }));
+      pieces.push(ground);
+      for (const tile of info.tiles) {
+        const list = byTile.get(tile);
+        const entry = `${shape.id}=${info.signature}`;
+        if (list) list.push(entry);
+        else byTile.set(tile, [entry]);
+      }
+    }
+    if (!pieces.length) return null;
+    return { set: new ClipSet(pieces), tiles: new Map([...byTile].map(([tile, list]) => [tile, list.join(',')])) };
   }
 
   /**
@@ -1006,35 +1097,47 @@ export class EditSession {
   }
 
   /**
-   * Tiles rebuilt for these edits, and which of them differ from `current`.
-   * Tiles no edited road reaches keep the generated polygons.
+   * Tiles rebuilt for these edits and drawn roads, and which of them differ
+   * from `current`. Tiles no edited or drawn road reaches keep the generated
+   * polygons.
    */
   private async rebuildTiles(
     edits: ModelEdits,
-    current: Map<string, string>,
+    current: RoadState,
     tiles: Map<number, RoadBucket[]>,
-  ): Promise<{ styles: Map<string, string>; changed: Set<number> }> {
+    cuts: Map<string, RoadCut>,
+  ): Promise<{ state: RoadState; changed: Set<number> }> {
     const changed = new Set<number>();
     const roads = this.roadTiles();
-    if (!roads) return { styles: new Map(), changed };
+    if (!roads) return { state: { styles: new Map(), cuts: new Map() }, changed };
     const styles = this.styles(edits, roads);
     const next = new Map([...styles].map(([key, style]) => [key, JSON.stringify(style)]));
+    for (const [key, cut] of cuts) next.set(key, `cut:${cut.signature}`);
+    const cutTiles = (cut: RoadCut) => (cut.tiles ??= roads.tilesReached(cut.polygons));
     const touched = new Set<string>();
-    for (const [key, value] of next) if (current.get(key) !== value) touched.add(key);
-    for (const key of current.keys()) if (!next.has(key)) touched.add(key);
+    for (const [key, value] of next) if (current.styles.get(key) !== value) touched.add(key);
+    for (const key of current.styles.keys()) if (!next.has(key)) touched.add(key);
     for (const key of touched) {
-      const before = current.get(key);
+      const was = current.cuts.get(key);
+      const now = cuts.get(key);
+      if (was || now) {
+        for (const tile of was ? cutTiles(was) : []) changed.add(tile);
+        for (const tile of now ? cutTiles(now) : []) changed.add(tile);
+        continue;
+      }
+      const before = current.styles.get(key);
       for (const tile of roads.tilesOf(key, before ? (JSON.parse(before) as RoadStyle) : undefined)) changed.add(tile);
       for (const tile of roads.tilesOf(key, styles.get(key))) changed.add(tile);
     }
     const reached = new Set<number>();
     for (const [key, style] of styles) for (const tile of roads.tilesOf(key, style)) reached.add(tile);
-    const ranged = new RoadStyles(styles);
+    for (const cut of cuts.values()) for (const tile of cutTiles(cut)) reached.add(tile);
+    const ranged = new RoadStyles(styles, new Map([...cuts].map(([key, cut]) => [key, cut.polygons])));
     for (const tile of changed) {
       if (reached.has(tile)) tiles.set(tile, await roads.tile(tile, ranged));
       else tiles.delete(tile);
     }
-    return { styles: next, changed };
+    return { state: { styles: next, cuts }, changed };
   }
 
   private tileContent(tile: number, tiles: Map<number, RoadBucket[]> = this.tiles): RoadBucket[] {
@@ -1349,7 +1452,8 @@ export class EditSession {
     this.tiles = new Map();
     this.tileMeshes.clear();
     this.tileSignatures.clear();
-    this.roadStyles = new Map();
+    this.roadState = { styles: new Map(), cuts: new Map() };
+    this.sentLand.clear();
     this.resend = true;
   }
 
@@ -1386,14 +1490,16 @@ export class EditSession {
       await offer(object, part, placed[0]?.layer.role ?? 'building', signature, () => edited.map((e) => e.solid));
     }
 
-    // Roads. The tiles are rebuilt in a copy and swapped in with their
-    // styles, or an export running meanwhile could read tiles for these edits
-    // with the styles of the last ones and skip rebuilding them.
+    // Roads, with the drawn roads on the ground they give way to. The tiles
+    // are rebuilt in a copy and swapped in with their styles, or an export
+    // running meanwhile could read tiles for these edits with the styles of
+    // the last ones and skip rebuilding them.
+    const { polygons: footprints, text } = await this.shapeFootprints(edits, warnings, true);
     const tiles = new Map(this.tiles);
-    const { styles, changed } = await this.rebuildTiles(edits, this.roadStyles, tiles);
+    const { state, changed } = await this.rebuildTiles(edits, this.roadState, tiles, this.roadCuts(edits, footprints));
     this.tiles = tiles;
-    this.roadStyles = styles;
-    if (styles.size && this.roads) {
+    this.roadState = state;
+    if (state.styles.size && this.roads) {
       const first = !this.tiled;
       this.tiled = true;
       const remesh = first ? Array.from({ length: this.roads.count }, (_, i) => i) : [...changed];
@@ -1417,7 +1523,6 @@ export class EditSession {
     }
 
     // Terrain and water, once water is left out or what stands in it changes.
-    const { polygons: footprints, text } = await this.shapeFootprints(edits, warnings, true);
     const { earth, standing } = this.standAll(pass, this.tiles, decks, footprints);
     const terrain = earth?.terrain ?? null;
     if (terrain !== this.sentTerrain) {
@@ -1452,8 +1557,11 @@ export class EditSession {
       this.sentCut = cleared?.signature ?? '';
     }
 
-    // Land cover back where a removed road, building or body of water was.
-    for (const fill of this.fills(pass, this.tiles)) {
+    // Land cover cut where shapes stand on it, and back where a removed
+    // road, building or body of water was.
+    const ground = this.groundCut(standing, edits);
+    parts.push(...(await this.landParts(ground)));
+    for (const fill of this.fills(pass, this.tiles, ground)) {
       const key = `${FILL_PREFIX}${fill.category}`;
       const role = LAND_ROLES[fill.category];
       await offer(key, `land-${fill.category}`, role, polygonSignature(fill.polygons), () => this.landSolids(fill, key), true);
@@ -1509,7 +1617,7 @@ export class EditSession {
    * what's near it, and each tile is kept until what it or the tiles around
    * it had changes.
    */
-  private fills(pass: Pass, tiles: Map<number, RoadBucket[]>): LandFill[] {
+  private fills(pass: Pass, tiles: Map<number, RoadBucket[]>, ground: GroundCut | null): LandFill[] {
     const land = this.ctx.land;
     if (!land) return [];
     const edits = pass.edits;
@@ -1537,9 +1645,12 @@ export class EditSession {
     const own = new Map<number, { signature: string; reach: MultiPolygon }>();
     for (const [tile, { gone, bodies }] of todo) {
       const buckets = tiles.get(tile);
-      const signature = `${tile}:${buckets ? buckets.map((b) => polygonSignature(b.polygons)).join('|') : '-'}:${gone.join(',')}:${bodies.join(',')}`;
+      const standing = ground?.tiles.get(tile) ?? '';
+      const signature = `${tile}:${buckets ? buckets.map((b) => polygonSignature(b.polygons)).join('|') : '-'}:${gone.join(',')}:${bodies.join(',')}:${standing}`;
       let cached = this.tileReach.get(tile);
-      if (cached?.signature !== signature) this.tileReach.set(tile, (cached = { signature, reach: LandCover.reach(this.vacatedIn(tile, buckets, gone, bodies)) }));
+      if (cached?.signature !== signature) {
+        this.tileReach.set(tile, (cached = { signature, reach: LandCover.reach(this.vacatedIn(tile, buckets, gone, bodies, standing ? ground : null)) }));
+      }
       own.set(tile, cached);
     }
     const signatures: string[] = [];
@@ -1553,7 +1664,7 @@ export class EditSession {
       let cached = this.tileFills.get(tile);
       if (cached?.signature !== signature) {
         const reach = around.flatMap((t) => own.get(t)!.reach);
-        const fills = cover.tile(this.grid.units(tile), reach, (box) => this.landBlockers(box, tiles, water, removed));
+        const fills = cover.tile(this.grid.units(tile), reach, (box) => this.landBlockers(box, tiles, water, removed, ground));
         this.tileFills.set(tile, (cached = { signature, fills }));
       }
       for (const fill of cached.fills) {
@@ -1586,9 +1697,10 @@ export class EditSession {
     return out;
   }
 
-  /** What keeps land cover off near a box now, as in the land stage: water, roads, airport paving and buildings. */
-  private landBlockers(box: Box, tiles: Map<number, RoadBucket[]>, water: ClipSet, removed: (ground: Ground) => boolean): MultiPolygon {
+  /** What keeps land cover off near a box now, as in the land stage: water, roads, airport paving and buildings, and shapes on the ground. */
+  private landBlockers(box: Box, tiles: Map<number, RoadBucket[]>, water: ClipSet, removed: (ground: Ground) => boolean, standing: GroundCut | null): MultiPolygon {
     const out: MultiPolygon = [...water.polygonsWithin(box)];
+    if (standing) out.push(...standing.set.polygonsWithin(box));
     const roads = this.roadTiles();
     if (roads) {
       for (const tile of this.grid.tilesTouching(box)) {
@@ -1630,8 +1742,12 @@ export class EditSession {
     return this.landWater.set;
   }
 
-  /** Ground in one tile that roads, buildings or water no longer keep land cover off. */
-  private vacatedIn(tile: number, buckets: RoadBucket[] | undefined, gone: number[], bodies: number[]): MultiPolygon {
+  /**
+   * Ground in one tile that roads, buildings or water no longer keep land
+   * cover off. What a shape stands on now isn't: a road a drawn road took
+   * the place of is under it still.
+   */
+  private vacatedIn(tile: number, buckets: RoadBucket[] | undefined, gone: number[], bodies: number[], standing: GroundCut | null): MultiPolygon {
     const vacated: MultiPolygon = [];
     const base = buckets ? (this.roads?.baseTile(tile).flatMap((b) => b.polygons) ?? []) : [];
     if (base.length) {
@@ -1641,7 +1757,51 @@ export class EditSession {
     const rect = this.grid.units(tile);
     for (const i of gone) vacated.push(...clipToUnits(this.grounds[i].pieces, rect));
     for (const i of bodies) vacated.push(...clipToUnits([this.ctx.bodies[i].polygon], rect));
-    return vacated;
+    return standing && vacated.length ? differenceSet(vacated, standing.set) : vacated;
+  }
+
+  /**
+   * The view's land parts with what shapes stand on cut out (land.ts), a
+   * tile at a time, so moving a shape only cuts and meshes the tiles it was
+   * and is in. The first cut in a category meshes all its tiles, about
+   * 0.2 s for the green in Boston. A part goes back to the generated one
+   * once nothing is cut from it.
+   */
+  private async landParts(ground: GroundCut | null): Promise<PartUpdate[]> {
+    const out: PartUpdate[] = [];
+    if (!this.ctx.land) return out;
+    for (const layer of this.spec.layers) {
+      if (!layer.id.startsWith('land-')) continue;
+      const category = layer.id.slice('land-'.length) as SurfaceCategory;
+      const slabs = (this.landSlabs ??= new LandSlabs(this.grid, this.generatedLand()));
+      const tiles = slabs.tiles(category);
+      const sample = layer.solids.find((solid): solid is PrismSolid => solid.kind === 'prism');
+      if (!sample || !ground || ![...tiles.keys()].some((tile) => ground.tiles.has(tile))) {
+        if (this.sentLand.delete(category)) out.push({ id: layer.id, part: null });
+        continue;
+      }
+      let meshes = this.landTiles.get(category);
+      if (!meshes) this.landTiles.set(category, (meshes = new Map()));
+      const made: string[] = [];
+      const list: MeshData[] = [];
+      for (const tile of [...tiles.keys()].sort((a, b) => a - b)) {
+        const signature = ground.tiles.get(tile) ?? '';
+        let entry = meshes.get(tile);
+        if (entry?.signature !== signature) {
+          const polygons = signature ? slabs.cut(category, tile, ground.set) : tiles.get(tile)!;
+          const part = polygons.length ? await this.meshPart({ ...layer, solids: polygons.map((polygon) => ({ ...sample, polygon })) }) : null;
+          meshes.set(tile, (entry = { signature, mesh: part?.indices.length ? { positions: part.positions, indices: part.indices } : null }));
+        }
+        made.push(`${tile}=${signature}`);
+        if (entry.mesh) list.push(entry.mesh);
+      }
+      const signature = made.join(';');
+      if (this.sentLand.get(category) === signature) continue;
+      const mesh = list.length ? concat(list) : { positions: new Float32Array(0), indices: new Uint32Array(0) };
+      out.push({ id: layer.id, part: { id: layer.id, name: layer.name, role: layer.role, positions: mesh.positions, indices: mesh.indices } });
+      this.sentLand.set(category, signature);
+    }
+    return out;
   }
 
   private landSolids(fill: LandFill, key: string): PrismSolid[] {
@@ -1757,16 +1917,18 @@ export class EditSession {
     };
 
     // The viewer's tiles when they're for these edits, or tiles of its own.
+    const excludedSet = new Set(excluded);
+    const { polygons: footprints } = await this.shapeFootprints(edits, warnings);
     const tiles = new Map(this.tiles);
-    const { styles } = await this.rebuildTiles(edits, this.roadStyles, tiles);
-    const roadsEdited = styles.size > 0 && this.roads !== null;
+    const { state } = await this.rebuildTiles(edits, this.roadState, tiles, this.roadCuts(edits, footprints, excludedSet));
+    const roadsEdited = state.styles.size > 0 && this.roads !== null;
     const roadTiles = roadsEdited ? tiles : new Map<number, RoadBucket[]>();
     const decks = this.rebuiltDecks(edits);
-    const { polygons: footprints } = await this.shapeFootprints(edits, warnings);
     const { earth, standing } = this.standAll(pass, roadTiles, decks, footprints);
     const shapeFootprints = [...standing.values()].flatMap((s) => (s.ground.length ? [s.ground] : []));
     const hidden = new Set(this.hiddenTrees(shapeFootprints, roadTiles, earth));
-    const cleared = this.cleared(standing, edits, new Set(excluded));
+    const cleared = this.cleared(standing, edits, excludedSet);
+    const ground = this.groundCut(standing, edits, excludedSet);
     let city: Layer | null = null;
     try {
       if (cleared) city = cleared.cut.layer(cleared.hole);
@@ -1833,7 +1995,15 @@ export class EditSession {
         continue;
       }
       const source =
-        layer.id === 'terrain' && earth?.terrain ? earth.terrain : layer.id === 'water' && earth?.water ? earth.water : layer.id === 'city' && city ? city.solids : layer.solids;
+        layer.id === 'terrain' && earth?.terrain
+          ? earth.terrain
+          : layer.id === 'water' && earth?.water
+            ? earth.water
+            : layer.id === 'city' && city
+              ? city.solids
+              : ground && layer.id.startsWith('land-')
+                ? cutSlabs(layer.solids, ground.set)
+                : layer.solids;
       const kept: Solid[] = [];
       for (const original of source) {
         if (left.has(original)) continue;
@@ -1851,7 +2021,7 @@ export class EditSession {
       if (kept.length) layers.push({ ...layer, solids: kept });
     }
     // Land cover back where a removed road, building or body of water was, in its land part.
-    for (const fill of this.fills(pass, roadTiles)) {
+    for (const fill of this.fills(pass, roadTiles, ground)) {
       const id = `land-${fill.category}`;
       const solids = this.landSolids(fill, `${FILL_PREFIX}${fill.category}`);
       const existing = layers.find((l) => l.id === id);
@@ -2003,6 +2173,14 @@ const GROUP_LABELS: Record<ColourGroup, string> = {
 
 function groupLabel(group: ColourGroup): string {
   return GROUP_LABELS[group];
+}
+
+/** Land cover slabs with what shapes stand on taken out, the rest as they were. */
+function cutSlabs(solids: Solid[], cut: ClipSet): Solid[] {
+  return solids.flatMap((solid) => {
+    if (solid.kind !== 'prism' || !cut.within(ringBounds(solid.polygon[0])).length) return [solid];
+    return cutCover([solid.polygon], cut).map((polygon) => ({ ...solid, polygon }));
+  });
 }
 
 function emptyPart(id: string): MeshPart {
