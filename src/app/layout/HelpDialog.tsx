@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { PenTool } from 'lucide-react';
 import { CACHE_LIMIT, cacheSize, clearCache, LIDAR_CACHE_LIMIT } from '../../core/data/cache';
 import { Dialog } from '../components/Dialog';
 import { BuyMeACoffeeMark, GithubMark, MakerWorldMark, PatreonMark } from '../components/Icons';
@@ -109,6 +110,10 @@ export function HelpDialog() {
         <a href="https://buymeacoffee.com/jarvizar" target="_blank" rel="noreferrer" className="btn btn-sm">
           <BuyMeACoffeeMark size={18} />
           Buy Me a Coffee
+        </a>
+        <a href="https://svgmap.jarvisar.com" target="_blank" rel="noreferrer" className="btn btn-sm">
+          <PenTool size={18} aria-hidden="true" />
+          SVGMap
         </a>
       </div>
 
