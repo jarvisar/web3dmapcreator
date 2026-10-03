@@ -172,6 +172,20 @@
   padding: 0;
 }
 
+.topbar-patreon-label {
+  display: none;
+}
+
+@media (min-width: 1000px) {
+  .topbar-patreon {
+    width: auto;
+    padding: 0 12px;
+  }
+  .topbar-patreon-label {
+    display: inline;
+  }
+}
+
 /* Undo and redo, at the right of the logo over the sidebar */
 .topbar-history {
   display: flex;
@@ -632,6 +646,9 @@
   .topbar-link {
     display: none;
   }
+  .topbar-patreon {
+    display: inline-flex;
+  }
   .view-btn {
     padding: 0 9px;
   }
@@ -655,9 +672,27 @@
   }
 }
 
+@media (max-width: 480px) {
+  .view-btn {
+    padding: 0 4px;
+  }
+}
+
 @media (max-width: 400px) {
   .view-btn svg {
     display: none;
+  }
+}
+
+@media (max-width: 360px) {
+  .topbar {
+    gap: 4px;
+  }
+  .topbar-start {
+    padding-left: 4px;
+  }
+  .topbar-end {
+    padding-inline: 4px;
   }
 }
 

@@ -152,11 +152,12 @@ export function TopBar({ narrow }: { narrow: boolean }) {
             Help
           </span>
         </button>
+        <a className="topbar-link topbar-patreon" href="https://www.patreon.com/c/Jarvizar" target="_blank" rel="noreferrer" aria-label="Patreon / Commercial" title="Patreon / Commercial">
+          <PatreonMark size={16} />
+          <span className="topbar-patreon-label" aria-hidden="true">Patreon / Commercial</span>
+        </a>
         <a className="topbar-link" href="https://buymeacoffee.com/jarvizar" target="_blank" rel="noreferrer" aria-label="Buy me a coffee" title="Buy me a coffee">
           <BuyMeACoffeeMark size={18} />
-        </a>
-        <a className="topbar-link" href="https://www.patreon.com/c/Jarvizar" target="_blank" rel="noreferrer" aria-label="Jarvizar on Patreon" title="Jarvizar on Patreon">
-          <PatreonMark size={16} />
         </a>
         <a className="topbar-link" href="https://makerworld.com/en/@jarvizar" target="_blank" rel="noreferrer" aria-label="Jarvizar on MakerWorld" title="Jarvizar on MakerWorld">
           <MakerWorldMark size={18} />
